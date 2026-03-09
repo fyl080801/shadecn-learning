@@ -80,7 +80,7 @@ const point = computed(() => {
 const latitudeLines = computed(() => {
   const lines: { path: string }[] = []
   const r = sphereRadius.value
-  const latCount = 7
+  const latCount = 4
 
   for (let i = 1; i < latCount; i++) {
     const lat = (Math.PI * i) / latCount
@@ -113,7 +113,7 @@ const latitudeLines = computed(() => {
 const longitudeLines = computed(() => {
   const lines: { path: string }[] = []
   const r = sphereRadius.value
-  const lonCount = 12
+  const lonCount = 4
 
   for (let i = 0; i < lonCount; i++) {
     const lon = (Math.PI * 2 * i) / lonCount
