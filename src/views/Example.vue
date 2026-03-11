@@ -30,8 +30,6 @@ function handlePositionUpdate(newPosition: { x: number; y: number }) {
         <div class="flex justify-center">
           <InteractiveSquare
             class="w-[350px] h-[350px]"
-            :square-size="200"
-            :drag-area-scale="1.5"
             @update:position="handlePositionUpdate"
           />
         </div>

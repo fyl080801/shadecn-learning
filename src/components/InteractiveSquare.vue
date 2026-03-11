@@ -3,10 +3,25 @@ import { ref, computed, onMounted, onUnmounted } from "vue"
 
 interface Props {
   moveSpeed?: number
+  defaultRotationX?: number
+  defaultRotationY?: number
+  defaultRotationZ?: number
+  /** 底部限制角度（屏幕下方，度数），默认 30 度 */
+  bottomLimitDegrees?: number
+  /** 顶部限制角度（屏幕上方，度数），默认 0 表示不限制 */
+  topLimitDegrees?: number
+  /** 中间矩形颜色 */
+  squareColor?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  moveSpeed: 0.005
+  moveSpeed: 0.005,
+  defaultRotationX: -0.10,
+  defaultRotationY: 0,
+  defaultRotationZ: 0,
+  bottomLimitDegrees: 38,
+  topLimitDegrees: 0,
+  squareColor: "#e5e5e5"
 })
 
 const emit = defineEmits<{
@@ -31,26 +46,43 @@ const sphereCenter = computed(() => ({
 
 const pointRadius = computed(() => squareSize.value * 0.08)
 
-// 球体旋转角度
-const rotationX = ref(0)
-const rotationY = ref(0)
+// 球体旋转角度（固定，使用 props）
+const rotationX = computed(() => props.defaultRotationX)
+const rotationY = computed(() => props.defaultRotationY)
+const rotationZ = computed(() => props.defaultRotationZ)
 
-// 拖动点位置（固定在球体前方）
-const pointPhi = ref(Math.PI / 2)
+// 拖动点在球面上的位置（球坐标）
+const pointTheta = ref(0) // 水平角度
+const pointPhi = ref(Math.PI / 2) // 垂直角度（从顶部开始）
 
 const isActive = ref(false)
 const dragStart = ref({ x: 0, y: 0 })
 
 // 3D旋转函数
-function rotatePoint(x: number, y: number, z: number, rx: number, ry: number) {
+function rotatePoint(
+  x: number,
+  y: number,
+  z: number,
+  rx: number,
+  ry: number,
+  rz: number
+) {
+  // 绕 X 轴旋转
   let y1 = y * Math.cos(rx) - z * Math.sin(rx)
   let z1 = y * Math.sin(rx) + z * Math.cos(rx)
   let x1 = x
 
+  // 绕 Y 轴旋转
   let x2 = x1 * Math.cos(ry) + z1 * Math.sin(ry)
   let z2 = -x1 * Math.sin(ry) + z1 * Math.cos(ry)
+  let y2 = y1
 
-  return { x: x2, y: y1, z: z2 }
+  // 绕 Z 轴旋转
+  let x3 = x2 * Math.cos(rz) - y2 * Math.sin(rz)
+  let y3 = x2 * Math.sin(rz) + y2 * Math.cos(rz)
+  let z3 = z2
+
+  return { x: x3, y: y3, z: z3 }
 }
 
 function project3Dto2D(x: number, y: number, z: number) {
@@ -64,16 +96,100 @@ function project3Dto2D(x: number, y: number, z: number) {
   }
 }
 
-// 计算旋转后的拖动点位置
+// 计算旋转后的拖动点位置和深度缩放
 const point = computed(() => {
   const r = sphereRadius.value
-  const x3d = 0
+  const x3d = r * Math.sin(pointPhi.value) * Math.cos(pointTheta.value)
   const y3d = r * Math.cos(pointPhi.value)
-  const z3d = r * Math.sin(pointPhi.value)
+  const z3d = r * Math.sin(pointPhi.value) * Math.sin(pointTheta.value)
 
-  const rotated = rotatePoint(x3d, y3d, z3d, rotationX.value, rotationY.value)
+  const rotated = rotatePoint(
+    x3d,
+    y3d,
+    z3d,
+    rotationX.value,
+    rotationY.value,
+    rotationZ.value
+  )
 
-  return project3Dto2D(rotated.x, rotated.y, rotated.z)
+  const projected = project3Dto2D(rotated.x, rotated.y, rotated.z)
+
+  // 计算深度缩放因子
+  const perspective = 400
+  const depthScale = perspective / (perspective + rotated.z)
+
+  return { ...projected, scale: depthScale, depth: rotated.z }
+})
+
+// 球体外轮廓 - 遍历整个球面，找投影后的外包络
+const sphereOutline = computed(() => {
+  const r = sphereRadius.value
+  const rx = rotationX.value
+  const ry = rotationY.value
+  const rz = rotationZ.value
+
+  // 遍历球面上的所有点，找到投影后的外包络
+  const projectedPoints: { x: number; y: number; z: number }[] = []
+
+  const latSteps = 36
+  const lonSteps = 72
+
+  for (let i = 0; i <= latSteps; i++) {
+    const lat = (Math.PI * i) / latSteps
+    for (let j = 0; j <= lonSteps; j++) {
+      const lon = (Math.PI * 2 * j) / lonSteps
+
+      const x = r * Math.sin(lat) * Math.cos(lon)
+      const y = r * Math.cos(lat)
+      const z = r * Math.sin(lat) * Math.sin(lon)
+
+      const rotated = rotatePoint(x, y, z, rx, ry, rz)
+      const projected = project3Dto2D(rotated.x, rotated.y, rotated.z)
+      projectedPoints.push({ ...projected, z: rotated.z })
+    }
+  }
+
+  const center = sphereCenter.value
+
+  // 按角度分组，每组取最远的点
+  const angleBuckets: Map<number, { x: number; y: number }> = new Map()
+  const bucketCount = 72
+
+  for (const p of projectedPoints) {
+    const dx = p.x - center.x
+    const dy = p.y - center.y
+    const angle = Math.atan2(dy, dx)
+    const dist = Math.sqrt(dx * dx + dy * dy)
+
+    const bucketIndex = Math.floor(
+      ((angle + Math.PI) / (2 * Math.PI)) * bucketCount
+    )
+
+    const existing = angleBuckets.get(bucketIndex)
+    if (
+      !existing ||
+      dist >
+        Math.sqrt((existing.x - center.x) ** 2 + (existing.y - center.y) ** 2)
+    ) {
+      angleBuckets.set(bucketIndex, { x: p.x, y: p.y })
+    }
+  }
+
+  const outlinePoints: { x: number; y: number }[] = []
+  for (let i = 0; i < bucketCount; i++) {
+    const p = angleBuckets.get(i)
+    if (p) outlinePoints.push(p)
+  }
+
+  if (outlinePoints.length > 0) {
+    let path = "M " + outlinePoints[0].x + " " + outlinePoints[0].y
+    for (let i = 1; i < outlinePoints.length; i++) {
+      path += " L " + outlinePoints[i].x + " " + outlinePoints[i].y
+    }
+    path += " Z"
+    return path
+  }
+  return ""
 })
 
 // 生成经纬度网格线
@@ -92,16 +208,23 @@ const latitudeLines = computed(() => {
       const y = r * Math.cos(lat)
       const z = r * Math.sin(lat) * Math.sin(lon)
 
-      const rotated = rotatePoint(x, y, z, rotationX.value, rotationY.value)
+      const rotated = rotatePoint(
+        x,
+        y,
+        z,
+        rotationX.value,
+        rotationY.value,
+        rotationZ.value
+      )
       points.push(rotated)
     }
 
     const projected = points.map((p) => project3Dto2D(p.x, p.y, p.z))
 
     if (projected.length > 0) {
-      let path = "M " + projected?.[0]?.x + " " + projected?.[0]?.y
+      let path = "M " + projected[0].x + " " + projected[0].y
       for (let j = 1; j < projected.length; j++) {
-        path += " L " + projected?.[j]?.x + " " + projected?.[j]?.y
+        path += " L " + projected[j].x + " " + projected[j].y
       }
       lines.push({ path })
     }
@@ -125,16 +248,23 @@ const longitudeLines = computed(() => {
       const y = r * Math.cos(lat)
       const z = r * Math.sin(lat) * Math.sin(lon)
 
-      const rotated = rotatePoint(x, y, z, rotationX.value, rotationY.value)
+      const rotated = rotatePoint(
+        x,
+        y,
+        z,
+        rotationX.value,
+        rotationY.value,
+        rotationZ.value
+      )
       points.push(rotated)
     }
 
     const projected = points.map((p) => project3Dto2D(p.x, p.y, p.z))
 
     if (projected.length > 0) {
-      let path = "M " + projected?.[0]?.x + " " + projected?.[0]?.y
+      let path = "M " + projected[0].x + " " + projected[0].y
       for (let j = 1; j < projected.length; j++) {
-        path += " L " + projected?.[j]?.x + " " + projected?.[j]?.y
+        path += " L " + projected[j].x + " " + projected[j].y
       }
       lines.push({ path })
     }
@@ -147,6 +277,17 @@ const squareOffset = computed(() => ({
   x: sphereCenter.value.x - squareSize.value / 2,
   y: sphereCenter.value.y - squareSize.value / 2
 }))
+
+// 内部矩形（面积为外部的 1/2，居中）
+const innerRect = computed(() => {
+  // 面积为一半，边长为 sqrt(1/2) ≈ 0.707
+  const innerSize = squareSize.value * Math.sqrt(0.5)
+  return {
+    x: sphereCenter.value.x - innerSize / 2,
+    y: sphereCenter.value.y - innerSize / 2,
+    size: innerSize
+  }
+})
 
 const corners = computed(() => [
   { x: squareOffset.value.x, y: squareOffset.value.y },
@@ -167,22 +308,50 @@ const lines = computed(() =>
   }))
 )
 
-const pointStyle = computed(() => ({
-  left: point.value.x - pointRadius.value + "px",
-  top: point.value.y - pointRadius.value + "px",
-  width: pointRadius.value * 2 + "px",
-  height: pointRadius.value * 2 + "px",
-  cursor: isActive.value ? "grabbing" : "pointer"
-}))
+const pointStyle = computed(() => {
+  const scaledRadius = pointRadius.value * point.value.scale
+  // 根据深度调整透明度
+  // depth > 0 表示在球体后方，应该更透明
+  let opacity = Math.max(0.4, Math.min(1, 0.7 + point.value.scale * 0.3))
+  if (point.value.depth > 0) {
+    // 在后方时降低透明度
+    opacity = Math.min(opacity, 0.5)
+  }
+  return {
+    left: point.value.x - scaledRadius + "px",
+    top: point.value.y - scaledRadius + "px",
+    width: scaledRadius * 2 + "px",
+    height: scaledRadius * 2 + "px",
+    cursor: isActive.value ? "grabbing" : "pointer",
+    opacity: opacity
+  }
+})
+
+// 计算 phi 的限制范围（弧度）
+// 注意：屏幕坐标中，phi 越小点越靠近屏幕底部
+const phiLimits = computed(() => {
+  // bottomLimitDegrees: 限制点不能太靠近屏幕底部（对应 phi 最小值）
+  // topLimitDegrees: 限制点不能太靠近屏幕顶部（对应 phi 最大值）
+  const minPhi = (props.bottomLimitDegrees * Math.PI) / 180
+  const maxPhi = Math.PI - (props.topLimitDegrees * Math.PI) / 180
+  return { min: minPhi, max: maxPhi }
+})
 
 function updateRotation(deltaX: number, deltaY: number) {
   const speed = props.moveSpeed
 
-  rotationY.value += deltaX * speed
-  rotationX.value += deltaY * speed
+  // 更新点在球面上的位置
+  pointTheta.value += deltaX * speed
+  const newPhi = pointPhi.value - deltaY * speed
+
+  // 限制 phi 在有效范围内
+  pointPhi.value = Math.max(
+    phiLimits.value.min,
+    Math.min(phiLimits.value.max, newPhi)
+  )
 
   emit("update:position", point.value)
-  emit("update:spherical", { theta: rotationY.value, phi: rotationX.value })
+  emit("update:spherical", { theta: pointTheta.value, phi: pointPhi.value })
 }
 
 function handleMouseDown(e: MouseEvent) {
@@ -270,12 +439,13 @@ onUnmounted(() => {
   >
     <!-- Square boundary -->
     <div
-      class="absolute border-2 border-primary bg-muted/30"
+      class="absolute border-2 border-primary/50 backdrop-blur-sm rounded-sm"
       :style="{
         left: squareOffset.x + 'px',
         top: squareOffset.y + 'px',
         width: squareSize + 'px',
-        height: squareSize + 'px'
+        height: squareSize + 'px',
+        backgroundColor: squareColor + '83'
       }"
     />
 
@@ -285,6 +455,15 @@ onUnmounted(() => {
       :width="containerSize.width"
       :height="containerSize.height"
     >
+      <!-- Sphere outline (球体外轮廓) -->
+      <path
+        :d="sphereOutline"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        class="text-primary/60"
+      />
+
       <!-- Longitude lines (经线) -->
       <path
         v-for="(line, index) in longitudeLines"
@@ -307,26 +486,17 @@ onUnmounted(() => {
         class="text-primary/40"
       />
 
-      <!-- Center axis lines -->
-      <line
-        :x1="squareOffset.x"
-        :y1="squareOffset.y + squareSize / 2"
-        :x2="squareOffset.x + squareSize"
-        :y2="squareOffset.y + squareSize / 2"
-        stroke="currentColor"
+      <!-- Inner rectangle (center, half area) -->
+      <rect
+        :x="innerRect.x"
+        :y="innerRect.y"
+        :width="innerRect.size"
+        :height="innerRect.size"
+        fill="none"
+        :stroke="props.squareColor"
         stroke-width="1"
-        stroke-dasharray="6 4"
-        class="text-primary/40"
-      />
-      <line
-        :x1="squareOffset.x + squareSize / 2"
-        :y1="squareOffset.y"
-        :x2="squareOffset.x + squareSize / 2"
-        :y2="squareOffset.y + squareSize"
-        stroke="currentColor"
-        stroke-width="1"
-        stroke-dasharray="6 4"
-        class="text-primary/40"
+        stroke-dasharray="4 2"
+        opacity="0.5"
       />
 
       <!-- Lines to corners -->
@@ -339,7 +509,7 @@ onUnmounted(() => {
         :y2="line.y2"
         stroke="currentColor"
         stroke-width="2"
-        class="text-primary/60"
+        :class="point.depth > 0 ? 'text-primary/30' : 'text-primary/60'"
       />
     </svg>
 
