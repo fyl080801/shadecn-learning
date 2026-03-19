@@ -3,6 +3,7 @@ import Home from '@/views/Home.vue'
 import About from '@/views/About.vue'
 import Example from '@/views/Example.vue'
 import Emu3DView from '@/views/Emu3DView.vue'
+import Demo3 from '@/views/Demo3.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -26,6 +27,11 @@ const router = createRouter({
       path: '/3d-cube',
       name: '3DCube',
       component: Emu3DView,
+    },
+    {
+      path: '/demo3',
+      name: 'Demo3',
+      component: Demo3,
     },
   ],
 })
