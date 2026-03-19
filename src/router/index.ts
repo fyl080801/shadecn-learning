@@ -5,6 +5,7 @@ import Example from '@/views/Example.vue'
 import Emu3DView from '@/views/Emu3DView.vue'
 import Demo3 from '@/views/Demo3.vue'
 import SnakeGame from '@/views/SnakeGame.vue'
+import Game2048 from '@/views/Game2048.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -38,6 +39,11 @@ const router = createRouter({
       path: '/snake',
       name: 'SnakeGame',
       component: SnakeGame,
+    },
+    {
+      path: '/2048',
+      name: 'Game2048',
+      component: Game2048,
     },
   ],
 })
