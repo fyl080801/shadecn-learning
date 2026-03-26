@@ -3,9 +3,9 @@ import AppHeader from '@/components/AppHeader.vue'
 </script>
 
 <template>
-  <div class="min-h-screen bg-background">
+  <div class="flex h-screen flex-col overflow-hidden bg-background">
     <AppHeader />
-    <main>
+    <main class="min-h-0 flex-1 overflow-auto">
       <RouterView />
     </main>
   </div>

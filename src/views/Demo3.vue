@@ -79,7 +79,7 @@ const initBricks = () => {
         width: config.brickWidth,
         height: config.brickHeight,
         alive: true,
-        color: brickColors[row % brickColors.length]
+        color: brickColors[row % brickColors.length]!
       })
     }
   }
@@ -464,7 +464,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: center;
   align-items: center;
-  min-height: 100vh;
+  min-height: 100%;
   background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
   padding: 20px;
   box-sizing: border-box;

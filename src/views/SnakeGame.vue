@@ -293,7 +293,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex h-[calc(100vh-3.5rem)] flex-col items-center justify-center p-4 bg-gradient-to-b from-slate-900 to-slate-800">
+  <div class="flex h-full min-h-0 flex-col items-center justify-center overflow-hidden bg-gradient-to-b from-slate-900 to-slate-800 p-4">
     <Card class="w-full max-w-lg">
       <CardHeader class="text-center">
         <CardTitle class="text-3xl font-bold bg-gradient-to-r from-green-400 to-emerald-500 bg-clip-text text-transparent">
