@@ -1,0 +1,23 @@
+{
+  "id": 54965,
+  "name": "shadecn-learning",
+  "abbrName": "SH",
+  "description": "",
+  "devMode": 2,
+  "status": null,
+  "url": null,
+  "databaseHost": null,
+  "databasePort": null,
+  "databaseName": null,
+  "databaseUsername": null,
+  "databasePassword": null,
+  "projectInfo": {
+    "JD": {
+      "fyl080801": [
+        {
+          "fyl080801": 54965
+        }
+      ]
+    }
+  }
+}

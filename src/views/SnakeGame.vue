@@ -132,7 +132,9 @@ const moveSnake = () => {
   // 更新方向
   direction.value = nextDirection.value
 
-  const head = { ...snake.value[0] }
+  const currentHead = snake.value[0]
+  if (!currentHead) return
+  const head: Position = { x: currentHead.x, y: currentHead.y }
 
   switch (direction.value) {
     case 'UP':
@@ -291,7 +293,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-col items-center justify-center min-h-screen p-4 bg-gradient-to-b from-slate-900 to-slate-800">
+  <div class="flex h-[calc(100vh-3.5rem)] flex-col items-center justify-center p-4 bg-gradient-to-b from-slate-900 to-slate-800">
     <Card class="w-full max-w-lg">
       <CardHeader class="text-center">
         <CardTitle class="text-3xl font-bold bg-gradient-to-r from-green-400 to-emerald-500 bg-clip-text text-transparent">
