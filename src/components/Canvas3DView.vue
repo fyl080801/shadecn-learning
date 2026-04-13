@@ -21,7 +21,7 @@ const props = withDefaults(defineProps<Props>(), {
   width: 300,
   height: 300,
   moveSpeed: 0.005,
-  defaultRotationX: -0.1,
+  defaultRotationX: 0,
   defaultRotationY: 0,
   defaultRotationZ: 0,
   bottomLimitDegrees: 38,
@@ -136,36 +136,36 @@ function draw() {
 }
 
 function drawSphereOutline(ctx: CanvasRenderingContext2D, r: number, rx: number, ry: number, rz: number) {
-  const angleBuckets = new Map<number, { x: number; y: number }>()
-  const bucketCount = 72
-  const latSteps = 36
-  const lonSteps = 72
+  // 透视投影解析法计算球体轮廓
+  // 相机在 (0, 0, -d)，球心在原点，半径 r
+  // 轮廓环是相机到球面切线的圆锥与球面的交线
+  const d = 400 // perspective distance
+  const cx = center.value.x
+  const cy = center.value.y
 
-  for (let i = 0; i <= latSteps; i++) {
-    const lat = (Math.PI * i) / latSteps
-    for (let j = 0; j <= lonSteps; j++) {
-      const lon = (Math.PI * 2 * j) / lonSteps
-      const x = r * Math.sin(lat) * Math.cos(lon)
-      const y = r * Math.cos(lat)
-      const z = r * Math.sin(lat) * Math.sin(lon)
-      const rot = rotatePoint(x, y, z, rx, ry, rz)
-      const proj = project(rot.x, rot.y, rot.z)
-      const cx = center.value.x, cy = center.value.y
-      const dx = proj.x - cx, dy = proj.y - cy
-      const angle = Math.atan2(dy, dx)
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      const bi = Math.floor(((angle + Math.PI) / (2 * Math.PI)) * bucketCount)
-      const existing = angleBuckets.get(bi)
-      if (!existing || dist > Math.sqrt((existing.x - cx) ** 2 + (existing.y - cy) ** 2)) {
-        angleBuckets.set(bi, { x: proj.x, y: proj.y })
-      }
-    }
-  }
+  // 切线圆锥：轮廓环在球面上的 z 坐标为 zc = r²/d（相对球心）
+  // 轮廓环半径 rc = r * sqrt(1 - (r/d)²)
+  const zc = -(r * r) / d  // 球心在原点，相机在 -d，轮廓环偏向相机侧
+  const rc = r * Math.sqrt(1 - (r * r) / (d * d))
 
+  const steps = 120
   const outlinePoints: { x: number; y: number }[] = []
-  for (let i = 0; i < bucketCount; i++) {
-    const p = angleBuckets.get(i)
-    if (p) outlinePoints.push(p)
+
+  for (let i = 0; i < steps; i++) {
+    const angle = (Math.PI * 2 * i) / steps
+    // 轮廓环上的3D点（旋转前）
+    const px = rc * Math.cos(angle)
+    const py = rc * Math.sin(angle)
+    const pz = zc
+
+    // 应用旋转
+    const rot = rotatePoint(px, py, pz, rx, ry, rz)
+    // 透视投影
+    const scale = d / (d + rot.z)
+    outlinePoints.push({
+      x: cx + rot.x * scale,
+      y: cy + rot.y * scale
+    })
   }
 
   if (outlinePoints.length > 1) {
@@ -185,9 +185,13 @@ function drawGridLines(ctx: CanvasRenderingContext2D, r: number, rx: number, ry:
   ctx.strokeStyle = props.gridColor
   ctx.lineWidth = 1
 
-  // 纬线
-  for (let i = 1; i < 4; i++) {
-    const lat = (Math.PI * i) / 4
+  // 纬线: 赤道(0°) 及上下各30°
+  const latitudes = [
+    Math.PI / 4,       // +30° (上方)
+    Math.PI / 2,       // 0°  赤道(中心)
+    (Math.PI * 2) / 3  // -30° (下方)
+  ]
+  for (const lat of latitudes) {
     ctx.beginPath()
     for (let j = 0; j <= 36; j++) {
       const lon = (Math.PI * 2 * j) / 36
@@ -202,22 +206,20 @@ function drawGridLines(ctx: CanvasRenderingContext2D, r: number, rx: number, ry:
     ctx.stroke()
   }
 
-  // 经线
-  for (let i = 0; i < 4; i++) {
-    const lon = (Math.PI * 2 * i) / 4
-    ctx.beginPath()
-    for (let j = 0; j <= 18; j++) {
-      const lat = (Math.PI * j) / 18
-      const x = r * Math.sin(lat) * Math.cos(lon)
-      const y = r * Math.cos(lat)
-      const z = r * Math.sin(lat) * Math.sin(lon)
-      const rot = rotatePoint(x, y, z, rx, ry, rz)
-      const proj = project(rot.x, rot.y, rot.z)
-      if (j === 0) ctx.moveTo(proj.x, proj.y)
-      else ctx.lineTo(proj.x, proj.y)
-    }
-    ctx.stroke()
+  // 中心经线 — lon = -π/2 (正前方)，从北极到南极的竖直半圆
+  const centerLon = -Math.PI / 2
+  ctx.beginPath()
+  for (let j = 0; j <= 36; j++) {
+    const lat = (Math.PI * j) / 36
+    const x = r * Math.sin(lat) * Math.cos(centerLon)
+    const y = r * Math.cos(lat)
+    const z = r * Math.sin(lat) * Math.sin(centerLon)
+    const rot = rotatePoint(x, y, z, rx, ry, rz)
+    const proj = project(rot.x, rot.y, rot.z)
+    if (j === 0) ctx.moveTo(proj.x, proj.y)
+    else ctx.lineTo(proj.x, proj.y)
   }
+  ctx.stroke()
 }
 
 function drawSquare(ctx: CanvasRenderingContext2D) {
