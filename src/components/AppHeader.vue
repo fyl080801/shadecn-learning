@@ -7,6 +7,20 @@ import {
   NavigationMenuList
 } from "@/components/ui/navigation-menu"
 import { Badge } from "@/components/ui/badge"
+
+interface NavItem {
+  label: string
+  to: string
+}
+
+const navItems: NavItem[] = [
+  { label: "Home", to: "/" },
+  { label: "About", to: "/about" },
+  { label: "Example", to: "/example" },
+  { label: "3D Cube", to: "/3d-cube" },
+  { label: "贪吃蛇", to: "/snake" },
+  { label: "canvas3d", to: "/cnavas3d" }
+]
 </script>
 
 <template>
@@ -20,58 +34,14 @@ import { Badge } from "@/components/ui/badge"
       </RouterLink>
       <NavigationMenu>
         <NavigationMenuList>
-          <NavigationMenuItem>
+          <NavigationMenuItem v-for="item in navItems" :key="item.to">
             <NavigationMenuLink as-child>
               <RouterLink
-                to="/"
+                :to="item.to"
                 class="group inline-flex h-9 w-max items-center justify-center rounded-md bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus:outline-none disabled:pointer-events-none disabled:opacity-50 data-[active]:bg-accent/50 data-[state=open]:bg-accent/50"
                 active-class="bg-accent"
               >
-                Home
-              </RouterLink>
-            </NavigationMenuLink>
-          </NavigationMenuItem>
-          <NavigationMenuItem>
-            <NavigationMenuLink as-child>
-              <RouterLink
-                to="/about"
-                class="group inline-flex h-9 w-max items-center justify-center rounded-md bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus:outline-none disabled:pointer-events-none disabled:opacity-50 data-[active]:bg-accent/50 data-[state=open]:bg-accent/50"
-                active-class="bg-accent"
-              >
-                About
-              </RouterLink>
-            </NavigationMenuLink>
-          </NavigationMenuItem>
-          <NavigationMenuItem>
-            <NavigationMenuLink as-child>
-              <RouterLink
-                to="/example"
-                class="group inline-flex h-9 w-max items-center justify-center rounded-md bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus:outline-none disabled:pointer-events-none disabled:opacity-50 data-[active]:bg-accent/50 data-[state=open]:bg-accent/50"
-                active-class="bg-accent"
-              >
-                Example
-              </RouterLink>
-            </NavigationMenuLink>
-          </NavigationMenuItem>
-          <NavigationMenuItem>
-            <NavigationMenuLink as-child>
-              <RouterLink
-                to="/3d-cube"
-                class="group inline-flex h-9 w-max items-center justify-center rounded-md bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus:outline-none disabled:pointer-events-none disabled:opacity-50 data-[active]:bg-accent/50 data-[state=open]:bg-accent/50"
-                active-class="bg-accent"
-              >
-                3D Cube
-              </RouterLink>
-            </NavigationMenuLink>
-          </NavigationMenuItem>
-          <NavigationMenuItem>
-            <NavigationMenuLink as-child>
-              <RouterLink
-                to="/snake"
-                class="group inline-flex h-9 w-max items-center justify-center rounded-md bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus:outline-none disabled:pointer-events-none disabled:opacity-50 data-[active]:bg-accent/50 data-[state=open]:bg-accent/50"
-                active-class="bg-accent"
-              >
-                贪吃蛇
+                {{ item.label }}
               </RouterLink>
             </NavigationMenuLink>
           </NavigationMenuItem>
