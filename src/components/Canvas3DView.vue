@@ -529,13 +529,74 @@ function drawCameraRect(ctx: CanvasRenderingContext2D, pt: { x: number; y: numbe
 }
 
 function drawPoint(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; scale: number; depth: number }) {
-  const scaledR = pointRadius.value * pt.scale
+  // 3D矢量变换的摄像机镜头图标
+  const r = sphereRadius.value
+  const theta = pointTheta.value
+  const phi = pointPhi.value
+
+  // 球面上的3D位置
+  const px = r * Math.sin(phi) * Math.cos(theta)
+  const py = r * Math.cos(phi)
+  const pz = r * Math.sin(phi) * Math.sin(theta)
+
+  // 法线方向（指向球心）
+  const nx = -Math.sin(phi) * Math.cos(theta)
+  const ny = -Math.cos(phi)
+  const nz = -Math.sin(phi) * Math.sin(theta)
+
+  // 构造局部坐标系 (right, up, normal)
+  let upX = 0, upY = 1, upZ = 0
+  if (Math.abs(ny) > 0.99) { upX = 0; upY = 0; upZ = 1 }
+
+  let rxL = upY * nz - upZ * ny
+  let ryL = upZ * nx - upX * nz
+  let rzL = upX * ny - upY * nx
+  const rLen = Math.sqrt(rxL * rxL + ryL * ryL + rzL * rzL)
+  rxL /= rLen; ryL /= rLen; rzL /= rLen
+
+  let uxL = ny * rzL - nz * ryL
+  let uyL = nz * rxL - nx * rzL
+  let uzL = nx * ryL - ny * rxL
+  const uLen = Math.sqrt(uxL * uxL + uyL * uyL + uzL * uzL)
+  uxL /= uLen; uyL /= uLen; uzL /= uLen
+
+  const rotRx = props.defaultRotationX
+  const rotRy = props.defaultRotationY
+  const rotRz = props.defaultRotationZ
+
+  // 将局部坐标 (lr, lu, ln) 转换为投影后的2D坐标
+  function localToScreen(lr: number, lu: number, ln: number) {
+    const wx = px + rxL * lr + uxL * lu + nx * ln
+    const wy = py + ryL * lr + uyL * lu + ny * ln
+    const wz = pz + rzL * lr + uzL * lu + nz * ln
+    const rot = rotatePoint(wx, wy, wz, rotRx, rotRy, rotRz)
+    return project(rot.x, rot.y, rot.z)
+  }
+
   let opacity = Math.max(0.4, Math.min(1, 0.7 + pt.scale * 0.3))
   if (pt.depth > 0) opacity = Math.min(opacity, 0.5)
 
   ctx.save()
   ctx.globalAlpha = opacity
-  ctx.fillStyle = colors.value.pointColor
+
+  // 摄像机尺寸参数（在局部3D空间中的大小）
+  const camW = squareSize.value * 0.22  // 半宽
+  const camH = squareSize.value * 0.16  // 半高
+  const camDepth = squareSize.value * 0.06 // 主体在法线方向的厚度
+
+  // === 摄像机主体：前面4顶点 + 后面4顶点 ===
+  const frontCorners = [
+    localToScreen(-camW, -camH, 0),
+    localToScreen( camW, -camH, 0),
+    localToScreen( camW,  camH, 0),
+    localToScreen(-camW,  camH, 0)
+  ]
+  const backCorners = [
+    localToScreen(-camW, -camH, -camDepth),
+    localToScreen( camW, -camH, -camDepth),
+    localToScreen( camW,  camH, -camDepth),
+    localToScreen(-camW,  camH, -camDepth)
+  ]
 
   // 阴影
   ctx.shadowColor = props.darkMode ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0.3)"
@@ -543,18 +604,167 @@ function drawPoint(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; sc
   ctx.shadowOffsetX = 2
   ctx.shadowOffsetY = 2
 
+  // 绘制背面
   ctx.beginPath()
-  ctx.arc(pt.x, pt.y, scaledR, 0, Math.PI * 2)
+  ctx.moveTo(backCorners[0]!.x, backCorners[0]!.y)
+  for (let i = 1; i < 4; i++) ctx.lineTo(backCorners[i]!.x, backCorners[i]!.y)
+  ctx.closePath()
+  ctx.fillStyle = props.darkMode ? "rgba(255,255,255,0.08)" : "rgba(59,130,246,0.1)"
+  ctx.strokeStyle = colors.value.camBackStroke
+  ctx.lineWidth = 1
+  ctx.fill()
+  ctx.stroke()
+
+  ctx.shadowColor = "transparent"
+  ctx.shadowBlur = 0
+  ctx.shadowOffsetX = 0
+  ctx.shadowOffsetY = 0
+
+  // 绘制侧面边线
+  ctx.strokeStyle = colors.value.camSideStroke
+  ctx.lineWidth = 1
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath()
+    ctx.moveTo(frontCorners[i]!.x, frontCorners[i]!.y)
+    ctx.lineTo(backCorners[i]!.x, backCorners[i]!.y)
+    ctx.stroke()
+  }
+
+  // 绘制前面（摄像机正面）
+  ctx.beginPath()
+  ctx.moveTo(frontCorners[0]!.x, frontCorners[0]!.y)
+  for (let i = 1; i < 4; i++) ctx.lineTo(frontCorners[i]!.x, frontCorners[i]!.y)
+  ctx.closePath()
+  ctx.fillStyle = props.darkMode ? "rgba(255,255,255,0.15)" : "rgba(59,130,246,0.2)"
+  ctx.strokeStyle = colors.value.pointColor
+  ctx.lineWidth = 2
+  ctx.fill()
+  ctx.stroke()
+
+  // === 镜头（前面中心的3D椭圆） ===
+  const lensR = camH * 0.6
+  const lensSteps = 32
+  ctx.beginPath()
+  for (let i = 0; i <= lensSteps; i++) {
+    const angle = (Math.PI * 2 * i) / lensSteps
+    const lp = localToScreen(
+      lensR * Math.cos(angle),
+      lensR * Math.sin(angle),
+      0
+    )
+    if (i === 0) ctx.moveTo(lp.x, lp.y)
+    else ctx.lineTo(lp.x, lp.y)
+  }
+  ctx.closePath()
+  ctx.strokeStyle = colors.value.pointColor
+  ctx.lineWidth = 2
+  ctx.stroke()
+
+  // 镜头内圈
+  const innerR = lensR * 0.55
+  ctx.beginPath()
+  for (let i = 0; i <= lensSteps; i++) {
+    const angle = (Math.PI * 2 * i) / lensSteps
+    const lp = localToScreen(
+      innerR * Math.cos(angle),
+      innerR * Math.sin(angle),
+      0
+    )
+    if (i === 0) ctx.moveTo(lp.x, lp.y)
+    else ctx.lineTo(lp.x, lp.y)
+  }
+  ctx.closePath()
+  ctx.fillStyle = colors.value.pointColor
+  ctx.globalAlpha = opacity * 0.4
+  ctx.fill()
+  ctx.globalAlpha = opacity
+
+  // 镜头高光（偏左上）
+  const hlR = innerR * 0.3
+  ctx.beginPath()
+  for (let i = 0; i <= lensSteps; i++) {
+    const angle = (Math.PI * 2 * i) / lensSteps
+    const lp = localToScreen(
+      -innerR * 0.25 + hlR * Math.cos(angle),
+      -innerR * 0.25 + hlR * Math.sin(angle),
+      0
+    )
+    if (i === 0) ctx.moveTo(lp.x, lp.y)
+    else ctx.lineTo(lp.x, lp.y)
+  }
+  ctx.closePath()
+  ctx.fillStyle = props.darkMode ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.7)"
   ctx.fill()
 
-  // active 状态外圈
-  if (isActive.value) {
-    ctx.shadowColor = "transparent"
-    ctx.strokeStyle = colors.value.pointColor
-    ctx.lineWidth = 2
-    ctx.globalAlpha = opacity * 0.5
+  ctx.globalAlpha = opacity
+
+  // === 取景器（主体右上方的3D凸起） ===
+  const vfW2 = camW * 0.35   // 取景器半宽
+  const vfH2 = camH * 0.25   // 取景器半高
+  const vfOffsetR = camW * 0.3  // 右偏移
+  const vfOffsetU = -camH - vfH2  // 在主体上方
+
+  const vfFront = [
+    localToScreen(vfOffsetR - vfW2, vfOffsetU - vfH2, 0),
+    localToScreen(vfOffsetR + vfW2, vfOffsetU - vfH2, 0),
+    localToScreen(vfOffsetR + vfW2, vfOffsetU + vfH2, 0),
+    localToScreen(vfOffsetR - vfW2, vfOffsetU + vfH2, 0)
+  ]
+  const vfBack = [
+    localToScreen(vfOffsetR - vfW2, vfOffsetU - vfH2, -camDepth),
+    localToScreen(vfOffsetR + vfW2, vfOffsetU - vfH2, -camDepth),
+    localToScreen(vfOffsetR + vfW2, vfOffsetU + vfH2, -camDepth),
+    localToScreen(vfOffsetR - vfW2, vfOffsetU + vfH2, -camDepth)
+  ]
+
+  // 取景器背面
+  ctx.beginPath()
+  ctx.moveTo(vfBack[0]!.x, vfBack[0]!.y)
+  for (let i = 1; i < 4; i++) ctx.lineTo(vfBack[i]!.x, vfBack[i]!.y)
+  ctx.closePath()
+  ctx.fillStyle = props.darkMode ? "rgba(255,255,255,0.06)" : "rgba(59,130,246,0.08)"
+  ctx.strokeStyle = colors.value.camBackStroke
+  ctx.lineWidth = 1
+  ctx.fill()
+  ctx.stroke()
+
+  // 取景器侧面
+  ctx.strokeStyle = colors.value.camSideStroke
+  ctx.lineWidth = 1
+  for (let i = 0; i < 4; i++) {
     ctx.beginPath()
-    ctx.arc(pt.x, pt.y, scaledR + 4, 0, Math.PI * 2)
+    ctx.moveTo(vfFront[i]!.x, vfFront[i]!.y)
+    ctx.lineTo(vfBack[i]!.x, vfBack[i]!.y)
+    ctx.stroke()
+  }
+
+  // 取景器正面
+  ctx.beginPath()
+  ctx.moveTo(vfFront[0]!.x, vfFront[0]!.y)
+  for (let i = 1; i < 4; i++) ctx.lineTo(vfFront[i]!.x, vfFront[i]!.y)
+  ctx.closePath()
+  ctx.fillStyle = props.darkMode ? "rgba(255,255,255,0.12)" : "rgba(59,130,246,0.15)"
+  ctx.strokeStyle = colors.value.pointColor
+  ctx.lineWidth = 1.5
+  ctx.fill()
+  ctx.stroke()
+
+  // === active 状态发光外框 ===
+  if (isActive.value) {
+    const pad = squareSize.value * 0.04
+    const glowCorners = [
+      localToScreen(-camW - pad, -camH - pad, 0),
+      localToScreen( camW + pad, -camH - pad, 0),
+      localToScreen( camW + pad,  camH + pad, 0),
+      localToScreen(-camW - pad,  camH + pad, 0)
+    ]
+    ctx.globalAlpha = opacity * 0.4
+    ctx.strokeStyle = colors.value.pointColor
+    ctx.lineWidth = 3
+    ctx.beginPath()
+    ctx.moveTo(glowCorners[0]!.x, glowCorners[0]!.y)
+    for (let i = 1; i < 4; i++) ctx.lineTo(glowCorners[i]!.x, glowCorners[i]!.y)
+    ctx.closePath()
     ctx.stroke()
   }
 
@@ -581,9 +791,12 @@ function getEventPos(e: MouseEvent | Touch) {
 
 function isOnPoint(ex: number, ey: number) {
   const pt = getPointProjection()
-  const scaledR = pointRadius.value * pt.scale
+  // 碰撞区域与3D摄像机图标尺寸匹配
+  const camW = squareSize.value * 0.22
+  const camH = squareSize.value * 0.16
+  const hitSize = Math.max(camW, camH) * pt.scale + 10
   const dx = ex - pt.x, dy = ey - pt.y
-  return dx * dx + dy * dy <= (scaledR + 10) ** 2
+  return dx * dx + dy * dy <= hitSize * hitSize
 }
 
 function handleMouseDown(e: MouseEvent) {
