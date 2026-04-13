@@ -189,7 +189,7 @@ function drawGridLines(ctx: CanvasRenderingContext2D, r: number, rx: number, ry:
   const latitudes = [
     Math.PI / 4,       // +30° (上方)
     Math.PI / 2,       // 0°  赤道(中心)
-    (Math.PI * 2) / 3  // -30° (下方)
+    (Math.PI * 3) / 4  // -45° (下方，与上方对称)
   ]
   for (const lat of latitudes) {
     ctx.beginPath()
@@ -206,20 +206,26 @@ function drawGridLines(ctx: CanvasRenderingContext2D, r: number, rx: number, ry:
     ctx.stroke()
   }
 
-  // 中心经线 — lon = -π/2 (正前方)，从北极到南极的竖直半圆
-  const centerLon = -Math.PI / 2
-  ctx.beginPath()
-  for (let j = 0; j <= 36; j++) {
-    const lat = (Math.PI * j) / 36
-    const x = r * Math.sin(lat) * Math.cos(centerLon)
-    const y = r * Math.cos(lat)
-    const z = r * Math.sin(lat) * Math.sin(centerLon)
-    const rot = rotatePoint(x, y, z, rx, ry, rz)
-    const proj = project(rot.x, rot.y, rot.z)
-    if (j === 0) ctx.moveTo(proj.x, proj.y)
-    else ctx.lineTo(proj.x, proj.y)
+  // 经线: 中心及左右各45°
+  const longitudes = [
+    -Math.PI * 3 / 4,  // 左45°
+    -Math.PI / 2,       // 中心(正前方)
+    -Math.PI / 4        // 右45°
+  ]
+  for (const lon of longitudes) {
+    ctx.beginPath()
+    for (let j = 0; j <= 36; j++) {
+      const lat = (Math.PI * j) / 36
+      const x = r * Math.sin(lat) * Math.cos(lon)
+      const y = r * Math.cos(lat)
+      const z = r * Math.sin(lat) * Math.sin(lon)
+      const rot = rotatePoint(x, y, z, rx, ry, rz)
+      const proj = project(rot.x, rot.y, rot.z)
+      if (j === 0) ctx.moveTo(proj.x, proj.y)
+      else ctx.lineTo(proj.x, proj.y)
+    }
+    ctx.stroke()
   }
-  ctx.stroke()
 }
 
 function drawSquare(ctx: CanvasRenderingContext2D) {
