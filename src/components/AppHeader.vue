@@ -20,7 +20,8 @@ const navItems: NavItem[] = [
   { label: "3D Cube", to: "/3d-cube" },
   { label: "贪吃蛇", to: "/snake" },
   { label: "2048", to: "/2048" },
-  { label: "canvas3d", to: "/canvas3d" }
+  { label: "canvas3d", to: "/canvas3d" },
+  { label: "lightscene", to: "/lightscene" }
 ]
 </script>
 

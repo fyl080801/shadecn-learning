@@ -7,6 +7,7 @@ import Demo3 from '@/views/Demo3.vue'
 import SnakeGame from '@/views/SnakeGame.vue'
 import Game2048 from '@/views/Game2048.vue'
 import Canvas3D from '@/views/Canvas3D.vue'
+import LightScene from '@/views/LightScene.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -50,6 +51,11 @@ const router = createRouter({
       path: '/canvas3d',
       name: 'Canvas3D',
       component: Canvas3D,
+    },
+    {
+      path: '/lightscene',
+      name: 'LightScene',
+      component: LightScene,
     },
   ],
 })
