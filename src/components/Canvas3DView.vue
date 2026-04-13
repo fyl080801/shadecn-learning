@@ -15,6 +15,7 @@ interface Props {
   lineColor?: string
   gridColor?: string
   outlineColor?: string
+  darkMode?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -30,7 +31,48 @@ const props = withDefaults(defineProps<Props>(), {
   pointColor: "#3b82f6",
   lineColor: "rgba(59,130,246,0.5)",
   gridColor: "rgba(59,130,246,0.25)",
-  outlineColor: "rgba(59,130,246,0.6)"
+  outlineColor: "rgba(59,130,246,0.6)",
+  darkMode: false
+})
+
+// 暗色模式下的颜色计算
+const colors = computed(() => {
+  if (props.darkMode) {
+    return {
+      squareColor: "rgba(255,255,255,0.08)",
+      squareStroke: "rgba(255,255,255,0.5)",
+      pointColor: "#ffffff",
+      lineColor: "rgba(255,255,255,0.5)",
+      gridFront: "rgba(255,255,255,0.35)",
+      gridBack: "rgba(255,255,255,0.1)",
+      outlineColor: "rgba(255,255,255,0.6)",
+      innerRectStroke: "rgba(255,255,255,0.4)",
+      cornerLineBehind: "rgba(255,255,255,0.2)",
+      camFrontFill: "rgba(255,255,255,0.1)",
+      camBackFill: "rgba(255,255,255,0.05)",
+      camBackStroke: "rgba(255,255,255,0.3)",
+      camSideStroke: "rgba(255,255,255,0.35)",
+      camLensStroke: "rgba(255,255,255,0.6)",
+      bgColor: "#0f172a"
+    }
+  }
+  return {
+    squareColor: props.squareColor,
+    squareStroke: "rgba(100,100,100,0.5)",
+    pointColor: props.pointColor,
+    lineColor: props.lineColor,
+    gridFront: props.gridColor,
+    gridBack: props.gridColor.replace(/[\d.]+\)$/, '0.1)'),
+    outlineColor: props.outlineColor,
+    innerRectStroke: "rgba(150,150,150,0.5)",
+    cornerLineBehind: "rgba(59,130,246,0.2)",
+    camFrontFill: "rgba(59,130,246,0.15)",
+    camBackFill: "rgba(59,130,246,0.08)",
+    camBackStroke: "rgba(59,130,246,0.3)",
+    camSideStroke: "rgba(59,130,246,0.35)",
+    camLensStroke: "rgba(59,130,246,0.6)",
+    bgColor: "transparent"
+  }
 })
 
 const emit = defineEmits<{
@@ -107,6 +149,12 @@ function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, props.width, props.height)
 
+  // 暗色模式填充背景
+  if (props.darkMode) {
+    ctx.fillStyle = colors.value.bgColor
+    ctx.fillRect(0, 0, props.width, props.height)
+  }
+
   const rx = props.defaultRotationX
   const ry = props.defaultRotationY
   const rz = props.defaultRotationZ
@@ -178,15 +226,15 @@ function drawSphereOutline(ctx: CanvasRenderingContext2D, r: number, rx: number,
       ctx.lineTo(outlinePoints[i]!.x, outlinePoints[i]!.y)
     }
     ctx.closePath()
-    ctx.strokeStyle = props.outlineColor
+    ctx.strokeStyle = colors.value.outlineColor
     ctx.lineWidth = 2
     ctx.stroke()
   }
 }
 
 function drawGridLines(ctx: CanvasRenderingContext2D, r: number, rx: number, ry: number, rz: number) {
-  const frontColor = props.gridColor
-  const backColor = props.gridColor.replace(/[\d.]+\)$/, '0.1)')
+  const frontColor = colors.value.gridFront
+  const backColor = colors.value.gridBack
 
   // 绘制一条纬线（完整环，自动区分前后）
   function drawLatLine(lat: number) {
@@ -276,8 +324,8 @@ function drawSquare(ctx: CanvasRenderingContext2D) {
   const s = squareSize.value
   const ox = center.value.x - s / 2
   const oy = center.value.y - s / 2
-  ctx.fillStyle = props.squareColor
-  ctx.strokeStyle = "rgba(100,100,100,0.5)"
+  ctx.fillStyle = colors.value.squareColor
+  ctx.strokeStyle = colors.value.squareStroke
   ctx.lineWidth = 2
   ctx.fillRect(ox, oy, s, s)
   ctx.strokeRect(ox, oy, s, s)
@@ -288,7 +336,7 @@ function drawInnerRect(ctx: CanvasRenderingContext2D) {
   const ix = center.value.x - innerSize / 2
   const iy = center.value.y - innerSize / 2
   ctx.setLineDash([4, 2])
-  ctx.strokeStyle = "rgba(150,150,150,0.5)"
+  ctx.strokeStyle = colors.value.innerRectStroke
   ctx.lineWidth = 1
   ctx.strokeRect(ix, iy, innerSize, innerSize)
   ctx.setLineDash([])
@@ -304,7 +352,7 @@ function drawCornerLines(ctx: CanvasRenderingContext2D, pt: { x: number; y: numb
     { x: ox, y: oy + s },
     { x: ox + s, y: oy + s }
   ]
-  ctx.strokeStyle = pt.depth > 0 ? "rgba(59,130,246,0.2)" : props.lineColor
+  ctx.strokeStyle = pt.depth > 0 ? colors.value.cornerLineBehind : colors.value.lineColor
   ctx.lineWidth = 2
   for (const c of corners) {
     ctx.beginPath()
@@ -324,7 +372,7 @@ function drawCornerDots(ctx: CanvasRenderingContext2D) {
     { x: ox, y: oy + s },
     { x: ox + s, y: oy + s }
   ]
-  ctx.fillStyle = props.pointColor
+  ctx.fillStyle = colors.value.pointColor
   for (const c of corners) {
     ctx.beginPath()
     ctx.arc(c.x, c.y, 4, 0, Math.PI * 2)
@@ -415,14 +463,14 @@ function drawCameraRect(ctx: CanvasRenderingContext2D, pt: { x: number; y: numbe
   ctx.moveTo(bp[0]!.x, bp[0]!.y)
   for (let i = 1; i < 4; i++) ctx.lineTo(bp[i]!.x, bp[i]!.y)
   ctx.closePath()
-  ctx.fillStyle = "rgba(59,130,246,0.08)"
-  ctx.strokeStyle = "rgba(59,130,246,0.3)"
+  ctx.fillStyle = colors.value.camBackFill
+  ctx.strokeStyle = colors.value.camBackStroke
   ctx.lineWidth = 1
   ctx.fill()
   ctx.stroke()
 
   // 绘制4条连接边（侧面边线）
-  ctx.strokeStyle = "rgba(59,130,246,0.35)"
+  ctx.strokeStyle = colors.value.camSideStroke
   ctx.lineWidth = 1
   for (let i = 0; i < 4; i++) {
     ctx.beginPath()
@@ -436,8 +484,8 @@ function drawCameraRect(ctx: CanvasRenderingContext2D, pt: { x: number; y: numbe
   ctx.moveTo(fp[0]!.x, fp[0]!.y)
   for (let i = 1; i < 4; i++) ctx.lineTo(fp[i]!.x, fp[i]!.y)
   ctx.closePath()
-  ctx.fillStyle = "rgba(59,130,246,0.15)"
-  ctx.strokeStyle = props.pointColor
+  ctx.fillStyle = colors.value.camFrontFill
+  ctx.strokeStyle = colors.value.pointColor
   ctx.lineWidth = 2
   ctx.fill()
   ctx.stroke()
@@ -448,7 +496,7 @@ function drawCameraRect(ctx: CanvasRenderingContext2D, pt: { x: number; y: numbe
   const lensR = camH * pt.scale * 0.5
   ctx.beginPath()
   ctx.arc(lensCx, lensCy, lensR, 0, Math.PI * 2)
-  ctx.strokeStyle = "rgba(59,130,246,0.6)"
+  ctx.strokeStyle = colors.value.camLensStroke
   ctx.lineWidth = 1.5
   ctx.stroke()
 
@@ -462,10 +510,10 @@ function drawPoint(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; sc
 
   ctx.save()
   ctx.globalAlpha = opacity
-  ctx.fillStyle = props.pointColor
+  ctx.fillStyle = colors.value.pointColor
 
   // 阴影
-  ctx.shadowColor = "rgba(0,0,0,0.3)"
+  ctx.shadowColor = props.darkMode ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0.3)"
   ctx.shadowBlur = 8
   ctx.shadowOffsetX = 2
   ctx.shadowOffsetY = 2
@@ -477,7 +525,7 @@ function drawPoint(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; sc
   // active 状态外圈
   if (isActive.value) {
     ctx.shadowColor = "transparent"
-    ctx.strokeStyle = props.pointColor
+    ctx.strokeStyle = colors.value.pointColor
     ctx.lineWidth = 2
     ctx.globalAlpha = opacity * 0.5
     ctx.beginPath()
@@ -569,7 +617,7 @@ function handleTouchEnd() {
 }
 
 // 响应 props 变化重绘
-watch(() => [props.width, props.height, props.defaultRotationX, props.defaultRotationY, props.defaultRotationZ, props.squareColor, props.pointColor], () => {
+watch(() => [props.width, props.height, props.defaultRotationX, props.defaultRotationY, props.defaultRotationZ, props.squareColor, props.pointColor, props.darkMode], () => {
   draw()
 })
 
