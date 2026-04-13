@@ -131,7 +131,10 @@ function draw() {
   // 6. 角点标记
   drawCornerDots(ctx)
 
-  // 7. 拖动点
+  // 7. 摄像机矩形外框
+  drawCameraRect(ctx, pt)
+
+  // 8. 拖动点
   drawPoint(ctx, pt)
 }
 
@@ -327,6 +330,129 @@ function drawCornerDots(ctx: CanvasRenderingContext2D) {
     ctx.arc(c.x, c.y, 4, 0, Math.PI * 2)
     ctx.fill()
   }
+}
+
+function drawCameraRect(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; scale: number; depth: number }) {
+  // 摄像机矩形外框，在拖动点位置绘制一个朝向球心的3D矩形
+  const r = sphereRadius.value
+  const theta = pointTheta.value
+  const phi = pointPhi.value
+
+  // 点在球面上的3D位置（未旋转前）
+  const px = r * Math.sin(phi) * Math.cos(theta)
+  const py = r * Math.cos(phi)
+  const pz = r * Math.sin(phi) * Math.sin(theta)
+
+  // 摄像机朝向球心的方向（法线，指向球心）
+  const nx = -Math.sin(phi) * Math.cos(theta)
+  const ny = -Math.cos(phi)
+  const nz = -Math.sin(phi) * Math.sin(theta)
+
+  // 构造摄像机矩形的局部坐标系
+  // up 近似为世界Y轴，然后正交化
+  let upX = 0, upY = 1, upZ = 0
+  // 如果法线几乎平行于Y轴，用Z轴作为up
+  if (Math.abs(ny) > 0.99) {
+    upX = 0; upY = 0; upZ = 1
+  }
+
+  // right = normalize(cross(up, n))
+  let rx2 = upY * nz - upZ * ny
+  let ry2 = upZ * nx - upX * nz
+  let rz2 = upX * ny - upY * nx
+  const rLen = Math.sqrt(rx2 * rx2 + ry2 * ry2 + rz2 * rz2)
+  rx2 /= rLen; ry2 /= rLen; rz2 /= rLen
+
+  // recalculate up = normalize(cross(n, right))
+  let ux = ny * rz2 - nz * ry2
+  let uy = nz * rx2 - nx * rz2
+  let uz = nx * ry2 - ny * rx2
+  const uLen = Math.sqrt(ux * ux + uy * uy + uz * uz)
+  ux /= uLen; uy /= uLen; uz /= uLen
+
+  // 矩形的半宽/半高（模拟摄像机尺寸）
+  const camW = squareSize.value * 0.18
+  const camH = squareSize.value * 0.13
+  // 摄像机"镜头筒"深度
+  const camDepth = squareSize.value * 0.1
+
+  // 前面矩形4个顶点（在球面点位置，朝向球心的平面上）
+  const frontCorners = [
+    { x: px - rx2 * camW - ux * camH, y: py - ry2 * camW - uy * camH, z: pz - rz2 * camW - uz * camH },
+    { x: px + rx2 * camW - ux * camH, y: py + ry2 * camW - uy * camH, z: pz + rz2 * camW - uz * camH },
+    { x: px + rx2 * camW + ux * camH, y: py + ry2 * camW + uy * camH, z: pz + rz2 * camW + uz * camH },
+    { x: px - rx2 * camW + ux * camH, y: py - ry2 * camW + uy * camH, z: pz - rz2 * camW + uz * camH }
+  ]
+
+  // 后面矩形4个顶点（沿法线反方向偏移，即远离球心方向）
+  const backCorners = frontCorners.map(c => ({
+    x: c.x - nx * camDepth,
+    y: c.y - ny * camDepth,
+    z: c.z - nz * camDepth
+  }))
+
+  // 对所有顶点应用全局旋转 + 投影
+  const rotRx = props.defaultRotationX
+  const rotRy = props.defaultRotationY
+  const rotRz = props.defaultRotationZ
+
+  function projectCorner(c: { x: number; y: number; z: number }) {
+    const rot = rotatePoint(c.x, c.y, c.z, rotRx, rotRy, rotRz)
+    return project(rot.x, rot.y, rot.z)
+  }
+
+  const fp = frontCorners.map(projectCorner)
+  const bp = backCorners.map(projectCorner)
+
+  let opacity = Math.max(0.4, Math.min(1, 0.7 + pt.scale * 0.3))
+  if (pt.depth > 0) opacity = Math.min(opacity, 0.5)
+
+  ctx.save()
+  ctx.globalAlpha = opacity
+
+  // 绘制背面矩形（先画背面，再画侧面，最后画前面，实现层次感）
+  ctx.beginPath()
+  ctx.moveTo(bp[0]!.x, bp[0]!.y)
+  for (let i = 1; i < 4; i++) ctx.lineTo(bp[i]!.x, bp[i]!.y)
+  ctx.closePath()
+  ctx.fillStyle = "rgba(59,130,246,0.08)"
+  ctx.strokeStyle = "rgba(59,130,246,0.3)"
+  ctx.lineWidth = 1
+  ctx.fill()
+  ctx.stroke()
+
+  // 绘制4条连接边（侧面边线）
+  ctx.strokeStyle = "rgba(59,130,246,0.35)"
+  ctx.lineWidth = 1
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath()
+    ctx.moveTo(fp[i]!.x, fp[i]!.y)
+    ctx.lineTo(bp[i]!.x, bp[i]!.y)
+    ctx.stroke()
+  }
+
+  // 绘制前面矩形（摄像机正面）
+  ctx.beginPath()
+  ctx.moveTo(fp[0]!.x, fp[0]!.y)
+  for (let i = 1; i < 4; i++) ctx.lineTo(fp[i]!.x, fp[i]!.y)
+  ctx.closePath()
+  ctx.fillStyle = "rgba(59,130,246,0.15)"
+  ctx.strokeStyle = props.pointColor
+  ctx.lineWidth = 2
+  ctx.fill()
+  ctx.stroke()
+
+  // 绘制前面矩形中的"镜头"圆形
+  const lensCx = (fp[0]!.x + fp[1]!.x + fp[2]!.x + fp[3]!.x) / 4
+  const lensCy = (fp[0]!.y + fp[1]!.y + fp[2]!.y + fp[3]!.y) / 4
+  const lensR = camH * pt.scale * 0.5
+  ctx.beginPath()
+  ctx.arc(lensCx, lensCy, lensR, 0, Math.PI * 2)
+  ctx.strokeStyle = "rgba(59,130,246,0.6)"
+  ctx.lineWidth = 1.5
+  ctx.stroke()
+
+  ctx.restore()
 }
 
 function drawPoint(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; scale: number; depth: number }) {

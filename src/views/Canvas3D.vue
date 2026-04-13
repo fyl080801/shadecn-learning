@@ -18,7 +18,7 @@ import {
       </CardHeader>
       <CardContent>
         <div class="flex justify-center">
-            <Canvas3DView />
+            <Canvas3DView view-mode="oblique" />
         </div>
       </CardContent>
     </Card>
