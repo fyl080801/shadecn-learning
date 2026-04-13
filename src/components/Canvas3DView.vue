@@ -352,9 +352,34 @@ function drawCornerLines(ctx: CanvasRenderingContext2D, pt: { x: number; y: numb
     { x: ox, y: oy + s },
     { x: ox + s, y: oy + s }
   ]
-  ctx.strokeStyle = pt.depth > 0 ? colors.value.cornerLineBehind : colors.value.lineColor
+  const isBehind = pt.depth > 0
+
   ctx.lineWidth = 2
   for (const c of corners) {
+    // 创建从拖动点(深)到角点(浅)的线性渐变
+    const gradient = ctx.createLinearGradient(pt.x, pt.y, c.x, c.y)
+    if (props.darkMode) {
+      if (isBehind) {
+        // 暗色背面：保持深到浅渐变，整体更透明
+        gradient.addColorStop(0, "rgba(255,255,255,0.25)")
+        gradient.addColorStop(1, "rgba(255,255,255,0.05)")
+      } else {
+        // 暗色正面：深到浅渐变
+        gradient.addColorStop(0, "rgba(255,255,255,0.6)")
+        gradient.addColorStop(1, "rgba(255,255,255,0.1)")
+      }
+    } else {
+      if (isBehind) {
+        // 亮色背面：保持深到浅渐变，整体更透明
+        gradient.addColorStop(0, "rgba(59,130,246,0.3)")
+        gradient.addColorStop(1, "rgba(59,130,246,0.05)")
+      } else {
+        // 亮色正面：深到浅渐变
+        gradient.addColorStop(0, "rgba(59,130,246,0.7)")
+        gradient.addColorStop(1, "rgba(59,130,246,0.15)")
+      }
+    }
+    ctx.strokeStyle = gradient
     ctx.beginPath()
     ctx.moveTo(c.x, c.y)
     ctx.lineTo(pt.x, pt.y)
