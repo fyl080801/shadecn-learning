@@ -182,38 +182,28 @@ function drawSphereOutline(ctx: CanvasRenderingContext2D, r: number, rx: number,
 }
 
 function drawGridLines(ctx: CanvasRenderingContext2D, r: number, rx: number, ry: number, rz: number) {
-  ctx.strokeStyle = props.gridColor
-  ctx.lineWidth = 1
+  const frontColor = props.gridColor
+  const backColor = props.gridColor.replace(/[\d.]+\)$/, '0.1)')
 
-  // 纬线: 赤道(0°) 及上下各30°
-  const latitudes = [
-    Math.PI / 4,       // +30° (上方)
-    Math.PI / 2,       // 0°  赤道(中心)
-    (Math.PI * 3) / 4  // -45° (下方，与上方对称)
-  ]
-  for (const lat of latitudes) {
-    ctx.beginPath()
-    for (let j = 0; j <= 36; j++) {
-      const lon = (Math.PI * 2 * j) / 36
+  // 绘制一条纬线（完整环，自动区分前后）
+  function drawLatLine(lat: number) {
+    const points: { x: number; y: number; behind: boolean }[] = []
+    for (let j = 0; j <= 72; j++) {
+      const lon = (Math.PI * 2 * j) / 72
       const x = r * Math.sin(lat) * Math.cos(lon)
       const y = r * Math.cos(lat)
       const z = r * Math.sin(lat) * Math.sin(lon)
       const rot = rotatePoint(x, y, z, rx, ry, rz)
       const proj = project(rot.x, rot.y, rot.z)
-      if (j === 0) ctx.moveTo(proj.x, proj.y)
-      else ctx.lineTo(proj.x, proj.y)
+      points.push({ x: proj.x, y: proj.y, behind: rot.z > 0 })
     }
-    ctx.stroke()
+    drawSegments(points)
   }
 
-  // 经线: 中心及左右各45°
-  const longitudes = [
-    -Math.PI * 3 / 4,  // 左45°
-    -Math.PI / 2,       // 中心(正前方)
-    -Math.PI / 4        // 右45°
-  ]
-  for (const lon of longitudes) {
-    ctx.beginPath()
+  // 绘制一条经线（完整大圆：lon 半圆 + lon+π 半圆，自动区分前后）
+  function drawLonLine(lon: number) {
+    const points: { x: number; y: number; behind: boolean }[] = []
+    // 从北极沿 lon 到南极
     for (let j = 0; j <= 36; j++) {
       const lat = (Math.PI * j) / 36
       const x = r * Math.sin(lat) * Math.cos(lon)
@@ -221,10 +211,61 @@ function drawGridLines(ctx: CanvasRenderingContext2D, r: number, rx: number, ry:
       const z = r * Math.sin(lat) * Math.sin(lon)
       const rot = rotatePoint(x, y, z, rx, ry, rz)
       const proj = project(rot.x, rot.y, rot.z)
-      if (j === 0) ctx.moveTo(proj.x, proj.y)
-      else ctx.lineTo(proj.x, proj.y)
+      points.push({ x: proj.x, y: proj.y, behind: rot.z > 0 })
     }
-    ctx.stroke()
+    // 从南极沿 lon+π 回到北极
+    const oppLon = lon + Math.PI
+    for (let j = 35; j >= 0; j--) {
+      const lat = (Math.PI * j) / 36
+      const x = r * Math.sin(lat) * Math.cos(oppLon)
+      const y = r * Math.cos(lat)
+      const z = r * Math.sin(lat) * Math.sin(oppLon)
+      const rot = rotatePoint(x, y, z, rx, ry, rz)
+      const proj = project(rot.x, rot.y, rot.z)
+      points.push({ x: proj.x, y: proj.y, behind: rot.z > 0 })
+    }
+    drawSegments(points)
+  }
+
+  // 按前后分段绘制，背面用虚线+低透明度
+  function drawSegments(points: { x: number; y: number; behind: boolean }[]) {
+    if (points.length < 2) return
+    let i = 0
+    while (i < points.length - 1) {
+      const behind = points[i]!.behind
+      ctx.beginPath()
+      ctx.moveTo(points[i]!.x, points[i]!.y)
+      while (i < points.length - 1 && points[i + 1]!.behind === behind) {
+        i++
+        ctx.lineTo(points[i]!.x, points[i]!.y)
+      }
+      ctx.strokeStyle = behind ? backColor : frontColor
+      ctx.setLineDash(behind ? [4, 3] : [])
+      ctx.lineWidth = 1
+      ctx.stroke()
+      i++
+    }
+    ctx.setLineDash([])
+  }
+
+  // 纬线
+  const latitudes = [
+    Math.PI / 4,
+    Math.PI / 2,
+    (Math.PI * 3) / 4
+  ]
+  for (const lat of latitudes) {
+    drawLatLine(lat)
+  }
+
+  // 经线（完整大圆）
+  const longitudes = [
+    -Math.PI * 3 / 4,
+    -Math.PI / 2,
+    -Math.PI / 4
+  ]
+  for (const lon of longitudes) {
+    drawLonLine(lon)
   }
 }
 
