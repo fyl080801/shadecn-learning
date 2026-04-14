@@ -166,9 +166,10 @@ function getPointProjection() {
   const r = sphereRadius.value
   const lift = baseSize.value * 0.08
   const factor = 1 + lift / r
-  const x3d = r * Math.sin(pointPhi.value) * Math.cos(pointTheta.value) * factor
+  // theta=0 时点朝向屏幕前方（z负方向），偏移 -π/2
+  const x3d = r * Math.sin(pointPhi.value) * Math.sin(pointTheta.value) * factor
   const y3d = r * Math.cos(pointPhi.value) * factor
-  const z3d = r * Math.sin(pointPhi.value) * Math.sin(pointTheta.value) * factor
+  const z3d = -r * Math.sin(pointPhi.value) * Math.cos(pointTheta.value) * factor
   const rot = rotatePoint(
     x3d,
     y3d,
@@ -466,10 +467,10 @@ function drawPoint(
   const theta = pointTheta.value
   const phi = pointPhi.value
 
-  // 球面上的3D位置（未旋转前）
-  const sx = r * Math.sin(phi) * Math.cos(theta)
+  // 球面上的3D位置（theta=0 朝向屏幕前方）
+  const sx = r * Math.sin(phi) * Math.sin(theta)
   const sy = r * Math.cos(phi)
-  const sz = r * Math.sin(phi) * Math.sin(theta)
+  const sz = -r * Math.sin(phi) * Math.cos(theta)
 
   // 外法线方向（离开球面）
   const onx = sx / r
