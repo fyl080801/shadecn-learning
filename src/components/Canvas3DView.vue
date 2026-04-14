@@ -16,6 +16,7 @@ interface Props {
   gridColor?: string
   outlineColor?: string
   darkMode?: boolean
+  modelValue?: { yaw: number; pitch: number; zoomLevel: "in" | "out" | "unchanged" }
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -32,7 +33,8 @@ const props = withDefaults(defineProps<Props>(), {
   lineColor: "rgba(59,130,246,0.5)",
   gridColor: "rgba(59,130,246,0.25)",
   outlineColor: "rgba(59,130,246,0.6)",
-  darkMode: false
+  darkMode: false,
+  modelValue: () => ({ yaw: 0, pitch: 0, zoomLevel: "unchanged" as const })
 })
 
 // 暗色模式下的颜色计算
@@ -76,8 +78,7 @@ const colors = computed(() => {
 })
 
 const emit = defineEmits<{
-  (e: "update:position", value: { x: number; y: number }): void
-  (e: "update:spherical", value: { theta: number; phi: number }): void
+  (e: "update:modelValue", value: { yaw: number; pitch: number; zoomLevel: "in" | "out" | "unchanged" }): void
 }>()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -85,23 +86,40 @@ const canvasRef = ref<HTMLCanvasElement | null>(null)
 // 球面坐标
 const pointTheta = ref(0)
 const pointPhi = ref(Math.PI / 2)
+const internalZoomLevel = ref<"in" | "out" | "unchanged">("unchanged")
 
 const isActive = ref(false)
 const dragStart = ref({ x: 0, y: 0 })
 
 // 尺寸计算
-const squareSize = computed(() => Math.min(props.width, props.height) * 0.35)
+const baseSize = computed(() => Math.min(props.width, props.height) * 0.35)
+const zoomScale = computed(() => {
+  switch (internalZoomLevel.value) {
+    case "in": return 1.35
+    case "out": return 0.7
+    default: return 1.0
+  }
+})
+const squareSize = computed(() => baseSize.value * zoomScale.value)
 const sphereRadius = computed(() => {
-  const halfDiag = (squareSize.value * Math.sqrt(3)) / 2
-  return halfDiag + squareSize.value * 0.25
+  const halfDiag = (baseSize.value * Math.sqrt(3)) / 2
+  return halfDiag + baseSize.value * 0.25
 })
 const center = computed(() => ({ x: props.width / 2, y: props.height / 2 }))
-const pointRadius = computed(() => squareSize.value * 0.08)
+const pointRadius = computed(() => baseSize.value * 0.08)
 
 const phiLimits = computed(() => ({
   min: (props.bottomLimitDegrees * Math.PI) / 180,
   max: Math.PI - (props.topLimitDegrees * Math.PI) / 180
 }))
+
+// 同步 v-model 到内部球面坐标
+watch(() => props.modelValue, (val) => {
+  pointTheta.value = val.yaw * Math.PI / 180
+  pointPhi.value = Math.PI / 2 - val.pitch * Math.PI / 180
+  internalZoomLevel.value = val.zoomLevel ?? "unchanged"
+  draw()
+}, { immediate: true })
 
 // 3D 旋转
 function rotatePoint(x: number, y: number, z: number, rx: number, ry: number, rz: number) {
@@ -444,10 +462,10 @@ function drawCameraRect(ctx: CanvasRenderingContext2D, pt: { x: number; y: numbe
   ux /= uLen; uy /= uLen; uz /= uLen
 
   // 矩形的半宽/半高（模拟摄像机尺寸）
-  const camW = squareSize.value * 0.18
-  const camH = squareSize.value * 0.13
+  const camW = baseSize.value * 0.18
+  const camH = baseSize.value * 0.13
   // 摄像机"镜头筒"深度
-  const camDepth = squareSize.value * 0.1
+  const camDepth = baseSize.value * 0.1
 
   // 前面矩形4个顶点（在球面点位置，朝向球心的平面上）
   const frontCorners = [
@@ -579,10 +597,10 @@ function drawPoint(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; sc
   ctx.save()
   ctx.globalAlpha = opacity
 
-  // 摄像机尺寸参数（在局部3D空间中的大小）
-  const camW = squareSize.value * 0.22  // 半宽
-  const camH = squareSize.value * 0.16  // 半高
-  const camDepth = squareSize.value * 0.06 // 主体在法线方向的厚度
+  // 摄像机尺寸参数（在局部3D空间中的大小，不随zoom缩放）
+  const camW = baseSize.value * 0.22  // 半宽
+  const camH = baseSize.value * 0.16  // 半高
+  const camDepth = baseSize.value * 0.06 // 主体在法线方向的厚度
 
   // === 摄像机主体：前面4顶点 + 后面4顶点 ===
   const frontCorners = [
@@ -751,7 +769,7 @@ function drawPoint(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; sc
 
   // === active 状态发光外框 ===
   if (isActive.value) {
-    const pad = squareSize.value * 0.04
+    const pad = baseSize.value * 0.04
     const glowCorners = [
       localToScreen(-camW - pad, -camH - pad, 0),
       localToScreen( camW + pad, -camH - pad, 0),
@@ -776,9 +794,11 @@ function updateRotation(deltaX: number, deltaY: number) {
   pointTheta.value += deltaX * props.moveSpeed
   const newPhi = pointPhi.value - deltaY * props.moveSpeed
   pointPhi.value = Math.max(phiLimits.value.min, Math.min(phiLimits.value.max, newPhi))
-  const pt = getPointProjection()
-  emit("update:position", { x: pt.x, y: pt.y })
-  emit("update:spherical", { theta: pointTheta.value, phi: pointPhi.value })
+  emit("update:modelValue", {
+    yaw: pointTheta.value * 180 / Math.PI,
+    pitch: (Math.PI / 2 - pointPhi.value) * 180 / Math.PI,
+    zoomLevel: internalZoomLevel.value
+  })
   draw()
 }
 
@@ -791,9 +811,9 @@ function getEventPos(e: MouseEvent | Touch) {
 
 function isOnPoint(ex: number, ey: number) {
   const pt = getPointProjection()
-  // 碰撞区域与3D摄像机图标尺寸匹配
-  const camW = squareSize.value * 0.22
-  const camH = squareSize.value * 0.16
+  // 碰撞区域与3D摄像机图标尺寸匹配（不随zoom缩放）
+  const camW = baseSize.value * 0.22
+  const camH = baseSize.value * 0.16
   const hitSize = Math.max(camW, camH) * pt.scale + 10
   const dx = ex - pt.x, dy = ey - pt.y
   return dx * dx + dy * dy <= hitSize * hitSize
@@ -854,6 +874,28 @@ function handleTouchEnd() {
   }
 }
 
+function handleWheel(e: WheelEvent) {
+  e.preventDefault()
+  const current = internalZoomLevel.value
+  let next: "in" | "out" | "unchanged"
+  if (e.deltaY < 0) {
+    // 向上滚动 → 放大
+    next = current === "out" ? "unchanged" : "in"
+  } else {
+    // 向下滚动 → 缩小
+    next = current === "in" ? "unchanged" : "out"
+  }
+  if (next !== current) {
+    internalZoomLevel.value = next
+    emit("update:modelValue", {
+      yaw: pointTheta.value * 180 / Math.PI,
+      pitch: (Math.PI / 2 - pointPhi.value) * 180 / Math.PI,
+      zoomLevel: next
+    })
+    draw()
+  }
+}
+
 // 响应 props 变化重绘
 watch(() => [props.width, props.height, props.defaultRotationX, props.defaultRotationY, props.defaultRotationZ, props.squareColor, props.pointColor, props.darkMode], () => {
   draw()
@@ -863,11 +905,17 @@ onMounted(() => {
   draw()
   window.addEventListener("mousemove", handleMouseMove)
   window.addEventListener("mouseup", handleMouseUp)
+  if (canvasRef.value) {
+    canvasRef.value.addEventListener("wheel", handleWheel, { passive: false })
+  }
 })
 
 onUnmounted(() => {
   window.removeEventListener("mousemove", handleMouseMove)
   window.removeEventListener("mouseup", handleMouseUp)
+  if (canvasRef.value) {
+    canvasRef.value.removeEventListener("wheel", handleWheel)
+  }
 })
 </script>
 

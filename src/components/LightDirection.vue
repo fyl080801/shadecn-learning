@@ -28,6 +28,10 @@ let animationId: number
 const SPHERE_RADIUS = 2
 const POINT_RADIUS = 0.12
 
+// Light cone mesh (visual gradient from drag point to rectangle)
+let coneMesh: THREE.Mesh
+let coneMaterial: THREE.ShaderMaterial
+
 // Spherical coordinates for the drag point
 const pointTheta = ref(0) // longitude
 const pointPhi = ref(Math.PI / 4) // colatitude (0=top, PI=bottom)
@@ -65,6 +69,15 @@ function updatePointPosition() {
     mat.opacity = isBack ? 0.4 : 1.0
     mat.transparent = true
   }
+
+  // Update cone position and orientation to follow the drag point
+  // Cone center = midpoint between drag point and origin
+  coneMesh.position.copy(pos).multiplyScalar(0.5)
+  // Orient cone so local Y axis points from center toward drag point
+  const targetDir = pos.clone().normalize()
+  coneMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), targetDir)
+  // Dim cone when point is on the back side
+  ;(coneMaterial.uniforms!.uOpacity as { value: number }).value = isBack ? 0.2 : 1.0
 
   // Emit direction
   const direction = pos.clone().normalize()
@@ -148,13 +161,9 @@ function init() {
   camera.position.set(0, 0, 6)
   camera.lookAt(0, 0, 0)
 
-  // Lights
-  const ambientLight = new THREE.AmbientLight(0xffffff, 1.5)
-  scene.add(ambientLight)
-
-  const dirLight = new THREE.DirectionalLight(0xffffff, 2)
-  dirLight.position.set(5, 5, 5)
-  scene.add(dirLight)
+  // Hemisphere light for subtle shading on the rectangle
+  const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2)
+  scene.add(hemiLight)
 
   // Semi-transparent sphere
   const sphereGeometry = new THREE.SphereGeometry(SPHERE_RADIUS, 64, 64)
@@ -176,6 +185,57 @@ function init() {
     new THREE.MeshBasicMaterial({ visible: false })
   )
   scene.add(sphereForHitTest)
+
+  // Reference rectangle in the center
+  const rectWidth = 1.6
+  const rectHeight = 1.2
+  const rectGeometry = new THREE.PlaneGeometry(rectWidth, rectHeight)
+  const rectMaterial = new THREE.MeshStandardMaterial({
+    color: 0xeeeeee,
+    roughness: 0.7,
+    metalness: 0.0,
+    side: THREE.DoubleSide
+  })
+  const rectMesh = new THREE.Mesh(rectGeometry, rectMaterial)
+  scene.add(rectMesh)
+
+  // Rectangle border frame
+  const borderGeometry = new THREE.EdgesGeometry(rectGeometry)
+  const borderMaterial = new THREE.LineBasicMaterial({ color: 0x888888 })
+  const borderLine = new THREE.LineSegments(borderGeometry, borderMaterial)
+  scene.add(borderLine)
+
+  // Light cone: visual gradient from drag point to rectangle
+  const coneHeight = SPHERE_RADIUS
+  const coneGeometry = new THREE.CylinderGeometry(0.05, 0.9, coneHeight, 32, 1, true)
+  coneMaterial = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uOpacity: { value: 1.0 }
+    },
+    vertexShader: `
+      varying float vProgress;
+      void main() {
+        // position.y ranges from -height/2 to +height/2
+        // Normalize to 0-1: 0 = bottom (rectangle), 1 = top (drag point)
+        vProgress = (position.y + ${(coneHeight / 2).toFixed(1)}) / ${coneHeight.toFixed(1)};
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying float vProgress;
+      uniform float uOpacity;
+      void main() {
+        float alpha = smoothstep(0.0, 1.0, vProgress) * 0.4 * uOpacity;
+        gl_FragColor = vec4(1.0, 1.0, 1.0, alpha);
+      }
+    `
+  })
+  coneMesh = new THREE.Mesh(coneGeometry, coneMaterial)
+  scene.add(coneMesh)
 
   // Draggable point on sphere surface
   createDragPoint(0xff4444)
@@ -234,10 +294,6 @@ function createAxisLine(
 
 function animate() {
   animationId = requestAnimationFrame(animate)
-
-  // Keep rings facing the camera
-  for (const p of points) {
-  }
 
   renderer.render(scene, camera)
 }
