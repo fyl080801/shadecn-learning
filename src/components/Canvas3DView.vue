@@ -16,7 +16,11 @@ interface Props {
   gridColor?: string
   outlineColor?: string
   darkMode?: boolean
-  modelValue?: { yaw: number; pitch: number; zoomLevel: "in" | "out" | "unchanged" }
+  modelValue?: {
+    yaw: number
+    pitch: number
+    zoomLevel: "in" | "out" | "unchanged"
+  }
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -64,7 +68,7 @@ const colors = computed(() => {
     pointColor: props.pointColor,
     lineColor: props.lineColor,
     gridFront: props.gridColor,
-    gridBack: props.gridColor.replace(/[\d.]+\)$/, '0.1)'),
+    gridBack: props.gridColor.replace(/[\d.]+\)$/, "0.1)"),
     outlineColor: props.outlineColor,
     innerRectStroke: "rgba(150,150,150,0.5)",
     cornerLineBehind: "rgba(59,130,246,0.2)",
@@ -78,7 +82,10 @@ const colors = computed(() => {
 })
 
 const emit = defineEmits<{
-  (e: "update:modelValue", value: { yaw: number; pitch: number; zoomLevel: "in" | "out" | "unchanged" }): void
+  (
+    e: "update:modelValue",
+    value: { yaw: number; pitch: number; zoomLevel: "in" | "out" | "unchanged" }
+  ): void
 }>()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -95,9 +102,12 @@ const dragStart = ref({ x: 0, y: 0 })
 const baseSize = computed(() => Math.min(props.width, props.height) * 0.35)
 const zoomScale = computed(() => {
   switch (internalZoomLevel.value) {
-    case "in": return 1.35
-    case "out": return 0.7
-    default: return 1.0
+    case "in":
+      return 1.35
+    case "out":
+      return 0.7
+    default:
+      return 1.0
   }
 })
 const squareSize = computed(() => baseSize.value * zoomScale.value)
@@ -114,15 +124,26 @@ const phiLimits = computed(() => ({
 }))
 
 // 同步 v-model 到内部球面坐标
-watch(() => props.modelValue, (val) => {
-  pointTheta.value = val.yaw * Math.PI / 180
-  pointPhi.value = Math.PI / 2 - val.pitch * Math.PI / 180
-  internalZoomLevel.value = val.zoomLevel ?? "unchanged"
-  draw()
-}, { immediate: true })
+watch(
+  () => props.modelValue,
+  (val) => {
+    pointTheta.value = (val.yaw * Math.PI) / 180
+    pointPhi.value = Math.PI / 2 - (val.pitch * Math.PI) / 180
+    internalZoomLevel.value = val.zoomLevel ?? "unchanged"
+    draw()
+  },
+  { immediate: true }
+)
 
 // 3D 旋转
-function rotatePoint(x: number, y: number, z: number, rx: number, ry: number, rz: number) {
+function rotatePoint(
+  x: number,
+  y: number,
+  z: number,
+  rx: number,
+  ry: number,
+  rz: number
+) {
   let y1 = y * Math.cos(rx) - z * Math.sin(rx)
   let z1 = y * Math.sin(rx) + z * Math.cos(rx)
   let x1 = x
@@ -141,13 +162,22 @@ function project(x: number, y: number, z: number) {
   return { x: center.value.x + x * scale, y: center.value.y + y * scale, scale }
 }
 
-// 获取移动点的投影信息
+// 获取移动点的投影信息（浮于球面上方）
 function getPointProjection() {
   const r = sphereRadius.value
-  const x3d = r * Math.sin(pointPhi.value) * Math.cos(pointTheta.value)
-  const y3d = r * Math.cos(pointPhi.value)
-  const z3d = r * Math.sin(pointPhi.value) * Math.sin(pointTheta.value)
-  const rot = rotatePoint(x3d, y3d, z3d, props.defaultRotationX, props.defaultRotationY, props.defaultRotationZ)
+  const lift = baseSize.value * 0.08
+  const factor = 1 + lift / r
+  const x3d = r * Math.sin(pointPhi.value) * Math.cos(pointTheta.value) * factor
+  const y3d = r * Math.cos(pointPhi.value) * factor
+  const z3d = r * Math.sin(pointPhi.value) * Math.sin(pointTheta.value) * factor
+  const rot = rotatePoint(
+    x3d,
+    y3d,
+    z3d,
+    props.defaultRotationX,
+    props.defaultRotationY,
+    props.defaultRotationZ
+  )
   const proj = project(rot.x, rot.y, rot.z)
   return { x: proj.x, y: proj.y, scale: proj.scale, depth: rot.z }
 }
@@ -197,14 +227,17 @@ function draw() {
   // 6. 角点标记
   drawCornerDots(ctx)
 
-  // 7. 摄像机矩形外框
-  drawCameraRect(ctx, pt)
-
-  // 8. 拖动点
+  // 7. 拖动点
   drawPoint(ctx, pt)
 }
 
-function drawSphereOutline(ctx: CanvasRenderingContext2D, r: number, rx: number, ry: number, rz: number) {
+function drawSphereOutline(
+  ctx: CanvasRenderingContext2D,
+  r: number,
+  rx: number,
+  ry: number,
+  rz: number
+) {
   // 透视投影解析法计算球体轮廓
   // 相机在 (0, 0, -d)，球心在原点，半径 r
   // 轮廓环是相机到球面切线的圆锥与球面的交线
@@ -214,7 +247,7 @@ function drawSphereOutline(ctx: CanvasRenderingContext2D, r: number, rx: number,
 
   // 切线圆锥：轮廓环在球面上的 z 坐标为 zc = r²/d（相对球心）
   // 轮廓环半径 rc = r * sqrt(1 - (r/d)²)
-  const zc = -(r * r) / d  // 球心在原点，相机在 -d，轮廓环偏向相机侧
+  const zc = -(r * r) / d // 球心在原点，相机在 -d，轮廓环偏向相机侧
   const rc = r * Math.sqrt(1 - (r * r) / (d * d))
 
   const steps = 120
@@ -250,7 +283,13 @@ function drawSphereOutline(ctx: CanvasRenderingContext2D, r: number, rx: number,
   }
 }
 
-function drawGridLines(ctx: CanvasRenderingContext2D, r: number, rx: number, ry: number, rz: number) {
+function drawGridLines(
+  ctx: CanvasRenderingContext2D,
+  r: number,
+  rx: number,
+  ry: number,
+  rz: number
+) {
   const frontColor = colors.value.gridFront
   const backColor = colors.value.gridBack
 
@@ -318,21 +357,13 @@ function drawGridLines(ctx: CanvasRenderingContext2D, r: number, rx: number, ry:
   }
 
   // 纬线
-  const latitudes = [
-    Math.PI / 4,
-    Math.PI / 2,
-    (Math.PI * 3) / 4
-  ]
+  const latitudes = [Math.PI / 4, Math.PI / 2, (Math.PI * 3) / 4]
   for (const lat of latitudes) {
     drawLatLine(lat)
   }
 
   // 经线（完整大圆）
-  const longitudes = [
-    -Math.PI * 3 / 4,
-    -Math.PI / 2,
-    -Math.PI / 4
-  ]
+  const longitudes = [(-Math.PI * 3) / 4, -Math.PI / 2, -Math.PI / 4]
   for (const lon of longitudes) {
     drawLonLine(lon)
   }
@@ -360,7 +391,10 @@ function drawInnerRect(ctx: CanvasRenderingContext2D) {
   ctx.setLineDash([])
 }
 
-function drawCornerLines(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; depth: number }) {
+function drawCornerLines(
+  ctx: CanvasRenderingContext2D,
+  pt: { x: number; y: number; depth: number }
+) {
   const s = squareSize.value
   const ox = center.value.x - s / 2
   const oy = center.value.y - s / 2
@@ -423,365 +457,140 @@ function drawCornerDots(ctx: CanvasRenderingContext2D) {
   }
 }
 
-function drawCameraRect(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; scale: number; depth: number }) {
-  // 摄像机矩形外框，在拖动点位置绘制一个朝向球心的3D矩形
+function drawPoint(
+  ctx: CanvasRenderingContext2D,
+  pt: { x: number; y: number; scale: number; depth: number }
+) {
+  // 简化的镜头图标：矩形边框 + 中心球体，浮于球面上方
   const r = sphereRadius.value
+  const lift = baseSize.value * 0.08
   const theta = pointTheta.value
   const phi = pointPhi.value
 
-  // 点在球面上的3D位置（未旋转前）
-  const px = r * Math.sin(phi) * Math.cos(theta)
-  const py = r * Math.cos(phi)
-  const pz = r * Math.sin(phi) * Math.sin(theta)
+  // 球面上的3D位置（未旋转前）
+  const sx = r * Math.sin(phi) * Math.cos(theta)
+  const sy = r * Math.cos(phi)
+  const sz = r * Math.sin(phi) * Math.sin(theta)
 
-  // 摄像机朝向球心的方向（法线，指向球心）
-  const nx = -Math.sin(phi) * Math.cos(theta)
-  const ny = -Math.cos(phi)
-  const nz = -Math.sin(phi) * Math.sin(theta)
+  // 外法线方向（离开球面）
+  const onx = sx / r
+  const ony = sy / r
+  const onz = sz / r
 
-  // 构造摄像机矩形的局部坐标系
-  // up 近似为世界Y轴，然后正交化
-  let upX = 0, upY = 1, upZ = 0
-  // 如果法线几乎平行于Y轴，用Z轴作为up
-  if (Math.abs(ny) > 0.99) {
-    upX = 0; upY = 0; upZ = 1
+  // 浮起后的3D位置
+  const fx = sx + onx * lift
+  const fy = sy + ony * lift
+  const fz = sz + onz * lift
+
+  // 构造局部坐标系 (right, up)
+  let upX = 0,
+    upY = 1,
+    upZ = 0
+  if (Math.abs(ony) > 0.99) {
+    upX = 0
+    upY = 0
+    upZ = 1
   }
 
-  // right = normalize(cross(up, n))
-  let rx2 = upY * nz - upZ * ny
-  let ry2 = upZ * nx - upX * nz
-  let rz2 = upX * ny - upY * nx
-  const rLen = Math.sqrt(rx2 * rx2 + ry2 * ry2 + rz2 * rz2)
-  rx2 /= rLen; ry2 /= rLen; rz2 /= rLen
-
-  // recalculate up = normalize(cross(n, right))
-  let ux = ny * rz2 - nz * ry2
-  let uy = nz * rx2 - nx * rz2
-  let uz = nx * ry2 - ny * rx2
-  const uLen = Math.sqrt(ux * ux + uy * uy + uz * uz)
-  ux /= uLen; uy /= uLen; uz /= uLen
-
-  // 矩形的半宽/半高（模拟摄像机尺寸）
-  const camW = baseSize.value * 0.18
-  const camH = baseSize.value * 0.13
-  // 摄像机"镜头筒"深度
-  const camDepth = baseSize.value * 0.1
-
-  // 前面矩形4个顶点（在球面点位置，朝向球心的平面上）
-  const frontCorners = [
-    { x: px - rx2 * camW - ux * camH, y: py - ry2 * camW - uy * camH, z: pz - rz2 * camW - uz * camH },
-    { x: px + rx2 * camW - ux * camH, y: py + ry2 * camW - uy * camH, z: pz + rz2 * camW - uz * camH },
-    { x: px + rx2 * camW + ux * camH, y: py + ry2 * camW + uy * camH, z: pz + rz2 * camW + uz * camH },
-    { x: px - rx2 * camW + ux * camH, y: py - ry2 * camW + uy * camH, z: pz - rz2 * camW + uz * camH }
-  ]
-
-  // 后面矩形4个顶点（沿法线反方向偏移，即远离球心方向）
-  const backCorners = frontCorners.map(c => ({
-    x: c.x - nx * camDepth,
-    y: c.y - ny * camDepth,
-    z: c.z - nz * camDepth
-  }))
-
-  // 对所有顶点应用全局旋转 + 投影
-  const rotRx = props.defaultRotationX
-  const rotRy = props.defaultRotationY
-  const rotRz = props.defaultRotationZ
-
-  function projectCorner(c: { x: number; y: number; z: number }) {
-    const rot = rotatePoint(c.x, c.y, c.z, rotRx, rotRy, rotRz)
-    return project(rot.x, rot.y, rot.z)
-  }
-
-  const fp = frontCorners.map(projectCorner)
-  const bp = backCorners.map(projectCorner)
-
-  let opacity = Math.max(0.4, Math.min(1, 0.7 + pt.scale * 0.3))
-  if (pt.depth > 0) opacity = Math.min(opacity, 0.5)
-
-  ctx.save()
-  ctx.globalAlpha = opacity
-
-  // 绘制背面矩形（先画背面，再画侧面，最后画前面，实现层次感）
-  ctx.beginPath()
-  ctx.moveTo(bp[0]!.x, bp[0]!.y)
-  for (let i = 1; i < 4; i++) ctx.lineTo(bp[i]!.x, bp[i]!.y)
-  ctx.closePath()
-  ctx.fillStyle = colors.value.camBackFill
-  ctx.strokeStyle = colors.value.camBackStroke
-  ctx.lineWidth = 1
-  ctx.fill()
-  ctx.stroke()
-
-  // 绘制4条连接边（侧面边线）
-  ctx.strokeStyle = colors.value.camSideStroke
-  ctx.lineWidth = 1
-  for (let i = 0; i < 4; i++) {
-    ctx.beginPath()
-    ctx.moveTo(fp[i]!.x, fp[i]!.y)
-    ctx.lineTo(bp[i]!.x, bp[i]!.y)
-    ctx.stroke()
-  }
-
-  // 绘制前面矩形（摄像机正面）
-  ctx.beginPath()
-  ctx.moveTo(fp[0]!.x, fp[0]!.y)
-  for (let i = 1; i < 4; i++) ctx.lineTo(fp[i]!.x, fp[i]!.y)
-  ctx.closePath()
-  ctx.fillStyle = colors.value.camFrontFill
-  ctx.strokeStyle = colors.value.pointColor
-  ctx.lineWidth = 2
-  ctx.fill()
-  ctx.stroke()
-
-  // 绘制前面矩形中的"镜头"圆形
-  const lensCx = (fp[0]!.x + fp[1]!.x + fp[2]!.x + fp[3]!.x) / 4
-  const lensCy = (fp[0]!.y + fp[1]!.y + fp[2]!.y + fp[3]!.y) / 4
-  const lensR = camH * pt.scale * 0.5
-  ctx.beginPath()
-  ctx.arc(lensCx, lensCy, lensR, 0, Math.PI * 2)
-  ctx.strokeStyle = colors.value.camLensStroke
-  ctx.lineWidth = 1.5
-  ctx.stroke()
-
-  ctx.restore()
-}
-
-function drawPoint(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; scale: number; depth: number }) {
-  // 3D矢量变换的摄像机镜头图标
-  const r = sphereRadius.value
-  const theta = pointTheta.value
-  const phi = pointPhi.value
-
-  // 球面上的3D位置
-  const px = r * Math.sin(phi) * Math.cos(theta)
-  const py = r * Math.cos(phi)
-  const pz = r * Math.sin(phi) * Math.sin(theta)
-
-  // 法线方向（指向球心）
-  const nx = -Math.sin(phi) * Math.cos(theta)
-  const ny = -Math.cos(phi)
-  const nz = -Math.sin(phi) * Math.sin(theta)
-
-  // 构造局部坐标系 (right, up, normal)
-  let upX = 0, upY = 1, upZ = 0
-  if (Math.abs(ny) > 0.99) { upX = 0; upY = 0; upZ = 1 }
-
-  let rxL = upY * nz - upZ * ny
-  let ryL = upZ * nx - upX * nz
-  let rzL = upX * ny - upY * nx
+  let rxL = upY * onz - upZ * ony
+  let ryL = upZ * onx - upX * onz
+  let rzL = upX * ony - upY * onx
   const rLen = Math.sqrt(rxL * rxL + ryL * ryL + rzL * rzL)
-  rxL /= rLen; ryL /= rLen; rzL /= rLen
+  rxL /= rLen
+  ryL /= rLen
+  rzL /= rLen
 
-  let uxL = ny * rzL - nz * ryL
-  let uyL = nz * rxL - nx * rzL
-  let uzL = nx * ryL - ny * rxL
+  let uxL = ony * rzL - onz * ryL
+  let uyL = onz * rxL - onx * rzL
+  let uzL = onx * ryL - ony * rxL
   const uLen = Math.sqrt(uxL * uxL + uyL * uyL + uzL * uzL)
-  uxL /= uLen; uyL /= uLen; uzL /= uLen
+  uxL /= uLen
+  uyL /= uLen
+  uzL /= uLen
 
   const rotRx = props.defaultRotationX
   const rotRy = props.defaultRotationY
   const rotRz = props.defaultRotationZ
 
-  // 将局部坐标 (lr, lu, ln) 转换为投影后的2D坐标
-  function localToScreen(lr: number, lu: number, ln: number) {
-    const wx = px + rxL * lr + uxL * lu + nx * ln
-    const wy = py + ryL * lr + uyL * lu + ny * ln
-    const wz = pz + rzL * lr + uzL * lu + nz * ln
+  // 将局部坐标 (right, up) 转换为投影后的2D坐标
+  function localToScreen(lr: number, lu: number) {
+    const wx = fx + rxL * lr + uxL * lu
+    const wy = fy + ryL * lr + uyL * lu
+    const wz = fz + rzL * lr + uzL * lu
     const rot = rotatePoint(wx, wy, wz, rotRx, rotRy, rotRz)
     return project(rot.x, rot.y, rot.z)
   }
 
+  // 球面点的投影（用于连接线）
+  const surfaceRot = rotatePoint(sx, sy, sz, rotRx, rotRy, rotRz)
+  const surfaceProj = project(surfaceRot.x, surfaceRot.y, surfaceRot.z)
+
   let opacity = Math.max(0.4, Math.min(1, 0.7 + pt.scale * 0.3))
   if (pt.depth > 0) opacity = Math.min(opacity, 0.5)
 
   ctx.save()
   ctx.globalAlpha = opacity
 
-  // 摄像机尺寸参数（在局部3D空间中的大小，不随zoom缩放）
-  const camW = baseSize.value * 0.22  // 半宽
-  const camH = baseSize.value * 0.16  // 半高
-  const camDepth = baseSize.value * 0.06 // 主体在法线方向的厚度
-
-  // === 摄像机主体：前面4顶点 + 后面4顶点 ===
-  const frontCorners = [
-    localToScreen(-camW, -camH, 0),
-    localToScreen( camW, -camH, 0),
-    localToScreen( camW,  camH, 0),
-    localToScreen(-camW,  camH, 0)
-  ]
-  const backCorners = [
-    localToScreen(-camW, -camH, -camDepth),
-    localToScreen( camW, -camH, -camDepth),
-    localToScreen( camW,  camH, -camDepth),
-    localToScreen(-camW,  camH, -camDepth)
-  ]
-
-  // 阴影
-  ctx.shadowColor = props.darkMode ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0.3)"
-  ctx.shadowBlur = 8
-  ctx.shadowOffsetX = 2
-  ctx.shadowOffsetY = 2
-
-  // 绘制背面
+  // 连接线：从球面到浮起点
+  const floatingCenter = localToScreen(0, 0)
   ctx.beginPath()
-  ctx.moveTo(backCorners[0]!.x, backCorners[0]!.y)
-  for (let i = 1; i < 4; i++) ctx.lineTo(backCorners[i]!.x, backCorners[i]!.y)
-  ctx.closePath()
-  ctx.fillStyle = props.darkMode ? "rgba(255,255,255,0.08)" : "rgba(59,130,246,0.1)"
-  ctx.strokeStyle = colors.value.camBackStroke
-  ctx.lineWidth = 1
-  ctx.fill()
+  ctx.moveTo(surfaceProj.x, surfaceProj.y)
+  ctx.lineTo(floatingCenter.x, floatingCenter.y)
+  ctx.strokeStyle = colors.value.lineColor
+  ctx.lineWidth = 1.5
   ctx.stroke()
 
-  ctx.shadowColor = "transparent"
-  ctx.shadowBlur = 0
-  ctx.shadowOffsetX = 0
-  ctx.shadowOffsetY = 0
+  // 矩形边框
+  const rectW = baseSize.value * 0.15
+  const rectH = baseSize.value * 0.11
+  const corners = [
+    localToScreen(-rectW, -rectH),
+    localToScreen(rectW, -rectH),
+    localToScreen(rectW, rectH),
+    localToScreen(-rectW, rectH)
+  ]
 
-  // 绘制侧面边线
-  ctx.strokeStyle = colors.value.camSideStroke
-  ctx.lineWidth = 1
-  for (let i = 0; i < 4; i++) {
-    ctx.beginPath()
-    ctx.moveTo(frontCorners[i]!.x, frontCorners[i]!.y)
-    ctx.lineTo(backCorners[i]!.x, backCorners[i]!.y)
-    ctx.stroke()
-  }
-
-  // 绘制前面（摄像机正面）
   ctx.beginPath()
-  ctx.moveTo(frontCorners[0]!.x, frontCorners[0]!.y)
-  for (let i = 1; i < 4; i++) ctx.lineTo(frontCorners[i]!.x, frontCorners[i]!.y)
+  ctx.moveTo(corners[0].x, corners[0].y)
+  for (let i = 1; i < 4; i++) ctx.lineTo(corners[i].x, corners[i].y)
   ctx.closePath()
-  ctx.fillStyle = props.darkMode ? "rgba(255,255,255,0.15)" : "rgba(59,130,246,0.2)"
+  ctx.fillStyle = props.darkMode
+    ? "rgba(255,255,255,0.15)"
+    : "rgba(59,130,246,0.2)"
   ctx.strokeStyle = colors.value.pointColor
   ctx.lineWidth = 2
   ctx.fill()
   ctx.stroke()
 
-  // === 镜头（前面中心的3D椭圆） ===
-  const lensR = camH * 0.6
-  const lensSteps = 32
+  // 中心球体（外圈透明边缘 + 内圈实心）
+  const dotR = Math.max(baseSize.value * 0.08 * pt.scale, 3)
+  // 外圈：透明边缘
   ctx.beginPath()
-  for (let i = 0; i <= lensSteps; i++) {
-    const angle = (Math.PI * 2 * i) / lensSteps
-    const lp = localToScreen(
-      lensR * Math.cos(angle),
-      lensR * Math.sin(angle),
-      0
-    )
-    if (i === 0) ctx.moveTo(lp.x, lp.y)
-    else ctx.lineTo(lp.x, lp.y)
-  }
-  ctx.closePath()
-  ctx.strokeStyle = colors.value.pointColor
-  ctx.lineWidth = 2
-  ctx.stroke()
-
-  // 镜头内圈
-  const innerR = lensR * 0.55
-  ctx.beginPath()
-  for (let i = 0; i <= lensSteps; i++) {
-    const angle = (Math.PI * 2 * i) / lensSteps
-    const lp = localToScreen(
-      innerR * Math.cos(angle),
-      innerR * Math.sin(angle),
-      0
-    )
-    if (i === 0) ctx.moveTo(lp.x, lp.y)
-    else ctx.lineTo(lp.x, lp.y)
-  }
-  ctx.closePath()
-  ctx.fillStyle = colors.value.pointColor
-  ctx.globalAlpha = opacity * 0.4
-  ctx.fill()
-  ctx.globalAlpha = opacity
-
-  // 镜头高光（偏左上）
-  const hlR = innerR * 0.3
-  ctx.beginPath()
-  for (let i = 0; i <= lensSteps; i++) {
-    const angle = (Math.PI * 2 * i) / lensSteps
-    const lp = localToScreen(
-      -innerR * 0.25 + hlR * Math.cos(angle),
-      -innerR * 0.25 + hlR * Math.sin(angle),
-      0
-    )
-    if (i === 0) ctx.moveTo(lp.x, lp.y)
-    else ctx.lineTo(lp.x, lp.y)
-  }
-  ctx.closePath()
-  ctx.fillStyle = props.darkMode ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.7)"
-  ctx.fill()
-
-  ctx.globalAlpha = opacity
-
-  // === 取景器（主体右上方的3D凸起） ===
-  const vfW2 = camW * 0.35   // 取景器半宽
-  const vfH2 = camH * 0.25   // 取景器半高
-  const vfOffsetR = camW * 0.3  // 右偏移
-  const vfOffsetU = -camH - vfH2  // 在主体上方
-
-  const vfFront = [
-    localToScreen(vfOffsetR - vfW2, vfOffsetU - vfH2, 0),
-    localToScreen(vfOffsetR + vfW2, vfOffsetU - vfH2, 0),
-    localToScreen(vfOffsetR + vfW2, vfOffsetU + vfH2, 0),
-    localToScreen(vfOffsetR - vfW2, vfOffsetU + vfH2, 0)
-  ]
-  const vfBack = [
-    localToScreen(vfOffsetR - vfW2, vfOffsetU - vfH2, -camDepth),
-    localToScreen(vfOffsetR + vfW2, vfOffsetU - vfH2, -camDepth),
-    localToScreen(vfOffsetR + vfW2, vfOffsetU + vfH2, -camDepth),
-    localToScreen(vfOffsetR - vfW2, vfOffsetU + vfH2, -camDepth)
-  ]
-
-  // 取景器背面
-  ctx.beginPath()
-  ctx.moveTo(vfBack[0]!.x, vfBack[0]!.y)
-  for (let i = 1; i < 4; i++) ctx.lineTo(vfBack[i]!.x, vfBack[i]!.y)
-  ctx.closePath()
-  ctx.fillStyle = props.darkMode ? "rgba(255,255,255,0.06)" : "rgba(59,130,246,0.08)"
-  ctx.strokeStyle = colors.value.camBackStroke
-  ctx.lineWidth = 1
-  ctx.fill()
-  ctx.stroke()
-
-  // 取景器侧面
-  ctx.strokeStyle = colors.value.camSideStroke
-  ctx.lineWidth = 1
-  for (let i = 0; i < 4; i++) {
-    ctx.beginPath()
-    ctx.moveTo(vfFront[i]!.x, vfFront[i]!.y)
-    ctx.lineTo(vfBack[i]!.x, vfBack[i]!.y)
-    ctx.stroke()
-  }
-
-  // 取景器正面
-  ctx.beginPath()
-  ctx.moveTo(vfFront[0]!.x, vfFront[0]!.y)
-  for (let i = 1; i < 4; i++) ctx.lineTo(vfFront[i]!.x, vfFront[i]!.y)
-  ctx.closePath()
-  ctx.fillStyle = props.darkMode ? "rgba(255,255,255,0.12)" : "rgba(59,130,246,0.15)"
+  ctx.arc(floatingCenter.x, floatingCenter.y, dotR, 0, Math.PI * 2)
   ctx.strokeStyle = colors.value.pointColor
   ctx.lineWidth = 1.5
-  ctx.fill()
   ctx.stroke()
+  // 内圈：实心
+  ctx.beginPath()
+  ctx.arc(floatingCenter.x, floatingCenter.y, dotR * 0.55, 0, Math.PI * 2)
+  ctx.fillStyle = colors.value.pointColor
+  ctx.fill()
 
-  // === active 状态发光外框 ===
+  // active 状态发光外框
   if (isActive.value) {
-    const pad = baseSize.value * 0.04
+    const pad = baseSize.value * 0.03
     const glowCorners = [
-      localToScreen(-camW - pad, -camH - pad, 0),
-      localToScreen( camW + pad, -camH - pad, 0),
-      localToScreen( camW + pad,  camH + pad, 0),
-      localToScreen(-camW - pad,  camH + pad, 0)
+      localToScreen(-rectW - pad, -rectH - pad),
+      localToScreen(rectW + pad, -rectH - pad),
+      localToScreen(rectW + pad, rectH + pad),
+      localToScreen(-rectW - pad, rectH + pad)
     ]
     ctx.globalAlpha = opacity * 0.4
     ctx.strokeStyle = colors.value.pointColor
     ctx.lineWidth = 3
     ctx.beginPath()
-    ctx.moveTo(glowCorners[0]!.x, glowCorners[0]!.y)
-    for (let i = 1; i < 4; i++) ctx.lineTo(glowCorners[i]!.x, glowCorners[i]!.y)
+    ctx.moveTo(glowCorners[0].x, glowCorners[0].y)
+    for (let i = 1; i < 4; i++) ctx.lineTo(glowCorners[i].x, glowCorners[i].y)
     ctx.closePath()
     ctx.stroke()
   }
@@ -793,10 +602,13 @@ function drawPoint(ctx: CanvasRenderingContext2D, pt: { x: number; y: number; sc
 function updateRotation(deltaX: number, deltaY: number) {
   pointTheta.value += deltaX * props.moveSpeed
   const newPhi = pointPhi.value - deltaY * props.moveSpeed
-  pointPhi.value = Math.max(phiLimits.value.min, Math.min(phiLimits.value.max, newPhi))
+  pointPhi.value = Math.max(
+    phiLimits.value.min,
+    Math.min(phiLimits.value.max, newPhi)
+  )
   emit("update:modelValue", {
-    yaw: pointTheta.value * 180 / Math.PI,
-    pitch: (Math.PI / 2 - pointPhi.value) * 180 / Math.PI,
+    yaw: (pointTheta.value * 180) / Math.PI,
+    pitch: ((Math.PI / 2 - pointPhi.value) * 180) / Math.PI,
     zoomLevel: internalZoomLevel.value
   })
   draw()
@@ -811,11 +623,10 @@ function getEventPos(e: MouseEvent | Touch) {
 
 function isOnPoint(ex: number, ey: number) {
   const pt = getPointProjection()
-  // 碰撞区域与3D摄像机图标尺寸匹配（不随zoom缩放）
-  const camW = baseSize.value * 0.22
-  const camH = baseSize.value * 0.16
-  const hitSize = Math.max(camW, camH) * pt.scale + 10
-  const dx = ex - pt.x, dy = ey - pt.y
+  // 碰撞区域匹配简化镜头图标（矩形+球体，不随zoom缩放）
+  const hitSize = baseSize.value * 0.18 * pt.scale + 10
+  const dx = ex - pt.x,
+    dy = ey - pt.y
   return dx * dx + dy * dy <= hitSize * hitSize
 }
 
@@ -888,8 +699,8 @@ function handleWheel(e: WheelEvent) {
   if (next !== current) {
     internalZoomLevel.value = next
     emit("update:modelValue", {
-      yaw: pointTheta.value * 180 / Math.PI,
-      pitch: (Math.PI / 2 - pointPhi.value) * 180 / Math.PI,
+      yaw: (pointTheta.value * 180) / Math.PI,
+      pitch: ((Math.PI / 2 - pointPhi.value) * 180) / Math.PI,
       zoomLevel: next
     })
     draw()
@@ -897,9 +708,21 @@ function handleWheel(e: WheelEvent) {
 }
 
 // 响应 props 变化重绘
-watch(() => [props.width, props.height, props.defaultRotationX, props.defaultRotationY, props.defaultRotationZ, props.squareColor, props.pointColor, props.darkMode], () => {
-  draw()
-})
+watch(
+  () => [
+    props.width,
+    props.height,
+    props.defaultRotationX,
+    props.defaultRotationY,
+    props.defaultRotationZ,
+    props.squareColor,
+    props.pointColor,
+    props.darkMode
+  ],
+  () => {
+    draw()
+  }
+)
 
 onMounted(() => {
   draw()
@@ -922,7 +745,11 @@ onUnmounted(() => {
 <template>
   <canvas
     ref="canvasRef"
-    :style="{ width: width + 'px', height: height + 'px', cursor: isActive ? 'grabbing' : 'default' }"
+    :style="{
+      width: width + 'px',
+      height: height + 'px',
+      cursor: isActive ? 'grabbing' : 'default'
+    }"
     @mousedown="handleMouseDown"
     @touchstart="handleTouchStart"
     @touchmove="handleTouchMove"
