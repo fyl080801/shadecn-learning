@@ -45,6 +45,7 @@ let lastPointerY = 0
 
 interface DragPoint {
   mesh: THREE.Mesh
+  glow: THREE.Mesh
 }
 
 const points: DragPoint[] = []
@@ -59,15 +60,16 @@ function sphericalToPosition(theta: number, phi: number): THREE.Vector3 {
 
 function updatePointPosition() {
   const pos = sphericalToPosition(pointTheta.value, pointPhi.value)
-  const camDir = camera.position.clone().normalize()
-  const isBack = pos.clone().normalize().dot(camDir) < 0
 
+  const lightDir = pos.clone().normalize().negate()
   for (const p of points) {
     p.mesh.position.copy(pos)
-
-    const mat = p.mesh.material as THREE.MeshPhysicalMaterial
-    mat.opacity = isBack ? 0.4 : 1.0
-    mat.transparent = true
+    p.glow.position.copy(pos)
+    // Update light direction uniform for gradient shading
+    const mat = p.mesh.material as THREE.ShaderMaterial
+    mat.uniforms.uLightDir.value.copy(lightDir)
+    const glowMat = p.glow.material as THREE.ShaderMaterial
+    glowMat.uniforms.uLightDir.value.copy(lightDir)
   }
 
   // Update cone position and orientation to follow the drag point
@@ -76,8 +78,6 @@ function updatePointPosition() {
   // Orient cone so local Y axis points from center toward drag point
   const targetDir = pos.clone().normalize()
   coneMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), targetDir)
-  // Dim cone when point is on the back side
-  ;(coneMaterial.uniforms!.uOpacity as { value: number }).value = isBack ? 0.2 : 1.0
 
   // Emit direction
   const direction = pos.clone().normalize()
@@ -155,6 +155,7 @@ function init() {
 
   // Scene
   scene = new THREE.Scene()
+  scene.background = new THREE.Color(0x1a1a2e)
 
   // Camera
   camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100)
@@ -162,19 +163,43 @@ function init() {
   camera.lookAt(0, 0, 0)
 
   // Hemisphere light for subtle shading on the rectangle
-  const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2)
+  const hemiLight = new THREE.HemisphereLight(0x9999ff, 0x222244, 1.5)
   scene.add(hemiLight)
 
-  // Semi-transparent sphere
+  // Bubble-effect sphere: edge ring visible, center fully transparent
   const sphereGeometry = new THREE.SphereGeometry(SPHERE_RADIUS, 64, 64)
-  const sphereMaterial = new THREE.MeshPhysicalMaterial({
-    color: 0xcccccc,
+  const sphereMaterial = new THREE.ShaderMaterial({
     transparent: true,
-    opacity: 0.2,
-    roughness: 0.1,
-    metalness: 0.0,
-    side: THREE.DoubleSide,
-    depthWrite: false
+    depthWrite: false,
+    side: THREE.FrontSide,
+    uniforms: {
+      uColor: { value: new THREE.Color(0.5, 0.6, 0.8) },
+      uEdgeStart: { value: 0 },
+      uEdgeWidth: { value: 1 }
+    },
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vViewDir;
+      void main() {
+        vNormal = normalize(normalMatrix * normal);
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        vViewDir = normalize(-mvPosition.xyz);
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uEdgeStart;
+      uniform float uEdgeWidth;
+      varying vec3 vNormal;
+      varying vec3 vViewDir;
+      void main() {
+        float fresnel = 1.0 - dot(vNormal, vViewDir);
+        float ring = smoothstep(uEdgeStart, uEdgeStart + uEdgeWidth, fresnel);
+        float alpha = ring * 0.55;
+        gl_FragColor = vec4(uColor, alpha);
+      }
+    `
   })
   const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial)
   scene.add(sphere)
@@ -191,7 +216,7 @@ function init() {
   const rectHeight = 1.2
   const rectGeometry = new THREE.PlaneGeometry(rectWidth, rectHeight)
   const rectMaterial = new THREE.MeshStandardMaterial({
-    color: 0xeeeeee,
+    color: 0x3a3a5c,
     roughness: 0.7,
     metalness: 0.0,
     side: THREE.DoubleSide
@@ -201,13 +226,20 @@ function init() {
 
   // Rectangle border frame
   const borderGeometry = new THREE.EdgesGeometry(rectGeometry)
-  const borderMaterial = new THREE.LineBasicMaterial({ color: 0x888888 })
+  const borderMaterial = new THREE.LineBasicMaterial({ color: 0x6666aa })
   const borderLine = new THREE.LineSegments(borderGeometry, borderMaterial)
   scene.add(borderLine)
 
   // Light cone: visual gradient from drag point to rectangle
   const coneHeight = SPHERE_RADIUS
-  const coneGeometry = new THREE.CylinderGeometry(0.05, 0.9, coneHeight, 32, 1, true)
+  const coneGeometry = new THREE.CylinderGeometry(
+    0.05,
+    0.9,
+    coneHeight,
+    32,
+    1,
+    true
+  )
   coneMaterial = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
@@ -238,7 +270,7 @@ function init() {
   scene.add(coneMesh)
 
   // Draggable point on sphere surface
-  createDragPoint(0xff4444)
+  createDragPoint()
 
   // Z-axis line (depth)
   createAxisLine(
@@ -256,25 +288,91 @@ function init() {
   canvasRef.value.addEventListener("pointerup", onPointerUp)
 }
 
-function createDragPoint(color: number) {
+function createDragPoint() {
   const pos = sphericalToPosition(pointTheta.value, pointPhi.value)
 
-  // Main point sphere
+  // Dark sphere with light-facing highlight gradient
   const geometry = new THREE.SphereGeometry(POINT_RADIUS, 32, 32)
-  const material = new THREE.MeshPhysicalMaterial({
-    color,
-    emissive: color,
-    emissiveIntensity: 0.6,
-    roughness: 0.2,
-    metalness: 0.5,
-    transparent: true,
-    opacity: 1.0
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      uLightDir: { value: pos.clone().normalize().negate() },
+      uBrightColor: { value: new THREE.Color(0.9, 0.95, 1.0) },
+      uDarkColor: { value: new THREE.Color(0.05, 0.05, 0.1) }
+    },
+    vertexShader: `
+      varying vec3 vNormal;
+      void main() {
+        vNormal = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uLightDir;
+      uniform vec3 uBrightColor;
+      uniform vec3 uDarkColor;
+      varying vec3 vNormal;
+      void main() {
+        float facing = dot(vNormal, uLightDir);
+        float t = smoothstep(-0.8, 1.0, facing);
+        vec3 color = mix(uDarkColor, uBrightColor, t);
+        gl_FragColor = vec4(color, 1.0);
+      }
+    `
   })
   const mesh = new THREE.Mesh(geometry, material)
   mesh.position.copy(pos)
   scene.add(mesh)
 
-  points.push({ mesh })
+  // Atmospheric glow: edge-only, bright toward sphere center, dark on far side
+  const GLOW_POWER = 2.0 // edge tightness (lower = softer spread)
+  const GLOW_INTENSITY = 1.2 // peak brightness
+
+  const glowRadius = POINT_RADIUS
+  const glowGeometry = new THREE.SphereGeometry(glowRadius, 32, 32)
+  const glowMaterial = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    side: THREE.FrontSide,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uGlowColor: { value: new THREE.Color(0.6, 0.7, 1.0) },
+      uLightDir: { value: pos.clone().normalize().negate() },
+      uPower: { value: GLOW_POWER },
+      uIntensity: { value: GLOW_INTENSITY }
+    },
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vViewDir;
+      void main() {
+        vNormal = normalize(normalMatrix * normal);
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        vViewDir = normalize(-mvPosition.xyz);
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uGlowColor;
+      uniform vec3 uLightDir;
+      uniform float uPower;
+      uniform float uIntensity;
+      varying vec3 vNormal;
+      varying vec3 vViewDir;
+      void main() {
+        float rim = 1.0 - dot(vNormal, vViewDir);
+        float edgeMask = pow(max(rim, 0.0), uPower);
+        float facing = dot(vNormal, uLightDir);
+        float dirMask = smoothstep(-0.2, 1.0, facing);
+        float alpha = edgeMask * dirMask * uIntensity;
+        gl_FragColor = vec4(uGlowColor, alpha);
+      }
+    `
+  })
+  const glow = new THREE.Mesh(glowGeometry, glowMaterial)
+  glow.position.copy(pos)
+  scene.add(glow)
+
+  points.push({ mesh, glow })
 }
 
 function createAxisLine(
