@@ -127,7 +127,7 @@ watch(
   () => props.modelValue,
   (val) => {
     pointTheta.value = (val.yaw * Math.PI) / 180
-    pointPhi.value = Math.PI / 2 - (val.pitch * Math.PI) / 180
+    pointPhi.value = Math.PI / 2 + (val.pitch * Math.PI) / 180
     internalZoomLevel.value = val.zoomLevel ?? "unchanged"
     draw()
   },
@@ -610,7 +610,7 @@ function updateRotation(deltaX: number, deltaY: number) {
   )
   emit("update:modelValue", {
     yaw: (pointTheta.value * 180) / Math.PI,
-    pitch: ((Math.PI / 2 - pointPhi.value) * 180) / Math.PI,
+    pitch: ((pointPhi.value - Math.PI / 2) * 180) / Math.PI,
     zoomLevel: internalZoomLevel.value
   })
   draw()
@@ -680,7 +680,7 @@ function handleWheel(e: WheelEvent) {
     internalZoomLevel.value = next
     emit("update:modelValue", {
       yaw: (pointTheta.value * 180) / Math.PI,
-      pitch: ((Math.PI / 2 - pointPhi.value) * 180) / Math.PI,
+      pitch: ((pointPhi.value - Math.PI / 2) * 180) / Math.PI,
       zoomLevel: next
     })
     draw()
