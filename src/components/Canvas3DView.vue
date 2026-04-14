@@ -614,30 +614,11 @@ function updateRotation(deltaX: number, deltaY: number) {
   draw()
 }
 
-function getEventPos(e: MouseEvent | Touch) {
-  const canvas = canvasRef.value
-  if (!canvas) return { x: 0, y: 0 }
-  const rect = canvas.getBoundingClientRect()
-  return { x: e.clientX - rect.left, y: e.clientY - rect.top }
-}
-
-function isOnPoint(ex: number, ey: number) {
-  const pt = getPointProjection()
-  // 碰撞区域匹配简化镜头图标（矩形+球体，不随zoom缩放）
-  const hitSize = baseSize.value * 0.18 * pt.scale + 10
-  const dx = ex - pt.x,
-    dy = ey - pt.y
-  return dx * dx + dy * dy <= hitSize * hitSize
-}
-
 function handleMouseDown(e: MouseEvent) {
-  const pos = getEventPos(e)
-  if (isOnPoint(pos.x, pos.y)) {
-    isActive.value = true
-    dragStart.value = { x: e.clientX, y: e.clientY }
-    e.preventDefault()
-    draw()
-  }
+  isActive.value = true
+  dragStart.value = { x: e.clientX, y: e.clientY }
+  e.preventDefault()
+  draw()
 }
 
 function handleMouseMove(e: MouseEvent) {
@@ -658,13 +639,10 @@ function handleMouseUp() {
 function handleTouchStart(e: TouchEvent) {
   const touch = e.touches[0]
   if (!touch) return
-  const pos = getEventPos(touch)
-  if (isOnPoint(pos.x, pos.y)) {
-    isActive.value = true
-    dragStart.value = { x: touch.clientX, y: touch.clientY }
-    e.preventDefault()
-    draw()
-  }
+  isActive.value = true
+  dragStart.value = { x: touch.clientX, y: touch.clientY }
+  e.preventDefault()
+  draw()
 }
 
 function handleTouchMove(e: TouchEvent) {
@@ -748,7 +726,7 @@ onUnmounted(() => {
     :style="{
       width: width + 'px',
       height: height + 'px',
-      cursor: isActive ? 'grabbing' : 'default'
+      cursor: isActive ? 'grabbing' : 'grab'
     }"
     @mousedown="handleMouseDown"
     @touchstart="handleTouchStart"
