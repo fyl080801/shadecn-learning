@@ -601,6 +601,8 @@ function drawPoint(
 // ============= 交互 =============
 function updateRotation(deltaX: number, deltaY: number) {
   pointTheta.value += deltaX * props.moveSpeed
+  // 将 theta 归一化到 [-π, π] 范围，避免数值持续增长
+  pointTheta.value = Math.atan2(Math.sin(pointTheta.value), Math.cos(pointTheta.value))
   const newPhi = pointPhi.value - deltaY * props.moveSpeed
   pointPhi.value = Math.max(
     phiLimits.value.min,
