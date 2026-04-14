@@ -27,7 +27,7 @@ const zoomLabel: Record<string, string> = {
       </CardHeader>
       <CardContent>
         <div class="flex justify-center">
-          <Canvas3DView v-model="cameraRotation" dark-mode />
+          <Canvas3DView v-model="cameraRotation" dark-mode :bottom-limit-degrees="55" />
         </div>
         <div class="mt-4 text-center text-sm text-muted-foreground">
           Camera rotation: Yaw {{ cameraRotation.yaw.toFixed(1) }}°, Pitch {{ cameraRotation.pitch.toFixed(1) }}°

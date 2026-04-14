@@ -116,7 +116,6 @@ const sphereRadius = computed(() => {
   return halfDiag + baseSize.value * 0.25
 })
 const center = computed(() => ({ x: props.width / 2, y: props.height / 2 }))
-const pointRadius = computed(() => baseSize.value * 0.08)
 
 const phiLimits = computed(() => ({
   min: (props.bottomLimitDegrees * Math.PI) / 180,
@@ -551,8 +550,8 @@ function drawPoint(
   ]
 
   ctx.beginPath()
-  ctx.moveTo(corners[0].x, corners[0].y)
-  for (let i = 1; i < 4; i++) ctx.lineTo(corners[i].x, corners[i].y)
+  ctx.moveTo(corners[0]!.x, corners[0]!.y)
+  for (let i = 1; i < 4; i++) ctx.lineTo(corners[i]!.x, corners[i]!.y)
   ctx.closePath()
   ctx.fillStyle = props.darkMode
     ? "rgba(255,255,255,0.15)"
@@ -589,8 +588,8 @@ function drawPoint(
     ctx.strokeStyle = colors.value.pointColor
     ctx.lineWidth = 3
     ctx.beginPath()
-    ctx.moveTo(glowCorners[0].x, glowCorners[0].y)
-    for (let i = 1; i < 4; i++) ctx.lineTo(glowCorners[i].x, glowCorners[i].y)
+    ctx.moveTo(glowCorners[0]!.x, glowCorners[0]!.y)
+    for (let i = 1; i < 4; i++) ctx.lineTo(glowCorners[i]!.x, glowCorners[i]!.y)
     ctx.closePath()
     ctx.stroke()
   }
