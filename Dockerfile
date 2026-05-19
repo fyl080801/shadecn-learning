@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm build
+RUN npx vite build
 
 FROM harbor-core.harbor.svc/library/nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
