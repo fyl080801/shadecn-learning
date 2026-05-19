@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: shadecn-learning
+  namespace: dev
+spec:
+  selector:
+    app: shadecn-learning
+  ports:
+    - port: 80
+      targetPort: 80
+  type: ClusterIP

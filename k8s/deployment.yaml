@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shadecn-learning
+  namespace: dev
+  labels:
+    app: shadecn-learning
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shadecn-learning
+  template:
+    metadata:
+      labels:
+        app: shadecn-learning
+    spec:
+      containers:
+        - name: shadecn-learning
+          image: 192.168.68.95:31443/apps/shadecn-learning:placeholder
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      imagePullSecrets:
+        - name: harbor-pull-secret
