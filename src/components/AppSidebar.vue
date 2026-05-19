@@ -41,7 +41,7 @@ const isCollapsedDesktop = computed(() => collapsed.value && !isNarrow.value)
 
 watch(isNarrow, (narrow) => {
   if (narrow) collapsed.value = true
-})
+}, { immediate: true })
 
 const closeOnMobile = () => {
   if (isNarrow.value) collapsed.value = true
