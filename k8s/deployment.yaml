@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: shadecn-learning
-          image: 192.168.68.95:31443/apps/shadecn-learning:0135b73
+          image: 192.168.68.95:31443/apps/shadecn-learning:d29673f
           imagePullPolicy: Always
           ports:
             - containerPort: 80
