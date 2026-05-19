@@ -6,7 +6,7 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN npx vite build
 
-FROM harbor-core.harbor.svc/library/nginx:alpine
+FROM 192.168.68.95:31443/docker.io/library/nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
