@@ -2,7 +2,7 @@ FROM --platform=$BUILDPLATFORM harbor-core.harbor.svc/library/node:22-alpine AS 
 RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm config set allow-builds esbuild,vue-demi && pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build
 
