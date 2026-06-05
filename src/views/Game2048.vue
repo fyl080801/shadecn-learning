@@ -83,8 +83,8 @@ const addRandomTile = () => {
     }
   }
   if (emptyCells.length > 0) {
-    const randomCell = emptyCells[Math.floor(Math.random() * emptyCells.length)]
-    grid.value[randomCell.row][randomCell.col] = Math.random() < 0.9 ? 2 : 4
+    const randomCell = emptyCells[Math.floor(Math.random() * emptyCells.length)]!
+    grid.value[randomCell.row]![randomCell.col] = Math.random() < 0.9 ? 2 : 4
   }
 }
 
@@ -111,8 +111,8 @@ const slide = (row: number[]): number[] => {
   let arr = row.filter(val => val !== 0)
   for (let i = 0; i < arr.length - 1; i++) {
     if (arr[i] === arr[i + 1]) {
-      arr[i] *= 2
-      score.value += arr[i]
+      arr[i]! *= 2
+      score.value += arr[i]!
       arr.splice(i + 1, 1)
       if (arr[i] === 2048 && !won.value && !continueGame.value) {
         won.value = true
@@ -129,8 +129,9 @@ const slide = (row: number[]): number[] => {
 const moveLeft = () => {
   let moved = false
   for (let i = 0; i < gridSize; i++) {
-    const newRow = slide([...grid.value[i]])
-    if (JSON.stringify(newRow) !== JSON.stringify(grid.value[i])) {
+    const row = grid.value[i]!
+    const newRow = slide([...row])
+    if (JSON.stringify(newRow) !== JSON.stringify(row)) {
       moved = true
     }
     grid.value[i] = newRow
@@ -141,8 +142,9 @@ const moveLeft = () => {
 const moveRight = () => {
   let moved = false
   for (let i = 0; i < gridSize; i++) {
-    const newRow = slide([...grid.value[i]].reverse()).reverse()
-    if (JSON.stringify(newRow) !== JSON.stringify(grid.value[i])) {
+    const row = grid.value[i]!
+    const newRow = slide([...row].reverse()).reverse()
+    if (JSON.stringify(newRow) !== JSON.stringify(row)) {
       moved = true
     }
     grid.value[i] = newRow
@@ -153,16 +155,16 @@ const moveRight = () => {
 const moveUp = () => {
   let moved = false
   for (let j = 0; j < gridSize; j++) {
-    let col = []
+    const col: number[] = []
     for (let i = 0; i < gridSize; i++) {
-      col.push(grid.value[i]?.[j])
+      col.push(grid.value[i]![j]!)
     }
     const newCol = slide(col)
     for (let i = 0; i < gridSize; i++) {
-      if (grid.value[i]?.[j] !== newCol[i]) {
+      if (grid.value[i]![j]! !== newCol[i]) {
         moved = true
       }
-      grid.value[i][j] = newCol[i]
+      grid.value[i]![j] = newCol[i]!
     }
   }
   return moved
@@ -171,16 +173,16 @@ const moveUp = () => {
 const moveDown = () => {
   let moved = false
   for (let j = 0; j < gridSize; j++) {
-    let col = []
+    const col: number[] = []
     for (let i = 0; i < gridSize; i++) {
-      col.push(grid.value[i]?.[j])
+      col.push(grid.value[i]![j]!)
     }
     const newCol = slide(col.reverse()).reverse()
     for (let i = 0; i < gridSize; i++) {
-      if (grid.value[i]?.[j] !== newCol[i]) {
+      if (grid.value[i]![j]! !== newCol[i]) {
         moved = true
       }
-      grid.value[i][j] = newCol[i]
+      grid.value[i]![j] = newCol[i]!
     }
   }
   return moved
