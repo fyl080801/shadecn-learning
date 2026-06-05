@@ -182,9 +182,9 @@ const sphereOutline = computed(() => {
   }
 
   if (outlinePoints.length > 0) {
-    let path = "M " + outlinePoints[0].x + " " + outlinePoints[0].y
+    let path = "M " + outlinePoints?.[0]?.x + " " + outlinePoints?.[0]?.y
     for (let i = 1; i < outlinePoints.length; i++) {
-      path += " L " + outlinePoints[i].x + " " + outlinePoints[i].y
+      path += " L " + outlinePoints?.[i]?.x + " " + outlinePoints?.[i]?.y
     }
     path += " Z"
     return path
@@ -222,9 +222,9 @@ const latitudeLines = computed(() => {
     const projected = points.map((p) => project3Dto2D(p.x, p.y, p.z))
 
     if (projected.length > 0) {
-      let path = "M " + projected[0].x + " " + projected[0].y
+      let path = "M " + projected?.[0]?.x + " " + projected?.[0]?.y
       for (let j = 1; j < projected.length; j++) {
-        path += " L " + projected[j].x + " " + projected[j].y
+        path += " L " + projected?.[j]?.x + " " + projected?.[j]?.y
       }
       lines.push({ path })
     }
@@ -262,9 +262,9 @@ const longitudeLines = computed(() => {
     const projected = points.map((p) => project3Dto2D(p.x, p.y, p.z))
 
     if (projected.length > 0) {
-      let path = "M " + projected[0].x + " " + projected[0].y
+      let path = "M " + projected?.[0]?.x + " " + projected?.[0]?.y
       for (let j = 1; j < projected.length; j++) {
-        path += " L " + projected[j].x + " " + projected[j].y
+        path += " L " + projected?.[j]?.x + " " + projected?.[j]?.y
       }
       lines.push({ path })
     }

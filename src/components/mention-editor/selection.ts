@@ -1,14 +1,23 @@
 /**
  * Selection bridge between the contenteditable DOM and the model.
  *
- * Conventions in our DOM:
+ * Conventions in our DOM (mirrors slate-react):
  *   - Every paragraph block: <div data-block-path="[bi]">
- *   - Every text leaf:       <span data-leaf-path="[bi,ii]">…text…</span>
+ *   - Every text leaf wrapper:
+ *       <span data-slate-node="text">
+ *         <span data-slate-leaf="true" data-leaf-path="[bi,ii]">
+ *           <span data-slate-string="true">…text…</span>      ← non-empty
+ *           OR
+ *           <span data-slate-zero-width="z|n" data-slate-length="0">
+ *             ﻿ (U+FEFF) [+ <br/> if "n"]
+ *           </span>
+ *         </span>
+ *       </span>
  *   - Every mention (void):  <span data-void-path="[bi,ii]" contenteditable="false">@…</span>
  *
- * The caret only ever sits inside text leaves (and their child text node).
- * Mentions are inline voids — the browser will skip past them when the
- * caret moves, landing in the surrounding empty text leaf.
+ * The caret only ever sits inside text leaves.  When the leaf is empty
+ * the caret lives on the zero-width span's FEFF text node; we must map
+ * that back to model offset 0 (the FEFF is a presentation-only filler).
  */
 import type { Path, Point } from "./types"
 import type { Range as ModelRange } from "./types"
@@ -40,6 +49,39 @@ export const findBlockElement = (
   return root.querySelector<HTMLElement>(`[data-block-path="${attr}"]`)
 }
 
+/**
+ * Locate the actual text node that backs a leaf in the DOM, taking
+ * the slate-style nested wrappers into account.  Returns the text node
+ * plus a flag telling whether it's a zero-width filler (FEFF).
+ */
+const getLeafTextAnchor = (
+  leafEl: HTMLElement
+): { node: Text; isZeroWidth: boolean } | null => {
+  // Prefer the [data-slate-string] inner span — that's where real text
+  // lives.
+  const stringEl = leafEl.querySelector<HTMLElement>("[data-slate-string]")
+  if (stringEl) {
+    let tn = stringEl.firstChild as Text | null
+    if (!tn || tn.nodeType !== Node.TEXT_NODE) {
+      tn = document.createTextNode("")
+      stringEl.insertBefore(tn, stringEl.firstChild)
+    }
+    return { node: tn, isZeroWidth: false }
+  }
+  // Otherwise it's a zero-width filler.
+  const zeroEl = leafEl.querySelector<HTMLElement>("[data-slate-zero-width]")
+  if (zeroEl) {
+    let tn = zeroEl.firstChild as Text | null
+    // The zero-width span contains a FEFF text node (and optionally a <br>).
+    if (!tn || tn.nodeType !== Node.TEXT_NODE) {
+      tn = document.createTextNode("\uFEFF")
+      zeroEl.insertBefore(tn, zeroEl.firstChild)
+    }
+    return { node: tn, isZeroWidth: true }
+  }
+  return null
+}
+
 /** Convert a model Point to a DOM (Node, offset) tuple. */
 export const toDOMPoint = (
   root: HTMLElement,
@@ -47,18 +89,19 @@ export const toDOMPoint = (
 ): { node: Node; offset: number } | null => {
   const leaf = findLeafElement(root, point.path)
   if (leaf) {
-    // Ensure we have a text node child to anchor on.
-    let tn = leaf.firstChild
-    if (!tn || tn.nodeType !== Node.TEXT_NODE) {
-      // Empty leaf — create a placeholder text node so a caret can
-      // land here.  This is safe; Vue keeps innerText in sync via the
-      // template, and the empty text node we add is harmless.
-      const empty = document.createTextNode("")
-      leaf.insertBefore(empty, leaf.firstChild)
-      tn = empty
+    const anchor = getLeafTextAnchor(leaf)
+    if (!anchor) {
+      return { node: leaf, offset: 0 }
     }
-    const len = tn.textContent?.length ?? 0
-    return { node: tn, offset: Math.max(0, Math.min(point.offset, len)) }
+    if (anchor.isZeroWidth) {
+      // Empty leaf: caret sits before the FEFF char.
+      return { node: anchor.node, offset: 0 }
+    }
+    const len = anchor.node.textContent?.length ?? 0
+    return {
+  node: anchor.node,
+      offset: Math.max(0, Math.min(point.offset, len))
+    }
   }
   // Fallback: the leaf hasn't rendered yet — anchor in the block.
   const block = findBlockElement(root, point.path.slice(0, -1))
@@ -66,13 +109,14 @@ export const toDOMPoint = (
   return null
 }
 
-/** Convert a DOM (Node, offset) tuple back to a model Point. */
+/** Convert a DOM (Node, offset) tupleback to a model Point. */
 export const toModelPoint = (
   root: HTMLElement,
   node: Node,
   offset: number
 ): Point | null => {
-  // Case 1: caret is on a text node inside a leaf span.
+  // Case 1: caret is on a text node — walk up to the closest leaf and
+  // figure out whether it's a zero-width filler or real string.
   if (node.nodeType === Node.TEXT_NODE && node.parentElement) {
     const leafEl = node.parentElement.closest(
       "[data-leaf-path]"
@@ -82,74 +126,113 @@ export const toModelPoint = (
         leafEl.getAttribute("data-leaf-path") ?? "null"
       ) as Path | null
       if (path) {
+        // If the parent (or any ancestor up to the leaf) is a zero-width
+        // span, the leaf is empty in the model — clamp offset to 0.
+        const isZeroWidth =
+          !!node.parentElement.closest("[data-slate-zero-width]")
+        if (isZeroWidth) {
+          return { path, offset: 0 }
+        }
         const len = node.textContent?.length ?? 0
         return { path, offset: Math.min(offset, len) }
       }
     }
   }
 
-  // Case 2: caret on a leaf span itself (no text node).
+  // Case 2: caret on an element node.
   if (node.nodeType === Node.ELEMENT_NODE) {
     const el = node as HTMLElement
-    const lp = el.getAttribute("data-leaf-path")
-    if (lp) {
-      const path = JSON.parse(lp) as Path
-   const tn = el.firstChild
-      const len = tn?.textContent?.length ?? 0
-      // offset here is the index among childNodes (0 or 1 typically).
-      // We map it to the text length when offset > 0, else 0.
-      return { path, offset: offset > 0 ? len : 0 }
-    }
 
-    // Case 3: caret on a void (mention) — translate to neighbouring
-    // text leaf.
-    const vp = el.getAttribute("data-void-path")
-    if (vp) {
-      const path = JSON.parse(vp) as Path
-      // Heuristic: place caret at the START of the next leaf if offset
-      // is non-zero, else at end of previous.  But callers usually
-      // shouldn't land here; handle as best-effort.
-      return resolveAroundInline(root, path, offset > 0 ? "after" : "before")
-    }
-
-    // Case 4: caret on a block <div> between children.
-    const bp = el.getAttribute("data-block-path")
-    if (bp) {
-      const blockPath = JSON.parse(bp) as Path
-      const bi = blockPath[0] ?? 0
-      const child = el.children[offset]
-      if (child) {
-        const lp2 = child.getAttribute("data-leaf-path")
-        if (lp2) {
-          const path = JSON.parse(lp2) as Path
+    // 2a: caret inside the leaf wrapper or one of its descendants but
+    // not on a text node — resolve to the leaf's text anchor.
+    const leafAncestor = el.closest("[data-leaf-path]") as HTMLElement | null
+    if (leafAncestor) {
+      const path = JSON.parse(
+        leafAncestor.getAttribute("data-leaf-path") ?? "null"
+      ) as Path | null
+      if (path) {
+        const anchor = getLeafTextAnchor(leafAncestor)
+        if (!anchor || anchor.isZeroWidth) {
           return { path, offset: 0 }
         }
-        const vp2 = child.getAttribute("data-void-path")
-        if (vp2) {
-          const path = JSON.parse(vp2) as Path
-          return resolveAroundInline(root, path, "before")
-        }
+        const len = anchor.node.textContent?.length ?? 0
+        // offset here is index among childNodes — best-effort map to
+        // text length when offset > 0, else 0.
+        return { path, offset: offset > 0 ? len : 0 }
       }
-      // Past last child:
-      if (offset >= el.children.length && el.children.length > 0) {
-        const last = el.children[el.children.length - 1] as HTMLElement
-        const lp2 = last.getAttribute("data-leaf-path")
-        if (lp2) {
-          const path = JSON.parse(lp2) as Path
-          const tn = last.firstChild
-          return { path, offset: tn?.textContent?.length ?? 0 }
-        }
-        const vp2 = last.getAttribute("data-void-path")
-        if (vp2) {
-          const path = JSON.parse(vp2) as Path
-          return resolveAroundInline(root, path, "after")
-        }
+    }
+
+    // 2b: caret on a void (mention) — translate to neighbouring text leaf.
+    const voidAncestor = el.closest("[data-void-path]") as HTMLElement | null
+    if (voidAncestor) {
+      const path = JSON.parse(
+        voidAncestor.getAttribute("data-void-path") ?? "null"
+      ) as Path | null
+      if (path) {
+        return resolveAroundInline(root, path, offset > 0 ? "after" : "before")
       }
-      return { path: [bi, 0], offset: 0 }
+    }
+
+    // 2c: caret on a block <div> between children.
+    const blockAncestor = el.closest("[data-block-path]") as HTMLElement | null
+    if (blockAncestor && el === blockAncestor) {
+      const blockPath = JSON.parse(
+        el.getAttribute("data-block-path") ?? "null"
+      ) as Path | null
+      if (blockPath) {
+        const bi = blockPath[0] ?? 0
+        const child = el.children[offset] as HTMLElement | undefined
+        if (child) {
+          // Either a text wrapper or a void.
+          const innerLeaf = child.querySelector?.(
+            "[data-leaf-path]"
+          ) as HTMLElement | null
+          if (innerLeaf) {
+            const path = JSON.parse(
+              innerLeaf.getAttribute("data-leaf-path") ?? "null"
+            ) as Path | null
+            if (path) return { path, offset: 0 }
+          }
+          const voidPath = child.getAttribute("data-void-path")
+          if (voidPath) {
+            return resolveAroundInline(
+              root,
+              JSON.parse(voidPath) as Path,
+              "before"
+            )
+          }
+        }
+        // Past last child: anchor at end of last text leaf in block.
+        if (offset >= el.children.length && el.children.length > 0) {
+          const last = el.children[el.children.length - 1] as HTMLElement
+          const innerLeaf = last.querySelector?.(
+            "[data-leaf-path]"
+          ) as HTMLElement | null
+          if (innerLeaf) {
+            const path = JSON.parse(
+              innerLeaf.getAttribute("data-leaf-path") ?? "null"
+            ) as Path | null
+            if (path) {
+              const a = getLeafTextAnchor(innerLeaf)
+              if (!a || a.isZeroWidth) return { path, offset: 0 }
+              return { path, offset: a.node.textContent?.length ?? 0 }
+            }
+          }
+          const voidPath = last.getAttribute("data-void-path")
+          if (voidPath) {
+            return resolveAroundInline(
+              root,
+              JSON.parse(voidPath) as Path,
+              "after"
+            )
+          }
+        }
+        return { path: [bi, 0], offset: 0 }
+      }
     }
   }
 
-  // Case 5: walk up looking for a leaf/void.
+  // Case 3: walk up looking for a leaf/void.
   let cur: HTMLElement | null =
     node.nodeType === Node.TEXT_NODE
       ? (node.parentElement ?? null)
@@ -158,7 +241,9 @@ export const toModelPoint = (
     const lp = cur.getAttribute("data-leaf-path")
     if (lp) {
       const path = JSON.parse(lp) as Path
-      return { path, offset: cur.firstChild?.textContent?.length ?? 0 }
+      const a = getLeafTextAnchor(cur)
+      if (!a || a.isZeroWidth) return { path, offset: 0 }
+      return { path, offset: a.node.textContent?.length ?? 0 }
     }
     const vp = cur.getAttribute("data-void-path")
     if (vp) {
@@ -181,23 +266,36 @@ const resolveAroundInline = (
   const targetAttr = JSON.stringify(voidPath)
   const children = Array.from(block.children) as HTMLElement[]
   const idx = children.findIndex(
-    (c) => c.getAttribute("data-void-path") === targetAttr
+    (c) => c.getAttribute("data-void-path")=== targetAttr
   )
   if (idx < 0) return null
+  const findLeafIn = (el: HTMLElement) =>
+    el.querySelector?.("[data-leaf-path]") as HTMLElement | null
   if (side === "before") {
     for (let i = idx - 1; i >= 0; i--) {
-      const lp = children[i]!.getAttribute("data-leaf-path")
-      if (lp) {
-        const path = JSON.parse(lp) as Path
-        const tn = children[i]!.firstChild
-        return { path, offset: tn?.textContent?.length ?? 0 }
+      const leafEl =
+        children[i]!.getAttribute("data-leaf-path") !== null
+          ? children[i]!
+          : findLeafIn(children[i]!)
+      if (leafEl && leafEl.getAttribute("data-leaf-path")) {
+        const path = JSON.parse(
+          leafEl.getAttribute("data-leaf-path") ?? "null"
+        ) as Path
+        const a = getLeafTextAnchor(leafEl)
+        if (!a || a.isZeroWidth) return { path, offset: 0 }
+        return { path, offset: a.node.textContent?.length ?? 0 }
       }
     }
   } else {
     for (let i = idx + 1; i < children.length; i++) {
-      const lp = children[i]!.getAttribute("data-leaf-path")
-      if (lp) {
-        const path = JSON.parse(lp) as Path
+      const leafEl =
+        children[i]!.getAttribute("data-leaf-path") !== null
+          ? children[i]!
+        : findLeafIn(children[i]!)
+      if (leafEl && leafEl.getAttribute("data-leaf-path")) {
+        const path = JSON.parse(
+          leafEl.getAttribute("data-leaf-path") ?? "null"
+        ) as Path
         return { path, offset: 0 }
       }
     }

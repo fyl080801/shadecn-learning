@@ -77,7 +77,7 @@ const addRandomTile = () => {
   const emptyCells: { row: number; col: number }[] = []
   for (let i = 0; i < gridSize; i++) {
     for (let j = 0; j < gridSize; j++) {
-      if (grid.value[i][j] === 0) {
+      if (grid.value[i]?.[j] === 0) {
         emptyCells.push({ row: i, col: j })
       }
     }
@@ -155,11 +155,11 @@ const moveUp = () => {
   for (let j = 0; j < gridSize; j++) {
     let col = []
     for (let i = 0; i < gridSize; i++) {
-      col.push(grid.value[i][j])
+      col.push(grid.value[i]?.[j])
     }
     const newCol = slide(col)
     for (let i = 0; i < gridSize; i++) {
-      if (grid.value[i][j] !== newCol[i]) {
+      if (grid.value[i]?.[j] !== newCol[i]) {
         moved = true
       }
       grid.value[i][j] = newCol[i]
@@ -173,11 +173,11 @@ const moveDown = () => {
   for (let j = 0; j < gridSize; j++) {
     let col = []
     for (let i = 0; i < gridSize; i++) {
-      col.push(grid.value[i][j])
+      col.push(grid.value[i]?.[j])
     }
     const newCol = slide(col.reverse()).reverse()
     for (let i = 0; i < gridSize; i++) {
-      if (grid.value[i][j] !== newCol[i]) {
+      if (grid.value[i]?.[j] !== newCol[i]) {
         moved = true
       }
       grid.value[i][j] = newCol[i]
@@ -191,14 +191,14 @@ const checkGameOver = () => {
   // 检查是否有空格
   for (let i = 0; i < gridSize; i++) {
     for (let j = 0; j < gridSize; j++) {
-      if (grid.value[i][j] === 0) return false
+      if (grid.value[i]?.[j] === 0) return false
     }
   }
   // 检查是否有可合并的相邻方块
   for (let i = 0; i < gridSize; i++) {
     for (let j = 0; j < gridSize; j++) {
-      if (j < gridSize - 1 && grid.value[i][j] === grid.value[i][j + 1]) return false
-      if (i < gridSize - 1 && grid.value[i][j] === grid.value[i + 1][j]) return false
+      if (j < gridSize - 1 && grid.value[i]?.[j] === grid.value[i]?.[j + 1]) return false
+      if (i < gridSize - 1 && grid.value[i]?.[j] === grid.value[i + 1]?.[j]) return false
     }
   }
   return true
@@ -260,33 +260,6 @@ const handleKeydown = (e: KeyboardEvent) => {
       e.preventDefault()
       handleMove('down')
       break
-  }
-}
-
-// 触摸事件处理
-let touchStartX = 0
-let touchStartY = 0
-
-const handleTouchStart = (e: TouchEvent) => {
-  touchStartX = e.touches[0].clientX
-  touchStartY = e.touches[0].clientY
-}
-
-const handleTouchEnd = (e: TouchEvent) => {
-  const touchEndX = e.changedTouches[0].clientX
-  const touchEndY = e.changedTouches[0].clientY
-  const diffX = touchEndX - touchStartX
-  const diffY = touchEndY - touchStartY
-  const minSwipeDistance = 50
-
-  if (Math.abs(diffX) > Math.abs(diffY)) {
-    if (Math.abs(diffX) > minSwipeDistance) {
-      handleMove(diffX > 0 ? 'right' : 'left')
-    }
-  } else {
-    if (Math.abs(diffY) > minSwipeDistance) {
-      handleMove(diffY > 0 ? 'down' : 'up')
-    }
   }
 }
 

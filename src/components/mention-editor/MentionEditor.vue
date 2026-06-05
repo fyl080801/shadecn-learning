@@ -2,18 +2,30 @@
 /**
  * MentionEditor — Vue analogue of Slate's <Slate> + <Editable>.
  *
- * Design:
+ * Design (mirrors slate-react's DOM exactly):
  *   - The `editor` is the single source of truth.
- *   - Text leaves are rendered with Vue templates (no manual textNode
- *     manipulation).  They wear `white-space: pre-wrap` so trailing
- *     spaces survive.
+ *   - Each block paragraph renders as:
+ *       <div data-slate-node="element" data-block-path="[bi]">
+ *         ...children...
+ *       </div>
+ *   - Each text leaf renders as:
+ *       <span data-slate-node="text">
+ *         <span data-slate-leaf="true" data-leaf-path="[bi,ii]">
+ *           <span data-slate-string="true">text</span>     ← when non-empty
+ *           OR
+ *           <span data-slate-zero-width="z|n" data-slate-length="0">
+ *             ﻿ (U+FEFF)
+ *             <br/>  ← only when this is an empty block's only leaf
+ *           </span>
+ *         </span>
+ *       </span>
  *   - Mentions are inline voids; the caret never lives inside them
  *     (it lives in the surrounding empty text leaves the normalizer
  *     guarantees).
- *   - On every `editor.revision` bump we re-apply the model selection
- *     to the DOM after Vue has re-rendered.
- *   - The `isUpdatingSelection` flag suppresses the bounce-back from
- *     the document `selectionchange` event during applyDOMRange.
+ *
+ * The zero-width FEFF + <br> in empty paragraphs is what gives the
+ * empty paragraph a visible height in the browser; without it, hitting
+ * Enter at the end of the document looks like "nothing happened".
  */
 import {
   computed,
@@ -223,7 +235,9 @@ const syncCurrentLeafFromDOM = (): void => {
     const pathAttr = cur.getAttribute("data-leaf-path")
     if (pathAttr) {
       const path = JSON.parse(pathAttr) as number[]
-      const textNode = cur.firstChild
+      // The text content lives inside the inner [data-slate-string] span.
+      const stringEl = cur.querySelector<HTMLElement>("[data-slate-string]")
+      const textNode = stringEl?.firstChild
       if (textNode && textNode.textContent != null) {
         const leaf = getText(props.editor, path)
         if (leaf && leaf.text !== textNode.textContent) {
@@ -271,6 +285,18 @@ const onPaste = (e: ClipboardEvent): void => {
 const isMention = (n: Descendant): n is Mention =>
   "type" in n && n.type === "mention"
 
+const isParaEmpty = (block: Paragraph): boolean => {
+  // A paragraph is "empty" if it contains no mentions and the only
+  // text leaf has empty text (slate uses this to render the line
+  // break placeholder so the empty line keeps its height).
+  const c = block.children
+  if (c.length === 1) {
+    const only = c[0]
+    return !!only && !("children" in only) && (only as { text: string }).text === ""
+  }
+  return false
+}
+
 const elementAttrs = (path: number[]) => ({
   "data-slate-node": "element",
   "data-slate-inline": "true",
@@ -285,11 +311,7 @@ const isDocumentEmpty = computed(() => {
   const block = c[0]
   if (!block || !("children" in block)) return false
   const p = block as Paragraph
-  if (p.children.length === 0) return true
-  if (p.children.length > 1) return false
-  const only = p.children[0]
-  if (!only || "children" in only) return false
-  return (only as { text: string }).text === ""
+  return isParaEmpty(p)
 })
 
 defineExpose({
@@ -305,6 +327,8 @@ defineExpose({
     contenteditable="true"
     spellcheck="false"
     data-cy="mention-editor"
+    data-slate-editor="true"
+    data-slate-node="value"
     :data-placeholder="placeholder"
     :class="[
       'min-h-40 w-full rounded-md border border-input bg-background p-3 text-sm leading-7',
@@ -344,12 +368,37 @@ defineExpose({
             :element="child"
           />
         </slot>
+        <!-- Text leaf: slate-style nested wrappers.
+             - Empty leaf in an empty paragraph  → zero-width "n" + <br>
+             - Empty leaf next to/around an inline → zero-width "z"
+             - Non-empty leaf                     → data-slate-string  -->
         <span
           v-else
-          :data-slate-leaf="'true'"
-          :data-leaf-path="JSON.stringify([bi, ci])"
-          style="white-space: pre-wrap;"
-        >{{ (child as { text: string }).text }}</span>
+          data-slate-node="text"
+        >
+          <span
+            data-slate-leaf="true"
+            :data-leaf-path="JSON.stringify([bi, ci])"
+          >
+            <template v-if="(child as { text: string }).text === ''">
+              <span
+                v-if="isParaEmpty(block as Paragraph)"
+                data-slate-zero-width="n"
+                data-slate-length="0"
+              >&#xFEFF;<br /></span>
+              <span
+                v-else
+                data-slate-zero-width="z"
+                data-slate-length="0"
+              >&#xFEFF;</span>
+            </template>
+            <span
+              v-else
+              data-slate-string="true"
+              style="white-space: pre-wrap;"
+            >{{ (child as { text: string }).text }}</span>
+          </span>
+        </span>
       </template>
     </div>
   </div>
