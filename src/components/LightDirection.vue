@@ -79,12 +79,21 @@ let isSnapping = false
 let snapTargetTheta = 0
 let snapTargetPhi = Math.PI / 2
 const SNAP_LONGITUDES = [
-  0, Math.PI / 4, Math.PI / 2, (3 * Math.PI) / 4,
-  Math.PI, (5 * Math.PI) / 4, (3 * Math.PI) / 2, (7 * Math.PI) / 4
+  0,
+  Math.PI / 4,
+  Math.PI / 2,
+  (3 * Math.PI) / 4,
+  Math.PI,
+  (5 * Math.PI) / 4,
+  (3 * Math.PI) / 2,
+  (7 * Math.PI) / 4
 ]
 const SNAP_LATITUDES = [Math.PI / 4, Math.PI / 2, (3 * Math.PI) / 4]
 
-function findNearestSnapPoint(currentTheta: number, currentPhi: number): { theta: number; phi: number } {
+function findNearestSnapPoint(
+  currentTheta: number,
+  currentPhi: number
+): { theta: number; phi: number } {
   const currentPos = sphericalToPosition(currentTheta, currentPhi)
   let minDist = Infinity
   let bestTheta = currentTheta
@@ -103,8 +112,12 @@ function findNearestSnapPoint(currentTheta: number, currentPhi: number): { theta
   }
 
   // Check poles
-  const northDist = new THREE.Vector3(0, SPHERE_RADIUS, 0).distanceTo(currentPos)
-  const southDist = new THREE.Vector3(0, -SPHERE_RADIUS, 0).distanceTo(currentPos)
+  const northDist = new THREE.Vector3(0, SPHERE_RADIUS, 0).distanceTo(
+    currentPos
+  )
+  const southDist = new THREE.Vector3(0, -SPHERE_RADIUS, 0).distanceTo(
+    currentPos
+  )
   if (northDist < minDist) {
     bestTheta = currentTheta
     bestPhi = 0.05
@@ -143,9 +156,9 @@ function updatePointPosition() {
     p.mesh.position.copy(pos)
     p.glow.position.copy(pos)
     const mat = p.mesh.material as THREE.ShaderMaterial
-    mat.uniforms.uLightDir!.value.copy(lightDir)
+    mat.uniforms.uLightDir?.value.copy(lightDir)
     const glowMat = p.glow.material as THREE.ShaderMaterial
-    glowMat.uniforms.uLightDir!.value.copy(lightDir)
+    glowMat.uniforms.uLightDir?.value.copy(lightDir)
   }
 
   // Update cone position and orientation to follow the drag point
@@ -381,7 +394,9 @@ function init() {
     const latPoints: THREE.Vector3[] = []
     for (let i = 0; i <= equatorSegments; i++) {
       const angle = (i / equatorSegments) * Math.PI * 2
-      latPoints.push(new THREE.Vector3(r * Math.cos(angle), y, r * Math.sin(angle)))
+      latPoints.push(
+        new THREE.Vector3(r * Math.cos(angle), y, r * Math.sin(angle))
+      )
     }
     createGridLine(latPoints)
   }
@@ -390,8 +405,14 @@ function init() {
   const dotRadius = 0.05
   const dotGeometry = new THREE.SphereGeometry(dotRadius, 16, 16)
   const gridLongitudes = [
-    0, Math.PI / 4, Math.PI / 2, (3 * Math.PI) / 4,
-    Math.PI, (5 * Math.PI) / 4, (3 * Math.PI) / 2, (7 * Math.PI) / 4
+    0,
+    Math.PI / 4,
+    Math.PI / 2,
+    (3 * Math.PI) / 4,
+    Math.PI,
+    (5 * Math.PI) / 4,
+    (3 * Math.PI) / 2,
+    (7 * Math.PI) / 4
   ]
   const gridLatitudes = [Math.PI / 4, Math.PI / 2, (3 * Math.PI) / 4]
 
@@ -435,8 +456,8 @@ function init() {
   }
 
   // Pole dots
-  createDot(new THREE.Vector3(0, SPHERE_RADIUS, 0))        // north pole
-  createDot(new THREE.Vector3(0, -SPHERE_RADIUS, 0))       // south pole
+  createDot(new THREE.Vector3(0, SPHERE_RADIUS, 0)) // north pole
+  createDot(new THREE.Vector3(0, -SPHERE_RADIUS, 0)) // south pole
 
   // Reference rectangle in the center
   const rectWidth = 1.6
@@ -609,22 +630,6 @@ function createDragPoint() {
   points.push({ mesh, glow })
 }
 
-function createAxisLine(
-  start: THREE.Vector3,
-  end: THREE.Vector3,
-  color: number
-) {
-  const material = new THREE.LineBasicMaterial({
-    color,
-    transparent: true,
-    opacity: 0.3
-  })
-  const geometry = new THREE.BufferGeometry().setFromPoints([start, end])
-  const line = new THREE.Line(geometry, material)
-  scene.add(line)
-  return line
-}
-
 function animate() {
   animationId = requestAnimationFrame(animate)
 
@@ -642,7 +647,7 @@ function animate() {
   // Sphere fades when dragging (light focused), bright when idle
   const sphereAlpha = isDragging.value ? 0.3 : 1.0
   sphereMaterial.uniforms.uAlphaScale!.value +=
-    (sphereAlpha - sphereMaterial.uniforms.uAlphaScale!.value) * 0.08
+    (sphereAlpha - sphereMaterial.uniforms.uAlphaScale?.value) * 0.08
 
   for (const p of points) {
     const glowMat = p.glow.material as THREE.ShaderMaterial
@@ -652,20 +657,24 @@ function animate() {
   // Update grid lines and dots with current light position
   const lightPos = pointLight.position
   for (const mat of gridLineMaterials) {
-    mat.uniforms.uLightPos!.value.copy(lightPos)
+    mat.uniforms.uLightPos?.value.copy(lightPos)
   }
   for (const mat of dotMaterials) {
-    mat.uniforms.uLightPos!.value.copy(lightPos)
+    mat.uniforms.uLightPos?.value.copy(lightPos)
   }
 
   // Snap animation: lerp toward nearest grid point
   if (isSnapping) {
     let thetaDiff = snapTargetTheta - pointTheta.value
-    thetaDiff = ((thetaDiff % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI) - Math.PI
+    thetaDiff =
+      (((thetaDiff % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI)) - Math.PI
     pointTheta.value += thetaDiff * 0.15
     pointPhi.value += (snapTargetPhi - pointPhi.value) * 0.15
 
-    if (Math.abs(thetaDiff) < 0.001 && Math.abs(snapTargetPhi - pointPhi.value) < 0.001) {
+    if (
+      Math.abs(thetaDiff) < 0.001 &&
+      Math.abs(snapTargetPhi - pointPhi.value) < 0.001
+    ) {
       pointTheta.value = snapTargetTheta
       pointPhi.value = snapTargetPhi
       isSnapping = false

@@ -169,7 +169,8 @@ function getPointProjection() {
   // theta=0 时点朝向屏幕前方（z负方向），偏移 -π/2
   const x3d = r * Math.sin(pointPhi.value) * Math.sin(pointTheta.value) * factor
   const y3d = r * Math.cos(pointPhi.value) * factor
-  const z3d = -r * Math.sin(pointPhi.value) * Math.cos(pointTheta.value) * factor
+  const z3d =
+    -r * Math.sin(pointPhi.value) * Math.cos(pointTheta.value) * factor
   const rot = rotatePoint(
     x3d,
     y3d,
@@ -602,7 +603,10 @@ function drawPoint(
 function updateRotation(deltaX: number, deltaY: number) {
   pointTheta.value += deltaX * props.moveSpeed
   // 将 theta 归一化到 [-π, π] 范围，避免数值持续增长
-  pointTheta.value = Math.atan2(Math.sin(pointTheta.value), Math.cos(pointTheta.value))
+  pointTheta.value = Math.atan2(
+    Math.sin(pointTheta.value),
+    Math.cos(pointTheta.value)
+  )
   const newPhi = pointPhi.value - deltaY * props.moveSpeed
   pointPhi.value = Math.max(
     phiLimits.value.min,
