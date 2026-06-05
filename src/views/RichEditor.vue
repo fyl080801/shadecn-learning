@@ -38,10 +38,10 @@ import {
   initializeEditor,
   toDOMRange,
   characterSource
-} from "@/components/mention-editor"
-import MentionEditor from "@/components/mention-editor/MentionEditor.vue"
-import MentionElement from "@/components/mention-editor/MentionElement.vue"
-import type { Descendant, RangeType } from "@/components/mention-editor"
+} from "@/components/prompt-input"
+import MentionEditor from "@/components/prompt-input/MentionEditor.vue"
+import MentionElement from "@/components/prompt-input/MentionElement.vue"
+import type { Descendant, RangeType } from "@/components/prompt-input"
 
 // --- editor instance (mimic React's useMemo) ----------------------------
 const editor = withMentions(withHistory(withReact(createEditor())))
