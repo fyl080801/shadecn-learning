@@ -1,19 +1,18 @@
 <script setup lang="ts">
 /**
- * RichEditor — Vue port of Slate's `mentions.tsx` example.
+ * RichEditor — Vue port of Slate's `mentions.tsx` example, refactored to
+ * exercise the plugin-based PromptInput API.  Read this file top-to-bottom
+ * and you should still recognise the original Slate flow.
  *
- * Read this file top-to-bottom and you should recognise every line from
- * https://github.com/ianstormtaylor/slate/blob/main/site/examples/ts/mentions.tsx
- *
- * Differences:
- *   - `useMemo` / `useState` / `useRef` become `ref` / `computed` / `ref`
- *   - `withReact(withHistory(createEditor()))` becomes
- *     `withMentions(withHistory(withReact(createEditor())))`
- *   - `ReactEditor.toDOMRange` becomes our `toDOMRange(editor, range)`
- *   - `<Portal>` is `<Teleport to="body">`
- *   - JSX is Vue's `<template>` syntax
+ * Differences from the React example:
+ *   - The editor is built with `createEditor({ plugins })` and plugins
+ *     are registered through `addPlugin`.
+ *   - "Mention" is no longer baked into the editor; it is just a plugin
+ *     authored here in the view layer.
+ *   - The popover renders inside `<PromptInput #portal:mention>` and is
+ *     fully controlled by this view; the editor only positions it.
  */
-import { computed, onMounted, ref, watch, nextTick } from "vue"
+import { computed, onMounted, ref } from "vue"
 import {
   Card,
   CardContent,
@@ -25,139 +24,101 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import {
+  PromptInput,
   createEditor,
-  withHistory,
-  withReact,
-  withMentions,
-  createText,
-  createMention,
-  createParagraph,
-  Editor,
-  Range,
-  Transforms,
+  definePlugin,
   initializeEditor,
-  toDOMRange,
-  characterSource
+  characterSource,
+  createText,
+  createInline,
+  createParagraph
 } from "@/components/prompt-input"
-import MentionEditor from "@/components/prompt-input/MentionEditor.vue"
-import MentionElement from "@/components/prompt-input/MentionElement.vue"
-import type { Descendant, RangeType } from "@/components/prompt-input"
+import type {
+  Descendant,
+  CustomInline,
+  TriggerContext,
+  MentionItem
+} from "@/components/prompt-input"
 
-// --- editor instance (mimic React's useMemo) ----------------------------
-const editor = withMentions(withHistory(withReact(createEditor())))
+// --- mention plugin (lives entirely in the view layer) -----------------
 
-// --- trigger state (mimic React's useState) ----------------------------
-const target = ref<RangeType | null>(null)
+// Local UI state for the mention popover; `definePlugin.onKeyDown` reads
+// these refs to drive ↑/↓/Tab/Enter navigation.
 const search = ref("")
 const index = ref(0)
-const popupStyle = ref({ top: "-9999px", left: "-9999px" })
-const popupEl = ref<HTMLElement | null>(null)
-
-// --- mention data --------------------------------------------------------
-const chars = computed(() => characterSource(search.value).slice(0, 10))
-
-// --- onChange — detect the @xxx trigger --------------------------------
-// 1:1 port of the React example's onChange:
-const onChange = (): void => {
-  const { selection } = editor
-  if (selection && Range.isCollapsed(selection)) {
-    const [start] = Range.edges(selection)
-    const wordBefore = Editor.before(editor, start, { unit: "word" })
-    const before = wordBefore && Editor.before(editor, wordBefore)
-    const beforeRange = before && Editor.range(editor, before, start)
-    const beforeText = beforeRange && Editor.string(editor, beforeRange)
-    const beforeMatch = beforeText && beforeText.match(/^@(\w*)$/)
-    const after = Editor.after(editor, start)
-    const afterRange = Editor.range(editor, start, after)
-    const afterText = Editor.string(editor, afterRange)
-    const afterMatch = afterText.match(/^(\s|$)/)
-    if (beforeMatch && afterMatch) {
-      target.value = beforeRange
-      search.value = beforeMatch[1] ?? ""
-      index.value = 0
-      return
-    }
-  }
-  target.value = null
-}
-
-// --- onKeyDown — handle arrow / Tab / Enter / Esc ---------------------
-const onKeyDown = (event: KeyboardEvent): void => {
-  if (target.value && chars.value.length > 0) {
-    switch (event.key) {
-      case "ArrowDown": {
-        event.preventDefault()
-        const prev = index.value >= chars.value.length - 1 ? 0 : index.value + 1
-        index.value = prev
-        break
-      }
-      case "ArrowUp": {
-        event.preventDefault()
-        const next = index.value <= 0 ? chars.value.length - 1 : index.value - 1
-        index.value = next
-        break
-      }
-      case "Tab":
-      case "Enter": {
-        event.preventDefault()
-        Transforms.select(editor, target.value)
-        insertMention(chars.value[index.value]!.character)
-        target.value = null
-        break
-      }
-      case "Escape": {
-        event.preventDefault()
-        target.value = null
-        break
-      }
-    }
-    return
-  }
-  // Popup is closed — handle Enter as a block break.
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault()
-    Transforms.splitBlock(editor)
-  }
-}
-
-// --- popup positioning (mimic React's useEffect) ------------------------
-watch(
-  [
-    () => chars.value.length,
-    () => search.value,
-    () => target.value,
-    () => index.value
-  ],
-  async () => {
-    await nextTick()
-    if (target.value && chars.value.length > 0 && popupEl.value) {
-      const root = document.querySelector<HTMLElement>(
-        '[data-cy="mention-editor"]'
-      )
-      if (!root) return
-      const domRange = toDOMRange(root, target.value)
-      if (!domRange) return
-      const rect = domRange.getBoundingClientRect()
-      popupStyle.value = {
-        top: `${rect.top + window.pageYOffset + 24}px`,
-        left: `${rect.left + window.pageXOffset}px`
-      }
-    }
-  },
-  { immediate: true, flush: "post" }
+const chars = computed<MentionItem[]>(() =>
+  characterSource(search.value).slice(0, 10)
 )
 
-// --- mention operations -------------------------------------------------
-const insertMention = (character: string): void => {
-  // Use the character's slug as the id so the demo can find the chip
-  // deterministically.  Slate assigns a random id; we don't expose that
-  // here because the consumer doesn't need it.
-  const mention = createMention(character)
-  Transforms.insertNodes(editor, mention)
-  Transforms.move(editor)
+const mentionPlugin = definePlugin({
+  name: "mention",
+  trigger: { key: "@" },
+  inline: { type: "mention" },
+  onKeyDown(e, _ctx) {
+    if (chars.value.length === 0) return false
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault()
+        index.value =
+          index.value >= chars.value.length - 1 ? 0 : index.value + 1
+        return true
+      case "ArrowUp":
+        e.preventDefault()
+        index.value =
+          index.value <= 0 ? chars.value.length - 1 : index.value - 1
+        return true
+      case "Tab":
+      case "Enter": {
+        e.preventDefault()
+        const pick = chars.value[index.value]
+        if (pick) commitPick(pick)
+        return true
+      }
+    }
+    return false
+  }
+})
+
+// --- editor instance ---------------------------------------------------
+
+const { editor, addPlugin } = createEditor({ plugins: [mentionPlugin] })
+// Demonstrate that `addPlugin` is also available post-construction:
+void addPlugin
+
+// --- popover commit ----------------------------------------------------
+
+let _commitFn: ((p: { data: unknown }) => void) | null = null
+const setCommitFn = (fn: (p: { data: unknown }) => void): void => {
+  _commitFn = fn
 }
 
-// --- initial value (mirror Slate's example) ----------------------------
+const commitPick = (item: MentionItem): void => {
+  // Persist the full data payload on the inline node so the renderer can
+  // show whatever fields it needs.
+  _commitFn?.({ data: item })
+  search.value = ""
+  index.value = 0
+}
+
+// --- trigger lifecycle ------------------------------------------------
+
+const onTriggerOpen = (ctx: TriggerContext): void => {
+  search.value = ctx.search
+  index.value = 0
+}
+
+const onTriggerSearch = (ctx: TriggerContext): void => {
+  search.value = ctx.search
+  index.value = 0
+}
+
+const onTriggerClose = (): void => {
+  search.value = ""
+  index.value = 0
+}
+
+// --- initial value -----------------------------------------------------
+
 const initialValue: Descendant[] = [
   createParagraph([
     createText("This example shows how you might implement a simple "),
@@ -173,27 +134,30 @@ const initialValue: Descendant[] = [
   ]),
   createParagraph([
     createText("Try mentioning characters, like "),
-    createMention("R2-D2"),
+    createInline("mention", {
+      id: "r2-d2",
+      character: "R2-D2"
+    } satisfies MentionItem),
     createText(" or "),
-    createMention("Mace Windu"),
+    createInline("mention", {
+      id: "mace-windu",
+      character: "Mace Windu"
+    } satisfies MentionItem),
     createText("!")
   ])
 ]
 
-// --- demo controls ------------------------------------------------------
 const reset = (): void => {
   initializeEditor(editor, initialValue)
-  target.value = null
-  search.value = ""
-  index.value = 0
 }
 
 onMounted(() => {
-  // The MentionEditor component runs initializeEditor itself on mount; this
-  // is here in case the user clicks Reset before focusing the editor.
+  // PromptInput runs initializeEditor itself on mount; this is here in case
+  // the user clicks Reset before focusing the editor.
 })
 
 // --- mentions for the side panel ---------------------------------------
+
 const modelMentions = computed(() => {
   const out: Array<{ id: string; character: string }> = []
   for (const block of editor.children as Descendant[]) {
@@ -203,8 +167,11 @@ const modelMentions = computed(() => {
           "children" in child &&
           (child as { type?: string }).type === "mention"
         ) {
-          const m = child as { character: string; id?: string }
-          out.push({ id: m.id ?? m.character, character: m.character })
+          const m = child as CustomInline & { character?: string }
+          const data = (m.data ?? {}) as Partial<MentionItem>
+          const character = data.character ?? m.character ?? ""
+          const id = data.id ?? character
+          out.push({ id, character })
         }
       }
     }
@@ -217,7 +184,7 @@ const modelMentions = computed(() => {
   <div class="container mx-auto max-w-6xl space-y-6 p-6">
     <header class="space-y-2">
       <h1 class="text-2xl font-semibold tracking-tight">
-        Rich Editor · @ Mentions
+        Rich Editor · @ Mentions（Plugin API）
       </h1>
       <p class="text-sm text-muted-foreground">
         Vue 3 port of
@@ -225,10 +192,9 @@ const modelMentions = computed(() => {
           href="https://github.com/ianstormtaylor/slate/blob/main/site/examples/ts/mentions.tsx"
           target="_blank"
           class="underline"
-          >slate/site/examples/ts/mentions.tsx</a
-        >. Input
-        <code class="rounded bg-muted px-1.5 py-0.5 text-xs">@</code> to
-        trigger, ↑/↓ to navigate, Enter/Tab to pick, Esc to dismiss.
+        >slate/site/examples/ts/mentions.tsx</a>. 输入
+        <code class="rounded bg-muted px-1.5 py-0.5 text-xs">@</code> 触发，
+        ↑/↓ 导航，Enter/Tab 选中，Esc 关闭。
       </p>
     </header>
 
@@ -239,7 +205,7 @@ const modelMentions = computed(() => {
             <div>
               <CardTitle>Editor</CardTitle>
               <CardDescription>
-                data-cy="mention-editor" — focus & start typing
+                data-cy="prompt-input" — focus & start typing
               </CardDescription>
             </div>
             <div class="flex items-center gap-2">
@@ -251,16 +217,78 @@ const modelMentions = computed(() => {
           </div>
         </CardHeader>
         <CardContent>
-          <MentionEditor
+          <PromptInput
             :editor="editor"
             :initial-value="initialValue"
-            @change="onChange"
-            @keydown="onKeyDown"
+            @trigger-open="onTriggerOpen"
+            @trigger-search="onTriggerSearch"
+            @trigger-close="onTriggerClose"
           >
-            <template #element="{ attributes, element }">
-              <MentionElement :attributes="attributes" :element="element" />
+            <!-- inline node renderer keyed by plugin name -->
+            <template #element:mention="{ element, attributes }">
+              <span
+                v-bind="attributes"
+                contenteditable="false"
+                :style="{
+                  padding: '3px 3px 2px',
+                  margin: '0 1px',
+                  verticalAlign: 'baseline',
+                  display: 'inline-block',
+                  borderRadius: '4px',
+                  backgroundColor: '#eee',
+                  fontSize: '0.9em'
+                }"
+              >
+                @{{
+                  ((element as CustomInline).data as MentionItem | undefined)
+                    ?.character ?? (element as CustomInline).character
+                }}
+              </span>
             </template>
-          </MentionEditor>
+
+            <!-- popover content keyed by plugin name -->
+            <template #portal:mention="{ commit, close }">
+              <!-- Capture commit so `onKeyDown` (running outside the slot
+                   scope) can apply selection too. -->
+              <template
+                v-if="(setCommitFn(commit as (p: { data: unknown }) => void), true)"
+              />
+              <div
+                :style="{
+                  padding: '3px',
+                  background: 'white',
+                  borderRadius: '4px',
+                  boxShadow: '0 1px 5px rgba(0,0,0,.2)'
+                }"
+              >
+                <div
+                  v-if="chars.length === 0"
+                  class="px-2 py-1 text-xs text-muted-foreground"
+                >
+                  无匹配
+                </div>
+                <div
+                  v-for="(char, i) in chars"
+                  :key="char.id"
+                  :style="{
+                    padding: '1px 6px',
+                    borderRadius: '3px',
+                    cursor: 'pointer',
+                    background: i === index ? '#B4D5FF' : 'transparent'
+                  }"
+                  @click="
+                    () => {
+                      commit({ data: char })
+                      close()
+                    }
+                  "
+                  @mouseenter="index = i"
+                >
+                  {{ char.character }}
+                </div>
+              </div>
+            </template>
+          </PromptInput>
         </CardContent>
       </Card>
 
@@ -312,45 +340,5 @@ const modelMentions = computed(() => {
         </CardContent>
       </Card>
     </div>
-
-    <!-- Popup — mirrors Slate's <Portal> -->
-    <Teleport to="body">
-      <div
-        v-if="target && chars.length > 0"
-        ref="popupEl"
-        data-cy="mentions-portal"
-        :style="{
-          position: 'absolute',
-          top: popupStyle.top,
-          left: popupStyle.left,
-          zIndex: 1000,
-          padding: '3px',
-          background: 'white',
-          borderRadius: '4px',
-          boxShadow: '0 1px 5px rgba(0,0,0,.2)'
-        }"
-        @mousedown.prevent
-      >
-        <div
-          v-for="(char, i) in chars"
-          :key="char.id"
-          :style="{
-            padding: '1px 3px',
-            borderRadius: '3px',
-            cursor: 'pointer',
-            background: i === index ? '#B4D5FF' : 'transparent'
-          }"
-          @click="
-            () => {
-              Transforms.select(editor, target!)
-              insertMention(char.character)
-              target = null
-            }
-          "
-        >
-          {{ char.character }}
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>

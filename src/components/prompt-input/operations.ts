@@ -25,8 +25,10 @@ import type {
   Point,
   Range as RangeType,
   Mention,
+  CustomInline,
   CustomText,
-  Paragraph
+  Paragraph,
+  PromptPlugin
 } from "./types"
 
 // ---------- type guards -------------------------------------------------
@@ -34,8 +36,13 @@ import type {
 const isCustomText = (n: Descendant | undefined | null): n is CustomText =>
   !!n && !("children" in n)
 
-const isMention = (n: Descendant | undefined | null): n is Mention =>
-  !!n && "children" in n && (n as { type?: string }).type === "mention"
+const isInlineNode = (
+  n: Descendant | undefined | null
+): n is CustomInline =>
+  !!n &&
+  "children" in n &&
+  (n as { type?: string }).type !== undefined &&
+  (n as { type?: string }).type !== "paragraph"
 
 const isParagraph = (n: Descendant | undefined | null): n is Paragraph =>
   !!n && "children" in n && (n as { type?: string }).type === "paragraph"
@@ -220,14 +227,14 @@ export const Editor = {
 /**
  * Normalize the children of a paragraph:
  *  - Ensure first/last child is a text leaf
- *  - Ensure adjacent mentions have a text leaf between them
+ *  - Ensure adjacent inline-void elements have a text leaf between them
  *  - Merge adjacent text leaves
  *  - Ensure at least one text leaf exists
  */
 const normalizeParagraphChildren = (
-  children: Array<CustomText | Mention>
-): Array<CustomText | Mention> => {
-  const out: Array<CustomText | Mention> = []
+  children: Array<CustomText | CustomInline>
+): Array<CustomText | CustomInline> => {
+  const out: Array<CustomText | CustomInline> = []
   for (const c of children) {
     if (isCustomText(c)) {
       const last = out[out.length - 1]
@@ -237,22 +244,22 @@ const normalizeParagraphChildren = (
       } else {
         out.push({ ...c })
       }
-    } else if (isMention(c)) {
+    } else if (isInlineNode(c)) {
       const last = out[out.length - 1]
-      // Ensure there's a text leaf before the mention
-      if (!last || isMention(last)) {
+      // Ensure there's a text leaf before the inline element
+      if (!last || isInlineNode(last)) {
         out.push({ text: "" })
       }
       out.push(c)
     }
   }
   // Ensure first child is text
-  if (out.length === 0 || isMention(out[0]!)) {
+  if (out.length === 0 || isInlineNode(out[0]!)) {
     out.unshift({ text: "" })
   }
   // Ensure last child is text
   const last = out[out.length - 1]
-  if (!last || isMention(last)) {
+  if (!last || isInlineNode(last)) {
     out.push({ text: "" })
   }
   return out
@@ -355,7 +362,7 @@ const replaceLeafText = (
 const replaceBlockChildren = (
   children: Descendant[],
   blockIdx: number,
-  newBlockChildren: Array<CustomText | Mention>
+  newBlockChildren: Array<CustomText | CustomInline>
 ): Descendant[] => {
   return children.map((b, i) =>
     i === blockIdx ? ({ ...b, children: newBlockChildren } as Paragraph) : b
@@ -448,7 +455,7 @@ const deleteRange = (editor: EditorType, range: RangeType): void => {
       newChildren.push(block)
       continue
     }
-    const newInlines: Array<CustomText | Mention> = []
+    const newInlines: Array<CustomText | CustomInline> = []
     for (let ii = 0; ii < block.children.length; ii++) {
       const inline = block.children[ii]
       if (!inline) continue
@@ -531,9 +538,9 @@ const EditorDeleteBackward = (editor: EditorType): void => {
 
   // Caret at offset 0 of a text leaf:
   if (at.offset === 0) {
-    // If previous sibling is a mention (inline void), drop it.
+    // If previous sibling is an inline-void element, drop it.
     const prev = block.children[inlineIdx - 1]
-    if (isMention(prev)) {
+    if (isInlineNode(prev)) {
       const newChildren = dropChild(editor.children, [blockIdx, inlineIdx - 1])
       // After dropping the mention, normalization will merge the
       // surrounding empty text leaves.  Land caret at the merged leaf.
@@ -639,9 +646,9 @@ const EditorDeleteForward = (editor: EditorType): void => {
   }
 
   // Caret at end of current text leaf:
-  // If next sibling is a mention, drop it.
+  // If next sibling is an inline-void element, drop it.
   const next = block.children[inlineIdx + 1]
-  if (isMention(next)) {
+  if (isInlineNode(next)) {
     const newChildren = dropChild(editor.children, [blockIdx, inlineIdx + 1])
     // Normalization will merge the current and following text leaves;
     // caret stays at end of current text leaf (which becomes start +
@@ -714,7 +721,7 @@ const mergeWithPrevious = (editor: EditorType): void => {
       joinOffset = (prevBlock.children[i] as CustomText).text.length
     }
   }
-  const newPrevChildren: Array<CustomText | Mention> = [
+  const newPrevChildren: Array<CustomText | CustomInline> = [
     ...prevBlock.children,
     ...curBlock.children
   ]
@@ -756,7 +763,7 @@ const mergeWithNext = (editor: EditorType): void => {
     }
   }
 
-  const newCurChildren: Array<CustomText | Mention> = [
+  const newCurChildren: Array<CustomText | CustomInline> = [
     ...curBlock.children,
     ...nextBlock.children
   ]
@@ -793,11 +800,11 @@ const EditorSplitBlock = (editor: EditorType): void => {
   // (after the split).  Keep all inlines before inlineIdx in the
   // current block; split the leaf at inlineIdx; everything after
   // inlineIdx goes to the new block.
-  const newCurChildren: Array<CustomText | Mention> = [
+  const newCurChildren: Array<CustomText | CustomInline> = [
     ...block.children.slice(0, inlineIdx),
     { text:beforeText }
   ]
-  const newBlockChildren: Array<CustomText | Mention> = [
+  const newBlockChildren: Array<CustomText | CustomInline> = [
     { text: afterText },
     ...block.children.slice(inlineIdx + 1)
   ]
@@ -849,16 +856,16 @@ export const Transforms = {
     const offset = at.offset
     const leaf = block.children[inlineIdx]
 
-    // Insert a single mention node at the caret.
-    if (list.length === 1 && isMention(list[0]!)) {
-      const mention = list[0] as Mention
+    // Insert a single inline-void node at the caret.
+    if (list.length === 1 && isInlineNode(list[0]!)) {
+      const inlineNode = list[0] as CustomInline
       if (isCustomText(leaf)) {
         const before: CustomText = { text: leaf.text.slice(0, offset) }
         const after: CustomText = { text: leaf.text.slice(offset) }
-        const newBlockChildren: Array<CustomText | Mention> = [
+        const newBlockChildren: Array<CustomText | CustomInline> = [
           ...block.children.slice(0, inlineIdx),
           before,
-          mention,
+          inlineNode,
           after,
           ...block.children.slice(inlineIdx + 1)
         ]
@@ -868,12 +875,7 @@ export const Transforms = {
           newBlockChildren
         )
         // After normalization, caret should be at the start of the
-        // text leaf AFTER the mention (so user can keep typing).
-        // Compute that leaf's text-leaf-index in the normalized block.
-        // Pre-normalize: there's at least one text leaf before and after
-        // the mention, so post-normalize will still have them; the leaf
-        // after the mention is the (textLeafIndex(block, inlineIdx) +
-        // 1)-th text leaf.
+        // text leaf AFTER the inline-void (so user can keep typing).
         const tlBefore = textLeafIndex(block, inlineIdx)
         renormalizeAndCommit(editor, newChildren, {
           blockIdx,
@@ -885,11 +887,11 @@ export const Transforms = {
       }
     }
 
-    // Insert text/mention list at caret in the middle of a leaf.
+    // Insert text/inline list at caret in the middle of a leaf.
     if (isCustomText(leaf)) {
       const before: CustomText = { text: leaf.text.slice(0, offset) }
       const after: CustomText = { text: leaf.text.slice(offset) }
-      const inserted = list as Array<CustomText | Mention>
+      const inserted = list as Array<CustomText | CustomInline>
       const newBlockChildren = [
       ...block.children.slice(0, inlineIdx),
         before,
@@ -971,15 +973,74 @@ export const initializeEditor = (
   editor.apply()
 }
 
-export const createEditor = (): EditorType => {
+/**
+ * Result returned by {@link createEditor}.  Destructure to obtain the
+ * editor instance and the registration helpers.
+ *
+ *   const { editor, addPlugin, removePlugin, getPlugins } = createEditor()
+ *   addPlugin(mentionPlugin)
+ */
+export type CreateEditorResult = {
+  /** The reactive editor instance. */
+  editor: EditorType
+  /** Register a plugin (idempotent on `plugin.name`). */
+  addPlugin: (plugin: PromptPlugin) => void
+  /** Remove a plugin by name. */
+  removePlugin: (name: string) => void
+  /** Inspect the current plugin registry (read-only snapshot). */
+  getPlugins: () => PromptPlugin[]
+}
+
+export type CreateEditorOptions = {
+  /** Plugins to register up-front. */
+  plugins?: PromptPlugin[]
+}
+
+/**
+ * Build a registry-backed `isInline`/`isVoid` predicate sothe editor
+ * dynamically recognises any plugin-registered inline element types.
+ */
+const installPluginRecognizers = (editor: EditorType): void => {
+  if (!editor.__plugins) editor.__plugins = new Map<string, PromptPlugin>()
+  const reg = editor.__plugins
+  const matchInlineType = (n: Element): PromptPlugin | undefined => {
+    const t = (n as { type?: string }).type
+    if (!t) return undefined
+    for (const p of reg.values()) {
+      const pt = p.inline?.type ?? p.name
+      if (pt === t) return p
+    }
+    return undefined
+  }
+  editor.isInline = (n: Element) => {
+    const p = matchInlineType(n)
+    if (!p) return false
+    return p.inline?.isInline ?? true
+  }
+  editor.isVoid = (n: Element) => {
+    const p = matchInlineType(n)
+    if (!p) return false
+    return p.inline?.isVoid ?? true
+  }
+  editor.markableVoid = (n: Element) => {
+    const p = matchInlineType(n)
+    if (!p) return false
+    return p.inline?.isVoid ?? true
+  }
+}
+
+export const createEditor = (
+  options: CreateEditorOptions = {}
+): CreateEditorResult => {
   const editor: EditorType = reactive({
     children: [] as Descendant[],
     selection: null as RangeType | null,
     revision: 0,
     onChangeListeners: new Set<(value: Descendant[]) => void>(),
-    isInline: (n: Element) => n.type === "mention",
-    isVoid: (n: Element) => n.type === "mention",
-    markableVoid: (n: Element) => n.type === "mention",
+    // Defaults; overridden once `installPluginRecognizers` runs below.
+    isInline: (_: Element) => false,
+    isVoid: (_: Element) => false,
+    markableVoid: (_: Element) => false,
     insertText(text: string) {
       Transforms.insertText(this, text)
     },
@@ -994,20 +1055,63 @@ export const createEditor = (): EditorType => {
       const value = JSON.parse(JSON.stringify(this.children)) as Descendant[]
       this.onChangeListeners.forEach((cb) => cb(value))
     },
+    __plugins: new Map<string, PromptPlugin>(),
     undo: undefined,
     redo: undefined,
     historyRevision: undefined
   }) as unknown as EditorType
-  return editor
+
+  installPluginRecognizers(editor)
+
+  const addPlugin = (plugin: PromptPlugin): void => {
+    if (!editor.__plugins) editor.__plugins = new Map()
+    editor.__plugins.set(plugin.name, plugin)
+  }
+  const removePlugin = (name: string): void => {
+    editor.__plugins?.delete(name)
+  }
+  const getPlugins = (): PromptPlugin[] =>
+    editor.__plugins ? Array.from(editor.__plugins.values()) : []
+
+  if (options.plugins) {
+    for (const p of options.plugins) addPlugin(p)
+  }
+
+  return { editor, addPlugin, removePlugin, getPlugins }
+}
+
+/**
+ * Standalone plugin registration helper, useful when you already have an
+ * editor instance (e.g. created by a legacy code path).
+ */
+export const addPlugin = (
+  editor: EditorType,
+  plugin: PromptPlugin
+): void => {
+  if (!editor.__plugins) editor.__plugins = new Map()
+  editor.__plugins.set(plugin.name, plugin)
+  installPluginRecognizers(editor)
 }
 
 export const withHistory = <T extends EditorType>(editor: T): T => editor
 export const withReact = <T extends EditorType>(editor: T): T => editor
 
+/**
+ * @deprecated Register a `mention` plugin via `createEditor({ plugins })`
+ * or `addPlugin(editor, plugin)` instead.  Kept for backwards compatibility
+ * — installs predicates that also recognise the legacy `mention` type
+ * regardless of plugin registration.
+ */
 export const withMentions = <T extends EditorType>(editor: T): T => {
-  editor.isInline = (n: Element) => n.type === "mention"
-  editor.isVoid = (n: Element) => n.type === "mention"
-  editor.markableVoid = (n: Element) => n.type === "mention"
+  const originalIsInline = editor.isInline
+  editor.isInline = (n: Element) =>
+    originalIsInline(n) || n.type === "mention"
+  const originalIsVoid = editor.isVoid
+  editor.isVoid = (n: Element) =>
+    originalIsVoid(n) || n.type === "mention"
+  const originalMV = editor.markableVoid
+  editor.markableVoid = (n: Element) =>
+    originalMV(n) || n.type === "mention"
   return editor
 }
 
@@ -1027,8 +1131,22 @@ export const createMention = (character: string): Mention => ({
   children: [{ text: "" }]
 })
 
+/**
+ * Create a generic inline-void node for plugin-defined element types.
+ * The `data` field carries plugin-specific payload and is opaque to the
+ * editor core.
+ */
+export const createInline = (
+  type: string,
+  data?: unknown
+): CustomInline => ({
+  type,
+  data,
+  children: [{ text: "" }]
+})
+
 export const createParagraph = (
-  children: Array<CustomText | Mention>
+  children: Array<CustomText | CustomInline>
 ): Paragraph => ({
   type: "paragraph",
   children
