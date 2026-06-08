@@ -66,29 +66,29 @@ const mentionPlugin = definePlugin({
     const id = data.id ?? character
     return `@[${character}](${id})`
   },
-  // onKeyDown(e) {
-  //   if (chars.value.length === 0) return false
-  //   switch (e.key) {
-  //     case "ArrowDown":
-  //       e.preventDefault()
-  //       index.value =
-  //         index.value >= chars.value.length - 1 ? 0 : index.value + 1
-  //       return true
-  //     case "ArrowUp":
-  //       e.preventDefault()
-  //       index.value =
-  //    index.value <= 0 ? chars.value.length - 1 : index.value - 1
-  //       return true
-  //     case "Tab":
-  //     case "Enter": {
-  //       e.preventDefault()
-  //       const pick = chars.value[index.value]
-  //       if (pick) commitPick(pick)
-  //       return true
-  //     }
-  //   }
-  //   return false
-  // }
+  onKeyDown(e) {
+    if (chars.value.length === 0) return false
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault()
+        index.value =
+          index.value >= chars.value.length - 1 ? 0 : index.value + 1
+        return true
+      case "ArrowUp":
+        e.preventDefault()
+        index.value =
+     index.value <= 0 ? chars.value.length - 1 : index.value - 1
+        return true
+      case "Tab":
+      case "Enter": {
+        e.preventDefault()
+        const pick = chars.value[index.value]
+        if (pick) commitPick(pick)
+        return true
+      }
+    }
+    return false
+  }
 })
 
 // --- ref plugin (no trigger) -------------------------------------------
