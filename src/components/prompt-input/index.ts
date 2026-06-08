@@ -10,15 +10,8 @@
  *     <template #element:mention="{ element, attributes }">…</template>
  *     <template #portal:mention="{ trigger, commit, close }">…</template>
  *   </PromptInput>
- *
- * Legacy `MentionEditor` / `MentionElement` are still exported for
- * backwards compatibility.
  */
 export { default as PromptInput } from "./PromptInput.vue"
-
-// --- legacy re-exports (backwards compatible) ---
-export { default as MentionEditor } from "./MentionEditor.vue"
-export { default as MentionElement } from "./MentionElement.vue"
 
 export {
   createEditor,

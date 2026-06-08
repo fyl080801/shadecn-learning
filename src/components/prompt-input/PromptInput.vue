@@ -3,16 +3,6 @@
  * PromptInput — generic Slate-style contenteditable editor with a plugin
  * system for inline-void elements and trigger popovers.
  *
- * Compared to the legacy `MentionEditor.vue`, this component:
- *   1. Is agnostic of "mention": custom inline nodes are rendered through
- *      `#element:<plugin.name>` slots; the slot name is routed by
- *      `element.type` matched against each plugin's `inline.type`.
- *   2. Detects trigger characters declared by plugins (`plugin.trigger`)
- *      and renders the corresponding `#portal:<plugin.name>` slot in a
- *      `<Teleport>` positioned above the trigger range.
- *   3. Hands keyboard events to the active plugin via `onKeyDown` so the
- *      caller can implement its own ↑/↓/Enter/Esc behaviour.
- *
  * Slot summary (all are scoped):
  *   - `#element:<name>`     { element, attributes }      inline node renderer
  *   - `#element`            { element, attributes }      fallback renderer

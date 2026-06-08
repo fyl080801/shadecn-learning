@@ -45,7 +45,7 @@ export const CHARACTERS: MentionItem[] = [
   { id: 'yoda', character: 'Yoda' }
 ]
 
-/** Synchronous source compatible with the source prop on <MentionEditor>. */
+/** Synchronous source compatible with the source prop on <PromptInput>. */
 export const characterSource = (search: string): MentionItem[] =>
   CHARACTERS.filter((c) =>
     c.character.toLowerCase().startsWith(search.toLowerCase())
