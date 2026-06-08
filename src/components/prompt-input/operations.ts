@@ -24,7 +24,6 @@ import type {
   Path,
   Point,
   Range as RangeType,
-  Mention,
   CustomInline,
   CustomText,
   Paragraph,
@@ -1022,11 +1021,6 @@ const installPluginRecognizers = (editor: EditorType): void => {
     if (!p) return false
     return p.inline?.isVoid ?? true
   }
-  editor.markableVoid = (n: Element) => {
-    const p = matchInlineType(n)
-    if (!p) return false
-    return p.inline?.isVoid ?? true
-  }
 }
 
 export const createEditor = (
@@ -1036,11 +1030,9 @@ export const createEditor = (
     children: [] as Descendant[],
     selection: null as RangeType | null,
     revision: 0,
-    onChangeListeners: new Set<(value: Descendant[]) => void>(),
     // Defaults; overridden once `installPluginRecognizers` runs below.
     isInline: (_: Element) => false,
     isVoid: (_: Element) => false,
-    markableVoid: (_: Element) => false,
     insertText(text: string) {
       Transforms.insertText(this, text)
     },
@@ -1052,13 +1044,8 @@ export const createEditor = (
     },
     apply() {
       this.revision = this.revision + 1
-      const value = JSON.parse(JSON.stringify(this.children)) as Descendant[]
-      this.onChangeListeners.forEach((cb) => cb(value))
     },
-    __plugins: new Map<string, PromptPlugin>(),
-    undo: undefined,
-    redo: undefined,
-    historyRevision: undefined
+    __plugins: new Map<string, PromptPlugin>()
   }) as unknown as EditorType
 
   installPluginRecognizers(editor)
@@ -1080,41 +1067,6 @@ export const createEditor = (
   return { editor, addPlugin, removePlugin, getPlugins }
 }
 
-/**
- * Standalone plugin registration helper, useful when you already have an
- * editor instance (e.g. created by a legacy code path).
- */
-export const addPlugin = (
-  editor: EditorType,
-  plugin: PromptPlugin
-): void => {
-  if (!editor.__plugins) editor.__plugins = new Map()
-  editor.__plugins.set(plugin.name, plugin)
-  installPluginRecognizers(editor)
-}
-
-export const withHistory = <T extends EditorType>(editor: T): T => editor
-export const withReact = <T extends EditorType>(editor: T): T => editor
-
-/**
- * @deprecated Register a `mention` plugin via `createEditor({ plugins })`
- * or `addPlugin(editor, plugin)` instead.  Kept for backwards compatibility
- * — installs predicates that also recognise the legacy `mention` type
- * regardless of plugin registration.
- */
-export const withMentions = <T extends EditorType>(editor: T): T => {
-  const originalIsInline = editor.isInline
-  editor.isInline = (n: Element) =>
-    originalIsInline(n) || n.type === "mention"
-  const originalIsVoid = editor.isVoid
-  editor.isVoid = (n: Element) =>
-    originalIsVoid(n) || n.type === "mention"
-  const originalMV = editor.markableVoid
-  editor.markableVoid = (n: Element) =>
-    originalMV(n) || n.type === "mention"
-  return editor
-}
-
 // ---------- factory helpers ------------------------------------------
 
 export const createText = (
@@ -1123,12 +1075,6 @@ export const createText = (
 ): CustomText => ({
   text,
   ...marks
-})
-
-export const createMention = (character: string): Mention => ({
-  type: "mention",
-  character,
-  children: [{ text: "" }]
 })
 
 /**

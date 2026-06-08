@@ -355,20 +355,6 @@ const onKeydown = (e: KeyboardEvent): void => {
       return
     }
   }
-  const mod = e.ctrlKey || e.metaKey
-  if (mod && (e.key === "z" || e.key === "Z")) {
-    if (props.editor.undo) {
-      e.preventDefault()
-      if (e.shiftKey) props.editor.redo?.()
-      else props.editor.undo()
-      return
-    }
-  }
-  if (mod && (e.key === "y" || e.key === "Y") && props.editor.redo) {
-    e.preventDefault()
-    props.editor.redo()
-    return
-  }
   emit("keydown", e)
 }
 

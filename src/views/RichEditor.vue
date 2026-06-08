@@ -6,13 +6,13 @@
  *
  * Differences from the React example:
  *   - The editor is built with `createEditor({ plugins })` and plugins
- *     are registered through `addPlugin`.
+ *     are registered through the plugin protocol.
  *   - "Mention" is no longer baked into the editor; it is just a plugin
  *     authored here in the view layer.
  *   - The popover renders inside `<PromptInput #portal:mention>` and is
  *     fully controlled by this view; the editor only positions it.
  */
-import { computed, onMounted, ref } from "vue"
+import { computed, ref } from "vue"
 import {
   Card,
   CardContent,
@@ -81,9 +81,7 @@ const mentionPlugin = definePlugin({
 
 // --- editor instance ---------------------------------------------------
 
-const { editor, addPlugin } = createEditor({ plugins: [mentionPlugin] })
-// Demonstrate that `addPlugin` is also available post-construction:
-void addPlugin
+const { editor } = createEditor({ plugins: [mentionPlugin] })
 
 // --- popover commit ----------------------------------------------------
 
@@ -150,11 +148,6 @@ const initialValue: Descendant[] = [
 const reset = (): void => {
   initializeEditor(editor, initialValue)
 }
-
-onMounted(() => {
-  // PromptInput runs initializeEditor itself on mount; this is here in case
-  // the user clicks Reset before focusing the editor.
-})
 
 // --- mentions for the side panel ---------------------------------------
 

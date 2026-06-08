@@ -15,15 +15,10 @@ export { default as PromptInput } from "./PromptInput.vue"
 
 export {
   createEditor,
-  addPlugin,
-  withHistory,
-  withReact,
-  withMentions,
   Editor,
   Transforms,
   Range,
   createText,
-  createMention,
   createInline,
   createParagraph,
   initializeEditor
@@ -52,7 +47,6 @@ export type {
   Element,
   CustomText,
   Paragraph,
-  Mention,
   CustomInline,
   EmptyText,
   Editor as EditorType,
@@ -60,7 +54,6 @@ export type {
   Point,
   Range as RangeType,
   MentionItem,
-  Trigger,
   PromptPlugin,
   PluginTrigger,
   PluginInlineSpec,

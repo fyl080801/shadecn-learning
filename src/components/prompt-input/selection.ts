@@ -33,14 +33,6 @@ export const findLeafElement = (
   return root.querySelector<HTMLElement>(`[data-leaf-path="${attr}"]`)
 }
 
-export const findVoidElement = (
-  root: HTMLElement,
-  path: Path
-): HTMLElement | null => {
-  const attr = JSON.stringify(path)
-  return root.querySelector<HTMLElement>(`[data-void-path="${attr}"]`)
-}
-
 export const findBlockElement = (
   root: HTMLElement,
   path: Path

@@ -19,8 +19,6 @@
  *     trigger keyword; the component renders matched nodes through the
  *     `#element:<plugin.name>` slot, and the trigger popover through the
  *     `#portal:<plugin.name>` slot.
- *   - `Mention` is preserved as a built-in plugin shape and an alias to
- *     CustomInline for backwards compatibility.
  */
 
 import type { Ref } from 'vue'
@@ -45,8 +43,6 @@ export type EmptyText = {
 /**
  * Generic inline-void node.  Each plugin registers a unique `type`; the
  * component renders the node through the `#element:<plugin.name>` slot.
- *
- * Legacy `Mention` is an alias for `CustomInline` with `type: 'mention'`.
  */
 export type CustomInline = {
   type: string
@@ -55,12 +51,6 @@ export type CustomInline = {
   children: [EmptyText]
   /** Reserved for legacy mention nodes. */
   character?: string
-}
-
-/** @deprecated Use `CustomInline` with a mention plugin. */
-export type Mention = CustomInline & {
-  type: 'mention'
-  character: string
 }
 
 export type Paragraph = {
@@ -137,15 +127,9 @@ export interface PromptPlugin {
 
 // --- editor --------------------------------------------------------------
 
-export type HistorySnapshot = {
-  children: Descendant[]
-  selection: Range | null
-}
-
 export type Editor = {
   children: Descendant[]
   selection: Range | null
-  onChangeListeners: Set<(value: Descendant[]) => void>
   /**
    * Monotonically increasing counter incremented on every model
    * mutation.  Components can watch this to force a re-render when
@@ -155,7 +139,6 @@ export type Editor = {
   revision: number
   isInline: (node: Element) => boolean
   isVoid: (node: Element) => boolean
-  markableVoid: (node: Element) => boolean
   insertText: (text: string) => void
   deleteBackward: (unit?: 'character' | 'word' | 'line' | 'block') => void
   deleteForward: (unit?: 'character' | 'word' | 'line' | 'block') => void
@@ -163,22 +146,11 @@ export type Editor = {
   apply: () => void
   /** Plugin registry keyed by plugin.name (read-only outside core). */
   __plugins?: Map<string, PromptPlugin>
-  // History (added by `withHistory`)
-  undo?: () => void
-  redo?: () => void
-  /** Updated whenever the undo/redo stacks change. */
-  historyRevision?: number
 }
 
-// --- legacy popup --------------------------------------------------------
+// --- demo helper ---------------------------------------------------------
 
-/** @deprecated Use `TriggerContext` from the plugin protocol. */
-export type Trigger = {
-  search: string
-  range: Range
-}
-
-/** @deprecated Demo data shape from `characters.ts`. */
+/** Demo data shape from `characters.ts`. */
 export type MentionItem = {
   id: string
   character: string
