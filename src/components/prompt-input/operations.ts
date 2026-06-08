@@ -1053,6 +1053,18 @@ export const createEditor = (
   const HISTORY_LIMIT = 100
   let lastChildrenRef: Descendant[] | null = null
   let historyMuted = false
+  /**
+   * Batch depth counter.  While > 0, `apply()` still mutates `children`
+   * and bumps `revision`, but it does **not** push to `undoStack` — the
+   * entire batch is collapsed into a single history entry on exit.
+   *
+   * 用于"一次粘贴 = 一次撤销"这类需要把多个 Transforms 合并的场景：
+   * 进入 batch 时记录 `children` 的引用作为起点，退出时仅当 children
+   * 确实发生过变化才往 undoStack 推一次（起点 ref + 入栈前的 selection）。
+   */
+  let batchDepth = 0
+  let batchStartChildren: Descendant[] | null = null
+  let batchStartSelection: RangeType | null = null
 
   const editor: EditorType = reactive({
     children: [] as Descendant[],
@@ -1072,9 +1084,11 @@ export const createEditor = (
     },
     apply() {
       // Push to undo stack iff this commit changed `children` and we're
-      // not currently replaying history.
+      // not currently replaying history.  Inside a batch we update
+      // `lastChildrenRef` (so post-batch deltas are detected correctly)
+      // but skip the push — the batch wrapper produces a single entry.
       if (!historyMuted && this.children !== lastChildrenRef) {
-        if (lastChildrenRef !== null) {
+        if (lastChildrenRef !== null && batchDepth === 0) {
           undoStack.push({
             children: lastChildrenRef,
             selection: lastSelectionSnapshot
@@ -1091,6 +1105,47 @@ export const createEditor = (
         lastSelectionSnapshot = cloneRange(this.selection)
       }
       this.revision = this.revision + 1
+    },
+    /**
+     * Run `fn` so that all `apply()` calls inside it collapse into a
+     * single history entry.  Reentrant: nested batches are merged into
+     * the outermost one.
+     *
+     * 典型用法：粘贴富文本时把多次 insertText / insertNodes / splitBlock
+     * 包裹起来，使 Ctrl+Z 能一次性回滚整段粘贴。
+     */
+    batch(fn: () => void) {
+      if (batchDepth === 0) {
+        batchStartChildren = this.children
+        batchStartSelection = cloneRange(this.selection)
+        // Fold the pre-batch selection so it becomes the "before" for the
+        // single history entry we'll emit on exit.
+        lastSelectionSnapshot = batchStartSelection
+      }
+      batchDepth++
+      try {
+        fn()
+      } finally {
+        batchDepth--
+        if (batchDepth === 0) {
+          // Only push if the batch produced a real content change and we
+          // are not muted by an in-flight undo/redo replay.
+          if (
+            !historyMuted &&
+            batchStartChildren !== null &&
+            this.children !== batchStartChildren
+          ) {
+            undoStack.push({
+              children: batchStartChildren,
+              selection: batchStartSelection
+            })
+            if (undoStack.length > HISTORY_LIMIT) undoStack.shift()
+            redoStack.length = 0
+          }
+          batchStartChildren = null
+          batchStartSelection = null
+        }
+      }
     },
     undo() {
       const prev = undoStack.pop()

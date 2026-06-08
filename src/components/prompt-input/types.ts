@@ -191,6 +191,14 @@ export type Editor = {
   undo: () => void
   /** Re-apply the most recently undone commit. */
   redo: () => void
+  /**
+   * Run `fn` so that every `apply()` inside it is collapsed into a
+   * single undo entry.  Reentrant: nested batches merge into the
+   * outermost one.  Use this for compound edits such as pasting a
+   * fragment with mixed inline/text/paragraph pieces, so a single
+   * Ctrl+Z rolls back the entire operation.
+   */
+  batch: (fn: () => void) => void
   /** Plugin registry keyed by plugin.name (read-only outside core). */
   __plugins?: Map<string, PromptPlugin>
 }

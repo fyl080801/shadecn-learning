@@ -590,28 +590,34 @@ const onPaste = (e: ClipboardEvent): void => {
 const insertSerializedText = (text: string): void => {
   if (!text) return
   const fragment = textToModel(text, plugins.value)
-  for (let i = 0; i < fragment.length; i++) {
-    const block = fragment[i]
-    if (
-      !block ||
-      !("children" in block) ||
-      (block as { type?: string }).type !== "paragraph"
-    ) {
-      continue
-    }
-    const children = (block as Paragraph).children
-    for (const child of children) {
-      if ("children" in child) {
-        Transforms.insertNodes(props.editor, child as Descendant)
-      } else {
-        const t = (child as { text: string }).text
-        if (t !== "") Transforms.insertText(props.editor, t)
+  // Collapse the entire paste — which may emit many insertText /
+  // insertNodes / splitBlock calls — into a single history entry so
+  // Ctrl+Z rolls back the whole paste at once instead of peeling it
+  // off one fragment item at a time.
+  props.editor.batch(() => {
+    for (let i = 0; i < fragment.length; i++) {
+      const block = fragment[i]
+      if (
+        !block ||
+        !("children" in block) ||
+        (block as { type?: string }).type !== "paragraph"
+      ) {
+        continue
+      }
+      const children = (block as Paragraph).children
+      for (const child of children) {
+        if ("children" in child) {
+          Transforms.insertNodes(props.editor, child as Descendant)
+        } else {
+          const t = (child as { text: string }).text
+          if (t !== "") Transforms.insertText(props.editor, t)
+        }
+      }
+      if (i < fragment.length - 1) {
+        Transforms.splitBlock(props.editor)
       }
     }
-    if (i < fragment.length - 1) {
-      Transforms.splitBlock(props.editor)
-    }
-  }
+  })
 }
 
 
