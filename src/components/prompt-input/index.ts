@@ -49,7 +49,12 @@ export {
   findBlockElement
 } from "./selection"
 
-export { splitByRegex, textToModel, modelToText } from "./serialize"
+export {
+  splitByRegex,
+  textToModel,
+  modelToText,
+  serializeRange
+} from "./serialize"
 
 export { characterSource, CHARACTERS } from "./characters"
 

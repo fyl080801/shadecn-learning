@@ -26,7 +26,7 @@ import {
 } from "./operations"
 import { getTriggerPattern } from "./definePlugin"
 import { readModelRange, applyDOMRange, toDOMRange } from "./selection"
-import { modelToText, textToModel } from "./serialize"
+import { modelToText, textToModel, serializeRange } from "./serialize"
 import type {
   Editor as EditorT,
   Paragraph,
@@ -571,7 +571,100 @@ const onPaste = (e: ClipboardEvent): void => {
   if (text == null) return
   e.preventDefault()
   flushSelectionFromDOM()
-  Transforms.insertFragmentText(props.editor, text)
+  insertSerializedText(text)
+}
+
+/**
+ * 把"真实字符串"粘贴回编辑器：先用 plugin.parse（textToModel）把字符串
+ * 还原成 Descendant[]，再按段落顺序插回光标位置。
+ *
+ * 实现要点：
+ *  - 段间换行（"\n\n"）：`Transforms.splitBlock()`，新段为空、光标在段首，
+ *    下一段内容直接续插即可，保持段落正向顺序。
+ *  - 段内纯文本片段：走 `Transforms.insertText`，单换行 `\n` 作为普通文本
+ *    进入 leaf，与 `modelToText` 输出对齐。
+ *  - 段内 inline 节点：单独调用 `Transforms.insertNodes`，引擎会把光标
+ *    精确放到 inline 之后的空文本叶起点，便于续接下一片段。
+ *  逐项串行避免一次性插入混合数组时因光标推算误差导致的段落顺序错位。
+ */
+const insertSerializedText = (text: string): void => {
+  if (!text) return
+  const fragment = textToModel(text, plugins.value)
+  for (let i = 0; i < fragment.length; i++) {
+    const block = fragment[i]
+    if (
+      !block ||
+      !("children" in block) ||
+      (block as { type?: string }).type !== "paragraph"
+    ) {
+      continue
+    }
+    const children = (block as Paragraph).children
+    for (const child of children) {
+      if ("children" in child) {
+        Transforms.insertNodes(props.editor, child as Descendant)
+      } else {
+        const t = (child as { text: string }).text
+        if (t !== "") Transforms.insertText(props.editor, t)
+      }
+    }
+    if (i < fragment.length - 1) {
+      Transforms.splitBlock(props.editor)
+    }
+  }
+}
+
+
+// --- copy / cut / drag (real-string serialization) ---------------------
+
+/**
+ * 把当前模型选区序列化为"真实字符串"——即 plugin.serialize 输出的源串
+ * （如 `@[name](id)`、`{{Ref 1}}`），而不是 DOM 上的可视展示文本。
+ *
+ * 返回 null 表示无可复制内容（选区为空/折叠/位于自治子区内）。
+ */
+const serializeSelection = (): string | null => {
+  flushSelectionFromDOM()
+  const sel = props.editor.selection
+  if (!sel || Range.isCollapsed(sel)) return null
+  const out = serializeRange(props.editor.children, sel, plugins.value)
+  return out.length > 0 ? out : null
+}
+
+const onCopy = (e: ClipboardEvent): void => {
+  if (composing.value) return
+  // 内联可编辑子区自治：复制行为交给浏览器原生，子区文本即源文本。
+  if (isInsideEditableInline(e)) return
+  const text = serializeSelection()
+  if (text == null) return
+  const cd = e.clipboardData
+  if (!cd) return
+  e.preventDefault()
+  cd.setData("text/plain", text)
+}
+
+const onCut = (e: ClipboardEvent): void => {
+  if (composing.value) return
+  if (isInsideEditableInline(e)) return
+  const text = serializeSelection()
+  if (text == null) return
+  const cd = e.clipboardData
+  if (!cd) return
+  e.preventDefault()
+  cd.setData("text/plain", text)
+  // 写入剪贴板后再删除选区，确保 undo 仍可回滚此次删除。
+  Transforms.delete(props.editor)
+}
+
+const onDragStart = (e: DragEvent): void => {
+  if (composing.value) return
+  if (isInsideEditableInline(e)) return
+  const text = serializeSelection()
+  if (text == null) return
+  const dt = e.dataTransfer
+  if (!dt) return
+  dt.setData("text/plain", text)
+  // 不 preventDefault：保留浏览器默认拖拽视觉。
 }
 
 // --- rendering helpers -------------------------------------------------
@@ -634,7 +727,15 @@ defineExpose({
   editor: props.editor,
   toDOMRange: (range: RangeType) =>
     rootEl.value ? toDOMRange(rootEl.value, range) : null,
-  closeTrigger
+  closeTrigger,
+  /**
+   * 返回当前选区对应的"真实字符串"（经 plugin.serialize 还原），
+   * 折叠/无选区时返回空串。
+   */
+  getSelectedText: (): string => serializeSelection() ?? "",
+  /** 返回整篇文档的"真实字符串"，等价于当前 modelValue。 */
+  getFullText: (): string =>
+    modelToText(props.editor.children, plugins.value)
 })
 </script>
 
@@ -660,6 +761,9 @@ defineExpose({
     @focus="onFocus"
     @blur="onBlur"
     @paste="onPaste"
+    @copy="onCopy"
+    @cut="onCut"
+    @dragstart="onDragStart"
     @compositionstart="onCompositionStart"
     @compositionend="onCompositionEnd"
   >

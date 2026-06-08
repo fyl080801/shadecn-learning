@@ -22,7 +22,8 @@ import type {
   Descendant,
   ParsedSegment,
   Paragraph,
-  PromptPlugin
+  PromptPlugin,
+  Range as RangeType
 } from "./types"
 
 // ---------- helpers ---------------------------------------------------
@@ -212,6 +213,95 @@ export const modelToText = (
         }
       } else {
         line += (child as CustomText).text
+      }
+    }
+    lines.push(line)
+  }
+  return lines.join("\n\n")
+}
+
+// ---------- range → text (selection serializer) ----------------------
+
+const comparePath = (a: number[], b: number[]): number => {
+  const len = Math.max(a.length, b.length)
+  for (let i = 0; i < len; i++) {
+    const av = a[i] ?? 0
+    const bv = b[i] ?? 0
+    if (av < bv) return -1
+    if (av > bv) return 1
+  }
+  return 0
+}
+
+const comparePoint = (
+  a: { path: number[]; offset: number },
+  b: { path: number[]; offset: number }
+): number => {
+  const p = comparePath(a.path, b.path)
+  if (p !== 0) return p
+  return a.offset - b.offset
+}
+
+const rangeEdges = (
+  range: RangeType
+): [
+  { path: number[]; offset: number },
+  { path: number[]; offset: number }
+] =>
+  comparePoint(range.anchor, range.focus) <= 0
+    ? [range.anchor, range.focus]
+    : [range.focus, range.anchor]
+
+/**
+ * Serialize a selection range into its "real string" form, applying each
+ * plugin's `serialize` to inline nodes that lie fully inside the range.
+ *
+ * Rules:
+ *   - Text leaves are sliced by `offset` at the range boundaries.
+ *   - Inline nodes are atomic: included only when the range fully covers
+ *     them (i.e. starts at-or-before the inline's text leaf preceding it,
+ *     and ends at-or-after the leaf following it). For partial coverage
+ *     we still include the serialized inline if its index sits strictly
+ *     between the start/end leaf indices in the same block.
+ *   - Paragraph breaks become "\n\n", mirroring `modelToText`.
+ */
+export const serializeRange = (
+  children: Descendant[],
+  range: RangeType,
+  plugins: PromptPlugin[]
+): string => {
+  const [start, end] = rangeEdges(range)
+  if (comparePoint(start, end) === 0) return ""
+  const startBi = start.path[0] ?? 0
+  const endBi = end.path[0] ?? 0
+  const lines: string[] = []
+  for (let bi = startBi; bi <= endBi; bi++) {
+    const block = children[bi]
+    if (!block || !isParagraph(block)) continue
+    const blockChildren = block.children
+    const startIi = bi === startBi ? start.path[1] ?? 0 : 0
+    const endIi = bi === endBi ? end.path[1] ?? 0 : blockChildren.length - 1
+    let line = ""
+    for (let ii = startIi; ii <= endIi; ii++) {
+      const child = blockChildren[ii]
+      if (!child) continue
+      if (isInline(child)) {
+        const ser = findSerializerFor(child.type, plugins)
+        if (ser) {
+          line += ser(child)
+        } else {
+          console.warn(
+            `[prompt-input] no serializer for inline type "${child.type}"; ` +
+              `node will be dropped from selection serialization`
+          )
+        }
+      } else {
+        const text = (child as CustomText).text
+        const sliceStart =
+          bi === startBi && ii === startIi ? start.offset : 0
+        const sliceEnd =
+          bi === endBi && ii === endIi ? end.offset : text.length
+        line += text.slice(sliceStart, sliceEnd)
       }
     }
     lines.push(line)
