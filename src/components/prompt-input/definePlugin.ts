@@ -42,9 +42,13 @@ export const definePlugin = (plugin: PromptPlugin): PromptPlugin => {
 /**
  * Build the default trigger pattern: `^{escape(key)}(\S*)$` — captures the
  * search term that follows the trigger key up to the next whitespace.
+ *
+ * Note: `key` is plugin-author-defined configuration (not user input) and is
+ * fully escaped via `replace(...)` below, so the `new RegExp` call is safe.
  */
 export const defaultTriggerPattern = (key: string): RegExp => {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // eslint-disable-next-line security/detect-non-literal-regexp
   return new RegExp(`^${escaped}(\\S*)$`)
 }
 

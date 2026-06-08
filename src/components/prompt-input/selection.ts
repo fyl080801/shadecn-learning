@@ -9,7 +9,7 @@
  *           <span data-slate-string="true">…text…</span>      ← non-empty
  *           OR
  *           <span data-slate-zero-width="z|n" data-slate-length="0">
- *             ﻿ (U+FEFF) [+ <br/> if "n"]
+ *             U+FEFF [+ <br/> if "n"]
  *           </span>
  *         </span>
  *       </span>

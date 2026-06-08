@@ -151,8 +151,9 @@ const flushSelectionFromDOM = (): void => {
   }
   const range = readModelRange(root)
   if (!range) return
-  if (!sameRange(props.editor.selection, range)) {
-    props.editor.selection = range
+  const editor = props.editor
+  if (!sameRange(editor.selection, range)) {
+    editor.selection = range
     emit("select", range)
   }
 }

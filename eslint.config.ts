@@ -4,6 +4,7 @@ import tseslint from "typescript-eslint"
 import pluginVue from "eslint-plugin-vue"
 import prettierConfig from "eslint-config-prettier"
 import vueParser from "vue-eslint-parser"
+import security from 'eslint-plugin-security'
 import { defineConfig } from "eslint/config"
 
 export default defineConfig(
@@ -11,7 +12,8 @@ export default defineConfig(
   { ignores: ["dist", "node_modules", "src/components/ui/**"] },
   {
     plugins: {
-      "@typescript-eslint": tseslint.plugin
+      "@typescript-eslint": tseslint.plugin,
+      security
     }
   },
   // Base JS recommended
@@ -24,6 +26,7 @@ export default defineConfig(
   // Vue 3 — essential + strongly-recommended
   ...pluginVue.configs["flat/recommended"],
   ...pluginVue.configs["flat/strongly-recommended"],
+  security.configs.recommended,
 
   // Prettier — must be last, disables formatting rules
   prettierConfig,
@@ -54,7 +57,8 @@ export default defineConfig(
     rules: {
       "vue/multi-word-component-names": "off",
       "vue/attributes-order": "off",
-      "vue/no-mutating-props": "warn",
+      "vue/no-mutating-props": "error",
+      "security/detect-non-literal-regexp": "error",
       "@typescript-eslint/no-unused-vars": [
         "warn",
         { argsIgnorePattern: "^_" }
