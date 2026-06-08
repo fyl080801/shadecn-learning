@@ -76,6 +76,25 @@ const composing = ref(false)
 const isUpdatingSelection = ref(false)
 const isFocused = ref(false)
 
+/**
+ * 判断事件是否发生在某个"内联可编辑子区"中（标记 `data-inline-editable`）。
+ * 此类子区由插件自行渲染并完全自治输入/键盘/合成事件，外层引擎应当跳过
+ * 默认处理，避免重复 preventDefault 把插件的输入吞掉。
+ */
+const isInsideEditableInline = (event: Event): boolean => {
+  const t = event.target as HTMLElement | null
+  if (!t || typeof t.closest !== "function") return false
+  return !!t.closest("[data-inline-editable]")
+}
+
+/**
+ * 当焦点位于"内联可编辑子区"内时，外层 model 的 selection 应锁定到该
+ * inline 节点的"前后某个文本叶"，以便外层光标定位、删除合并等操作
+ * 把整个块当作一个原子。我们这里只用作判定，真实的 model selection
+ * 由 PromptInput 通过 `selectionchange` 事件正常读取（DOM 选区在子区
+ * 内时 `toModelPoint` 会向上找到 void-path 并解析到相邻文本叶）。
+ */
+
 // --- plugin helpers ----------------------------------------------------
 
 const plugins = computed<PromptPlugin[]>(() => {
@@ -96,6 +115,11 @@ const pluginByInlineType = (type: string | undefined): PromptPlugin | null => {
 const applyModelSelectionToDOM = (): void => {
   const root = rootEl.value
   if (!root) return
+  // 若当前焦点位于内联可编辑子区，外层不再覆盖 DOM 选区，避免抢走插件光标。
+  const active = document.activeElement as HTMLElement | null
+  if (active && active.closest && active.closest("[data-inline-editable]")) {
+    return
+  }
   isUpdatingSelection.value = true
   applyDOMRange(root, props.editor.selection)
   setTimeout(() => {
@@ -120,6 +144,11 @@ const flushSelectionFromDOM = (): void => {
   if (!isFocused.value) return
   const root = rootEl.value
   if (!root) return
+  // 若 DOM 焦点位于内联可编辑子区，外层不再读取这一选区为 model selection。
+  const active = document.activeElement as HTMLElement | null
+  if (active && active.closest && active.closest("[data-inline-editable]")) {
+    return
+  }
   const range = readModelRange(root)
   if (!range) return
   if (!sameRange(props.editor.selection, range)) {
@@ -286,7 +315,12 @@ const onFocus = (): void => {
   emit("focus")
 }
 
-const onBlur = (): void => {
+const onBlur = (e: FocusEvent): void => {
+  // 当焦点切到内联可编辑子区时不应视作失焦——它们仍在编辑器内部。
+  const next = e.relatedTarget as HTMLElement | null
+  if (next && rootEl.value && rootEl.value.contains(next)) {
+    return
+  }
   isFocused.value = false
   emit("blur")
 }
@@ -302,6 +336,8 @@ const onClick = (): void => {
 
 const onBeforeInput = (event: InputEvent): void => {
   if (composing.value) return
+  // 内联可编辑子区自治：插件自行处理输入，避免外层 preventDefault 吞事件。
+  if (isInsideEditableInline(event)) return
   flushSelectionFromDOM()
 
   const type = event.inputType
@@ -351,11 +387,13 @@ const onBeforeInput = (event: InputEvent): void => {
 
 // --- IME composition ---------------------------------------------------
 
-const onCompositionStart = (): void => {
+const onCompositionStart = (event: CompositionEvent): void => {
+  if (isInsideEditableInline(event)) return
   composing.value = true
 }
 
 const onCompositionEnd = (event: CompositionEvent): void => {
+  if (isInsideEditableInline(event)) return
   composing.value = false
   if (event.data) {
     Transforms.insertText(props.editor, event.data)
@@ -463,6 +501,11 @@ const isRedoCombo = (e: KeyboardEvent): boolean => {
 }
 
 const onKeydown = (e: KeyboardEvent): void => {
+  // 内联可编辑子区自治：插件自行决定键盘行为。
+  if (isInsideEditableInline(e)) {
+    emit("keydown", e)
+    return
+  }
   // Let the active plugin intercept first.
   const trigger = activeTrigger.value
   if (trigger) {
@@ -523,6 +566,7 @@ const onKeydown = (e: KeyboardEvent): void => {
 
 const onPaste = (e: ClipboardEvent): void => {
   if (composing.value) return
+  if (isInsideEditableInline(e)) return
   const text = e.clipboardData?.getData("text/plain")
   if (text == null) return
   e.preventDefault()

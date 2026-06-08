@@ -37,6 +37,12 @@ import type {
   ParsedSegment,
   TriggerContext
 } from "@/components/prompt-input"
+import {
+  InlineCodeEditable,
+  createInlineCodePlugin,
+  commitInlineCodeText,
+  type InlineCodeData
+} from "@/components/inline-code"
 
 // --- mention plugin (with trigger) -------------------------------------
 
@@ -128,11 +134,25 @@ const cameraPlugin = definePlugin({
   }
 })
 
+// --- inline-code plugin (no trigger, md-style ` ... `) -----------------
+
+const inlineCodePlugin = createInlineCodePlugin()
+
 // --- editor instance ---------------------------------------------------
 
 const { editor } = createEditor({
-  plugins: [mentionPlugin, refPlugin, cameraPlugin]
+  plugins: [mentionPlugin, refPlugin, cameraPlugin, inlineCodePlugin]
 })
+
+/**
+ * 子区输入回写：把新文本写回节点 data 并触发 editor.apply()。
+ * 注意：DOM 文本由 <InlineCodeEditable> 自管，这里不再读取 textContent。
+ * 之所以独立成子组件是为了避免 Vue 在 revision++ 时重写 textContent
+ * 把光标拉回到块首——子组件用 ref + 手动同步绕开模板插值。
+ */
+const onInlineCodeUpdate = (element: CustomInline, text: string): void => {
+  commitInlineCodeText(editor, element, text)
+}
 
 // --- popover commit ----------------------------------------------------
 
@@ -172,7 +192,11 @@ const initialText =
   "Which, in this case means Star Wars characters.\n\n" +
   "Try mentioning characters, like @[R2-D2](r2-d2) or " +
   "@[Mace Windu](mace-windu)! You can also drop refs like {{Ref 1}} or a " +
-  "{{Camera}} placeholder anywhere in the text."
+  "{{Camera}} placeholder anywhere in the text.\n\n" +
+  "Inline-code blocks are editable in place: try clicking inside " +
+  "`hello world` or `npm install vue` and typing—but you can't add line " +
+  "breaks, and ArrowLeft/ArrowRight at the boundary jumps over the whole " +
+  "block in a single step."
 
 const text = ref(initialText)
 
@@ -211,6 +235,12 @@ const modelMentions = computed(() => {
           >{{Camera}}</code
         >
         由插件解析为不同的 inline 元素。
+        <br />
+        新增：<code v-pre class="rounded bg-muted px-1.5 py-0.5 text-xs"
+          >`text`</code
+        >
+        被解析为可内部编辑的行内代码块——块内可单独编辑，但禁止换行；外层
+        ArrowLeft/Right 把整块视为一个字符。
       </p>
     </header>
 
@@ -301,6 +331,35 @@ const modelMentions = computed(() => {
               >
                 📷 Camera
             </span>
+            </template>
+
+            <!-- inline-code: 嵌套 contenteditable 子区由独立子组件管理，
+                 避免 Vue 在 editor.apply() 后重写 textContent 把光标拉回块首。-->
+            <template #element:inline-code="{ element, attributes }">
+              <span
+                v-bind="attributes"
+                contenteditable="false"
+                :style="{
+                  display: 'inline-block',
+                  verticalAlign: 'baseline',
+                  margin: '0 2px',
+                  padding: '0 6px',
+                  borderRadius: '4px',
+                  backgroundColor: '#f3f4f6',
+                  border: '1px solid #e5e7eb',
+                  fontFamily:
+                    'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                  fontSize: '0.88em',
+                  lineHeight: '1.5'
+                }"
+              >
+                <InlineCodeEditable
+                  :text="
+                    ((element as CustomInline).data as InlineCodeData | undefined)?.text ?? ''
+                  "
+                  @update="(t) => onInlineCodeUpdate(element as CustomInline, t)"
+                />
+              </span>
             </template>
 
             <!-- mention popover -->
