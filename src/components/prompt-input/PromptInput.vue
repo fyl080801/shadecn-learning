@@ -749,11 +749,11 @@ defineExpose({
     data-slate-node="value"
     :data-placeholder="placeholder"
     :class="[
-      'min-h-40 w-full rounded-md border border-input bg-background p-3 text-sm leading-7',
+      'relative min-h-40 w-full rounded-md border border-input bg-background p-3 text-sm leading-7',
       'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
       'whitespace-pre-wrap',
-      isDocumentEmpty &&
-        'before:content-[attr(data-placeholder)] before:text-muted-foreground before:pointer-events-none'
+      isDocumentEmpty && !isFocused &&
+        'before:content-[attr(data-placeholder)] before:text-muted-foreground before:pointer-events-none before:absolute before:left-3 before:top-3 before:leading-7'
     ]"
     @beforeinput="onBeforeInput"
     @keydown="onKeydown"
