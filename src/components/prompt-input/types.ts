@@ -108,14 +108,36 @@ export type TriggerContext = {
   range: Range
 }
 
+/**
+ * One slice produced by a plugin's {@link PromptPlugin.parse}.
+ *
+ *   - `text` : a chunk of plain text the plugin did **not** consume.  It
+ *     will be re-fed to other plugins (in registration order, latest first)
+ *     until no plugin claims it.
+ *   - `node` : a chunk the plugin recognised; the editor turns it into an
+ *     inline-void {@link CustomInline} of `type` carrying `data`.
+ *
+ * Authors typically build these via the `splitByRegex` helper exported
+ * from `prompt-input`.
+ */
+export type ParsedSegment =
+  | { kind: 'text'; text: string }
+  | { kind: 'node'; type: string; data?: unknown }
+
 export interface PromptPlugin {
   /** Unique name; routes slots `element:<name>` and `portal:<name>`. */
   name: string
+  /**
+   * Optional input-trigger spec.  When absent the plugin **does not** open
+   * a popover on typing — it can still participate in text↔model parsing
+   * via {@link parse}/{@link serialize}.
+   */
   trigger?: PluginTrigger
   inline?: PluginInlineSpec
   /**
    * Replace `payload.range` with an inline node carrying `payload.data`.
-   * Default behaviour is provided when omitted.
+   * Default behaviour is provided when omitted (only meaningful for
+   * plugins that declare a {@link trigger}).
    */
   commit?: (
     editor: Editor,
@@ -123,6 +145,22 @@ export interface PromptPlugin {
   ) => void
   /** Intercept keydown while this plugin's popover is active. */
   onKeyDown?: (event: KeyboardEvent, ctx: TriggerContext) => boolean
+  /**
+   * Split a chunk of plain text into a sequence of segments.  Anything the
+   * plugin does not recognise should be returned as `{ kind: 'text', text }`
+   * so that other plugins (and the editor) can keep processing it.
+   *
+   * **Override semantics:** the editor runs `parse` in *reverse* registration
+   * order, so a plugin registered later sees the text first and may "claim"
+   * substrings before earlier plugins do.
+   */
+  parse?: (text: string) => ParsedSegment[]
+  /**
+   * Render a {@link CustomInline} produced by this plugin back to its
+   * source text representation.  Required if {@link parse} can emit nodes
+   * of this plugin's type and the editor's value should round-trip.
+   */
+  serialize?: (node: CustomInline) => string
 }
 
 // --- editor --------------------------------------------------------------
@@ -144,6 +182,15 @@ export type Editor = {
   deleteForward: (unit?: 'character' | 'word' | 'line' | 'block') => void
   /** Apply a transform and notify subscribers. */
   apply: () => void
+  /**
+   * Roll back the last content-changing commit (selection-only commits
+   * are intentionally **not** undo'able on their own; they ride along
+   * with the next content commit).  No-op when the history stack is
+   * empty.
+   */
+  undo: () => void
+  /** Re-apply the most recently undone commit. */
+  redo: () => void
   /** Plugin registry keyed by plugin.name (read-only outside core). */
   __plugins?: Map<string, PromptPlugin>
 }

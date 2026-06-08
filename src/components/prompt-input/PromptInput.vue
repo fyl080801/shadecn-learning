@@ -26,27 +26,40 @@ import {
 } from "./operations"
 import { getTriggerPattern } from "./definePlugin"
 import { readModelRange, applyDOMRange, toDOMRange } from "./selection"
+import { modelToText, textToModel } from "./serialize"
 import type {
-  Descendant,
   Editor as EditorT,
   Paragraph,
   CustomInline,
   PromptPlugin,
   Range as RangeType,
-  TriggerContext
+  TriggerContext,
+  Descendant
 } from "./types"
 
+/**
+ * Props
+ *
+ *   - `modelValue` : the editor's value as a **string**.  Plugins drive how
+ *     inline tokens (e.g. `@[name](id)`, `{{Ref 3}}`) round-trip.  Use
+ *     `v-model` to two-way bind.
+ *   - `placeholder` : shown when the document is empty.
+ *
+ * The editor never emits its internal `Descendant[]` shape; consumers only
+ * deal with strings.
+ */
 const props = withDefaults(
   defineProps<{
     editor: EditorT
-    initialValue: Descendant[]
+    modelValue?: string
     placeholder?: string
   }>(),
-  { placeholder: "输入触发字符（如 @）打开菜单…" }
+  { modelValue: "", placeholder: "输入触发字符（如 @）打开菜单…" }
 )
 
 const emit = defineEmits<{
-  (e: "change", value: Descendant[]): void
+  (e: "update:modelValue", value: string): void
+  (e: "change", value: string): void
   (e: "keydown", event: KeyboardEvent): void
   (e: "select", range: RangeType | null): void
   (e: "focus"): void
@@ -198,8 +211,24 @@ watch(activeTrigger, () => {
 
 let onDocumentSelectionChange: (() => void) | null = null
 
+/**
+ * Last value we emitted via `update:modelValue`.  We use it to:
+ *   1. avoid emitting an event when the value hasn't actually changed, and
+ *   2. detect when an externally-set `modelValue` is *different* from what
+ *      the editor currently holds, so we can rebuild the model — without
+ *      this guard a parent that forwards `update:modelValue` straight back
+ *      via `v-model` would create a write-loop.
+ */
+let lastEmittedText = ""
+
+const buildInitialModel = (): Descendant[] =>
+  textToModel(props.modelValue ?? "", plugins.value)
+
 onMounted(() => {
-  initializeEditor(props.editor, props.initialValue)
+  const initial = buildInitialModel()
+  initializeEditor(props.editor, initial)
+  // Seed the cache so the first revision change does not spuriously emit.
+  lastEmittedText = modelToText(props.editor.children, plugins.value)
   onDocumentSelectionChange = () => {
     if (!isFocused.value) return
     flushSelectionFromDOM()
@@ -222,10 +251,28 @@ watch(
   () => {
     nextTick(() => {
       applyModelSelectionToDOM()
-      emit("change", props.editor.children)
+      const text = modelToText(props.editor.children, plugins.value)
+      if (text !== lastEmittedText) {
+        lastEmittedText = text
+        emit("update:modelValue", text)
+        emit("change", text)
+      }
       detectTrigger()
       positionPopover()
     })
+  }
+)
+
+// External value changes: rebuild the model only when the new value
+// differs from what we last emitted (otherwise the parent's v-model echo
+// would re-initialise on every keystroke and wipe the caret).
+watch(
+  () => props.modelValue,
+  (next) => {
+    const incoming = next ?? ""
+    if (incoming === lastEmittedText) return
+    lastEmittedText = incoming
+    initializeEditor(props.editor, textToModel(incoming, plugins.value))
   }
 )
 
@@ -289,6 +336,14 @@ const onBeforeInput = (event: InputEvent): void => {
     case "insertFromPaste":
       event.preventDefault()
       break
+    case "historyUndo":
+      event.preventDefault()
+      props.editor.undo()
+      break
+    case "historyRedo":
+      event.preventDefault()
+      props.editor.redo()
+      break
     default:
       break
   }
@@ -340,6 +395,73 @@ const syncCurrentLeafFromDOM = (): void => {
 
 // --- keyboard ----------------------------------------------------------
 
+/**
+ * Detect "the caret sits in an empty text leaf glued to an inline-void
+ * sibling" — the situation where a single ArrowLeft/ArrowRight visually
+ * does nothing because the browser stops on the zero-width FEFF char.
+ *
+ * Returns the desired post-move model point, or `null` if no special
+ * handling is needed (let the browser do its thing).
+ */
+const inlineHopTarget = (
+  reverse: boolean
+): { path: number[]; offset: number } | null => {
+  const editor = props.editor
+  const sel = editor.selection
+  if (!sel || !Range.isCollapsed(sel)) return null
+  const { path, offset } = sel.anchor
+  if (path.length < 2) return null
+  const [bi, ii] = path as [number, number]
+  const block = editor.children[bi]
+  if (!block || !("children" in block)) return null
+  const blockChildren = (block as Paragraph).children
+  const leaf = blockChildren[ii]
+  if (!leaf || "children" in leaf) return null
+  const leafText = (leaf as { text: string }).text
+
+  if (reverse) {
+    // Hop left over an inline that lives right before the current leaf
+    // when the caret sits at the leaf's start.
+    if (offset !== 0) return null
+    const prev = blockChildren[ii - 1]
+    if (!prev || !("children" in prev)) return null
+    if ((prev as { type?: string }).type === undefined) return null
+    // Land at the end of the text leaf preceding the inline (which
+    // normalisation guarantees to exist).
+    const beforeIdx = ii - 2
+    if (beforeIdx < 0) return null
+    const beforeLeaf = blockChildren[beforeIdx]
+    if (!beforeLeaf || "children" in beforeLeaf) return null
+    return {
+      path: [bi, beforeIdx],
+      offset: (beforeLeaf as { text: string }).text.length
+    }
+  } else {
+    // Hop right over an inline that lives right after the current leaf
+    // when the caret sits at the leaf's end.
+    if (offset !== leafText.length) return null
+    const next = blockChildren[ii + 1]
+    if (!next || !("children" in next)) return null
+    if ((next as { type?: string }).type === undefined) return null
+    const afterIdx = ii + 2
+    if (afterIdx >= blockChildren.length) return null
+    const afterLeaf = blockChildren[afterIdx]
+    if (!afterLeaf || "children" in afterLeaf) return null
+    return { path: [bi, afterIdx], offset: 0 }
+  }
+}
+
+const isUndoCombo = (e: KeyboardEvent): boolean =>
+  (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z"
+
+const isRedoCombo = (e: KeyboardEvent): boolean => {
+  if (e.altKey) return false
+  // Ctrl+Y on Win/Linux, Shift+Cmd+Z on macOS, Shift+Ctrl+Z everywhere.
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "z") return true
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "y") return true
+  return false
+}
+
 const onKeydown = (e: KeyboardEvent): void => {
   // Let the active plugin intercept first.
   const trigger = activeTrigger.value
@@ -355,6 +477,47 @@ const onKeydown = (e: KeyboardEvent): void => {
       return
     }
   }
+
+  // Undo / redo — wired to the editor's history stack.  We have to take
+  // over here because the browser's native contenteditable undo would
+  // mutate the DOM out from under our model.
+  if (isRedoCombo(e)) {
+    e.preventDefault()
+    props.editor.redo()
+    emit("keydown", e)
+    return
+  }
+  if (isUndoCombo(e)) {
+    e.preventDefault()
+    props.editor.undo()
+    emit("keydown", e)
+    return
+  }
+
+  // ArrowLeft / ArrowRight: jump over an inline-void in one keystroke
+  // when the caret would otherwise visually stall on the zero-width
+  // FEFF filler that lives in the empty text leaf adjacent to the
+  // inline.  We only intercept the *single-step* unmodified arrow keys
+  // so that Shift-selection / Option-skip-by-word keep the browser's
+  // native behaviour.
+  if (
+    !e.shiftKey &&
+    !e.altKey &&
+    !e.ctrlKey &&
+    !e.metaKey &&
+    (e.key === "ArrowLeft" || e.key === "ArrowRight")
+  ) {
+    const target = inlineHopTarget(e.key === "ArrowLeft")
+    if (target) {
+      e.preventDefault()
+      Transforms.select(props.editor, {
+        anchor: { path: target.path, offset: target.offset },
+        focus: { path: target.path, offset: target.offset }
+      })
+      return
+    }
+  }
+
   emit("keydown", e)
 }
 

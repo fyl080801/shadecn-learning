@@ -84,6 +84,15 @@ export const RangeCreate = (
   focus: focus ?? anchor
 })
 
+/** Deep-copy a range so undo/redo stacks don't alias live selections. */
+const cloneRange = (range: RangeType | null): RangeType | null => {
+  if (!range) return null
+  return {
+    anchor: { path: range.anchor.path.slice(), offset: range.anchor.offset },
+    focus: { path: range.focus.path.slice(), offset: range.focus.offset }
+  }
+}
+
 export const Range = {
   edges: RangeEdges,
   isCollapsed: RangeIsCollapsed,
@@ -1026,6 +1035,25 @@ const installPluginRecognizers = (editor: EditorType): void => {
 export const createEditor = (
   options: CreateEditorOptions = {}
 ): CreateEditorResult => {
+  /**
+   * History stacks.  A snapshot is `{ children, selection }`; we push
+   * to `undoStack` whenever `apply()` runs after a content-changing
+   * commit (i.e. the `children` reference moved).  Selection-only
+   * commits (e.g. `Transforms.select`, caret moves) do **not** create
+   * a new history entry — they are folded into the next content commit
+   * so a single `Ctrl+Z` rolls back the last visible edit, not just a
+   * caret jump.
+   *
+   * `historyMuted` is true while we are *replaying* an undo/redo so
+   * the resulting `apply()` doesn't push onto the stack again.
+   */
+  type Snapshot = { children: Descendant[]; selection: RangeType | null }
+  const undoStack: Snapshot[] = []
+  const redoStack: Snapshot[] = []
+  const HISTORY_LIMIT = 100
+  let lastChildrenRef: Descendant[] | null = null
+  let historyMuted = false
+
   const editor: EditorType = reactive({
     children: [] as Descendant[],
     selection: null as RangeType | null,
@@ -1043,10 +1071,65 @@ export const createEditor = (
       EditorDeleteForward(this)
     },
     apply() {
+      // Push to undo stack iff this commit changed `children` and we're
+      // not currently replaying history.
+      if (!historyMuted && this.children !== lastChildrenRef) {
+        if (lastChildrenRef !== null) {
+          undoStack.push({
+            children: lastChildrenRef,
+            selection: lastSelectionSnapshot
+          })
+          if (undoStack.length > HISTORY_LIMIT) undoStack.shift()
+          // A fresh edit invalidates the redo branch.
+          redoStack.length = 0
+        }
+        lastChildrenRef = this.children
+        lastSelectionSnapshot = cloneRange(this.selection)
+      } else if (!historyMuted) {
+        // Selection-only commit: keep tracking the latest selection so
+        // it lands in the next snapshot.
+        lastSelectionSnapshot = cloneRange(this.selection)
+      }
       this.revision = this.revision + 1
+    },
+    undo() {
+      const prev = undoStack.pop()
+      if (!prev) return
+      // Stash current state on the redo stack before rolling back.
+      redoStack.push({
+        children: this.children,
+        selection: cloneRange(this.selection)
+      })
+      historyMuted = true
+      this.children = prev.children
+      this.selection = cloneRange(prev.selection)
+      lastChildrenRef = this.children
+      lastSelectionSnapshot = cloneRange(this.selection)
+      this.revision = this.revision + 1
+      historyMuted = false
+    },
+    redo() {
+      const next = redoStack.pop()
+      if (!next) return
+      undoStack.push({
+        children: this.children,
+        selection: cloneRange(this.selection)
+      })
+      historyMuted = true
+      this.children = next.children
+      this.selection = cloneRange(next.selection)
+      lastChildrenRef = this.children
+      lastSelectionSnapshot = cloneRange(this.selection)
+      this.revision = this.revision + 1
+      historyMuted = false
     },
     __plugins: new Map<string, PromptPlugin>()
   }) as unknown as EditorType
+
+  // Tracks the selection that was current at the time of the last
+  // content-bearing snapshot.  Defined out here (instead of inside the
+  // reactive object) so the closures in `apply/undo/redo` can mutate it.
+  let lastSelectionSnapshot: RangeType | null = null
 
   installPluginRecognizers(editor)
 

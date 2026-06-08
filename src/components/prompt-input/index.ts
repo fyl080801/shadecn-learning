@@ -1,12 +1,21 @@
 /**
  * Public surface of `prompt-input`.
  *
+ * The component's value is a plain string; plugins decide how inline
+ * tokens (e.g. `@[name](id)`, `{{Ref 3}}`) round-trip through `parse`
+ * and `serialize` hooks.  Trigger-driven popovers remain optional.
+ *
  * Recommended API (plugin-based):
  *
  *   const { editor, addPlugin } = createEditor()
- *   addPlugin(definePlugin({ name: 'mention', trigger: { key: '@' } }))
+ *   addPlugin(definePlugin({
+ *     name: 'mention',
+ *     trigger: { key: '@' },          // optional — input popover
+ *     parse: (text) => …,             // text → segments
+ *     serialize: (node) => …          // node → text
+ *   }))
  *
- *   <PromptInput :editor :initial-value>
+ *   <PromptInput v-model="text" :editor>
  *     <template #element:mention="{ element, attributes }">…</template>
  *     <template #portal:mention="{ trigger, commit, close }">…</template>
  *   </PromptInput>
@@ -40,6 +49,8 @@ export {
   findBlockElement
 } from "./selection"
 
+export { splitByRegex, textToModel, modelToText } from "./serialize"
+
 export { characterSource, CHARACTERS } from "./characters"
 
 export type {
@@ -57,7 +68,8 @@ export type {
   PromptPlugin,
   PluginTrigger,
   PluginInlineSpec,
-  TriggerContext
+  TriggerContext,
+  ParsedSegment
 } from "./types"
 
 export type {

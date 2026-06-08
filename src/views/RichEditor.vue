@@ -1,16 +1,17 @@
 <script setup lang="ts">
 /**
- * RichEditor — Vue port of Slate's `mentions.tsx` example, refactored to
- * exercise the plugin-based PromptInput API.  Read this file top-to-bottom
- * and you should still recognise the original Slate flow.
+ * RichEditor — exercises the plugin-driven `<PromptInput>` with a string
+ * `v-model`.  The editor's value is the raw string seen in the textarea
+ * on the right; plugins decide how inline tokens round-trip.
  *
- * Differences from the React example:
- *   - The editor is built with `createEditor({ plugins })` and plugins
- *     are registered through the plugin protocol.
- *   - "Mention" is no longer baked into the editor; it is just a plugin
- *     authored here in the view layer.
- *   - The popover renders inside `<PromptInput #portal:mention>` and is
- *     fully controlled by this view; the editor only positions it.
+ * Three plugins are wired in:
+ *
+ *   1. `mention`  — input trigger `@`, syntax `@[Name](id)`.
+ *   2. `ref`      — no trigger, syntax `{{Ref N}}`.
+ *   3. `camera`   — no trigger, syntax `{{Camera}}`.
+ *
+ * All inline rendering and popover content stays here in the view layer;
+ * `<PromptInput>` only talks plain strings.
  */
 import { computed, ref } from "vue"
 import {
@@ -27,23 +28,18 @@ import {
   PromptInput,
   createEditor,
   definePlugin,
-  initializeEditor,
   characterSource,
-  createText,
-  createInline,
-  createParagraph
+  splitByRegex
 } from "@/components/prompt-input"
 import type {
-  Descendant,
   CustomInline,
-  TriggerContext,
-  MentionItem
+  MentionItem,
+  ParsedSegment,
+  TriggerContext
 } from "@/components/prompt-input"
 
-// --- mention plugin (lives entirely in the view layer) -----------------
+// --- mention plugin (with trigger) -------------------------------------
 
-// Local UI state for the mention popover; `definePlugin.onKeyDown` reads
-// these refs to drive ↑/↓/Tab/Enter navigation.
 const search = ref("")
 const index = ref(0)
 const chars = computed<MentionItem[]>(() =>
@@ -54,34 +50,89 @@ const mentionPlugin = definePlugin({
   name: "mention",
   trigger: { key: "@" },
   inline: { type: "mention" },
-  onKeyDown(e, _ctx) {
-    if (chars.value.length === 0) return false
-    switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault()
-        index.value =
-          index.value >= chars.value.length - 1 ? 0 : index.value + 1
-        return true
-      case "ArrowUp":
-        e.preventDefault()
-        index.value =
-          index.value <= 0 ? chars.value.length - 1 : index.value - 1
-        return true
-      case "Tab":
-      case "Enter": {
-        e.preventDefault()
-        const pick = chars.value[index.value]
-        if (pick) commitPick(pick)
-        return true
-      }
-    }
-    return false
+  parse(text): ParsedSegment[] {
+    return splitByRegex(text, /@\[([^\]]+)\]\(([^)]+)\)/g, (m) => ({
+      kind: "node",
+      type: "mention",
+      data: {
+        character: m[1] ?? "",
+        id: m[2] ?? ""
+      } satisfies MentionItem
+    }))
+  },
+  serialize(node): string {
+    const data = (node.data ?? {}) as Partial<MentionItem>
+    const character = data.character ?? node.character ?? ""
+    const id = data.id ?? character
+    return `@[${character}](${id})`
+  },
+  // onKeyDown(e) {
+  //   if (chars.value.length === 0) return false
+  //   switch (e.key) {
+  //     case "ArrowDown":
+  //       e.preventDefault()
+  //       index.value =
+  //         index.value >= chars.value.length - 1 ? 0 : index.value + 1
+  //       return true
+  //     case "ArrowUp":
+  //       e.preventDefault()
+  //       index.value =
+  //    index.value <= 0 ? chars.value.length - 1 : index.value - 1
+  //       return true
+  //     case "Tab":
+  //     case "Enter": {
+  //       e.preventDefault()
+  //       const pick = chars.value[index.value]
+  //       if (pick) commitPick(pick)
+  //       return true
+  //     }
+  //   }
+  //   return false
+  // }
+})
+
+// --- ref plugin (no trigger) -------------------------------------------
+
+type RefData = { index: number }
+
+const refPlugin = definePlugin({
+  name: "ref",
+  inline: { type: "ref" },
+  parse(text): ParsedSegment[] {
+    return splitByRegex(text, /\{\{Ref\s+(\d+)\}\}/g, (m) => ({
+      kind: "node",
+      type: "ref",
+      data: { index: Number(m[1]) } satisfies RefData
+    }))
+  },
+  serialize(node): string {
+    const data = (node.data ?? { index: 0 }) as RefData
+    return `{{Ref${data.index}}}`
+  }
+})
+
+// --- camera plugin (no trigger) ----------------------------------------
+
+const cameraPlugin = definePlugin({
+  name: "camera",
+  inline: { type: "camera" },
+  parse(text): ParsedSegment[] {
+    return splitByRegex(text, /\{\{Camera\}\}/g, () => ({
+      kind: "node",
+      type: "camera",
+      data: {}
+    }))
+  },
+  serialize(): string {
+    return "{{Camera}}"
   }
 })
 
 // --- editor instance ---------------------------------------------------
 
-const { editor } = createEditor({ plugins: [mentionPlugin] })
+const { editor } = createEditor({
+  plugins: [mentionPlugin, refPlugin, cameraPlugin]
+})
 
 // --- popover commit ----------------------------------------------------
 
@@ -91,8 +142,6 @@ const setCommitFn = (fn: (p: { data: unknown }) => void): void => {
 }
 
 const commitPick = (item: MentionItem): void => {
-  // Persist the full data payload on the inline node so the renderer can
-  // show whatever fields it needs.
   _commitFn?.({ data: item })
   search.value = ""
   index.value = 0
@@ -115,59 +164,30 @@ const onTriggerClose = (): void => {
   index.value = 0
 }
 
-// --- initial value -----------------------------------------------------
+// --- v-model (string value) -------------------------------------------
 
-const initialValue: Descendant[] = [
-  createParagraph([
-    createText("This example shows how you might implement a simple "),
-    createText("@-mentions", { bold: true }),
-    createText(
-      " feature that lets users autocomplete mentioning a user by their " +
-        "username. Which, in this case means Star Wars characters. The "
-    ),
-    createText("mentions", { bold: true }),
-    createText(" are rendered as "),
-    createText("void inline elements", { code: true }),
-    createText(" inside the document.")
-  ]),
-  createParagraph([
-    createText("Try mentioning characters, like "),
-    createInline("mention", {
-      id: "r2-d2",
-      character: "R2-D2"
-    } satisfies MentionItem),
-    createText(" or "),
-    createInline("mention", {
-      id: "mace-windu",
-      character: "Mace Windu"
-    } satisfies MentionItem),
-    createText("!")
-  ])
-]
+const initialText =
+  "This example shows how you might implement a simple @-mentions feature " +
+  "that lets users autocomplete mentioning a user by their username. " +
+  "Which, in this case means Star Wars characters.\n\n" +
+  "Try mentioning characters, like @[R2-D2](r2-d2) or " +
+  "@[Mace Windu](mace-windu)! You can also drop refs like {{Ref 1}} or a " +
+  "{{Camera}} placeholder anywhere in the text."
+
+const text = ref(initialText)
 
 const reset = (): void => {
-  initializeEditor(editor, initialValue)
+  text.value = initialText
 }
 
-// --- mentions for the side panel ---------------------------------------
+// --- live mention list (parsed straight from the string) --------------
 
 const modelMentions = computed(() => {
   const out: Array<{ id: string; character: string }> = []
-  for (const block of editor.children as Descendant[]) {
-    if ("children" in block) {
-      for (const child of (block as { children: Descendant[] }).children) {
-        if (
-          "children" in child &&
-          (child as { type?: string }).type === "mention"
-        ) {
-          const m = child as CustomInline & { character?: string }
-          const data = (m.data ?? {}) as Partial<MentionItem>
-          const character = data.character ?? m.character ?? ""
-          const id = data.id ?? character
-          out.push({ id, character })
-        }
-      }
-    }
+  const re = /@\[([^\]]+)\]\(([^)]+)\)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text.value)) !== null) {
+    out.push({ character: m[1] ?? "", id: m[2] ?? "" })
   }
   return out
 })
@@ -177,17 +197,20 @@ const modelMentions = computed(() => {
   <div class="container mx-auto max-w-6xl space-y-6 p-6">
     <header class="space-y-2">
       <h1 class="text-2xl font-semibold tracking-tight">
-        Rich Editor · @ Mentions（Plugin API）
+        Rich Editor · Plugin-driven string v-model
       </h1>
       <p class="text-sm text-muted-foreground">
-        Vue 3 port of
-        <a
-          href="https://github.com/ianstormtaylor/slate/blob/main/site/examples/ts/mentions.tsx"
-          target="_blank"
-          class="underline"
-        >slate/site/examples/ts/mentions.tsx</a>. 输入
-        <code class="rounded bg-muted px-1.5 py-0.5 text-xs">@</code> 触发，
-        ↑/↓ 导航，Enter/Tab 选中，Esc 关闭。
+        值类型为字符串。<code class="rounded bg-muted px-1.5 py-0.5 text-xs"
+          >@</code
+        >
+        触发 mention，<code v-pre class="rounded bg-muted px-1.5 py-0.5 text-xs"
+          >{{Ref N}}</code
+        >
+        与
+        <code v-pre class="rounded bg-muted px-1.5 py-0.5 text-xs"
+          >{{Camera}}</code
+        >
+        由插件解析为不同的 inline 元素。
       </p>
     </header>
 
@@ -211,20 +234,20 @@ const modelMentions = computed(() => {
         </CardHeader>
         <CardContent>
           <PromptInput
+            v-model="text"
             :editor="editor"
-            :initial-value="initialValue"
             @trigger-open="onTriggerOpen"
             @trigger-search="onTriggerSearch"
             @trigger-close="onTriggerClose"
           >
-            <!-- inline node renderer keyed by plugin name -->
+            <!-- mention -->
             <template #element:mention="{ element, attributes }">
               <span
                 v-bind="attributes"
                 contenteditable="false"
                 :style="{
                   padding: '3px 3px 2px',
-                  margin: '0 1px',
+              margin: '0 1px',
                   verticalAlign: 'baseline',
                   display: 'inline-block',
                   borderRadius: '4px',
@@ -239,10 +262,49 @@ const modelMentions = computed(() => {
               </span>
             </template>
 
-            <!-- popover content keyed by plugin name -->
+            <!-- ref -->
+            <template #element:ref="{ element, attributes }">
+              <span
+                v-bind="attributes"
+                contenteditable="false"
+                :style="{
+                  padding: '2px 6px',
+                  margin: '0 1px',
+                  verticalAlign: 'baseline',
+                  display: 'inline-block',
+                  borderRadius: '4px',
+                  backgroundColor: '#dbeafe',
+                  color: '#1d4ed8',
+                  fontSize: '0.85em'
+                }"
+              >
+                Ref
+                {{ ((element as CustomInline).data as { index: number }).index }}
+              </span>
+            </template>
+
+            <!-- camera -->
+            <template #element:camera="{ attributes }">
+              <span
+                v-bind="attributes"
+                contenteditable="false"
+                :style="{
+                  padding: '2px 6px',
+                  margin: '0 1px',
+                  verticalAlign: 'baseline',
+                  display: 'inline-block',
+                  borderRadius: '4px',
+                  backgroundColor: '#fef3c7',
+                  color: '#92400e',
+                  fontSize: '0.85em'
+                }"
+              >
+                📷 Camera
+            </span>
+            </template>
+
+            <!-- mention popover -->
             <template #portal:mention="{ commit, close }">
-              <!-- Capture commit so `onKeyDown` (running outside the slot
-                   scope) can apply selection too. -->
               <template
                 v-if="(setCommitFn(commit as (p: { data: unknown }) => void), true)"
               />
@@ -287,20 +349,20 @@ const modelMentions = computed(() => {
 
       <Card>
         <CardHeader>
-          <CardTitle>Live document model</CardTitle>
-          <CardDescription>Reactive snapshot of the model</CardDescription>
+          <CardTitle>Live string value</CardTitle>
+          <CardDescription>The v-model is a plain string</CardDescription>
         </CardHeader>
         <CardContent class="space-y-4">
           <div>
             <p
               class="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground"
             >
-              Mentions
+              Mentions (parsed from string)
             </p>
             <div
               v-if="modelMentions.length === 0"
               class="text-sm text-muted-foreground"
-            >
+          >
               (empty)
             </div>
             <ul v-else class="space-y-1.5">
@@ -324,11 +386,11 @@ const modelMentions = computed(() => {
             <p
               class="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground"
             >
-              Model
+              Raw string
             </p>
             <pre
-              class="max-h-72 overflow-auto rounded-md bg-muted/40 p-2 text-xs leading-relaxed"
-            ><code>{{ JSON.stringify(editor.children, null, 2) }}</code></pre>
+              class="max-h-72 overflow-auto rounded-md bg-muted/40 p-2 text-xs leading-relaxed whitespace-pre-wrap"
+            ><code>{{ text }}</code></pre>
           </div>
         </CardContent>
       </Card>
