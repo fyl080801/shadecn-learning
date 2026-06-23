@@ -360,7 +360,7 @@ const replaceLeafText = (
   const inline = block.children[inlineIdx]
   if (!isCustomText(inline)) return null
   const newBlockChildren = block.children.map((c, i) =>
-    i === inlineIdx ? ({ ...c,text: newText } as CustomText) : c
+    i === inlineIdx ? ({ ...c, text: newText } as CustomText) : c
   )
   return children.map((b, i) =>
     i === blockIdx ? ({ ...b, children: newBlockChildren } as Paragraph) : b
@@ -410,7 +410,7 @@ const EditorInsertText = (editor: EditorType, text: string): void => {
   const inline = getText(editor, at.path)
   if (!inline) return
   const newText =
-  inline.text.slice(0, at.offset) + text + inline.text.slice(at.offset)
+    inline.text.slice(0, at.offset) + text + inline.text.slice(at.offset)
   const newChildren = replaceLeafText(editor.children, at.path, newText)
   if (!newChildren) return
   const block = getBlock(editor, at.path[0] ?? 0)
@@ -470,7 +470,7 @@ const deleteRange = (editor: EditorType, range: RangeType): void => {
       if (bi === sBlock && ii < sInline) {
         newInlines.push(inline)
         continue
-    }
+      }
       if (bi === eBlock && ii > eInline) {
         newInlines.push(inline)
         continue
@@ -479,7 +479,7 @@ const deleteRange = (editor: EditorType, range: RangeType): void => {
         if (isCustomText(inline)) {
           newInlines.push({ ...inline, text: inline.text.slice(0, start.offset) })
         }
-    continue
+        continue
       }
       if (bi === eBlock && ii === eInline) {
         if (isCustomText(inline)) {
@@ -681,7 +681,7 @@ const EditorDeleteForward = (editor: EditorType): void => {
   }
 
   // Otherwise: delete first char of next text leaf.
-  const nextTextPath = nextTextLeaf(editor,at.path)
+  const nextTextPath = nextTextLeaf(editor, at.path)
   if (nextTextPath) {
     const nextLeaf = getText(editor, nextTextPath)
     if (nextLeaf && nextLeaf.text.length > 0) {
@@ -692,7 +692,7 @@ const EditorDeleteForward = (editor: EditorType): void => {
         newText
       )
       if (newChildren) {
-       const tl = textLeafIndex(block, inlineIdx)
+        const tl = textLeafIndex(block, inlineIdx)
         renormalizeAndCommit(editor, newChildren, {
           blockIdx,
           textLeafIdx: tl,
@@ -810,7 +810,7 @@ const EditorSplitBlock = (editor: EditorType): void => {
   // inlineIdx goes to the new block.
   const newCurChildren: Array<CustomText | CustomInline> = [
     ...block.children.slice(0, inlineIdx),
-    { text:beforeText }
+    { text: beforeText }
   ]
   const newBlockChildren: Array<CustomText | CustomInline> = [
     { text: afterText },
@@ -830,16 +830,6 @@ const EditorSplitBlock = (editor: EditorType): void => {
     offset: 0
   })
   editor.apply()
-}
-
-const EditorInsertFragmentText = (editor: EditorType, text: string): void => {
-  if (!text) return
-  const segments = text.split("\n")
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i]
-    if (seg) EditorInsertText(editor, seg)
-    if (i < segments.length - 1) EditorSplitBlock(editor)
-  }
 }
 
 // ---------- Transforms namespace --------------------------------------
@@ -901,7 +891,7 @@ export const Transforms = {
       const after: CustomText = { text: leaf.text.slice(offset) }
       const inserted = list as Array<CustomText | CustomInline>
       const newBlockChildren = [
-      ...block.children.slice(0, inlineIdx),
+        ...block.children.slice(0, inlineIdx),
         before,
         ...inserted,
         after,
@@ -944,10 +934,6 @@ export const Transforms = {
     EditorInsertText(editor, text)
   },
 
-  insertFragmentText(editor: EditorType, text: string): void {
-    EditorInsertFragmentText(editor, text)
-  },
-
   splitBlock(editor: EditorType): void {
     EditorSplitBlock(editor)
   }
@@ -960,21 +946,18 @@ export const initializeEditor = (
   initialValue: Descendant[]
 ): void => {
   commitChildren(editor, initialValue)
-  // Place caret at end of first text leaf in first block.
-  const first = editor.children[0]
-  if (isParagraph(first)) {
-    let lastTextIdx = -1
-    for (let i = 0; i < first.children.length; i++) {
-      if (isCustomText(first.children[i])) lastTextIdx = i
-    }
-    if (lastTextIdx >= 0) {
-      const leaf = first.children[lastTextIdx] as CustomText
-      commitSelection(
-        editor,
-        RangeCreate({ path: [0, lastTextIdx], offset: leaf.text.length })
-      )
-      editor.apply()
-      return
+  // Place caret at end of the last text leaf in the last block.
+  const children = editor.children
+  for (let bi = children.length - 1; bi >= 0; bi--) {
+    const block = children[bi]
+    if (!isParagraph(block)) continue
+    for (let ii = block.children.length - 1; ii >= 0; ii--) {
+      const leaf = block.children[ii]
+      if (isCustomText(leaf)) {
+        commitSelection(editor, RangeCreate({ path: [bi, ii], offset: leaf.text.length }))
+        editor.apply()
+        return
+      }
     }
   }
   commitSelection(editor, RangeCreate({ path: [0, 0], offset: 0 }))

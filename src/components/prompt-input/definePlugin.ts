@@ -23,7 +23,7 @@ export const definePlugin = (plugin: PromptPlugin): PromptPlugin => {
     inline: {
       type: plugin.inline?.type ?? plugin.name,
       isVoid: plugin.inline?.isVoid ?? true,
-    isInline: plugin.inline?.isInline ?? true
+      isInline: plugin.inline?.isInline ?? true
     }
   }
   // Provide a sensible default `commit`: replace the trigger range with an
@@ -33,7 +33,6 @@ export const definePlugin = (plugin: PromptPlugin): PromptPlugin => {
     filled.commit = (editor, { range, data }) => {
       Transforms.select(editor, range)
       Transforms.insertNodes(editor, createInline(type, data))
-      Transforms.move(editor)
     }
   }
   return filled

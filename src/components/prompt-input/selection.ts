@@ -91,7 +91,7 @@ export const toDOMPoint = (
     }
     const len = anchor.node.textContent?.length ?? 0
     return {
-  node: anchor.node,
+      node: anchor.node,
       offset: Math.max(0, Math.min(point.offset, len))
     }
   }
@@ -258,7 +258,7 @@ const resolveAroundInline = (
   const targetAttr = JSON.stringify(voidPath)
   const children = Array.from(block.children) as HTMLElement[]
   const idx = children.findIndex(
-    (c) => c.getAttribute("data-void-path")=== targetAttr
+    (c) => c.getAttribute("data-void-path") === targetAttr
   )
   if (idx < 0) return null
   const findLeafIn = (el: HTMLElement) =>
@@ -283,7 +283,7 @@ const resolveAroundInline = (
       const leafEl =
         children[i]!.getAttribute("data-leaf-path") !== null
           ? children[i]!
-        : findLeafIn(children[i]!)
+          : findLeafIn(children[i]!)
       if (leafEl && leafEl.getAttribute("data-leaf-path")) {
         const path = JSON.parse(
           leafEl.getAttribute("data-leaf-path") ?? "null"

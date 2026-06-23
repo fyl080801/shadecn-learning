@@ -7,6 +7,7 @@
  *   - `#element:<name>`     { element, attributes }      inline node renderer
  *   - `#element`            { element, attributes }      fallback renderer
  *   - `#portal:<name>`      { trigger, commit, close, editor }  popover content
+ *   - `#footer-action`                                  footer action area
  */
 import {
   computed,
@@ -15,14 +16,17 @@ import {
   onMounted,
   ref,
   watch,
-  useSlots
+  useSlots,
+  useAttrs,
+  Comment
 } from "vue"
 import {
   Transforms,
   Editor,
   Range,
   initializeEditor,
-  getText
+  getText,
+  pointsEqual
 } from "./operations"
 import { getTriggerPattern } from "./definePlugin"
 import { readModelRange, applyDOMRange, toDOMRange } from "./selection"
@@ -48,13 +52,45 @@ import type {
  * The editor never emits its internal `Descendant[]` shape; consumers only
  * deal with strings.
  */
+defineOptions({ inheritAttrs: false })
+
+const attrs = useAttrs()
+
 const props = withDefaults(
   defineProps<{
     editor: EditorT
     modelValue?: string
     placeholder?: string
+    /** Override the root container classes.  When omitted the default
+     *  light-theme utility classes are applied. */
+    containerClass?: string
+    /** Override the outer wrapper classes (border, background, border-radius).
+     *  Useful when footer needs to be inside the visual container. */
+    wrapperClass?: string
+    /** When true, the editor is read-only (contenteditable="false"). */
+    disabled?: boolean
+    /** Maximum visible character count (strips \n and zero-width spaces).
+     *  null / undefined = no limit, no footer rendered. */
+    maxLength?: number | null
+    /** Show character counter in footer. Requires maxLength to be set. */
+    showCounter?: boolean
+    /** Show clear button in footer. */
+    showClear?: boolean
+    /** 挂载时不自动聚焦 contenteditable，避免画布新建节点后焦点落入输入框导致 Delete 键失效。
+     *  用户点击输入区时仍按原生行为一次聚焦。画布配置节点场景启用。 */
+    deferFocusOnClick?: boolean
   }>(),
-  { modelValue: "", placeholder: "输入触发字符（如 @）打开菜单…" }
+  {
+    modelValue: "",
+    placeholder: "输入触发字符（如 @）打开菜单…",
+    containerClass: undefined,
+    wrapperClass: undefined,
+    disabled: false,
+    maxLength: null,
+    showCounter: false,
+    showClear: false,
+    deferFocusOnClick: false
+  }
 )
 
 const emit = defineEmits<{
@@ -67,6 +103,7 @@ const emit = defineEmits<{
   (e: "trigger-open", ctx: TriggerContext): void
   (e: "trigger-search", ctx: TriggerContext): void
   (e: "trigger-close"): void
+  (e: "exceed-limit", currentCount: number, limit: number): void
 }>()
 
 const slots = useSlots()
@@ -110,11 +147,114 @@ const pluginByInlineType = (type: string | undefined): PromptPlugin | null => {
   return null
 }
 
+// --- character counting & maxLength enforcement ----------------------------
+
+const ZERO_WIDTH_SPACE = "\u200B"
+const ZERO_WIDTH_REGEX = new RegExp(ZERO_WIDTH_SPACE, "g")
+
+const INPUT_LIMIT_TIP_TEXT = "输入内容超过最大限制，已被忽略"
+const PASTE_TRUNCATE_TIP_TEXT = "粘贴内容超过最大限制，已被截断"
+const LIMIT_TIP_DURATION = 3000
+
+/** Count visible characters (strips \n and zero-width spaces). */
+function getVisibleCharCount(text: string): number {
+  return text.replace(/\n/g, "").replace(ZERO_WIDTH_REGEX, "").length
+}
+
+/** Cached serialized text from the revision watcher — avoids double traversal. */
+const serializedText = ref("")
+
+/** Current visible character count based on the editor model. */
+const charCount = computed(() => getVisibleCharCount(serializedText.value))
+
+/** Count visible characters in the current selection. */
+function getSelectedVisibleCharCount(): number {
+  const sel = props.editor.selection
+  if (!sel || Range.isCollapsed(sel)) return 0
+  const selectedText = serializeRange(props.editor.children, sel, plugins.value)
+  return getVisibleCharCount(selectedText)
+}
+
+/**
+ * Truncate `insertText` so that after insertion the visible character count
+ * does not exceed `limit`.  Accounts for selected text being replaced.
+ */
+function truncateToMaxLength(
+  insertText: string,
+  currentCount: number,
+  selectedCount: number,
+  limit: number
+): { text: string; truncated: boolean } {
+  const available = limit - currentCount + selectedCount
+  if (available <= 0) return { text: "", truncated: insertText.length > 0 }
+  let visibleCount = 0
+  for (let i = 0; i < insertText.length; i += 1) {
+    const ch = insertText[i]
+    if (ch === "\n" || ch === ZERO_WIDTH_SPACE) continue
+    visibleCount += 1
+    if (visibleCount > available) {
+      return { text: insertText.slice(0, i), truncated: true }
+    }
+  }
+  return { text: insertText, truncated: false }
+}
+
+// --- limit tip state -------------------------------------------------------
+
+const limitTipVisible = ref(false)
+const limitTipText = ref("")
+let limitTipTimer: ReturnType<typeof setTimeout> | null = null
+
+function showLimitTip(message: string) {
+  if (limitTipVisible.value && limitTipText.value === message) return
+  limitTipText.value = message
+  limitTipVisible.value = true
+  if (limitTipTimer) {
+    clearTimeout(limitTipTimer)
+  }
+  limitTipTimer = setTimeout(() => {
+    limitTipVisible.value = false
+    limitTipTimer = null
+  }, LIMIT_TIP_DURATION)
+}
+
+// --- footer helpers --------------------------------------------------------
+
+/**
+ * 判断 footer-action 槽位是否实际渲染了内容。
+ * 仅检查 `slots['footer-action']` 函数是否存在是不够的——父组件声明了
+ * `<template #footer-action>` 但内部用 `v-if` 条件渲染时，槽位函数始终
+ * 存在，只是返回 Comment 占位节点。这里调用槽位函数并过滤掉 Comment
+ * 节点来判断是否有有效内容。
+ */
+const hasFooterActionContent = computed(() => {
+  const fn = slots["footer-action"]
+  if (!fn) return false
+  const vnodes = fn()
+  return vnodes.some((v) => v.type !== Comment)
+})
+
+const hasFooter = computed(
+  () =>
+    props.maxLength != null &&
+    (props.showCounter || hasFooterActionContent.value || limitTipVisible.value)
+)
+
+function handleClear() {
+  if (props.disabled) return
+  initializeEditor(props.editor, textToModel("", plugins.value))
+  lastEmittedText = ""
+  serializedText.value = ""
+  nextTick(() => rootEl.value?.focus())
+}
+
 // --- selection bridge --------------------------------------------------
 
 const applyModelSelectionToDOM = (): void => {
   const root = rootEl.value
   if (!root) return
+  // 延迟聚焦模式：未聚焦时不主动写 DOM 选区，避免浏览器自动聚焦 contenteditable
+  if (props.deferFocusOnClick && !isFocused.value) return
   // 若当前焦点位于内联可编辑子区，外层不再覆盖 DOM 选区，避免抢走插件光标。
   const active = document.activeElement as HTMLElement | null
   if (active && active.closest && active.closest("[data-inline-editable]")) {
@@ -129,14 +269,7 @@ const applyModelSelectionToDOM = (): void => {
 
 const sameRange = (a: RangeType | null, b: RangeType | null): boolean => {
   if (!a || !b) return a === b
-  return (
-    a.anchor.offset === b.anchor.offset &&
-    a.focus.offset === b.focus.offset &&
-    a.anchor.path.length === b.anchor.path.length &&
-    a.anchor.path.every((v, i) => v === b.anchor.path[i]) &&
-    a.focus.path.length === b.focus.path.length &&
-    a.focus.path.every((v, i) => v === b.focus.path[i])
-  )
+  return pointsEqual(a.anchor, b.anchor) && pointsEqual(a.focus, b.focus)
 }
 
 const flushSelectionFromDOM = (): void => {
@@ -178,13 +311,6 @@ const detectTrigger = (): void => {
   const before = wordBefore && Editor.before(editor, wordBefore)
   const beforeRange = before && Editor.range(editor, before, start)
   const beforeText = beforeRange && Editor.string(editor, beforeRange)
-  const after = Editor.after(editor, start)
-  const afterRange = Editor.range(editor, start, after)
-  const afterText = Editor.string(editor, afterRange)
-  if (!afterText.match(/^(\s|$)/)) {
-    closeTrigger()
-    return
-  }
   if (!beforeText || !beforeRange) {
     closeTrigger()
     return
@@ -251,6 +377,13 @@ let onDocumentSelectionChange: (() => void) | null = null
  */
 let lastEmittedText = ""
 
+/**
+ * Reference to the `editor.children` array at the time of the last
+ * serialization.  When `revision` bumps but `children` hasn't changed
+ * (i.e. a selection-only commit), we skip the O(n) `modelToText` traversal.
+ */
+let lastSerializedChildren: Descendant[] | null = null
+
 const buildInitialModel = (): Descendant[] =>
   textToModel(props.modelValue ?? "", plugins.value)
 
@@ -258,14 +391,20 @@ onMounted(() => {
   const initial = buildInitialModel()
   initializeEditor(props.editor, initial)
   // Seed the cache so the first revision change does not spuriously emit.
-  lastEmittedText = modelToText(props.editor.children, plugins.value)
+  const initialText = modelToText(props.editor.children, plugins.value)
+  lastEmittedText = initialText
+  serializedText.value = initialText
+  lastSerializedChildren = props.editor.children
   onDocumentSelectionChange = () => {
     if (!isFocused.value) return
     flushSelectionFromDOM()
   }
   document.addEventListener("selectionchange", onDocumentSelectionChange)
   nextTick(() => {
-    if (rootEl.value) applyDOMRange(rootEl.value, props.editor.selection)
+    // 延迟聚焦模式：挂载时不主动设置 DOM 选区，避免浏览器自动聚焦 contenteditable
+    if (rootEl.value && !props.deferFocusOnClick) {
+      applyDOMRange(rootEl.value, props.editor.selection)
+    }
   })
 })
 
@@ -273,22 +412,32 @@ onBeforeUnmount(() => {
   if (onDocumentSelectionChange) {
     document.removeEventListener("selectionchange", onDocumentSelectionChange)
   }
+  if (limitTipTimer) {
+    clearTimeout(limitTipTimer)
+    limitTipTimer = null
+  }
 })
 
 // Sync model -> DOM on every revision bump and run trigger detection.
+// positionPopover is intentionally NOT called here — watch(activeTrigger) handles it
+// whenever the trigger state changes (open / search update / close).
 watch(
   () => props.editor.revision,
   () => {
     nextTick(() => {
       applyModelSelectionToDOM()
-      const text = modelToText(props.editor.children, plugins.value)
-      if (text !== lastEmittedText) {
-        lastEmittedText = text
-        emit("update:modelValue", text)
-        emit("change", text)
+      // Skip serialization when only selection changed (children reference unchanged).
+      if (props.editor.children !== lastSerializedChildren) {
+        lastSerializedChildren = props.editor.children
+        const text = modelToText(props.editor.children, plugins.value)
+        serializedText.value = text
+        if (text !== lastEmittedText) {
+          lastEmittedText = text
+          emit("update:modelValue", text)
+          emit("change", text)
+        }
       }
       detectTrigger()
-      positionPopover()
     })
   }
 )
@@ -302,9 +451,21 @@ watch(
     const incoming = next ?? ""
     if (incoming === lastEmittedText) return
     lastEmittedText = incoming
+    serializedText.value = incoming
     initializeEditor(props.editor, textToModel(incoming, plugins.value))
+    lastSerializedChildren = props.editor.children
   }
 )
+
+// --- wrapper click (forwards focus when clicking outside the editable) ---
+
+const onWrapperClick = (e: MouseEvent): void => {
+  if (props.disabled) return
+  const target = e.target as Node
+  if (rootEl.value && !rootEl.value.contains(target)) {
+    rootEl.value.focus()
+  }
+}
 
 // --- focus / blur ------------------------------------------------------
 
@@ -345,10 +506,30 @@ const onBeforeInput = (event: InputEvent): void => {
   const data = event.data ?? ""
 
   switch (type) {
-    case "insertText":
+    case "insertText": {
       event.preventDefault()
-      Transforms.insertText(props.editor, data)
+      const limit = props.maxLength
+      let textToInsert = data
+      let wasTruncated = false
+      if (limit != null && limit > 0) {
+        const result = truncateToMaxLength(
+          data,
+          charCount.value,
+          getSelectedVisibleCharCount(),
+          limit
+        )
+        textToInsert = result.text
+        wasTruncated = result.truncated
+      }
+      if (textToInsert) {
+        Transforms.insertText(props.editor, textToInsert)
+      }
+      if (wasTruncated) {
+        showLimitTip(INPUT_LIMIT_TIP_TEXT)
+        emit("exceed-limit", charCount.value, limit!)
+      }
       break
+    }
     case "insertCompositionText":
       break
     case "deleteContentBackward":
@@ -396,7 +577,26 @@ const onCompositionStart = (event: CompositionEvent): void => {
 const onCompositionEnd = (event: CompositionEvent): void => {
   if (isInsideEditableInline(event)) return
   composing.value = false
-  if (event.data) {
+  const limit = props.maxLength
+  if (event.data && limit != null && limit > 0) {
+    // Composition replaces in-progress text, not a model selection,
+    // so selectedCount is 0 and currentCount already reflects the
+    // pre-composition model state.
+    const result = truncateToMaxLength(event.data, charCount.value, 0, limit)
+    if (result.truncated) {
+      showLimitTip(INPUT_LIMIT_TIP_TEXT)
+      emit("exceed-limit", charCount.value, limit)
+    }
+    if (result.text) {
+      Transforms.insertText(props.editor, result.text)
+    }
+    // If the composition result was partially truncated, the DOM may
+    // still contain the full composition text — sync the leaf to
+    // discard the extra characters.
+    if (result.text !== event.data) {
+      syncCurrentLeafFromDOM()
+    }
+  } else if (event.data) {
     Transforms.insertText(props.editor, event.data)
   } else {
     syncCurrentLeafFromDOM()
@@ -491,13 +691,18 @@ const inlineHopTarget = (
 }
 
 const isUndoCombo = (e: KeyboardEvent): boolean =>
-  (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z"
+  (e.metaKey || e.ctrlKey) &&
+  !e.shiftKey &&
+  !e.altKey &&
+  e.key.toLowerCase() === "z"
 
 const isRedoCombo = (e: KeyboardEvent): boolean => {
   if (e.altKey) return false
   // Ctrl+Y on Win/Linux, Shift+Cmd+Z on macOS, Shift+Ctrl+Z everywhere.
-  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "z") return true
-  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "y") return true
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "z")
+    return true
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "y")
+    return true
   return false
 }
 
@@ -572,7 +777,22 @@ const onPaste = (e: ClipboardEvent): void => {
   if (text == null) return
   e.preventDefault()
   flushSelectionFromDOM()
-  insertSerializedText(text)
+  const limit = props.maxLength
+  if (limit != null && limit > 0) {
+    const result = truncateToMaxLength(
+      text,
+      charCount.value,
+      getSelectedVisibleCharCount(),
+      limit
+    )
+    if (result.truncated) {
+      showLimitTip(PASTE_TRUNCATE_TIP_TEXT)
+      emit("exceed-limit", charCount.value, limit)
+    }
+    insertSerializedText(result.text)
+  } else {
+    insertSerializedText(text)
+  }
 }
 
 /**
@@ -621,7 +841,6 @@ const insertSerializedText = (text: string): void => {
   })
 }
 
-
 // --- copy / cut / drag (real-string serialization) ---------------------
 
 /**
@@ -638,29 +857,26 @@ const serializeSelection = (): string | null => {
   return out.length > 0 ? out : null
 }
 
-const onCopy = (e: ClipboardEvent): void => {
-  if (composing.value) return
+const writeSelectionToClipboard = (e: ClipboardEvent): boolean => {
+  if (composing.value) return false
   // 内联可编辑子区自治：复制行为交给浏览器原生，子区文本即源文本。
-  if (isInsideEditableInline(e)) return
+  if (isInsideEditableInline(e)) return false
   const text = serializeSelection()
-  if (text == null) return
+  if (text == null) return false
   const cd = e.clipboardData
-  if (!cd) return
+  if (!cd) return false
   e.preventDefault()
   cd.setData("text/plain", text)
+  return true
+}
+
+const onCopy = (e: ClipboardEvent): void => {
+  writeSelectionToClipboard(e)
 }
 
 const onCut = (e: ClipboardEvent): void => {
-  if (composing.value) return
-  if (isInsideEditableInline(e)) return
-  const text = serializeSelection()
-  if (text == null) return
-  const cd = e.clipboardData
-  if (!cd) return
-  e.preventDefault()
-  cd.setData("text/plain", text)
   // 写入剪贴板后再删除选区，确保 undo 仍可回滚此次删除。
-  Transforms.delete(props.editor)
+  if (writeSelectionToClipboard(e)) Transforms.delete(props.editor)
 }
 
 const onDragStart = (e: DragEvent): void => {
@@ -696,7 +912,8 @@ const elementAttrs = (path: number[]) => ({
   "data-slate-node": "element",
   "data-slate-inline": "true",
   "data-slate-void": "true",
-  "data-void-path": JSON.stringify(path)
+  "data-void-path": JSON.stringify(path),
+  contenteditable: "false"
 })
 
 const slotForElement = (el: CustomInline): string => {
@@ -716,22 +933,36 @@ const isDocumentEmpty = computed(() => {
 
 // --- popover commit helper exposed to slot -----------------------------
 
-const commitForActive = (
-  payload: { range?: RangeType; data: unknown }
-): void => {
+const commitForActive = (payload: {
+  range?: RangeType
+  data: unknown
+}): void => {
   const trigger = activeTrigger.value
   if (!trigger) return
   const plugin = plugins.value.find((p) => p.name === trigger.name)
   if (!plugin?.commit) return
+  const limit = props.maxLength
   plugin.commit(props.editor, {
     range: payload.range ?? trigger.range,
     data: payload.data
   })
   closeTrigger()
+  // Post-commit limit check: if the commit pushed us over, undo it.
+  if (limit != null && limit > 0 && charCount.value > limit) {
+    props.editor.undo()
+    showLimitTip(INPUT_LIMIT_TIP_TEXT)
+    emit("exceed-limit", charCount.value, limit)
+  }
 }
 
 defineExpose({
   editor: props.editor,
+  /** The contenteditable root element (NOT the wrapper). */
+  editableEl: rootEl,
+  /** Current visible character count. */
+  charCount,
+  /** Allow external callers to trigger the limit tip. */
+  showLimitTip,
   toDOMRange: (range: RangeType) =>
     rootEl.value ? toDOMRange(rootEl.value, range) : null,
   closeTrigger,
@@ -741,98 +972,173 @@ defineExpose({
    */
   getSelectedText: (): string => serializeSelection() ?? "",
   /** 返回整篇文档的"真实字符串"，等价于当前 modelValue。 */
-  getFullText: (): string =>
-    modelToText(props.editor.children, plugins.value)
+  getFullText: (): string => modelToText(props.editor.children, plugins.value),
+  /** 重新定位 popover（画布场景视口变化时由外部调用）。 */
+  repositionPopover: positionPopover,
+  /** 聚焦编辑区。 */
+  focus: () => rootEl.value?.focus()
 })
 </script>
 
 <template>
   <div
-    ref="rootEl"
-    contenteditable="true"
-    spellcheck="false"
-    data-cy="prompt-input"
-    data-slate-editor="true"
-    data-slate-node="value"
-    :data-placeholder="placeholder"
     :class="[
-      'relative min-h-40 w-full rounded-md border border-input bg-background p-3 text-sm leading-7',
-      'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
-      'whitespace-pre-wrap',
-      isDocumentEmpty && !isFocused &&
-        'before:content-[attr(data-placeholder)] before:text-muted-foreground before:pointer-events-none before:absolute before:left-3 before:top-3 before:leading-7'
+      'prompt-input',
+      'relative w-full flex flex-col',
+      props.wrapperClass,
+      isFocused && 'prompt-input-focused'
     ]"
-    @beforeinput="onBeforeInput"
-    @keydown="onKeydown"
-    @click="onClick"
-    @focus="onFocus"
-    @blur="onBlur"
-    @paste="onPaste"
-    @copy="onCopy"
-    @cut="onCut"
-    @dragstart="onDragStart"
-    @compositionstart="onCompositionStart"
-    @compositionend="onCompositionEnd"
+    v-bind="attrs"
+    @click="onWrapperClick"
   >
     <div
-      v-for="(block, bi) in editor.children"
-      :key="`block-${bi}`"
-      :data-block-path="JSON.stringify([bi])"
-      data-slate-node="element"
-      class="my-0"
+      ref="rootEl"
+      :contenteditable="!props.disabled"
+      role="textbox"
+      :aria-disabled="props.disabled ? 'true' : undefined"
+      spellcheck="false"
+      data-cy="prompt-input"
+      data-slate-editor="true"
+      data-slate-node="value"
+      :data-placeholder="placeholder"
+      :class="[
+        props.containerClass ?? [
+          'relative min-h-40 w-full rounded-md border border-input bg-background p-3 text-sm leading-7 cursor-text',
+          'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
+          'whitespace-pre-wrap',
+          isDocumentEmpty &&
+            !isFocused &&
+            'before:content-[attr(data-placeholder)] before:text-muted-foreground before:pointer-events-none before:absolute before:left-3 before:top-3 before:leading-7'
+        ],
+        hasFooter ? 'flex-1 min-h-0' : 'flex-1'
+      ]"
+      @beforeinput="onBeforeInput"
+      @keydown="onKeydown"
+      @click="onClick"
+      @focus="onFocus"
+      @blur="onBlur"
+      @paste="onPaste"
+      @copy="onCopy"
+      @cut="onCut"
+      @dragstart="onDragStart"
+      @compositionstart="onCompositionStart"
+      @compositionend="onCompositionEnd"
     >
-      <template
-        v-for="(child, ci) in (block as Paragraph).children"
-        :key="`child-${bi}-${ci}`"
+      <div
+        v-for="(block, bi) in editor.children"
+        :key="`block-${bi}`"
+        :data-block-path="JSON.stringify([bi])"
+        data-slate-node="element"
+        class="my-0"
       >
-        <!-- inline-void element: route to `#element:<plugin>` slot -->
-        <slot
-          v-if="isInline(child)"
-          :name="slotForElement(child as CustomInline)"
-          :attributes="elementAttrs([bi, ci])"
-          :element="child"
+        <template
+          v-for="(child, ci) in (block as Paragraph).children"
+          :key="`child-${bi}-${ci}`"
         >
-          <!-- generic fallback if neither named slot nor `#element` exists -->
+          <!-- inline-void element: route to `#element:<plugin>` slot -->
           <slot
-            name="element"
+            v-if="isInline(child)"
+            :name="slotForElement(child as CustomInline)"
             :attributes="elementAttrs([bi, ci])"
             :element="child"
           >
-            <span
-              v-bind="elementAttrs([bi, ci])"
-              contenteditable="false"
-              class="px-1 mx-0.5 rounded bg-muted text-xs"
+            <!-- generic fallback if neither named slot nor `#element` exists -->
+            <slot
+              name="element"
+              :attributes="elementAttrs([bi, ci])"
+              :element="child"
             >
-              [{{ (child as CustomInline).type }}]
-            </span>
-          </slot>
-        </slot>
-        <!-- text leaf -->
-        <span v-else data-slate-node="text">
-          <span
-            data-slate-leaf="true"
-            :data-leaf-path="JSON.stringify([bi, ci])"
-          >
-            <template v-if="(child as { text: string }).text === ''">
               <span
-                v-if="isParaEmpty(block as Paragraph)"
-                data-slate-zero-width="n"
-                data-slate-length="0"
-              >&#xFEFF;<br /></span>
+                v-bind="elementAttrs([bi, ci])"
+                contenteditable="false"
+                class="px-1 mx-0.5 rounded bg-muted text-xs"
+              >
+                [{{ (child as CustomInline).type }}]
+              </span>
+            </slot>
+          </slot>
+          <!-- text leaf -->
+          <span v-else data-slate-node="text">
+            <span
+              data-slate-leaf="true"
+              :data-leaf-path="JSON.stringify([bi, ci])"
+            >
+              <template v-if="(child as { text: string }).text === ''">
+                <span
+                  v-if="isParaEmpty(block as Paragraph)"
+                  data-slate-zero-width="n"
+                  data-slate-length="0"
+                  >&#xFEFF;<br
+                /></span>
+                <span v-else data-slate-zero-width="z" data-slate-length="0"
+                  >&#xFEFF;</span
+                >
+              </template>
               <span
                 v-else
-                data-slate-zero-width="z"
-                data-slate-length="0"
-              >&#xFEFF;</span>
-            </template>
-            <span
-              v-else
-              data-slate-string="true"
-              style="white-space: pre-wrap;"
-            >{{ (child as { text: string }).text }}</span>
+                data-slate-string="true"
+                style="white-space: pre-wrap"
+                >{{ (child as { text: string }).text }}</span
+              >
+            </span>
           </span>
+        </template>
+      </div>
+    </div>
+
+    <!-- Footer: character counter, clear button, limit tip, and footer-action slot -->
+    <div
+      v-if="hasFooter"
+      class="prompt-input-footer shrink-0 flex items-stretch justify-between rounded-b-md px-3 py-2"
+    >
+      <div class="flex min-w-0 flex-1 items-center">
+        <span
+          v-if="limitTipVisible"
+          class="pointer-events-none truncate text-xs text-destructive"
+        >
+          {{ limitTipText }}
         </span>
-      </template>
+        <div
+          v-else-if="showCounter"
+          class="flex items-center gap-x-0.5 text-xs text-muted-foreground"
+        >
+          <span class="pointer-events-none min-w-[3.75rem] text-left"
+            >{{ charCount }} / {{ maxLength }}</span
+          >
+          <span
+            v-if="showClear && charCount > 0"
+            class="mx-1 h-3 w-px bg-border"
+            aria-hidden="true"
+          ></span>
+          <button
+            v-if="showClear && charCount > 0"
+            type="button"
+            class="pointer-events-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted cursor-pointer"
+            :disabled="props.disabled"
+            aria-label="清空内容"
+            @click="handleClear"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M18 6 6 18" />
+              <path d="m6 6 12 12" />
+            </svg>
+          </button>
+        </div>
+        <span v-else aria-hidden="true"></span>
+      </div>
+      <div class="flex items-center">
+        <slot name="footer-action" />
+      </div>
     </div>
   </div>
 
@@ -862,3 +1168,22 @@ defineExpose({
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.prompt-input {
+  font-size: 14px;
+  border: 1px solid hsl(var(--border));
+  cursor: text;
+}
+
+.prompt-input-focused {
+  box-shadow: 0 0 0 1px hsl(var(--border));
+}
+
+/* Align text leaves with inline-void elements (badges use vertical-align: middle).
+   Without this, plain text sits on the baseline while badges are middle-aligned,
+   causing the plain text to appear slightly higher than the badge's internal text. */
+.prompt-input :deep([data-slate-node="text"]) {
+  vertical-align: middle;
+}
+</style>

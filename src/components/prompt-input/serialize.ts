@@ -208,7 +208,7 @@ export const modelToText = (
         } else {
           console.warn(
             `[prompt-input] no serializer for inline type "${child.type}"; ` +
-              `node will be dropped from the string output`
+            `node will be dropped from the string output`
           )
         }
       } else {
@@ -245,9 +245,9 @@ const comparePoint = (
 const rangeEdges = (
   range: RangeType
 ): [
-  { path: number[]; offset: number },
-  { path: number[]; offset: number }
-] =>
+    { path: number[]; offset: number },
+    { path: number[]; offset: number }
+  ] =>
   comparePoint(range.anchor, range.focus) <= 0
     ? [range.anchor, range.focus]
     : [range.focus, range.anchor]
@@ -292,7 +292,7 @@ export const serializeRange = (
         } else {
           console.warn(
             `[prompt-input] no serializer for inline type "${child.type}"; ` +
-              `node will be dropped from selection serialization`
+            `node will be dropped from selection serialization`
           )
         }
       } else {
