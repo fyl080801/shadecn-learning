@@ -62,6 +62,11 @@ const router = createRouter({
       path: "/richeditor",
       name: "RichEditor",
       component: RichEditor
+    },
+    {
+      path: "/hic",
+      name: "HtmlInCanvas",
+      component: () => import('@/views/HiC.vue')
     }
   ]
 })
