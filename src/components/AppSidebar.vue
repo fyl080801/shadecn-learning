@@ -25,7 +25,6 @@ interface NavItem {
 const navItems: NavItem[] = [
   { label: "Home", to: "/", icon: Home },
   { label: "About", to: "/about", icon: Info },
-  { label: "3D Cube", to: "/3d-cube", icon: Box },
   { label: "贪吃蛇", to: "/snake", icon: Gamepad2 },
   { label: "2048", to: "/2048", icon: Grid3X3 },
   { label: "canvas3d", to: "/canvas3d", icon: Layers },

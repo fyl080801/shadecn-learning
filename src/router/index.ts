@@ -24,16 +24,6 @@ const router = createRouter({
       component: About
     },
     {
-      path: "/example",
-      name: "Example",
-      component: Example
-    },
-    {
-      path: "/3d-cube",
-      name: "3DCube",
-      component: Emu3DView
-    },
-    {
       path: "/demo3",
       name: "Demo3",
       component: Demo3
