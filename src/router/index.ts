@@ -57,6 +57,11 @@ const router = createRouter({
       path: "/hic",
       name: "HtmlInCanvas",
       component: () => import('@/views/HiC.vue')
+    },
+    {
+      path: "/three-editor",
+      name: "ThreeEditor",
+      component: () => import('@/views/ThreeEditor.vue')
     }
   ]
 })

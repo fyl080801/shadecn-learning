@@ -9,7 +9,14 @@ import { defineConfig } from "eslint/config"
 
 export default defineConfig(
   // Global ignores
-  { ignores: ["dist", "node_modules", "src/components/ui/**"] },
+  {
+    ignores: [
+      "dist",
+      "node_modules",
+      "src/components/ui/**",
+      "src/components/three-editor/**"
+    ]
+  },
   {
     plugins: {
       "@typescript-eslint": tseslint.plugin,
@@ -68,7 +75,8 @@ export default defineConfig(
       "@typescript-eslint/array-type": "off",
       "@typescript-eslint/no-empty-function": "off",
       "@typescript-eslint/prefer-function-type": "off",
-      "@typescript-eslint/consistent-generic-constructors": "off"
+      "@typescript-eslint/consistent-generic-constructors": "off",
+      "@typescript-eslint/no-explicit-any": "warn"
     }
   }
 )

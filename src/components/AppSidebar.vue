@@ -13,7 +13,8 @@ import {
   Gamepad2,
   Grid3X3,
   Layers,
-  Sun
+  Sun,
+  Boxes
 } from "lucide-vue-next"
 
 interface NavItem {
@@ -29,7 +30,8 @@ const navItems: NavItem[] = [
   { label: "2048", to: "/2048", icon: Grid3X3 },
   { label: "canvas3d", to: "/canvas3d", icon: Layers },
   { label: "lightscene", to: "/lightscene", icon: Sun },
-  { label: "richeditor", to: "/richeditor", icon: Sun }
+  { label: "richeditor", to: "/richeditor", icon: Sun },
+  { label: "Three Editor", to: "/three-editor", icon: Boxes }
 ]
 
 const route = useRoute()

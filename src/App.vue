@@ -5,7 +5,7 @@ import AppSidebar from '@/components/AppSidebar.vue'
 <template>
   <div class="flex h-screen overflow-hidden bg-background">
     <AppSidebar />
-    <main class="min-w-0 flex-1 overflow-auto">
+    <main class="min-w-0 flex-1 overflow-auto h-full">
       <RouterView />
     </main>
   </div>
