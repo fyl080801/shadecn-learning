@@ -1,0 +1,12 @@
+export { createEditor } from "./composables/useEditorContext"
+
+export { default as ThreeEditor } from "./ThreeEditor.vue"
+export { default as EditorMenubar } from "./EditorMenubar.vue"
+export { default as EditorSidebar } from "./EditorSidebar.vue"
+export { default as EditorSidebarResizer } from "./EditorSidebarResizer.vue"
+export { default as EditorToolbar } from "./EditorToolbar.vue"
+export { default as EditorViewport } from "./EditorViewport.vue"
+export { default as EditorPlayer } from "./EditorPlayer.vue"
+export { default as EditorScript } from "./EditorScript.vue"
+export { default as EditorAnimation } from "./EditorAnimation.vue"
+export { default as EditorAnimationResizer } from "./EditorAnimationResizer.vue"

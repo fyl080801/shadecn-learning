@@ -8,6 +8,7 @@ import { MultiCmdsCommand } from "./commands/MultiCmdsCommand"
 import { RemoveObjectCommand } from "./commands/RemoveObjectCommand"
 import { SetPositionCommand } from "./commands/SetPositionCommand"
 import { RenderImageDialog, RenderVideoDialog } from "./RenderDialogs"
+import { useEditor } from "./composables/useEditorContext"
 
 import {
   Menubar,
@@ -23,9 +24,7 @@ import {
   MenubarTrigger
 } from "@/components/ui/menubar"
 
-const props = defineProps<{ editor: any }>()
-
-const editor = props.editor
+const editor = useEditor()
 const strings = editor.strings
 const t = (key: string) => strings.getKey(key)
 
@@ -692,7 +691,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="bg-background absolute top-0 right-0 left-0 z-10 flex h-9 items-center justify-between border-b px-2"
+    class="bg-background relative z-10 flex h-9 shrink-0 items-center justify-between border-b px-2"
   >
     <Menubar class="h-8 gap-0 rounded-none border-none p-0 shadow-none">
       <MenubarMenu>

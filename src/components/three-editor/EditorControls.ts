@@ -73,11 +73,27 @@ class EditorControls extends THREE.EventDispatcher {
     }
 
     this.pan = function (delta) {
-      var distance = object.isOrthographicCamera
-        ? (object.top - object.bottom) / object.zoom
-        : object.position.distanceTo(center)
+      var elementHeight = domElement ? domElement.clientHeight : 0
 
-      delta.multiplyScalar(distance * scope.panSpeed)
+      var panSpeed
+      if (!elementHeight) {
+        // fallback when not connected to an element yet
+        var distance = object.isOrthographicCamera
+          ? (object.top - object.bottom) / object.zoom
+          : object.position.distanceTo(center)
+        panSpeed = distance * scope.panSpeed
+      } else if (object.isOrthographicCamera) {
+        panSpeed = (object.top - object.bottom) / object.zoom / elementHeight
+      } else {
+        // map screen pixels to world units 1:1 at the target distance,
+        // so the point under the cursor stays under the cursor while panning
+        var targetDistance =
+          object.position.distanceTo(center) *
+          Math.tan(((object.fov / 2) * Math.PI) / 180)
+        panSpeed = (2 * targetDistance) / elementHeight
+      }
+
+      delta.multiplyScalar(panSpeed)
       delta.applyMatrix3(normalMatrix.getNormalMatrix(object.matrix))
 
       object.position.add(delta)
