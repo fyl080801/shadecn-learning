@@ -156,16 +156,18 @@ function SidebarProjectRenderer(editor) {
     const rendererType = rendererTypeSelect.getValue()
     const antialias = antialiasBoolean.getValue()
 
+    // reversedDepthBuffer is intentionally left off: three.js applies it to
+    // *any* camera rendered through this renderer, including the ViewHelper's
+    // internal orthographic gizmo camera, which corrupts its projection matrix
+    // and breaks click-to-rotate on the viewport axis widget.
     if (rendererType === "WebGPURenderer") {
       currentRenderer = new WebGPURenderer({
-        antialias: antialias,
-        reversedDepthBuffer: true
+        antialias: antialias
       })
       await currentRenderer.init()
     } else {
       currentRenderer = new THREE.WebGLRenderer({
-        antialias: antialias,
-        reversedDepthBuffer: true
+        antialias: antialias
       })
     }
 
