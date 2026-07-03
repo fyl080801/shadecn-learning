@@ -1,33 +1,31 @@
 // @ts-nocheck
-import { UIPanel } from "./libs/ui.js"
-
 import { ViewHelper as ViewHelperBase } from "three/addons/helpers/ViewHelper.js"
 
 class ViewHelper extends ViewHelperBase {
   constructor(editorCamera, container) {
-    super(editorCamera, container.dom)
+    super(editorCamera, container)
 
     this.location.top = 30
 
-    const panel = new UIPanel()
-    panel.setId("viewHelper")
-    panel.setPosition("absolute")
-    panel.setRight("0px")
-    panel.setTop("30px")
-    panel.setHeight("128px")
-    panel.setWidth("128px")
+    const panel = document.createElement("div")
+    panel.id = "viewHelper"
+    panel.style.position = "absolute"
+    panel.style.right = "0px"
+    panel.style.top = "30px"
+    panel.style.height = "128px"
+    panel.style.width = "128px"
 
-    panel.dom.addEventListener("pointerup", (event) => {
+    panel.addEventListener("pointerup", (event) => {
       event.stopPropagation()
 
       this.handleClick(event)
     })
 
-    panel.dom.addEventListener("pointerdown", function (event) {
+    panel.addEventListener("pointerdown", function (event) {
       event.stopPropagation()
     })
 
-    container.add(panel)
+    container.appendChild(panel)
   }
 }
 

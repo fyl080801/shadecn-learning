@@ -7,8 +7,10 @@ import { AddObjectCommand } from "./commands/AddObjectCommand"
 import { MultiCmdsCommand } from "./commands/MultiCmdsCommand"
 import { RemoveObjectCommand } from "./commands/RemoveObjectCommand"
 import { SetPositionCommand } from "./commands/SetPositionCommand"
-import { RenderImageDialog, RenderVideoDialog } from "./RenderDialogs"
 import { useEditor } from "./composables/useEditorContext"
+import { mountClosableDialog } from "./libs/mountDialog"
+import RenderImageDialogView from "./RenderImageDialog.vue"
+import RenderVideoDialogView from "./RenderVideoDialog.vue"
 
 import {
   Menubar,
@@ -622,13 +624,11 @@ function toggleFullscreen() {
 const hasVideoEncoder = "VideoEncoder" in window
 
 function showImageDialog() {
-  const dialog = new RenderImageDialog(editor, strings)
-  document.body.appendChild(dialog.dom)
+  mountClosableDialog(RenderImageDialogView, { editor, strings })
 }
 
 function showVideoDialog() {
-  const dialog = new RenderVideoDialog(editor, strings)
-  document.body.appendChild(dialog.dom)
+  mountClosableDialog(RenderVideoDialogView, { editor, strings })
 }
 
 // Help menu

@@ -4,8 +4,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue"
 import * as THREE from "three"
 import { ChevronDown, ChevronRight } from "lucide-vue-next"
 
-import { UITexture } from "./libs/ui.three"
 import { useEditor } from "./composables/useEditorContext"
+import TextureField from "./TextureField.vue"
 
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
@@ -127,20 +127,18 @@ function resolveColorSpace(value: string) {
   return value === NO_COLOR_SPACE ? THREE.NoColorSpace : value
 }
 
-const backgroundTextureRef = ref<HTMLDivElement | null>(null)
-const backgroundEquirectTextureRef = ref<HTMLDivElement | null>(null)
-const environmentEquirectTextureRef = ref<HTMLDivElement | null>(null)
-
-let backgroundTexture: any
-let backgroundEquirectangularTexture: any
-let environmentEquirectangularTexture: any
+const sceneTextures = reactive<{
+  background: any
+  backgroundEquirect: any
+  environmentEquirect: any
+}>({ background: null, backgroundEquirect: null, environmentEquirect: null })
 
 function onBackgroundChanged() {
   signals.sceneBackgroundChanged.dispatch(
     backgroundType.value,
     backgroundColor.value.replace("#", "0x"),
-    backgroundTexture.getValue(),
-    backgroundEquirectangularTexture.getValue(),
+    sceneTextures.background,
+    sceneTextures.backgroundEquirect,
     resolveColorSpace(backgroundColorSpace.value),
     backgroundBlurriness.value,
     backgroundIntensity.value,
@@ -160,7 +158,7 @@ const environmentType = ref("Default")
 function onEnvironmentChanged() {
   signals.sceneEnvironmentChanged.dispatch(
     environmentType.value,
-    environmentEquirectangularTexture.getValue()
+    sceneTextures.environmentEquirect
   )
 }
 
@@ -213,7 +211,7 @@ function refreshUI() {
       break
 
     case "Texture":
-      backgroundTexture.setValue(scene.background)
+      sceneTextures.background = scene.background
       backgroundColorSpace.value =
         scene.background.colorSpace === THREE.NoColorSpace
           ? NO_COLOR_SPACE
@@ -221,7 +219,7 @@ function refreshUI() {
       break
 
     case "Equirectangular":
-      backgroundEquirectangularTexture.setValue(scene.background)
+      sceneTextures.backgroundEquirect = scene.background
       backgroundBlurriness.value = scene.backgroundBlurriness
       backgroundIntensity.value = scene.backgroundIntensity
       backgroundColorSpace.value =
@@ -231,18 +229,15 @@ function refreshUI() {
       break
 
     default:
-      backgroundTexture.setValue(null)
-      backgroundEquirectangularTexture.setValue(null)
+      sceneTextures.background = null
+      sceneTextures.backgroundEquirect = null
       backgroundColorSpace.value = NO_COLOR_SPACE
   }
 
   environmentType.value = editor.environmentType
 
-  if (editor.environmentType === "Equirectangular") {
-    environmentEquirectangularTexture.setValue(scene.environment)
-  } else {
-    environmentEquirectangularTexture.setValue(null)
-  }
+  sceneTextures.environmentEquirect =
+    editor.environmentType === "Equirectangular" ? scene.environment : null
 
   if (scene.fog) {
     fogColor.value = "#" + scene.fog.color.getHexString()
@@ -295,22 +290,6 @@ function onSceneBackgroundChanged() {
 }
 
 onMounted(() => {
-  backgroundTexture = new UITexture(editor).onChange(onBackgroundChanged)
-  backgroundEquirectangularTexture = new UITexture(editor).onChange(
-    onBackgroundChanged
-  )
-  environmentEquirectangularTexture = new UITexture(editor).onChange(
-    onEnvironmentChanged
-  )
-
-  backgroundTextureRef.value?.appendChild(backgroundTexture.dom)
-  backgroundEquirectTextureRef.value?.appendChild(
-    backgroundEquirectangularTexture.dom
-  )
-  environmentEquirectTextureRef.value?.appendChild(
-    environmentEquirectangularTexture.dom
-  )
-
   refreshUI()
 
   signals.editorCleared.add(refreshUI)
@@ -414,13 +393,17 @@ onBeforeUnmount(() => {
               @input="onBackgroundChanged"
             />
 
-            <div
+            <TextureField
               v-show="backgroundType === 'Texture'"
-              ref="backgroundTextureRef"
+              v-model="sceneTextures.background"
+              :editor="editor"
+              @update:model-value="onBackgroundChanged"
             />
-            <div
+            <TextureField
               v-show="backgroundType === 'Equirectangular'"
-              ref="backgroundEquirectTextureRef"
+              v-model="sceneTextures.backgroundEquirect"
+              :editor="editor"
+              @update:model-value="onBackgroundChanged"
             />
           </div>
 
@@ -517,9 +500,11 @@ onBeforeUnmount(() => {
               </SelectContent>
             </Select>
 
-            <div
+            <TextureField
               v-show="environmentType === 'Equirectangular'"
-              ref="environmentEquirectTextureRef"
+              v-model="sceneTextures.environmentEquirect"
+              :editor="editor"
+              @update:model-value="onEnvironmentChanged"
             />
           </div>
         </div>

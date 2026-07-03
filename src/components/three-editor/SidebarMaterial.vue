@@ -4,7 +4,7 @@ import { onBeforeUnmount, onMounted, reactive, ref, shallowRef } from "vue"
 import * as THREE from "three"
 
 import { useEditor } from "./composables/useEditorContext"
-import { UITexture } from "./libs/ui.three"
+import TextureField from "./TextureField.vue"
 import { TextureParametersDialog } from "./TextureParametersDialog"
 
 import { SetMaterialCommand } from "./commands/SetMaterialCommand"
@@ -296,8 +296,7 @@ const values = reactive<Record<string, any>>({})
 const mapEnabled = reactive<Record<string, boolean>>({})
 const mapHasTexture = reactive<Record<string, boolean>>({})
 
-const mapContainerRefs = ref<HTMLElement[]>([])
-const mapWidgets: Record<string, any> = {}
+const mapTextures = reactive<Record<string, any>>({})
 
 // ----- helpers -----
 
@@ -428,8 +427,7 @@ function applyMap(row: any, newMap: any) {
 }
 
 function onMapEnabledChange(row: any) {
-  const widget = mapWidgets[row.key]
-  const newMap = mapEnabled[row.key] ? (widget?.getValue() ?? null) : null
+  const newMap = mapEnabled[row.key] ? (mapTextures[row.key] ?? null) : null
   applyMap(row, newMap)
 }
 
@@ -452,8 +450,7 @@ function onMapTextureChange(row: any, texture: any) {
 }
 
 async function onMapSettings(row: any) {
-  const widget = mapWidgets[row.key]
-  const texture = widget?.getValue()
+  const texture = mapTextures[row.key]
   if (!texture) return
 
   const dialog = new TextureParametersDialog(editor, texture)
@@ -680,7 +677,7 @@ function refreshUI() {
   }
 
   for (const row of mapRows) {
-    mapWidgets[row.key]?.setValue(null)
+    mapTextures[row.key] = null
   }
 
   for (const row of mapRows) {
@@ -689,7 +686,7 @@ function refreshUI() {
       const texture = m[row.key]
       mapEnabled[row.key] = texture !== null
       mapHasTexture[row.key] = texture !== null
-      if (texture !== null) mapWidgets[row.key]?.setValue(texture)
+      if (texture !== null) mapTextures[row.key] = texture
 
       if (row.extra === "scale" || row.extra === "intensity") {
         values[row.extraProp] = m[row.extraProp]
@@ -729,16 +726,6 @@ function onObjectSelected(object: any) {
 }
 
 onMounted(() => {
-  mapRows.forEach((row, i) => {
-    const el = mapContainerRefs.value[i]
-    if (!el) return
-    const widget = new UITexture(editor).onChange((texture: any) =>
-      onMapTextureChange(row, texture)
-    )
-    el.appendChild(widget.dom)
-    mapWidgets[row.key] = widget
-  })
-
   onObjectSelected(editor.selected)
 
   signals.objectSelected.add(onObjectSelected)
@@ -951,7 +938,7 @@ onBeforeUnmount(() => {
       </div>
     </template>
 
-    <template v-for="(row, i) in mapRows" :key="row.key">
+    <template v-for="row in mapRows" :key="row.key">
       <div v-show="present[row.key]" class="flex flex-wrap items-center gap-2">
         <Label class="w-32 shrink-0 text-xs">{{ row.label }}</Label>
         <Checkbox
@@ -959,7 +946,11 @@ onBeforeUnmount(() => {
           :disabled="!mapHasTexture[row.key]"
           @update:model-value="onMapEnabledChange(row)"
         />
-        <div :ref="(el) => (mapContainerRefs[i] = el as HTMLElement)" />
+        <TextureField
+          v-model="mapTextures[row.key]"
+          :editor="editor"
+          @update:model-value="onMapTextureChange(row, $event)"
+        />
         <Button
           size="sm"
           variant="outline"

@@ -4,12 +4,7 @@ import { PMREMGenerator } from "three/webgpu"
 
 import { TransformControls } from "three/addons/controls/TransformControls.js"
 
-import { UIPanel } from "./libs/ui"
-
 import { EditorControls } from "./EditorControls"
-
-import { ViewportControls } from "./Viewport.Controls"
-import { ViewportInfo } from "./Viewport.Info"
 
 import { ViewHelper } from "./Viewport.ViewHelper"
 import { XR } from "./Viewport.XR"
@@ -26,12 +21,9 @@ function Viewport(editor) {
   const selector = editor.selector
   const signals = editor.signals
 
-  const container = new UIPanel()
-  container.setId("viewport")
-  container.setPosition("absolute")
-
-  container.add(new ViewportControls(editor))
-  container.add(new ViewportInfo(editor))
+  const container = document.createElement("div")
+  container.id = "viewport"
+  container.style.position = "absolute"
 
   //
 
@@ -156,7 +148,7 @@ function Viewport(editor) {
     for (const uuid in editor.cameras) {
       const camera = editor.cameras[uuid]
 
-      const aspect = container.dom.offsetWidth / container.dom.offsetHeight
+      const aspect = container.offsetWidth / container.offsetHeight
 
       if (camera.isPerspectiveCamera) {
         camera.aspect = aspect
@@ -197,14 +189,14 @@ function Viewport(editor) {
 
     if (event.target !== renderer.domElement) return
 
-    const array = getMousePosition(container.dom, event.clientX, event.clientY)
+    const array = getMousePosition(container, event.clientX, event.clientY)
     onDownPosition.fromArray(array)
 
     document.addEventListener("mouseup", onMouseUp)
   }
 
   function onMouseUp(event) {
-    const array = getMousePosition(container.dom, event.clientX, event.clientY)
+    const array = getMousePosition(container, event.clientX, event.clientY)
     onUpPosition.fromArray(array)
 
     handleClick()
@@ -215,7 +207,7 @@ function Viewport(editor) {
   function onTouchStart(event) {
     const touch = event.changedTouches[0]
 
-    const array = getMousePosition(container.dom, touch.clientX, touch.clientY)
+    const array = getMousePosition(container, touch.clientX, touch.clientY)
     onDownPosition.fromArray(array)
 
     document.addEventListener("touchend", onTouchEnd)
@@ -224,7 +216,7 @@ function Viewport(editor) {
   function onTouchEnd(event) {
     const touch = event.changedTouches[0]
 
-    const array = getMousePosition(container.dom, touch.clientX, touch.clientY)
+    const array = getMousePosition(container, touch.clientX, touch.clientY)
     onUpPosition.fromArray(array)
 
     handleClick()
@@ -233,7 +225,7 @@ function Viewport(editor) {
   }
 
   function onDoubleClick(event) {
-    const array = getMousePosition(container.dom, event.clientX, event.clientY)
+    const array = getMousePosition(container, event.clientX, event.clientY)
     onDoubleClickPosition.fromArray(array)
 
     const intersects = selector.getPointerIntersects(
@@ -248,9 +240,9 @@ function Viewport(editor) {
     }
   }
 
-  container.dom.addEventListener("mousedown", onMouseDown)
-  container.dom.addEventListener("touchstart", onTouchStart, { passive: false })
-  container.dom.addEventListener("dblclick", onDoubleClick)
+  container.addEventListener("mousedown", onMouseDown)
+  container.addEventListener("touchstart", onTouchStart, { passive: false })
+  container.addEventListener("dblclick", onDoubleClick)
 
   // controls need to be added *after* main logic,
   // otherwise controls.enabled doesn't work.
@@ -313,7 +305,7 @@ function Viewport(editor) {
 
       renderer.dispose()
 
-      container.dom.removeChild(renderer.domElement)
+      container.removeChild(renderer.domElement)
     }
 
     controls.connect(newRenderer.domElement)
@@ -348,7 +340,7 @@ function Viewport(editor) {
     renderer.getClearColor(editor.viewportColor)
 
     renderer.setPixelRatio(window.devicePixelRatio)
-    renderer.setSize(container.dom.offsetWidth, container.dom.offsetHeight)
+    renderer.setSize(container.offsetWidth, container.offsetHeight)
 
     if (renderer.isWebGLRenderer) {
       pmremGenerator = new THREE.PMREMGenerator(renderer)
@@ -361,7 +353,7 @@ function Viewport(editor) {
       pathtracer = null
     }
 
-    container.dom.appendChild(renderer.domElement)
+    container.appendChild(renderer.domElement)
 
     signals.sceneEnvironmentChanged.dispatch(editor.environmentType)
 
@@ -654,9 +646,9 @@ function Viewport(editor) {
 
     if (renderer === null) return
 
-    renderer.setSize(container.dom.offsetWidth, container.dom.offsetHeight)
+    renderer.setSize(container.offsetWidth, container.offsetHeight)
     if (pathtracer)
-      pathtracer.setSize(container.dom.offsetWidth, container.dom.offsetHeight)
+      pathtracer.setSize(container.offsetWidth, container.offsetHeight)
 
     render()
   })
@@ -795,12 +787,7 @@ function Viewport(editor) {
 
     startTime = performance.now()
 
-    renderer.setViewport(
-      0,
-      0,
-      container.dom.offsetWidth,
-      container.dom.offsetHeight
-    )
+    renderer.setViewport(0, 0, container.offsetWidth, container.offsetHeight)
     renderer.render(scene, editor.viewportCamera)
 
     if (camera === editor.viewportCamera) {

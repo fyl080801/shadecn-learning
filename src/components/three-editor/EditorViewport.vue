@@ -5,6 +5,8 @@ import * as THREE from "three"
 
 import { Viewport } from "./Viewport"
 import { useEditor } from "./composables/useEditorContext"
+import ViewportControlsOverlay from "./ViewportControlsOverlay.vue"
+import ViewportInfoOverlay from "./ViewportInfoOverlay.vue"
 
 defineOptions({ inheritAttrs: false })
 
@@ -24,9 +26,9 @@ onMounted(() => {
   signals.rendererCreated.add(onRendererCreated)
 
   const viewport = new Viewport(editor)
-  viewport.dom.style.position = "absolute"
-  viewport.dom.style.inset = "0"
-  hostRef.value?.appendChild(viewport.dom)
+  viewport.style.position = "absolute"
+  viewport.style.inset = "0"
+  hostRef.value?.appendChild(viewport)
 
   // Watches the viewport's own box instead of relying on whatever resizer
   // moved it, so the renderer/camera stay in sync no matter how the
@@ -50,5 +52,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="hostRef" v-bind="$attrs" class="te-viewport" />
+  <div ref="hostRef" v-bind="$attrs" class="te-viewport">
+    <ViewportControlsOverlay :editor="editor" />
+    <ViewportInfoOverlay :editor="editor" />
+  </div>
 </template>
