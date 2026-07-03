@@ -841,5 +841,4 @@ function formatFileSize(sizeB, K = 1024) {
   )
 }
 
-
 export { RenderImageDialog, RenderVideoDialog }

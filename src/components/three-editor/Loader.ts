@@ -179,7 +179,8 @@ function Loader(editor) {
         reader.addEventListener(
           "load",
           async function (event) {
-            const { TDSLoader } = await import("three/addons/loaders/TDSLoader.js")
+            const { TDSLoader } =
+              await import("three/addons/loaders/TDSLoader.js")
 
             const loader = new TDSLoader()
             const object = loader.parse(event.target.result)
@@ -216,7 +217,8 @@ function Loader(editor) {
         reader.addEventListener(
           "load",
           async function (event) {
-            const { AMFLoader } = await import("three/addons/loaders/AMFLoader.js")
+            const { AMFLoader } =
+              await import("three/addons/loaders/AMFLoader.js")
 
             const loader = new AMFLoader()
             const amfobject = loader.parse(event.target.result)
@@ -297,7 +299,8 @@ function Loader(editor) {
           async function (event) {
             const contents = event.target.result
 
-            const { FBXLoader } = await import("three/addons/loaders/FBXLoader.js")
+            const { FBXLoader } =
+              await import("three/addons/loaders/FBXLoader.js")
 
             const loader = new FBXLoader(manager)
             const object = loader.parse(contents)
@@ -418,7 +421,8 @@ function Loader(editor) {
         reader.addEventListener(
           "load",
           async function (event) {
-            const { KMZLoader } = await import("three/addons/loaders/KMZLoader.js")
+            const { KMZLoader } =
+              await import("three/addons/loaders/KMZLoader.js")
 
             const loader = new KMZLoader()
             const collada = loader.parse(event.target.result)
@@ -465,7 +469,8 @@ function Loader(editor) {
           async function (event) {
             const contents = event.target.result
 
-            const { MD2Loader } = await import("three/addons/loaders/MD2Loader.js")
+            const { MD2Loader } =
+              await import("three/addons/loaders/MD2Loader.js")
 
             const geometry = new MD2Loader().parse(contents)
             const material = new THREE.MeshStandardMaterial()
@@ -490,7 +495,8 @@ function Loader(editor) {
           async function (event) {
             const contents = event.target.result
 
-            const { OBJLoader } = await import("three/addons/loaders/OBJLoader.js")
+            const { OBJLoader } =
+              await import("three/addons/loaders/OBJLoader.js")
 
             const object = new OBJLoader().parse(contents)
             object.name = filename
@@ -510,7 +516,8 @@ function Loader(editor) {
           async function (event) {
             const contents = event.target.result
 
-            const { PCDLoader } = await import("three/addons/loaders/PCDLoader.js")
+            const { PCDLoader } =
+              await import("three/addons/loaders/PCDLoader.js")
 
             const points = new PCDLoader().parse(contents)
             points.name = filename
@@ -530,7 +537,8 @@ function Loader(editor) {
           async function (event) {
             const contents = event.target.result
 
-            const { PLYLoader } = await import("three/addons/loaders/PLYLoader.js")
+            const { PLYLoader } =
+              await import("three/addons/loaders/PLYLoader.js")
 
             const geometry = new PLYLoader().parse(contents)
             let object
@@ -563,7 +571,8 @@ function Loader(editor) {
           async function (event) {
             const contents = event.target.result
 
-            const { STLLoader } = await import("three/addons/loaders/STLLoader.js")
+            const { STLLoader } =
+              await import("three/addons/loaders/STLLoader.js")
 
             const geometry = new STLLoader().parse(contents)
             const material = new THREE.MeshStandardMaterial()
@@ -591,7 +600,8 @@ function Loader(editor) {
           async function (event) {
             const contents = event.target.result
 
-            const { SVGLoader } = await import("three/addons/loaders/SVGLoader.js")
+            const { SVGLoader } =
+              await import("three/addons/loaders/SVGLoader.js")
 
             const loader = new SVGLoader()
             const paths = loader.parse(contents).paths
@@ -665,7 +675,8 @@ function Loader(editor) {
           async function (event) {
             const contents = event.target.result
 
-            const { USDLoader } = await import("three/addons/loaders/USDLoader.js")
+            const { USDLoader } =
+              await import("three/addons/loaders/USDLoader.js")
 
             const loader = new USDLoader(manager)
             loader.parse(contents, "", function (group) {
@@ -686,7 +697,8 @@ function Loader(editor) {
           async function (event) {
             const contents = event.target.result
 
-            const { VOXLoader } = await import("three/addons/loaders/VOXLoader.js")
+            const { VOXLoader } =
+              await import("three/addons/loaders/VOXLoader.js")
 
             const { scene } = new VOXLoader().parse(contents)
 
@@ -727,7 +739,8 @@ function Loader(editor) {
           async function (event) {
             const contents = event.target.result
 
-            const { XYZLoader } = await import("three/addons/loaders/XYZLoader.js")
+            const { XYZLoader } =
+              await import("three/addons/loaders/XYZLoader.js")
 
             const geometry = new XYZLoader().parse(contents)
 
@@ -881,7 +894,8 @@ function Loader(editor) {
 
       switch (extension) {
         case "fbx": {
-          const { FBXLoader } = await import("three/addons/loaders/FBXLoader.js")
+          const { FBXLoader } =
+            await import("three/addons/loaders/FBXLoader.js")
 
           const loader = new FBXLoader(manager)
           const object = loader.parse(file.buffer)

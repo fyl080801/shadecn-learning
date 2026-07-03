@@ -908,21 +908,6 @@ onBeforeUnmount(() => {
           }}</MenubarItem>
         </MenubarContent>
       </MenubarMenu>
-
-      <MenubarMenu>
-        <MenubarTrigger>{{ t("menubar/help") }}</MenubarTrigger>
-        <MenubarContent>
-          <MenubarItem @select="openSourceCode">{{
-            t("menubar/help/source_code")
-          }}</MenubarItem>
-          <MenubarItem @select="openAbout">{{
-            t("menubar/help/about")
-          }}</MenubarItem>
-          <MenubarItem @select="openManual">{{
-            t("menubar/help/manual")
-          }}</MenubarItem>
-        </MenubarContent>
-      </MenubarMenu>
     </Menubar>
 
     <div class="flex items-center gap-2 text-xs">

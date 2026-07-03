@@ -1,42 +1,34 @@
 // @ts-nocheck
-import { UIPanel } from './libs/ui.js';
+import { UIPanel } from "./libs/ui.js"
 
-import { ViewHelper as ViewHelperBase } from 'three/addons/helpers/ViewHelper.js';
+import { ViewHelper as ViewHelperBase } from "three/addons/helpers/ViewHelper.js"
 
 class ViewHelper extends ViewHelperBase {
+  constructor(editorCamera, container) {
+    super(editorCamera, container.dom)
 
-	constructor( editorCamera, container ) {
+    this.location.top = 30
 
-		super( editorCamera, container.dom );
+    const panel = new UIPanel()
+    panel.setId("viewHelper")
+    panel.setPosition("absolute")
+    panel.setRight("0px")
+    panel.setTop("30px")
+    panel.setHeight("128px")
+    panel.setWidth("128px")
 
-		this.location.top = 30;
+    panel.dom.addEventListener("pointerup", (event) => {
+      event.stopPropagation()
 
-		const panel = new UIPanel();
-		panel.setId( 'viewHelper' );
-		panel.setPosition( 'absolute' );
-		panel.setRight( '0px' );
-		panel.setTop( '30px' );
-		panel.setHeight( '128px' );
-		panel.setWidth( '128px' );
+      this.handleClick(event)
+    })
 
-		panel.dom.addEventListener( 'pointerup', ( event ) => {
+    panel.dom.addEventListener("pointerdown", function (event) {
+      event.stopPropagation()
+    })
 
-			event.stopPropagation();
-
-			this.handleClick( event );
-
-		} );
-
-		panel.dom.addEventListener( 'pointerdown', function ( event ) {
-
-			event.stopPropagation();
-
-		} );
-
-		container.add( panel );
-
-	}
-
+    container.add(panel)
+  }
 }
 
-export { ViewHelper };
+export { ViewHelper }

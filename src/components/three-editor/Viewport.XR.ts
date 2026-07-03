@@ -1,234 +1,200 @@
 // @ts-nocheck
-import * as THREE from 'three';
+import * as THREE from "three"
 
-import { HTMLMesh } from 'three/addons/interactive/HTMLMesh.js';
-import { InteractiveGroup } from 'three/addons/interactive/InteractiveGroup.js';
+import { HTMLMesh } from "three/addons/interactive/HTMLMesh.js"
+import { InteractiveGroup } from "three/addons/interactive/InteractiveGroup.js"
 
-import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFactory.js"
 
 class XR {
+  constructor(editor, controls) {
+    const selector = editor.selector
+    const signals = editor.signals
 
-	constructor( editor, controls ) {
+    let controllers = null
+    let group = null
+    let renderer = null
 
-		const selector = editor.selector;
-		const signals = editor.signals;
+    const camera = new THREE.PerspectiveCamera()
 
-		let controllers = null;
-		let group = null;
-		let renderer = null;
+    const onSessionStarted = async (session) => {
+      if (editor.camera.isPerspectiveCamera) {
+        camera.copy(editor.camera)
+      } else {
+        // an orthographic default camera can't be mirrored into a perspective XR camera
 
-		const camera = new THREE.PerspectiveCamera();
+        camera.position.copy(editor.camera.position)
+        camera.quaternion.copy(editor.camera.quaternion)
+      }
 
-		const onSessionStarted = async ( session ) => {
+      const sidebar = document.getElementById("sidebar")
+      sidebar.style.width = "350px"
+      sidebar.style.height = "700px"
 
-			if ( editor.camera.isPerspectiveCamera ) {
+      //
 
-				camera.copy( editor.camera );
+      if (controllers === null) {
+        const geometry = new THREE.BufferGeometry()
+        geometry.setAttribute(
+          "position",
+          new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, -5], 3)
+        )
 
-			} else {
+        const line = new THREE.Line(geometry)
 
-				// an orthographic default camera can't be mirrored into a perspective XR camera
+        const raycaster = new THREE.Raycaster()
 
-				camera.position.copy( editor.camera.position );
-				camera.quaternion.copy( editor.camera.quaternion );
+        function onSelect(event) {
+          const controller = event.target
 
-			}
+          controller1.userData.active = false
+          controller2.userData.active = false
 
-			const sidebar = document.getElementById( 'sidebar' );
-			sidebar.style.width = '350px';
-			sidebar.style.height = '700px';
+          if (controller === controller1) {
+            controller1.userData.active = true
+            controller1.add(line)
+          }
 
-			//
+          if (controller === controller2) {
+            controller2.userData.active = true
+            controller2.add(line)
+          }
 
-			if ( controllers === null ) {
+          raycaster.setFromXRController(controller)
 
-				const geometry = new THREE.BufferGeometry();
-				geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( [ 0, 0, 0, 0, 0, - 5 ], 3 ) );
+          const intersects = selector.getIntersects(raycaster)
 
-				const line = new THREE.Line( geometry );
+          if (intersects.length > 0) {
+            // Ignore menu clicks
 
-				const raycaster = new THREE.Raycaster();
+            const intersect = intersects[0]
+            if (intersect.object === group.children[0]) return
+          }
 
-				function onSelect( event ) {
+          signals.intersectionsDetected.dispatch(intersects)
+        }
 
-					const controller = event.target;
+        function onControllerEvent(event) {
+          const controller = event.target
 
-					controller1.userData.active = false;
-					controller2.userData.active = false;
+          if (controller.userData.active === false) return
 
-					if ( controller === controller1 ) {
+          controls.getRaycaster().setFromXRController(controller)
 
-						controller1.userData.active = true;
-						controller1.add( line );
+          switch (event.type) {
+            case "selectstart":
+              controls.pointerDown(null)
+              break
 
-					}
+            case "selectend":
+              controls.pointerUp(null)
+              break
 
-					if ( controller === controller2 ) {
+            case "move":
+              controls.pointerHover(null)
+              controls.pointerMove(null)
+              break
+          }
+        }
 
-						controller2.userData.active = true;
-						controller2.add( line );
+        controllers = new THREE.Group()
 
-					}
+        const controller1 = renderer.xr.getController(0)
+        controller1.addEventListener("select", onSelect)
+        controller1.addEventListener("selectstart", onControllerEvent)
+        controller1.addEventListener("selectend", onControllerEvent)
+        controller1.addEventListener("move", onControllerEvent)
+        controller1.userData.active = false
+        controllers.add(controller1)
 
-					raycaster.setFromXRController( controller );
+        const controller2 = renderer.xr.getController(1)
+        controller2.addEventListener("select", onSelect)
+        controller2.addEventListener("selectstart", onControllerEvent)
+        controller2.addEventListener("selectend", onControllerEvent)
+        controller2.addEventListener("move", onControllerEvent)
+        controller2.userData.active = true
+        controllers.add(controller2)
 
-					const intersects = selector.getIntersects( raycaster );
+        //
 
-					if ( intersects.length > 0 ) {
+        const controllerModelFactory = new XRControllerModelFactory()
 
-						// Ignore menu clicks
+        const controllerGrip1 = renderer.xr.getControllerGrip(0)
+        controllerGrip1.add(
+          controllerModelFactory.createControllerModel(controllerGrip1)
+        )
+        controllers.add(controllerGrip1)
 
-						const intersect = intersects[ 0 ];
-						if ( intersect.object === group.children[ 0 ] ) return;
+        const controllerGrip2 = renderer.xr.getControllerGrip(1)
+        controllerGrip2.add(
+          controllerModelFactory.createControllerModel(controllerGrip2)
+        )
+        controllers.add(controllerGrip2)
 
-					}
+        // menu
 
-					signals.intersectionsDetected.dispatch( intersects );
+        group = new InteractiveGroup()
 
-				}
+        const mesh = new HTMLMesh(sidebar)
+        mesh.name = "picker" // Make Selector be aware of the menu
+        mesh.position.set(0.5, 1.0, -0.5)
+        mesh.rotation.y = -0.5
+        group.add(mesh)
 
-				function onControllerEvent( event ) {
+        group.listenToXRControllerEvents(controller1)
+        group.listenToXRControllerEvents(controller2)
+      }
 
-					const controller = event.target;
+      editor.sceneHelpers.add(group)
+      editor.sceneHelpers.add(controllers)
 
-					if ( controller.userData.active === false ) return;
+      renderer.xr.enabled = true
+      renderer.xr.addEventListener("sessionend", onSessionEnded)
 
-					controls.getRaycaster().setFromXRController( controller );
+      await renderer.xr.setSession(session)
+    }
 
-					switch ( event.type ) {
+    const onSessionEnded = async () => {
+      editor.sceneHelpers.remove(group)
+      editor.sceneHelpers.remove(controllers)
 
-						case 'selectstart':
-							controls.pointerDown( null );
-							break;
+      const sidebar = document.getElementById("sidebar")
+      sidebar.style.width = ""
+      sidebar.style.height = ""
 
-						case 'selectend':
-							controls.pointerUp( null );
-							break;
+      renderer.xr.removeEventListener("sessionend", onSessionEnded)
+      renderer.xr.enabled = false
 
-						case 'move':
-							controls.pointerHover( null );
-							controls.pointerMove( null );
-							break;
+      editor.camera.copy(camera)
 
-					}
+      signals.windowResize.dispatch()
+      signals.leaveXR.dispatch()
+    }
 
-				}
+    // signals
 
-				controllers = new THREE.Group();
+    const sessionInit = { optionalFeatures: ["local-floor"] }
 
-				const controller1 = renderer.xr.getController( 0 );
-				controller1.addEventListener( 'select', onSelect );
-				controller1.addEventListener( 'selectstart', onControllerEvent );
-				controller1.addEventListener( 'selectend', onControllerEvent );
-				controller1.addEventListener( 'move', onControllerEvent );
-				controller1.userData.active = false;
-				controllers.add( controller1 );
+    signals.enterXR.add((mode) => {
+      if ("xr" in navigator) {
+        navigator.xr.requestSession(mode, sessionInit).then(onSessionStarted)
+      }
+    })
 
-				const controller2 = renderer.xr.getController( 1 );
-				controller2.addEventListener( 'select', onSelect );
-				controller2.addEventListener( 'selectstart', onControllerEvent );
-				controller2.addEventListener( 'selectend', onControllerEvent );
-				controller2.addEventListener( 'move', onControllerEvent );
-				controller2.userData.active = true;
-				controllers.add( controller2 );
+    signals.offerXR.add(function (mode) {
+      if ("xr" in navigator) {
+        navigator.xr.offerSession(mode, sessionInit).then(onSessionStarted)
 
-				//
+        signals.leaveXR.add(function () {
+          navigator.xr.offerSession(mode, sessionInit).then(onSessionStarted)
+        })
+      }
+    })
 
-				const controllerModelFactory = new XRControllerModelFactory();
-
-				const controllerGrip1 = renderer.xr.getControllerGrip( 0 );
-				controllerGrip1.add( controllerModelFactory.createControllerModel( controllerGrip1 ) );
-				controllers.add( controllerGrip1 );
-
-				const controllerGrip2 = renderer.xr.getControllerGrip( 1 );
-				controllerGrip2.add( controllerModelFactory.createControllerModel( controllerGrip2 ) );
-				controllers.add( controllerGrip2 );
-
-				// menu
-
-				group = new InteractiveGroup();
-
-				const mesh = new HTMLMesh( sidebar );
-				mesh.name = 'picker'; // Make Selector be aware of the menu
-				mesh.position.set( 0.5, 1.0, - 0.5 );
-				mesh.rotation.y = - 0.5;
-				group.add( mesh );
-
-				group.listenToXRControllerEvents( controller1 );
-				group.listenToXRControllerEvents( controller2 );
-
-			}
-
-			editor.sceneHelpers.add( group );
-			editor.sceneHelpers.add( controllers );
-
-			renderer.xr.enabled = true;
-			renderer.xr.addEventListener( 'sessionend', onSessionEnded );
-
-			await renderer.xr.setSession( session );
-
-		};
-
-		const onSessionEnded = async () => {
-
-			editor.sceneHelpers.remove( group );
-			editor.sceneHelpers.remove( controllers );
-
-			const sidebar = document.getElementById( 'sidebar' );
-			sidebar.style.width = '';
-			sidebar.style.height = '';
-
-			renderer.xr.removeEventListener( 'sessionend', onSessionEnded );
-			renderer.xr.enabled = false;
-
-			editor.camera.copy( camera );
-
-			signals.windowResize.dispatch();
-			signals.leaveXR.dispatch();
-
-		};
-
-		// signals
-
-		const sessionInit = { optionalFeatures: [ 'local-floor' ] };
-
-		signals.enterXR.add( ( mode ) => {
-
-			if ( 'xr' in navigator ) {
-
-				navigator.xr.requestSession( mode, sessionInit )
-					.then( onSessionStarted );
-
-			}
-
-		} );
-
-		signals.offerXR.add( function ( mode ) {
-
-			if ( 'xr' in navigator ) {
-
-				navigator.xr.offerSession( mode, sessionInit )
-					.then( onSessionStarted );
-
-				signals.leaveXR.add( function () {
-
-					navigator.xr.offerSession( mode, sessionInit )
-						.then( onSessionStarted );
-
-				} );
-
-			}
-
-		} );
-
-		signals.rendererCreated.add( ( value ) => {
-
-			renderer = value;
-
-		} );
-
-	}
-
+    signals.rendererCreated.add((value) => {
+      renderer = value
+    })
+  }
 }
 
-export { XR };
+export { XR }

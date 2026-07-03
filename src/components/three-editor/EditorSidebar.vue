@@ -1,12 +1,12 @@
 <script setup lang="ts">
 // @ts-nocheck
-import { onBeforeUnmount, onMounted, ref } from "vue"
+import { ref } from "vue"
 import { Boxes, FolderCog, Settings } from "lucide-vue-next"
 
-import { SidebarScene } from "./Sidebar.Scene"
-import { SidebarProperties } from "./Sidebar.Properties"
-import { SidebarProject } from "./Sidebar.Project"
-import { SidebarSettings } from "./Sidebar.Settings"
+import SidebarScene from "./SidebarScene.vue"
+import SidebarProperties from "./SidebarProperties.vue"
+import SidebarSettings from "./SidebarSettings.vue"
+import SidebarProject from "./SidebarProject.vue"
 import { useEditor } from "./composables/useEditorContext"
 
 import {
@@ -30,35 +30,6 @@ const tabs = [
 ] as const
 
 const activeTab = ref<(typeof tabs)[number]["id"]>("scene")
-
-const sceneRef = ref<HTMLDivElement | null>(null)
-const projectRef = ref<HTMLDivElement | null>(null)
-const settingsRef = ref<HTMLDivElement | null>(null)
-
-let resizeObserver: ResizeObserver | null = null
-
-onMounted(() => {
-  const scene = new (SidebarScene as any)(editor)
-  const sidebarProperties = new (SidebarProperties as any)(editor)
-  sceneRef.value?.appendChild(scene.dom)
-  sceneRef.value?.appendChild(sidebarProperties.dom)
-
-  const project = new (SidebarProject as any)(editor)
-  projectRef.value?.appendChild(project.dom)
-
-  const settings = new (SidebarSettings as any)(editor)
-  settingsRef.value?.appendChild(settings.dom)
-
-  // The properties tabs need to know the sidebar's width to lay themselves out.
-  resizeObserver = new ResizeObserver(() => {
-    sidebarProperties.tabsDiv.setWidth(getComputedStyle(sceneRef.value!).width)
-  })
-  if (sceneRef.value) resizeObserver.observe(sceneRef.value)
-})
-
-onBeforeUnmount(() => {
-  resizeObserver?.disconnect()
-})
 </script>
 
 <template>
@@ -80,9 +51,12 @@ onBeforeUnmount(() => {
           </SidebarMenu>
         </SidebarHeader>
         <SidebarContent>
-          <div v-show="activeTab === 'scene'" ref="sceneRef" />
-          <div v-show="activeTab === 'project'" ref="projectRef" />
-          <div v-show="activeTab === 'settings'" ref="settingsRef" />
+          <div v-show="activeTab === 'scene'" class="flex h-full flex-col">
+            <SidebarScene class="h-1/2 shrink-0 border-b" />
+            <SidebarProperties class="min-h-0 flex-1" />
+          </div>
+          <SidebarProject v-show="activeTab === 'project'" />
+          <SidebarSettings v-show="activeTab === 'settings'" />
         </SidebarContent>
       </Sidebar>
     </SidebarProvider>
