@@ -6,6 +6,11 @@ import { VertexNormalsHelper } from "three/addons/helpers/VertexNormalsHelper.js
 
 import { useEditor } from "./composables/useEditorContext"
 import GeometryParameters from "./GeometryParameters.vue"
+import GeometryParametersShape from "./GeometryParametersShape.vue"
+import GeometryParametersExtrude from "./GeometryParametersExtrude.vue"
+import GeometryParametersText from "./GeometryParametersText.vue"
+import GeometryParametersLathe from "./GeometryParametersLathe.vue"
+import GeometryParametersTube from "./GeometryParametersTube.vue"
 
 import { SetGeometryValueCommand } from "./commands/SetGeometryValueCommand"
 
@@ -39,6 +44,14 @@ const SIMPLE_TYPES = new Set([
   "TorusKnotGeometry"
 ])
 
+const SPECIAL_COMPONENTS: Record<string, any> = {
+  ShapeGeometry: GeometryParametersShape,
+  ExtrudeGeometry: GeometryParametersExtrude,
+  TextGeometry: GeometryParametersText,
+  LatheGeometry: GeometryParametersLathe,
+  TubeGeometry: GeometryParametersTube
+}
+
 const selected = ref<any>(null)
 const geometryType = ref("")
 const geometryUUID = ref("")
@@ -53,21 +66,20 @@ const morphAttributesInfo = ref<Array<{ name: string; count: number }>>([])
 const morphTargetsRelative = ref(false)
 const morphs = ref<Array<{ index: number; name: string; value: number }>>([])
 
-const geometryParamsRef = ref<InstanceType<typeof GeometryParameters> | null>(
-  null
-)
-const legacyParamsRef = ref<HTMLDivElement | null>(null)
-
-let legacyPanelInstance: any = null
-let legacyPanelType: string | null = null
+const geometryParamsRef = ref<{ refresh?: () => void } | null>(null)
 
 const paramsMode = computed(() => {
   const type = geometryType.value
   if (SIMPLE_TYPES.has(type)) return "simple"
-  if (type === "BufferGeometry" || type === "InstancedBufferGeometry")
-    return "modifiers"
-  return "legacy"
+  if (SPECIAL_COMPONENTS[type]) return "special"
+  return "modifiers"
 })
+
+const isBufferGeometry = computed(
+  () =>
+    geometryType.value === "BufferGeometry" ||
+    geometryType.value === "InstancedBufferGeometry"
+)
 
 function onUuidRenew() {
   if (!selected.value) return
@@ -173,24 +185,6 @@ function onMorphInfluenceChange(morph: { index: number; value: number }) {
   signals.objectChanged.dispatch(object)
 }
 
-async function mountLegacyPanel(object: any) {
-  const type = object.geometry.type
-  if (legacyPanelType === type && legacyPanelInstance) return
-
-  if (legacyParamsRef.value) legacyParamsRef.value.innerHTML = ""
-  legacyPanelInstance = null
-  legacyPanelType = null
-
-  if (type === "BufferGeometry" || type === "InstancedBufferGeometry") return
-
-  const { GeometryParametersPanel } = await import(
-    `./Sidebar.Geometry.${type}.ts`
-  )
-  legacyPanelInstance = new GeometryParametersPanel(editor, object)
-  legacyParamsRef.value?.appendChild(legacyPanelInstance.dom)
-  legacyPanelType = type
-}
-
 function computeAttributesInfo() {
   const geometry = selected.value?.geometry
   if (!geometry) {
@@ -228,7 +222,7 @@ function computeAttributesInfo() {
   morphTargetsRelative.value = geometry.morphTargetsRelative
 }
 
-async function build() {
+function build() {
   const object = selected.value
   if (!object?.geometry) return
 
@@ -237,8 +231,6 @@ async function build() {
   geometryType.value = geometry.type
   geometryUUID.value = geometry.uuid
   geometryName.value = geometry.name
-
-  await mountLegacyPanel(object)
 
   if (geometry.boundingBox === null) geometry.computeBoundingBox()
   const bb = geometry.boundingBox
@@ -288,7 +280,6 @@ function refreshMorphs() {
 
 function onObjectSelected(object: any) {
   selected.value = object && object.geometry ? object : null
-  legacyPanelType = null
   if (selected.value) build()
 }
 
@@ -359,12 +350,13 @@ onBeforeUnmount(() => {
       ref="geometryParamsRef"
       :object="selected"
     />
-    <div
-      v-show="paramsMode === 'legacy'"
-      ref="legacyParamsRef"
-      class="te-legacy-geometry-params"
+    <component
+      :is="SPECIAL_COMPONENTS[geometryType]"
+      v-else-if="paramsMode === 'special' && selected"
+      ref="geometryParamsRef"
+      :object="selected"
     />
-    <div v-if="paramsMode === 'modifiers'" class="flex flex-wrap gap-2">
+    <div v-if="isBufferGeometry" class="flex flex-wrap gap-2">
       <Button
         size="sm"
         variant="outline"
