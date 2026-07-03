@@ -25,7 +25,7 @@ const timelineAreaRef = ref<HTMLDivElement | null>(null)
 const trackListRef = ref<HTMLDivElement | null>(null)
 const playheadRef = ref<HTMLDivElement | null>(null)
 
-let panelHeight = 36
+let panelHeight = 45
 
 const labelWidth = 150
 
@@ -101,7 +101,10 @@ function updateTimeFromPosition(clientX: number) {
   const rect = timelineAreaRef.value!.getBoundingClientRect()
   const timelineStart = labelWidth
   const timelineWidth = rect.width - labelWidth
-  const x = Math.max(0, Math.min(clientX - rect.left - timelineStart, timelineWidth))
+  const x = Math.max(
+    0,
+    Math.min(clientX - rect.left - timelineStart, timelineWidth)
+  )
   const percent = x / timelineWidth
 
   if (currentAction && currentClip) {
@@ -188,7 +191,8 @@ function update() {
     clipRow.style.height = "24px"
     clipRow.style.borderBottom = "1px solid #ccc"
     clipRow.style.cursor = "pointer"
-    clipRow.style.background = currentClip === clip ? "rgba(0, 136, 255, 0.1)" : ""
+    clipRow.style.background =
+      currentClip === clip ? "rgba(0, 136, 255, 0.1)" : ""
 
     const clipLabel = document.createElement("div")
     clipLabel.style.width = labelWidth + "px"
@@ -273,7 +277,12 @@ function update() {
         block.style.borderRadius = "2px"
         block.style.opacity = "0.6"
         block.title =
-          trackType + ": " + startTime.toFixed(2) + "s - " + endTime.toFixed(2) + "s"
+          trackType +
+          ": " +
+          startTime.toFixed(2) +
+          "s - " +
+          endTime.toFixed(2) +
+          "s"
 
         trackTimeline.appendChild(block)
 
@@ -412,15 +421,35 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="rootRef" class="flex shrink-0 flex-col overflow-hidden border-t bg-muted/40">
-    <div class="flex shrink-0 items-center justify-center gap-1.5 border-b px-2.5 py-1.5">
-      <Button variant="ghost" size="icon-sm" class="[&_svg]:size-3" @click="play">
+  <div
+    ref="rootRef"
+    class="te-animation flex shrink-0 flex-col overflow-hidden border-t bg-muted/40"
+  >
+    <div
+      class="flex shrink-0 items-center justify-center gap-1.5 border-b px-2.5 py-1.5"
+    >
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="[&_svg]:size-3"
+        @click="play"
+      >
         <Play fill="currentColor" />
       </Button>
-      <Button variant="ghost" size="icon-sm" class="[&_svg]:size-3" @click="pause">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="[&_svg]:size-3"
+        @click="pause"
+      >
         <Pause fill="currentColor" />
       </Button>
-      <Button variant="ghost" size="icon-sm" class="[&_svg]:size-3" @click="stop">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="[&_svg]:size-3"
+        @click="stop"
+      >
         <Square fill="currentColor" />
       </Button>
 
@@ -446,8 +475,15 @@ onBeforeUnmount(() => {
       />
     </div>
 
-    <div ref="timelineAreaRef" class="relative flex flex-1 flex-col overflow-hidden" @mousedown="onTimelineMouseDown">
-      <div ref="trackListRef" class="flex-1 overflow-x-hidden overflow-y-auto" />
+    <div
+      ref="timelineAreaRef"
+      class="relative flex flex-1 flex-col overflow-hidden"
+      @mousedown="onTimelineMouseDown"
+    >
+      <div
+        ref="trackListRef"
+        class="flex-1 overflow-x-hidden overflow-y-auto"
+      />
       <div
         ref="playheadRef"
         class="pointer-events-none absolute top-0 bottom-0 z-10 w-0.5 bg-red-500"

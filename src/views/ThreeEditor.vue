@@ -6,13 +6,12 @@ import {
   ThreeEditor,
   EditorMenubar,
   EditorSidebar,
-  EditorSidebarResizer,
   EditorToolbar,
   EditorViewport,
   EditorPlayer,
   EditorScript,
   EditorAnimation,
-  EditorAnimationResizer
+  EditorResizer
 } from "@/components/three-editor"
 
 const SIDEBAR_DEFAULT_WIDTH = 350
@@ -35,11 +34,11 @@ const editor = createEditor()
           <EditorScript />
         </div>
 
-        <EditorAnimationResizer />
+        <EditorResizer direction="vertical" />
         <EditorAnimation />
       </div>
 
-      <EditorSidebarResizer :sidebar-col-ref="sidebarColRef" />
+      <EditorResizer direction="horizontal" :sidebar-col-ref="sidebarColRef" />
 
       <div
         ref="sidebarColRef"

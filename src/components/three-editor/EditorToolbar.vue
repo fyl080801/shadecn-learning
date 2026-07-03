@@ -47,7 +47,7 @@ onBeforeUnmount(() => {
 <template>
   <TooltipProvider :delay-duration="300">
     <div
-      class="absolute bottom-14 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-md border bg-card p-1 shadow-sm"
+      class="te-toolbar absolute bottom-14 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-md border bg-card p-1 shadow-sm"
     >
       <Tooltip v-for="tool in tools" :key="tool.id">
         <TooltipTrigger as-child>

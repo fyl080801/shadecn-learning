@@ -691,7 +691,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="bg-background relative z-10 flex h-9 shrink-0 items-center justify-between border-b px-2"
+    class="te-menubar bg-background relative z-10 flex h-9 shrink-0 items-center justify-between border-b px-2"
   >
     <Menubar class="h-8 gap-0 rounded-none border-none p-0 shadow-none">
       <MenubarMenu>

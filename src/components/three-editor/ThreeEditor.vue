@@ -21,7 +21,10 @@ useEditorWindowResize(props.editor, containerRef)
 </script>
 
 <template>
-  <div ref="containerRef" class="flex h-full w-full flex-col overflow-hidden">
+  <div
+    ref="containerRef"
+    class="te flex h-full w-full flex-col overflow-hidden"
+  >
     <slot />
   </div>
 </template>

@@ -15,7 +15,10 @@ let player: any = null
 
 function resize() {
   if (!player || !containerRef.value) return
-  player.setSize(containerRef.value.clientWidth, containerRef.value.clientHeight)
+  player.setSize(
+    containerRef.value.clientWidth,
+    containerRef.value.clientHeight
+  )
 }
 
 function onStartPlayer() {
@@ -55,5 +58,5 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-show="visible" ref="containerRef" class="absolute inset-0" />
+  <div v-show="visible" ref="containerRef" class="te-player absolute inset-0" />
 </template>

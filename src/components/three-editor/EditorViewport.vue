@@ -37,5 +37,5 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="hostRef" class="absolute inset-0" />
+  <div ref="hostRef" class="te-viewport absolute inset-0" />
 </template>

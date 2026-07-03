@@ -69,7 +69,13 @@ function handleChange() {
     if (typeof currentScript === "object") {
       if (value !== currentScript.source) {
         editor.execute(
-          new SetScriptValueCommand(editor, currentObject, currentScript, "source", value)
+          new SetScriptValueCommand(
+            editor,
+            currentObject,
+            currentScript,
+            "source",
+            value
+          )
         )
       }
 
@@ -81,23 +87,36 @@ function handleChange() {
     const json = JSON.parse(value)
 
     if (
-      JSON.stringify(currentObject.material.defines) !== JSON.stringify(json.defines)
+      JSON.stringify(currentObject.material.defines) !==
+      JSON.stringify(json.defines)
     ) {
-      const cmd = new SetMaterialValueCommand(editor, currentObject, "defines", json.defines)
+      const cmd = new SetMaterialValueCommand(
+        editor,
+        currentObject,
+        "defines",
+        json.defines
+      )
       cmd.updatable = false
       editor.execute(cmd)
     }
 
     if (
-      JSON.stringify(currentObject.material.uniforms) !== JSON.stringify(json.uniforms)
+      JSON.stringify(currentObject.material.uniforms) !==
+      JSON.stringify(json.uniforms)
     ) {
-      const cmd = new SetMaterialValueCommand(editor, currentObject, "uniforms", json.uniforms)
+      const cmd = new SetMaterialValueCommand(
+        editor,
+        currentObject,
+        "uniforms",
+        json.uniforms
+      )
       cmd.updatable = false
       editor.execute(cmd)
     }
 
     if (
-      JSON.stringify(currentObject.material.attributes) !== JSON.stringify(json.attributes)
+      JSON.stringify(currentObject.material.attributes) !==
+      JSON.stringify(json.attributes)
     ) {
       const cmd = new SetMaterialValueCommand(
         editor,
@@ -152,7 +171,10 @@ function validate(string: string) {
         for (let i = 0, n = programs.length; i !== n; ++i) {
           const diagnostics = programs[i].diagnostics
 
-          if (diagnostics === undefined || diagnostics.material !== currentObject.material)
+          if (
+            diagnostics === undefined ||
+            diagnostics.material !== currentObject.material
+          )
             continue
 
           if (!diagnostics.runnable) valid = false
@@ -184,17 +206,23 @@ function setTitle(object: any, script: any) {
     switch (script) {
       case "vertexShader":
         title.value =
-          object.material.name + " / " + strings.getKey("script/title/vertexShader")
+          object.material.name +
+          " / " +
+          strings.getKey("script/title/vertexShader")
         break
 
       case "fragmentShader":
         title.value =
-          object.material.name + " / " + strings.getKey("script/title/fragmentShader")
+          object.material.name +
+          " / " +
+          strings.getKey("script/title/fragmentShader")
         break
 
       case "programInfo":
         title.value =
-          object.material.name + " / " + strings.getKey("script/title/programInfo")
+          object.material.name +
+          " / " +
+          strings.getKey("script/title/programInfo")
         break
 
       default:
@@ -269,7 +297,8 @@ function onScriptRemoved(script: any) {
 
 function onObjectChanged(object: any) {
   if (object !== currentObject) return
-  if (["programInfo", "vertexShader", "fragmentShader"].includes(currentScript)) return
+  if (["programInfo", "vertexShader", "fragmentShader"].includes(currentScript))
+    return
   setTitle(currentObject, currentScript)
 }
 
@@ -318,7 +347,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-show="visible" class="absolute inset-0 flex flex-col bg-[#272822] opacity-90">
+  <div
+    v-show="visible"
+    class="te-script absolute inset-0 flex flex-col bg-[#272822] opacity-90"
+  >
     <div class="relative flex shrink-0 items-center px-2.5 py-2.5">
       <span class="text-sm text-white">{{ title }}</span>
       <Button

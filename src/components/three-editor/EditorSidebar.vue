@@ -63,7 +63,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div id="sidebar">
-    <SidebarProvider class="h-full min-h-full w-full">
+    <SidebarProvider class="te-sidebar h-full min-h-full w-full">
       <Sidebar collapsible="none" class="h-full w-full border-l">
         <SidebarHeader class="border-b p-0">
           <SidebarMenu class="flex-row">
