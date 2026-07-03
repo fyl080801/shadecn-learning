@@ -1,6 +1,9 @@
 import { onBeforeUnmount, onMounted, type Ref } from "vue"
 
-export function useEditorWindowResize(editor: any, containerRef: Ref<HTMLElement | null>) {
+export function useEditorWindowResize(
+  editor: any,
+  containerRef: Ref<HTMLElement | null>
+) {
   let resizeObserver: ResizeObserver | null = null
 
   function onResize() {

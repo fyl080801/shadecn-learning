@@ -1,93 +1,97 @@
 // @ts-nocheck
-import { Command } from '../Command';
+import { Command } from "../Command"
 
 class SetMaterialRangeCommand extends Command {
+  /**
+   * @param {Editor} editor
+   * @param {THREE.Object3D|null} [object=null]
+   * @param {string} [attributeName='']
+   * @param {number} [newMinValue=-Infinity]
+   * @param {number} [newMaxValue=Infinity]
+   * @param {number} [materialSlot=-1]
+   * @constructor
+   */
+  constructor(
+    editor,
+    object = null,
+    attributeName = "",
+    newMinValue = -Infinity,
+    newMaxValue = Infinity,
+    materialSlot = -1
+  ) {
+    super(editor)
 
-	/**
-	 * @param {Editor} editor
-	 * @param {THREE.Object3D|null} [object=null]
-	 * @param {string} [attributeName='']
-	 * @param {number} [newMinValue=-Infinity]
-	 * @param {number} [newMaxValue=Infinity]
-	 * @param {number} [materialSlot=-1]
-	 * @constructor
-	 */
-	constructor( editor, object = null, attributeName = '', newMinValue = - Infinity, newMaxValue = Infinity, materialSlot = - 1 ) {
+    this.type = "SetMaterialRangeCommand"
+    this.name =
+      editor.strings.getKey("command/SetMaterialRange") + ": " + attributeName
+    this.updatable = true
 
-		super( editor );
+    this.object = object
+    this.materialSlot = materialSlot
 
-		this.type = 'SetMaterialRangeCommand';
-		this.name = editor.strings.getKey( 'command/SetMaterialRange' ) + ': ' + attributeName;
-		this.updatable = true;
+    const material =
+      object !== null ? editor.getObjectMaterial(object, materialSlot) : null
 
-		this.object = object;
-		this.materialSlot = materialSlot;
+    this.oldRange =
+      material !== null && material[attributeName] !== undefined
+        ? [...material[attributeName]]
+        : null
+    this.newRange = [newMinValue, newMaxValue]
 
-		const material = ( object !== null ) ? editor.getObjectMaterial( object, materialSlot ) : null;
+    this.attributeName = attributeName
+  }
 
-		this.oldRange = ( material !== null && material[ attributeName ] !== undefined ) ? [ ... material[ attributeName ] ] : null;
-		this.newRange = [ newMinValue, newMaxValue ];
+  execute() {
+    const material = this.editor.getObjectMaterial(
+      this.object,
+      this.materialSlot
+    )
 
-		this.attributeName = attributeName;
+    material[this.attributeName] = [...this.newRange]
+    material.needsUpdate = true
 
-	}
+    this.editor.signals.objectChanged.dispatch(this.object)
+    this.editor.signals.materialChanged.dispatch(this.object, this.materialSlot)
+  }
 
-	execute() {
+  undo() {
+    const material = this.editor.getObjectMaterial(
+      this.object,
+      this.materialSlot
+    )
 
-		const material = this.editor.getObjectMaterial( this.object, this.materialSlot );
+    material[this.attributeName] = [...this.oldRange]
+    material.needsUpdate = true
 
-		material[ this.attributeName ] = [ ...this.newRange ];
-		material.needsUpdate = true;
+    this.editor.signals.objectChanged.dispatch(this.object)
+    this.editor.signals.materialChanged.dispatch(this.object, this.materialSlot)
+  }
 
-		this.editor.signals.objectChanged.dispatch( this.object );
-		this.editor.signals.materialChanged.dispatch( this.object, this.materialSlot );
+  update(cmd) {
+    this.newRange = [...cmd.newRange]
+  }
 
-	}
+  toJSON() {
+    const output = super.toJSON(this)
 
-	undo() {
+    output.objectUuid = this.object.uuid
+    output.attributeName = this.attributeName
+    output.oldRange = [...this.oldRange]
+    output.newRange = [...this.newRange]
+    output.materialSlot = this.materialSlot
 
-		const material = this.editor.getObjectMaterial( this.object, this.materialSlot );
+    return output
+  }
 
-		material[ this.attributeName ] = [ ...this.oldRange ];
-		material.needsUpdate = true;
+  fromJSON(json) {
+    super.fromJSON(json)
 
-		this.editor.signals.objectChanged.dispatch( this.object );
-		this.editor.signals.materialChanged.dispatch( this.object, this.materialSlot );
-
-	}
-
-	update( cmd ) {
-
-		this.newRange = [ ...cmd.newRange ];
-
-	}
-
-	toJSON() {
-
-		const output = super.toJSON( this );
-
-		output.objectUuid = this.object.uuid;
-		output.attributeName = this.attributeName;
-		output.oldRange = [ ...this.oldRange ];
-		output.newRange = [ ...this.newRange ];
-		output.materialSlot = this.materialSlot;
-
-		return output;
-
-	}
-
-	fromJSON( json ) {
-
-		super.fromJSON( json );
-
-		this.attributeName = json.attributeName;
-		this.oldRange = [ ...json.oldRange ];
-		this.newRange = [ ...json.newRange ];
-		this.object = this.editor.objectByUuid( json.objectUuid );
-		this.materialSlot = json.materialSlot;
-
-	}
-
+    this.attributeName = json.attributeName
+    this.oldRange = [...json.oldRange]
+    this.newRange = [...json.newRange]
+    this.object = this.editor.objectByUuid(json.objectUuid)
+    this.materialSlot = json.materialSlot
+  }
 }
 
-export { SetMaterialRangeCommand };
+export { SetMaterialRangeCommand }

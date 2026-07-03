@@ -15,6 +15,7 @@ export function provideEditor(editor: any) {
 
 export function useEditor(): any {
   const editor = inject(EditorKey)
-  if (!editor) throw new Error("useEditor() called outside of an editor provider")
+  if (!editor)
+    throw new Error("useEditor() called outside of an editor provider")
   return editor
 }

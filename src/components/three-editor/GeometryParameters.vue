@@ -177,7 +177,12 @@ const configs: Record<string, any> = {
       }
     ],
     build: (v: any) =>
-      new THREE.PlaneGeometry(v.width, v.height, v.widthSegments, v.heightSegments)
+      new THREE.PlaneGeometry(
+        v.width,
+        v.height,
+        v.widthSegments,
+        v.heightSegments
+      )
   },
   RingGeometry: {
     fields: [
@@ -285,7 +290,11 @@ const configs: Record<string, any> = {
         integer: true,
         min: 1
       },
-      { key: "arc", label: t("sidebar/geometry/torus_geometry/arc"), degrees: true }
+      {
+        key: "arc",
+        label: t("sidebar/geometry/torus_geometry/arc"),
+        degrees: true
+      }
     ],
     build: (v: any) =>
       new THREE.TorusGeometry(
@@ -312,8 +321,16 @@ const configs: Record<string, any> = {
         integer: true,
         min: 1
       },
-      { key: "p", label: t("sidebar/geometry/torusKnot_geometry/p"), integer: true },
-      { key: "q", label: t("sidebar/geometry/torusKnot_geometry/q"), integer: true }
+      {
+        key: "p",
+        label: t("sidebar/geometry/torusKnot_geometry/p"),
+        integer: true
+      },
+      {
+        key: "q",
+        label: t("sidebar/geometry/torusKnot_geometry/q"),
+        integer: true
+      }
     ],
     build: (v: any) =>
       new THREE.TorusKnotGeometry(
@@ -327,7 +344,12 @@ const configs: Record<string, any> = {
   }
 }
 
-for (const type of ["Dodecahedron", "Icosahedron", "Octahedron", "Tetrahedron"]) {
+for (const type of [
+  "Dodecahedron",
+  "Icosahedron",
+  "Octahedron",
+  "Tetrahedron"
+]) {
   const prefix = type.toLowerCase() + "_geometry"
   configs[`${type}Geometry`] = {
     fields: [
@@ -364,7 +386,9 @@ function update() {
 
   const args: Record<string, any> = {}
   for (const field of cfg.fields) {
-    args[field.key] = field.degrees ? Number(values[field.key]) * DEG2RAD : values[field.key]
+    args[field.key] = field.degrees
+      ? Number(values[field.key]) * DEG2RAD
+      : values[field.key]
   }
 
   editor.execute(new SetGeometryCommand(editor, props.object, cfg.build(args)))
@@ -381,7 +405,11 @@ defineExpose({ refresh })
 
 <template>
   <div v-if="config" class="space-y-2">
-    <div v-for="field in config.fields" :key="field.key" class="flex items-center gap-2">
+    <div
+      v-for="field in config.fields"
+      :key="field.key"
+      class="flex items-center gap-2"
+    >
       <Label class="w-32 shrink-0 text-xs">{{ field.label }}</Label>
 
       <Checkbox

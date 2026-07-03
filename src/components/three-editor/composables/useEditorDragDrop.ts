@@ -1,6 +1,9 @@
 import { onBeforeUnmount, onMounted, type Ref } from "vue"
 
-export function useEditorDragDrop(editor: any, containerRef: Ref<HTMLElement | null>) {
+export function useEditorDragDrop(
+  editor: any,
+  containerRef: Ref<HTMLElement | null>
+) {
   function onDragover(e: DragEvent) {
     e.preventDefault()
     if (e.dataTransfer) e.dataTransfer.dropEffect = "copy"
