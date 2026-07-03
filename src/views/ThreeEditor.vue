@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { ref } from "vue"
-
 import {
   createEditor,
   ThreeEditor,
@@ -10,13 +8,13 @@ import {
   EditorViewport,
   EditorPlayer,
   EditorScript,
-  EditorAnimation,
-  EditorResizer
+  EditorAnimation
 } from "@/components/three-editor"
-
-const SIDEBAR_DEFAULT_WIDTH = 350
-
-const sidebarColRef = ref<HTMLDivElement | null>(null)
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup
+} from "@/components/ui/resizable"
 
 const editor = createEditor()
 </script>
@@ -25,28 +23,33 @@ const editor = createEditor()
   <ThreeEditor :editor="editor">
     <EditorMenubar />
 
-    <div class="flex min-h-0 flex-1">
-      <div class="flex min-w-0 flex-1 flex-col">
-        <div class="relative min-h-0 flex-1">
-          <EditorViewport />
-          <EditorToolbar />
-          <EditorPlayer />
-          <EditorScript />
-        </div>
+    <ResizablePanelGroup direction="horizontal" class="min-h-0 flex-1">
+      <ResizablePanel>
+        <ResizablePanelGroup direction="vertical">
+          <ResizablePanel :default-size="80" :min-size="30">
+            <div class="relative h-full min-h-0">
+              <EditorViewport class="absolute inset-0" />
+              <EditorToolbar
+                class="absolute bottom-14 left-1/2 -translate-x-1/2"
+              />
+              <EditorPlayer class="absolute inset-0" />
+              <EditorScript class="absolute inset-0" />
+            </div>
+          </ResizablePanel>
 
-        <EditorResizer direction="vertical" />
-        <EditorAnimation />
-      </div>
+          <ResizableHandle />
 
-      <EditorResizer direction="horizontal" :sidebar-col-ref="sidebarColRef" />
+          <ResizablePanel :default-size="20" :min-size="10" :max-size="50">
+            <EditorAnimation />
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </ResizablePanel>
 
-      <div
-        ref="sidebarColRef"
-        class="h-full shrink-0"
-        :style="{ width: SIDEBAR_DEFAULT_WIDTH + 'px' }"
-      >
+      <ResizableHandle />
+
+      <ResizablePanel :default-size="18" :min-size="18">
         <EditorSidebar />
-      </div>
-    </div>
+      </ResizablePanel>
+    </ResizablePanelGroup>
   </ThreeEditor>
 </template>

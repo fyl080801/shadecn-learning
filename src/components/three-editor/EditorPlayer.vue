@@ -5,6 +5,8 @@ import { onBeforeUnmount, onMounted, ref } from "vue"
 import { APP } from "./libs/app"
 import { useEditor } from "./composables/useEditorContext"
 
+defineOptions({ inheritAttrs: false })
+
 const editor = useEditor()
 const signals = editor.signals
 
@@ -58,5 +60,5 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-show="visible" ref="containerRef" class="te-player absolute inset-0" />
+  <div v-show="visible" ref="containerRef" v-bind="$attrs" class="te-player" />
 </template>

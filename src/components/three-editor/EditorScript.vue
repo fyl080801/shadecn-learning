@@ -15,6 +15,8 @@ import { SetScriptValueCommand } from "./commands/SetScriptValueCommand"
 import { SetMaterialValueCommand } from "./commands/SetMaterialValueCommand"
 import { useEditor } from "./composables/useEditorContext"
 
+defineOptions({ inheritAttrs: false })
+
 const editor = useEditor()
 const signals = editor.signals
 const strings = editor.strings
@@ -349,7 +351,8 @@ onBeforeUnmount(() => {
 <template>
   <div
     v-show="visible"
-    class="te-script absolute inset-0 flex flex-col bg-[#272822] opacity-90"
+    v-bind="$attrs"
+    class="te-script flex flex-col bg-[#272822] opacity-90"
   >
     <div class="relative flex shrink-0 items-center px-2.5 py-2.5">
       <span class="text-sm text-white">{{ title }}</span>

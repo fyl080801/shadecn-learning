@@ -95,7 +95,6 @@ function Editor() {
     pathTracerUpdated: new Signal(),
 
     animationPanelChanged: new Signal(),
-    animationPanelResized: new Signal(),
 
     morphTargetsUpdated: new Signal()
   }

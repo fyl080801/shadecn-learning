@@ -64,7 +64,7 @@ onBeforeUnmount(() => {
 <template>
   <div id="sidebar">
     <SidebarProvider class="te-sidebar h-full min-h-full w-full">
-      <Sidebar collapsible="none" class="h-full w-full border-l">
+      <Sidebar collapsible="none" class="h-full w-full">
         <SidebarHeader class="border-b p-0">
           <SidebarMenu class="flex-row">
             <SidebarMenuItem v-for="tab in tabs" :key="tab.id" class="flex-1">

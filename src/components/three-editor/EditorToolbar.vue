@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/tooltip"
 import { useEditor } from "./composables/useEditorContext"
 
+defineOptions({ inheritAttrs: false })
+
 const editor = useEditor()
 const signals = editor.signals
 const strings = editor.strings
@@ -47,7 +49,8 @@ onBeforeUnmount(() => {
 <template>
   <TooltipProvider :delay-duration="300">
     <div
-      class="te-toolbar absolute bottom-14 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-md border bg-card p-1 shadow-sm"
+      v-bind="$attrs"
+      class="te-toolbar flex items-center gap-0.5 rounded-md border bg-card p-1 shadow-sm"
     >
       <Tooltip v-for="tool in tools" :key="tool.id">
         <TooltipTrigger as-child>

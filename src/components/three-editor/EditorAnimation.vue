@@ -25,8 +25,6 @@ const timelineAreaRef = ref<HTMLDivElement | null>(null)
 const trackListRef = ref<HTMLDivElement | null>(null)
 const playheadRef = ref<HTMLDivElement | null>(null)
 
-let panelHeight = 45
-
 const labelWidth = 150
 
 // Track colors by type
@@ -357,12 +355,6 @@ function selectDefaultClip(object: any) {
   }
 }
 
-function onAnimationPanelResized(height: number) {
-  panelHeight = height
-  rootRef.value!.style.height = height + "px"
-  signals.windowResize.dispatch()
-}
-
 function onTimeScaleChange() {
   mixer.timeScale = timeScale.value
 }
@@ -391,9 +383,6 @@ function stop() {
 }
 
 onMounted(() => {
-  rootRef.value!.style.height = panelHeight + "px"
-
-  signals.animationPanelResized.add(onAnimationPanelResized)
   signals.objectSelected.add(selectDefaultClip)
   signals.editorCleared.add(clear)
   signals.objectAdded.add(update)
@@ -407,7 +396,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  signals.animationPanelResized.remove(onAnimationPanelResized)
   signals.objectSelected.remove(selectDefaultClip)
   signals.editorCleared.remove(clear)
   signals.objectAdded.remove(update)
@@ -423,7 +411,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     ref="rootRef"
-    class="te-animation flex shrink-0 flex-col overflow-hidden border-t bg-muted/40"
+    class="te-animation flex h-full flex-col overflow-hidden border-t bg-muted/40"
   >
     <div
       class="flex shrink-0 items-center justify-center gap-1.5 border-b px-2.5 py-1.5"

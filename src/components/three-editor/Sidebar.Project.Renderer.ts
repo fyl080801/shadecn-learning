@@ -180,7 +180,13 @@ function SidebarProjectRenderer(editor) {
     signals.rendererUpdated.dispatch()
   }
 
-  createRenderer()
+  // Deferred to a microtask so this always runs after the *entire* initial
+  // component tree has finished mounting, regardless of whether the sidebar
+  // or the viewport happens to mount first in the DOM. Dispatching
+  // rendererCreated synchronously here would race Viewport.ts's own mount
+  // (which registers the listener that sets up pmremGenerator) whenever the
+  // sidebar is placed/mounted before the viewport in the layout.
+  queueMicrotask(createRenderer)
 
   // Signals
 
