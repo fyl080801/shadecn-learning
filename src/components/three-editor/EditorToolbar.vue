@@ -28,8 +28,13 @@ const tools = [
 ] as const
 
 const mode = ref<(typeof tools)[number]["id"]>("translate")
+// While a bone is selected, only rotation is allowed: translating or scaling
+// a bone would offset it from its parent and visibly break the joint
+// connection, so those tools are disabled for the duration of the selection.
+const selectedIsBone = ref(false)
 
 function setMode(id: (typeof tools)[number]["id"]) {
+  if (selectedIsBone.value && id !== "rotate") return
   signals.transformModeChanged.dispatch(id)
 }
 
@@ -37,12 +42,19 @@ function onTransformModeChanged(newMode: (typeof tools)[number]["id"]) {
   mode.value = newMode
 }
 
+function onObjectSelected(object: any) {
+  selectedIsBone.value = !!object?.isBone
+}
+
 onMounted(() => {
   signals.transformModeChanged.add(onTransformModeChanged)
+  signals.objectSelected.add(onObjectSelected)
+  onObjectSelected(editor.selected)
 })
 
 onBeforeUnmount(() => {
   signals.transformModeChanged.remove(onTransformModeChanged)
+  signals.objectSelected.remove(onObjectSelected)
 })
 </script>
 
@@ -58,6 +70,7 @@ onBeforeUnmount(() => {
             :variant="mode === tool.id ? 'secondary' : 'ghost'"
             size="icon-sm"
             class="[&_svg]:size-4"
+            :disabled="selectedIsBone && tool.id !== 'rotate'"
             @click="setMode(tool.id)"
           >
             <span v-html="tool.icon" />

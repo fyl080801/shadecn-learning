@@ -132,6 +132,12 @@ function Strings(config) {
       "sidebar/properties/geometry": "ژئومتری",
       "sidebar/properties/material": "متریال",
       "sidebar/properties/script": "اسکریپت",
+      "sidebar/properties/skeleton": "اسکلت",
+
+      "sidebar/skeleton/bones": "استخوان‌ها",
+      "sidebar/skeleton/resetPose": "بازنشانی حالت",
+      "sidebar/skeleton/resetJoint": "بازنشانی مفصل",
+      "sidebar/skeleton/empty": "مشی اسکلتی انتخاب نشده است",
 
       "sidebar/object/type": "انواع",
       "sidebar/object/new": "جدید",
@@ -583,6 +589,12 @@ function Strings(config) {
       "sidebar/properties/geometry": "Geometry",
       "sidebar/properties/material": "Material",
       "sidebar/properties/script": "Script",
+      "sidebar/properties/skeleton": "Skeleton",
+
+      "sidebar/skeleton/bones": "Bones",
+      "sidebar/skeleton/resetPose": "Reset Pose",
+      "sidebar/skeleton/resetJoint": "Reset Joint",
+      "sidebar/skeleton/empty": "No skinned mesh selected",
 
       "sidebar/object/type": "Type",
       "sidebar/object/new": "New",
@@ -1040,6 +1052,12 @@ function Strings(config) {
       "sidebar/properties/geometry": "Géométrie",
       "sidebar/properties/material": "Matériaux",
       "sidebar/properties/script": "Script",
+      "sidebar/properties/skeleton": "Squelette",
+
+      "sidebar/skeleton/bones": "Os",
+      "sidebar/skeleton/resetPose": "Réinitialiser la pose",
+      "sidebar/skeleton/resetJoint": "Réinitialiser l'articulation",
+      "sidebar/skeleton/empty": "Aucun maillage squelettique sélectionné",
 
       "sidebar/object/type": "Type",
       "sidebar/object/new": "Nouveau",
@@ -1493,6 +1511,12 @@ function Strings(config) {
       "sidebar/properties/geometry": "几何组件",
       "sidebar/properties/material": "材质组件",
       "sidebar/properties/script": "脚本",
+      "sidebar/properties/skeleton": "骨骼",
+
+      "sidebar/skeleton/bones": "骨骼列表",
+      "sidebar/skeleton/resetPose": "重置姿势",
+      "sidebar/skeleton/resetJoint": "重置关节",
+      "sidebar/skeleton/empty": "未选中蒙皮网格",
 
       "sidebar/object/type": "类型",
       "sidebar/object/new": "更新",
@@ -1948,6 +1972,12 @@ function Strings(config) {
       "sidebar/properties/geometry": "ジオメトリ",
       "sidebar/properties/material": "マテリアル",
       "sidebar/properties/script": "スクリプト",
+      "sidebar/properties/skeleton": "スケルトン",
+
+      "sidebar/skeleton/bones": "ボーン",
+      "sidebar/skeleton/resetPose": "ポーズをリセット",
+      "sidebar/skeleton/resetJoint": "ジョイントをリセット",
+      "sidebar/skeleton/empty": "スキンメッシュが選択されていません",
 
       "sidebar/object/type": "タイプ",
       "sidebar/object/new": "新規",
@@ -2402,6 +2432,12 @@ function Strings(config) {
       "sidebar/properties/geometry": "지오메트리",
       "sidebar/properties/material": "머티리얼",
       "sidebar/properties/script": "스크립트",
+      "sidebar/properties/skeleton": "스켈레톤",
+
+      "sidebar/skeleton/bones": "본",
+      "sidebar/skeleton/resetPose": "포즈 초기화",
+      "sidebar/skeleton/resetJoint": "관절 초기화",
+      "sidebar/skeleton/empty": "선택된 스킨 메시가 없습니다",
 
       "sidebar/object/type": "타입",
       "sidebar/object/new": "새로 만들기",

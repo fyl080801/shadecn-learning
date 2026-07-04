@@ -7,6 +7,7 @@ import SidebarObject from "./SidebarObject.vue"
 import SidebarGeometry from "./SidebarGeometry.vue"
 import SidebarMaterial from "./SidebarMaterial.vue"
 import SidebarScript from "./SidebarScript.vue"
+import SidebarSkeleton from "./SidebarSkeleton.vue"
 
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -23,6 +24,9 @@ const showMaterialTab = computed(() => !!selected.value?.material)
 const showScriptTab = computed(
   () => selected.value !== null && selected.value !== editor.camera
 )
+const showSkeletonTab = computed(
+  () => !!selected.value?.isSkinnedMesh || !!selected.value?.isBone
+)
 
 function onObjectSelected(object: any) {
   selected.value = object
@@ -36,6 +40,9 @@ function onObjectSelected(object: any) {
     activeTab.value = "objectTab"
   }
   if (!showScriptTab.value && activeTab.value === "scriptTab") {
+    activeTab.value = "objectTab"
+  }
+  if (!showSkeletonTab.value && activeTab.value === "skeletonTab") {
     activeTab.value = "objectTab"
   }
 }
@@ -77,6 +84,13 @@ onBeforeUnmount(() => {
         >
           {{ t("sidebar/properties/script") }}
         </TabsTrigger>
+        <TabsTrigger
+          v-if="showSkeletonTab"
+          value="skeletonTab"
+          class="flex-1 text-xs"
+        >
+          {{ t("sidebar/properties/skeleton") }}
+        </TabsTrigger>
       </TabsList>
       <ScrollArea class="min-h-0 flex-1">
         <TabsContent value="objectTab">
@@ -90,6 +104,9 @@ onBeforeUnmount(() => {
         </TabsContent>
         <TabsContent value="scriptTab">
           <SidebarScript />
+        </TabsContent>
+        <TabsContent value="skeletonTab">
+          <SidebarSkeleton />
         </TabsContent>
       </ScrollArea>
     </Tabs>

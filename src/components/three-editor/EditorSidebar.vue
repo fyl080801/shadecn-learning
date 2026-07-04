@@ -33,7 +33,7 @@ const activeTab = ref<(typeof tabs)[number]["id"]>("scene")
 </script>
 
 <template>
-  <div id="sidebar">
+  <div id="sidebar" class="h-full">
     <SidebarProvider class="te-sidebar h-full min-h-full w-full">
       <Sidebar collapsible="none" class="h-full w-full">
         <SidebarHeader class="border-b p-0">
@@ -51,8 +51,8 @@ const activeTab = ref<(typeof tabs)[number]["id"]>("scene")
           </SidebarMenu>
         </SidebarHeader>
         <SidebarContent>
-          <div v-show="activeTab === 'scene'" class="flex h-full flex-col">
-            <SidebarScene class="h-1/2 shrink-0 border-b" />
+          <div v-show="activeTab === 'scene'" class="flex h-full min-h-0 flex-col">
+            <SidebarScene class="h-1/2 min-h-0 shrink-0 border-b" />
             <SidebarProperties class="min-h-0 flex-1" />
           </div>
           <SidebarProject v-show="activeTab === 'project'" />

@@ -10,6 +10,20 @@ import { LoaderUtils } from "./LoaderUtils"
 
 import { GLTFImportDialog } from "./GLTFImportDialog"
 
+import { snapshotBindPose } from "./SkeletonBindPose"
+
+// FBXLoader stores the file's GlobalSettings.UnitScaleFactor (centimeters
+// per scene unit) on userData but never applies it. Many FBX exports
+// (e.g. Mixamo) use centimeters, so without this the imported object is
+// 100x too large relative to a scene authored in meters.
+function applyFBXUnitScale(object) {
+  const unitScaleFactor = object.userData.unitScaleFactor
+
+  if (typeof unitScaleFactor === "number" && unitScaleFactor !== 100) {
+    object.scale.multiplyScalar(unitScaleFactor / 100)
+  }
+}
+
 import { unzipSync, strFromU8 } from "three/addons/libs/fflate.module.js"
 
 function Loader(editor) {
@@ -246,6 +260,8 @@ function Loader(editor) {
 
             collada.scene.name = filename
 
+            await snapshotBindPose(collada.scene)
+
             editor.execute(new AddObjectCommand(editor, collada.scene))
           },
           false
@@ -305,7 +321,12 @@ function Loader(editor) {
             const loader = new FBXLoader(manager)
             const object = loader.parse(contents)
 
+            applyFBXUnitScale(object)
+
+            await snapshotBindPose(object)
+
             editor.execute(new AddObjectCommand(editor, object))
+            editor.focus(object)
           },
           false
         )
@@ -326,11 +347,13 @@ function Loader(editor) {
 
               const loader = await createGLTFLoader()
 
-              loader.parse(contents, "", function (result) {
+              loader.parse(contents, "", async function (result) {
                 const scene = result.scene
                 scene.name = filename
 
                 scene.animations.push(...result.animations)
+
+                await snapshotBindPose(scene)
 
                 if (options.asScene) {
                   editor.execute(new SetSceneCommand(editor, scene))
@@ -364,11 +387,13 @@ function Loader(editor) {
 
               const loader = await createGLTFLoader(manager)
 
-              loader.parse(contents, "", function (result) {
+              loader.parse(contents, "", async function (result) {
                 const scene = result.scene
                 scene.name = filename
 
                 scene.animations.push(...result.animations)
+
+                await snapshotBindPose(scene)
 
                 if (options.asScene) {
                   editor.execute(new SetSceneCommand(editor, scene))
@@ -428,6 +453,8 @@ function Loader(editor) {
             const collada = loader.parse(event.target.result)
 
             collada.scene.name = filename
+
+            await snapshotBindPose(collada.scene)
 
             editor.execute(new AddObjectCommand(editor, collada.scene))
           },
@@ -900,7 +927,12 @@ function Loader(editor) {
           const loader = new FBXLoader(manager)
           const object = loader.parse(file.buffer)
 
+          applyFBXUnitScale(object)
+
+          await snapshotBindPose(object)
+
           editor.execute(new AddObjectCommand(editor, object))
+          editor.focus(object)
 
           break
         }
@@ -912,10 +944,12 @@ function Loader(editor) {
 
             const loader = await createGLTFLoader()
 
-            loader.parse(file.buffer, "", function (result) {
+            loader.parse(file.buffer, "", async function (result) {
               const scene = result.scene
 
               scene.animations.push(...result.animations)
+
+              await snapshotBindPose(scene)
 
               if (options.asScene) {
                 editor.execute(new SetSceneCommand(editor, scene))
@@ -940,10 +974,12 @@ function Loader(editor) {
 
             const loader = await createGLTFLoader(manager)
 
-            loader.parse(strFromU8(file), "", function (result) {
+            loader.parse(strFromU8(file), "", async function (result) {
               const scene = result.scene
 
               scene.animations.push(...result.animations)
+
+              await snapshotBindPose(scene)
 
               if (options.asScene) {
                 editor.execute(new SetSceneCommand(editor, scene))

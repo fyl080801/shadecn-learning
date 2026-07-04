@@ -45,6 +45,7 @@ function objectType(object: any) {
   if (object.isMesh) return "Mesh"
   if (object.isLine) return "Line"
   if (object.isPoints) return "Points"
+  if (object.isBone) return "Bone"
   return "Object3D"
 }
 
@@ -309,7 +310,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="te-sidebar-scene flex h-full flex-col">
+  <div class="te-sidebar-scene flex min-h-0 flex-col">
     <ScrollArea class="h-48 shrink-0 border-b">
       <div class="p-1">
         <button
@@ -361,7 +362,7 @@ onBeforeUnmount(() => {
       </div>
     </ScrollArea>
 
-    <ScrollArea class="flex-1">
+    <ScrollArea class="min-h-0 flex-1">
       <div class="space-y-4 p-3">
         <!-- background -->
         <div class="space-y-2">

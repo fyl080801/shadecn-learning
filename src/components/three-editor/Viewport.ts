@@ -39,6 +39,8 @@ function Viewport(editor) {
 
   const GRID_COLORS_LIGHT = [0x999999, 0x777777]
   const GRID_COLORS_DARK = [0x555555, 0x888888]
+  const GRID_PLANE_COLOR_LIGHT = 0x3b82f6
+  const GRID_PLANE_COLOR_DARK = 0x60a5fa
 
   const grid = new THREE.Group()
 
@@ -51,6 +53,20 @@ function Viewport(editor) {
   grid2.material.color.setHex(GRID_COLORS_LIGHT[1])
   grid2.material.vertexColors = false
   grid.add(grid2)
+
+  const gridPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(30, 30),
+    new THREE.MeshBasicMaterial({
+      color: GRID_PLANE_COLOR_LIGHT,
+      transparent: true,
+      opacity: 0.25,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    })
+  )
+  gridPlane.rotation.x = -Math.PI / 2
+  gridPlane.position.y = -0.001
+  grid.add(gridPlane)
 
   const viewHelper = new ViewHelper(camera, container)
 
@@ -130,6 +146,12 @@ function Viewport(editor) {
           }
 
           break
+      }
+
+      // Drag frames used the cheap (non-precise) box for performance; true
+      // up to a precise box now that dragging has stopped.
+      if (editor.selected === object) {
+        box.setFromObject(object, true)
       }
     }
 
@@ -323,7 +345,9 @@ function Viewport(editor) {
         updateGridColors(
           grid1,
           grid2,
-          event.matches ? GRID_COLORS_DARK : GRID_COLORS_LIGHT
+          event.matches ? GRID_COLORS_DARK : GRID_COLORS_LIGHT,
+          gridPlane,
+          event.matches ? GRID_PLANE_COLOR_DARK : GRID_PLANE_COLOR_LIGHT
         )
 
         render()
@@ -333,7 +357,9 @@ function Viewport(editor) {
       updateGridColors(
         grid1,
         grid2,
-        mediaQuery.matches ? GRID_COLORS_DARK : GRID_COLORS_LIGHT
+        mediaQuery.matches ? GRID_COLORS_DARK : GRID_COLORS_LIGHT,
+        gridPlane,
+        mediaQuery.matches ? GRID_PLANE_COLOR_DARK : GRID_PLANE_COLOR_LIGHT
       )
     }
 
@@ -387,6 +413,12 @@ function Viewport(editor) {
       }
 
       transformControls.attach(object)
+
+      // Bones only support rotation in this editor: translating/scaling a
+      // bone would offset it from its parent and break the joint connection.
+      if (object.isBone && transformControls.mode !== "rotate") {
+        signals.transformModeChanged.dispatch("rotate")
+      }
     }
 
     render()
@@ -407,7 +439,13 @@ function Viewport(editor) {
 
   signals.objectChanged.add(function (object) {
     if (editor.selected === object) {
-      box.setFromObject(object, true)
+      // Precise mode walks and transforms every vertex of every mesh in the
+      // subtree, which for a skinned character (many bones + a dense mesh)
+      // is expensive enough to visibly stutter a translate drag when redone
+      // on every pointer-move. Fall back to the cheap (cached bounding box)
+      // pass while actively dragging and only pay for a precise box once
+      // the drag settles.
+      box.setFromObject(object, !transformControls.dragging)
     }
 
     if (object.isPerspectiveCamera) {
@@ -805,9 +843,11 @@ function Viewport(editor) {
   return container
 }
 
-function updateGridColors(grid1, grid2, colors) {
+function updateGridColors(grid1, grid2, colors, gridPlane, planeColor) {
   grid1.material.color.setHex(colors[0])
   grid2.material.color.setHex(colors[1])
+  if (gridPlane && planeColor !== undefined)
+    gridPlane.material.color.setHex(planeColor)
 }
 
 export { Viewport }

@@ -99,6 +99,13 @@ const showPenumbra = computed(() => selected.value?.penumbra !== undefined)
 const showDecay = computed(() => selected.value?.decay !== undefined)
 
 const showRotationScale = computed(() => !selected.value?.isLight)
+// Bones only expose rotation: translating/scaling a bone would change its
+// offset from its parent and visibly break the joint connection, so those
+// controls are hidden here (still editable generically for non-bone objects).
+const showPosition = computed(() => !selected.value?.isBone)
+const showScale = computed(
+  () => showRotationScale.value && !selected.value?.isBone
+)
 
 const showShadowRow = computed(
   () =>
@@ -500,7 +507,7 @@ onBeforeUnmount(() => {
       />
     </div>
 
-    <div class="flex items-center gap-2">
+    <div v-if="showPosition" class="flex items-center gap-2">
       <Label class="w-24 shrink-0 text-xs">{{
         t("sidebar/object/position")
       }}</Label>
@@ -570,7 +577,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="showRotationScale" class="flex items-center gap-2">
+    <div v-if="showScale" class="flex items-center gap-2">
       <Label class="w-24 shrink-0 text-xs">{{
         t("sidebar/object/scale")
       }}</Label>
