@@ -35,9 +35,15 @@ onBeforeUnmount(() => {
 // Flat, ungrouped list of top-level scene graphics — the panorama sphere
 // (see DirectorScenePropertiesPanel) lives in editor.backdrop, not
 // editor.scene, so it never appears here.
+//
+// Three.js mutates `scene.children` in place (push/splice), so it's always
+// the same array reference. A computed that returned it directly would
+// recompute on every bump() but Vue would see the "new" result as
+// reference-equal to the cached one and skip re-rendering the v-for below —
+// copying into a fresh array each time is what makes the bump visible.
 const items = computed(() => {
   graphVersion.value
-  return editor.scene.children
+  return [...editor.scene.children]
 })
 
 function selectItem(object: any) {

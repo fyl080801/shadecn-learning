@@ -37,9 +37,9 @@ onBeforeUnmount(() => signals.objectSelected.remove(onObjectSelected))
 // ----- scene transform -----
 //
 // Scales/moves/rotates the built stage — the ground grid plus every placed
-// graphic (characters/机位). The grid is rendered as its own pass
-// (Viewport.ts's `grid`, exposed as editor.grid), not a child of `scene`, so
-// it has to be driven explicitly alongside scene.scale/position/rotation to
+// graphic (characters/机位). The grid (editor.grid, owned by Editor and
+// rendered as its own pass by Viewport.ts) is not a child of `scene`, so it
+// has to be driven explicitly alongside scene.scale/position/rotation to
 // stay in lockstep with the characters/机位 that *are* scene children. The
 // panorama backdrop deliberately sits outside all of this — see below.
 
@@ -55,7 +55,7 @@ const sceneRotationZ = ref(scene.rotation.z * THREE.MathUtils.RAD2DEG)
 // top of the scene's y position rather than replacing it, so scaling/moving
 // the stage and nudging the ground plane's height don't fight each other.
 function applyGridPosition() {
-  editor.grid?.position.set(
+  editor.grid.position.set(
     scenePositionX.value,
     scenePositionY.value + groundHeight.value,
     scenePositionZ.value
@@ -65,7 +65,7 @@ function applyGridPosition() {
 watch(sceneScalePercent, (value) => {
   const scale = (Array.isArray(value) ? value[0] : value) / 100
   scene.scale.set(scale, scale, scale)
-  editor.grid?.scale.set(scale, scale, scale)
+  editor.grid.scale.set(scale, scale, scale)
   requestRender()
 })
 
@@ -81,14 +81,14 @@ watch([sceneRotationX, sceneRotationY, sceneRotationZ], ([x, y, z]) => {
     y * THREE.MathUtils.DEG2RAD,
     z * THREE.MathUtils.DEG2RAD
   )
-  editor.grid?.rotation.copy(scene.rotation)
+  editor.grid.rotation.copy(scene.rotation)
   requestRender()
 })
 
 onMounted(() => {
-  editor.grid?.scale.copy(scene.scale)
+  editor.grid.scale.copy(scene.scale)
   applyGridPosition()
-  editor.grid?.rotation.copy(scene.rotation)
+  editor.grid.rotation.copy(scene.rotation)
 })
 
 // ----- ground grid -----
@@ -105,16 +105,14 @@ const groundOpacity = ref(0.25)
 const groundHeight = ref(0)
 
 watch(showGround, (value) => {
-  if (editor.grid) editor.grid.visible = value
+  editor.grid.visible = value
   requestRender()
 })
 
 watch(groundOpacity, (value) => {
   const plane = editor.groundPlane
-  if (plane) {
-    plane.material.opacity = Array.isArray(value) ? value[0] : value
-    plane.material.needsUpdate = true
-  }
+  plane.material.opacity = Array.isArray(value) ? value[0] : value
+  plane.material.needsUpdate = true
   requestRender()
 })
 
@@ -124,11 +122,9 @@ watch(groundHeight, () => {
 })
 
 onMounted(() => {
-  if (editor.grid) editor.grid.visible = showGround.value
-  if (editor.groundPlane) {
-    editor.groundPlane.material.opacity = groundOpacity.value
-    editor.groundPlane.material.needsUpdate = true
-  }
+  editor.grid.visible = showGround.value
+  editor.groundPlane.material.opacity = groundOpacity.value
+  editor.groundPlane.material.needsUpdate = true
 })
 
 // ----- panorama background -----

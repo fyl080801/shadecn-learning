@@ -36,13 +36,13 @@ function Viewport(editor) {
   const sceneHelpers = editor.sceneHelpers
 
   // Rendered right after `scene` but before `grid`/`sceneHelpers` (see
-  // render() below), so that anything drawn here (e.g. the director's
-  // panorama sphere) is real background color already sitting in the
-  // buffer by the time the ground plane's translucent fill blends on top
-  // of it. Kept as its own scene rather than living in sceneHelpers so it
-  // can render ahead of grid/gizmos without them jumping the queue with it.
-  const backdrop = new THREE.Scene()
-  editor.backdrop = backdrop
+  // render() below), so that anything drawn here is real background color
+  // already sitting in the buffer by the time the ground plane's
+  // translucent fill blends on top of it. Kept as its own scene rather than
+  // living in sceneHelpers so it can render ahead of grid/gizmos without
+  // them jumping the queue with it. Owned by Editor (see Editor.ts) so it
+  // exists before this Viewport is ever constructed.
+  const backdrop = editor.backdrop
 
   // helpers
 
@@ -51,31 +51,11 @@ function Viewport(editor) {
   const GRID_PLANE_COLOR_LIGHT = 0x3b82f6
   const GRID_PLANE_COLOR_DARK = 0x60a5fa
 
-  const grid = new THREE.Group()
-
-  const grid1 = new THREE.GridHelper(30, 30)
-  grid1.material.color.setHex(GRID_COLORS_LIGHT[0])
-  grid1.material.vertexColors = false
-  grid.add(grid1)
-
-  const grid2 = new THREE.GridHelper(30, 6)
-  grid2.material.color.setHex(GRID_COLORS_LIGHT[1])
-  grid2.material.vertexColors = false
-  grid.add(grid2)
-
-  const gridPlane = new THREE.Mesh(
-    new THREE.PlaneGeometry(30, 30),
-    new THREE.MeshBasicMaterial({
-      color: GRID_PLANE_COLOR_LIGHT,
-      transparent: true,
-      opacity: 0.25,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    })
-  )
-  gridPlane.rotation.x = -Math.PI / 2
-  gridPlane.position.y = -0.001
-  grid.add(gridPlane)
+  // Owned by Editor (see Editor.ts), not constructed here, for the same
+  // reason as `backdrop` above.
+  const grid = editor.grid
+  const [grid1, grid2] = grid.children
+  const gridPlane = editor.groundPlane
 
   const viewHelper = new ViewHelper(camera, container)
 
@@ -286,8 +266,6 @@ function Viewport(editor) {
   viewHelper.center = controls.center
 
   editor.controls = controls
-  editor.grid = grid
-  editor.groundPlane = gridPlane
 
   // signals
 
@@ -837,12 +815,12 @@ function Viewport(editor) {
     startTime = performance.now()
 
     renderer.setViewport(0, 0, container.offsetWidth, container.offsetHeight)
-    // `scene` goes first (not `backdrop`) because `scene.background` is a
-    // flat THREE.Color (天空颜色) — Three.js force-clears the buffer whenever
-    // it renders a scene with a Color background, regardless of autoClear,
-    // so anything rendered *before* scene here would get wiped out the
-    // instant scene renders. Rendering backdrop right after, with autoClear
-    // off, lets it paint over 天空颜色 wherever nothing else already drew,
+    // `scene` goes first (not `backdrop`) because a flat THREE.Color
+    // background makes Three.js force-clear the buffer whenever it renders
+    // a scene with a Color background, regardless of autoClear, so anything
+    // rendered *before* scene here would get wiped out the instant scene
+    // renders. Rendering backdrop right after, with autoClear off, lets it
+    // paint over that background fill wherever nothing else already drew,
     // while still losing the depth test to real scene geometry that's
     // nearer than it.
     renderer.render(scene, editor.viewportCamera)

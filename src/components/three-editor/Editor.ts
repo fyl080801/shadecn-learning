@@ -115,6 +115,45 @@ function Editor(namespace) {
   this.sceneHelpers = new THREE.Scene()
   this.sceneHelpers.add(new THREE.HemisphereLight(0xffffff, 0x888888, 2))
 
+  // A sibling scene, rendered by Viewport in its own pass with the same
+  // camera. Anything added here (e.g. a fixed background mesh) gets ordinary
+  // camera-relative parallax/zoom, unlike `scene.background`, which Three.js
+  // renders at infinite distance and only reorients with camera *rotation*.
+  // Kept outside `scene` so it's unaffected by scene.scale/position/rotation
+  // and outside `sceneHelpers` so it isn't picked up by Selector's raycasts.
+  this.backdrop = new THREE.Scene()
+
+  // Ground reference grid + its translucent fill plane. Kept outside `scene`
+  // so it isn't part of the authored scene graph (autosave, export, the
+  // scene panel) while still being transformable in lockstep with it.
+  // Constructed here (not by Viewport) so these are always present as soon
+  // as an Editor exists, regardless of whether/when a viewport mounts.
+  this.grid = new THREE.Group()
+
+  const grid1 = new THREE.GridHelper(30, 30)
+  grid1.material.color.setHex(0x999999)
+  grid1.material.vertexColors = false
+  this.grid.add(grid1)
+
+  const grid2 = new THREE.GridHelper(30, 6)
+  grid2.material.color.setHex(0x777777)
+  grid2.material.vertexColors = false
+  this.grid.add(grid2)
+
+  this.groundPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(30, 30),
+    new THREE.MeshBasicMaterial({
+      color: 0x3b82f6,
+      transparent: true,
+      opacity: 0.25,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    })
+  )
+  this.groundPlane.rotation.x = -Math.PI / 2
+  this.groundPlane.position.y = -0.001
+  this.grid.add(this.groundPlane)
+
   this.backgroundType = "Default"
   this.environmentType = "Default"
 
