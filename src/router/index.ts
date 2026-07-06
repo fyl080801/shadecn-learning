@@ -62,6 +62,11 @@ const router = createRouter({
       path: "/three-editor",
       name: "ThreeEditor",
       component: () => import('@/views/ThreeEditor.vue')
+    },
+    {
+      path: "/3d-scene",
+      name: "3DScene",
+      component: () => import('@/views/3DScene.vue')
     }
   ]
 })

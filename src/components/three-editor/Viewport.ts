@@ -35,6 +35,15 @@ function Viewport(editor) {
   const scene = editor.scene
   const sceneHelpers = editor.sceneHelpers
 
+  // Rendered right after `scene` but before `grid`/`sceneHelpers` (see
+  // render() below), so that anything drawn here (e.g. the director's
+  // panorama sphere) is real background color already sitting in the
+  // buffer by the time the ground plane's translucent fill blends on top
+  // of it. Kept as its own scene rather than living in sceneHelpers so it
+  // can render ahead of grid/gizmos without them jumping the queue with it.
+  const backdrop = new THREE.Scene()
+  editor.backdrop = backdrop
+
   // helpers
 
   const GRID_COLORS_LIGHT = [0x999999, 0x777777]
@@ -277,6 +286,8 @@ function Viewport(editor) {
   viewHelper.center = controls.center
 
   editor.controls = controls
+  editor.grid = grid
+  editor.groundPlane = gridPlane
 
   // signals
 
@@ -826,15 +837,25 @@ function Viewport(editor) {
     startTime = performance.now()
 
     renderer.setViewport(0, 0, container.offsetWidth, container.offsetHeight)
+    // `scene` goes first (not `backdrop`) because `scene.background` is a
+    // flat THREE.Color (天空颜色) — Three.js force-clears the buffer whenever
+    // it renders a scene with a Color background, regardless of autoClear,
+    // so anything rendered *before* scene here would get wiped out the
+    // instant scene renders. Rendering backdrop right after, with autoClear
+    // off, lets it paint over 天空颜色 wherever nothing else already drew,
+    // while still losing the depth test to real scene geometry that's
+    // nearer than it.
     renderer.render(scene, editor.viewportCamera)
 
+    renderer.autoClear = false
+    renderer.render(backdrop, editor.viewportCamera)
+
     if (camera === editor.viewportCamera) {
-      renderer.autoClear = false
       if (grid.visible === true) renderer.render(grid, camera)
       if (sceneHelpers.visible === true) renderer.render(sceneHelpers, camera)
       if (renderer.xr.isPresenting !== true) viewHelper.render(renderer)
-      renderer.autoClear = true
     }
+    renderer.autoClear = true
 
     endTime = performance.now()
     editor.signals.sceneRendered.dispatch(endTime - startTime)

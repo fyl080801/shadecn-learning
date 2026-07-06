@@ -1,6 +1,6 @@
 // @ts-nocheck
-function Config() {
-  const name = "threejs-editor"
+function Config(namespace) {
+  const name = namespace || "threejs-editor"
 
   const userLanguage = navigator.language.split("-")[0]
 

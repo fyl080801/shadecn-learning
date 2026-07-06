@@ -15,7 +15,7 @@ _DEFAULT_CAMERA.position.set(0, 5, 10)
 _DEFAULT_CAMERA.lookAt(new THREE.Vector3())
 const _ORTHOGRAPHIC_FRUSTUM_SIZE = 100
 
-function Editor() {
+function Editor(namespace) {
   const Signal = signals.Signal
 
   this.signals = {
@@ -99,10 +99,10 @@ function Editor() {
     morphTargetsUpdated: new Signal()
   }
 
-  this.config = new Config()
+  this.config = new Config(namespace)
   this.history = new _History(this)
   this.selector = new Selector(this)
-  this.storage = new _Storage()
+  this.storage = new _Storage(namespace)
   this.strings = new Strings(this.config)
 
   this.loader = new Loader(this)

@@ -1,5 +1,5 @@
 // @ts-nocheck
-function Storage() {
+function Storage(namespace) {
   const indexedDB = window.indexedDB
 
   if (indexedDB === undefined) {
@@ -12,7 +12,7 @@ function Storage() {
     }
   }
 
-  const name = "threejs-editor"
+  const name = namespace || "threejs-editor"
   const version = 1
 
   let database

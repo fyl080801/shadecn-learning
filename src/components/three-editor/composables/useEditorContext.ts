@@ -4,8 +4,8 @@ import { Editor } from "../Editor"
 
 export const EditorKey: InjectionKey<any> = Symbol("editor")
 
-export function createEditor() {
-  return new (Editor as any)()
+export function createEditor(namespace?: string) {
+  return new (Editor as any)(namespace)
 }
 
 export function provideEditor(editor: any) {

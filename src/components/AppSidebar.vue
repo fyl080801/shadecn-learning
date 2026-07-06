@@ -14,7 +14,8 @@ import {
   Grid3X3,
   Layers,
   Sun,
-  Boxes
+  Boxes,
+  Video
 } from "lucide-vue-next"
 
 interface NavItem {
@@ -31,7 +32,8 @@ const navItems: NavItem[] = [
   { label: "canvas3d", to: "/canvas3d", icon: Layers },
   { label: "lightscene", to: "/lightscene", icon: Sun },
   { label: "richeditor", to: "/richeditor", icon: Sun },
-  { label: "Three Editor", to: "/three-editor", icon: Boxes }
+  { label: "Three Editor", to: "/three-editor", icon: Boxes },
+  { label: "3D导演台", to: "/3d-scene", icon: Video }
 ]
 
 const route = useRoute()
