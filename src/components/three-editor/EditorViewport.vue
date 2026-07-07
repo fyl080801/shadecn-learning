@@ -1,14 +1,16 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { onBeforeUnmount, onMounted, ref } from "vue"
 import * as THREE from "three"
 
 import { Viewport } from "./Viewport"
+import type { ViewHelperOffset } from "./Viewport.ViewHelper"
 import { useEditor } from "./composables/useEditorContext"
-import ViewportControlsOverlay from "./ViewportControlsOverlay.vue"
-import ViewportInfoOverlay from "./ViewportInfoOverlay.vue"
 
 defineOptions({ inheritAttrs: false })
+
+const props = defineProps<{
+  viewHelperOffset?: ViewHelperOffset
+}>()
 
 const editor = useEditor()
 const signals = editor.signals
@@ -25,15 +27,14 @@ function onRendererCreated(newRenderer: THREE.WebGLRenderer) {
 onMounted(() => {
   signals.rendererCreated.add(onRendererCreated)
 
-  const viewport = new Viewport(editor)
+  const viewport = Viewport(editor, { viewHelperOffset: props.viewHelperOffset })
   viewport.style.position = "absolute"
   viewport.style.inset = "0"
   hostRef.value?.appendChild(viewport)
 
-  // Watches the viewport's own box instead of relying on whatever resizer
-  // moved it, so the renderer/camera stay in sync no matter how the
-  // surrounding layout resizes this element (manual drag resizer, a
-  // ResizablePanelGroup split, a window resize, etc).
+  // 监视视口自身的盒子，而非依赖移动它的任何调整器，
+  // 使渲染器/相机始终保持同步，无论周围布局如何调整此元素的大小
+  // （手动拖拽调整器、ResizablePanelGroup 分割、窗口调整大小等）。
   resizeObserver = new ResizeObserver(() => {
     signals.windowResize.dispatch()
   })
@@ -52,8 +53,5 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="hostRef" v-bind="$attrs" class="te-viewport">
-    <ViewportControlsOverlay :editor="editor" />
-    <ViewportInfoOverlay :editor="editor" />
-  </div>
+  <div ref="hostRef" v-bind="$attrs" class="te-viewport" />
 </template>

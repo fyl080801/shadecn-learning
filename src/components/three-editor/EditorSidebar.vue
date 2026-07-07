@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { ref } from "vue"
 import { Boxes, FolderCog, Settings } from "lucide-vue-next"
 
@@ -51,7 +50,10 @@ const activeTab = ref<(typeof tabs)[number]["id"]>("scene")
           </SidebarMenu>
         </SidebarHeader>
         <SidebarContent>
-          <div v-show="activeTab === 'scene'" class="flex h-full min-h-0 flex-col">
+          <div
+            v-show="activeTab === 'scene'"
+            class="flex h-full min-h-0 flex-col"
+          >
             <SidebarScene class="h-1/2 min-h-0 shrink-0 border-b" />
             <SidebarProperties class="min-h-0 flex-1" />
           </div>

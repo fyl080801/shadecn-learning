@@ -24,9 +24,8 @@ function requestRender() {
   signals.sceneGraphChanged.dispatch()
 }
 
-// Shown only while nothing is selected — stays mounted (v-show, not v-if)
-// so background watchers keep running when the user selects a graphic and
-// this panel hides in favor of the object panel.
+// 仅在无选中对象时显示——保持挂载（用 v-show 而非 v-if），
+// 使背景监视器在用户选中图形、此面板让位于对象面板时继续运行。
 const selected = ref<any>(editor.selected)
 function onObjectSelected(object: any) {
   selected.value = object
@@ -34,14 +33,12 @@ function onObjectSelected(object: any) {
 onMounted(() => signals.objectSelected.add(onObjectSelected))
 onBeforeUnmount(() => signals.objectSelected.remove(onObjectSelected))
 
-// ----- scene transform -----
+// ----- 场景变换 -----
 //
-// Scales/moves/rotates the built stage — the ground grid plus every placed
-// graphic (characters/机位). The grid (editor.grid, owned by Editor and
-// rendered as its own pass by Viewport.ts) is not a child of `scene`, so it
-// has to be driven explicitly alongside scene.scale/position/rotation to
-// stay in lockstep with the characters/机位 that *are* scene children. The
-// panorama backdrop deliberately sits outside all of this — see below.
+// 缩放/移动/旋转内建的舞台——地面网格加上每个放置的图形（角色/机位）。
+// 网格（editor.grid，由 Editor 拥有并由 Viewport.ts 作为独立通道渲染）不是
+// `scene` 的子节点，因此必须与 scene.scale/position/rotation 一同显式驱动，
+// 以与作为 scene 子节点的角色/机位保持同步。全景背景板故意游离于这一切之外——见下文。
 
 const sceneScalePercent = ref(Math.round(scene.scale.x * 100) || 100)
 const scenePositionX = ref(scene.position.x)
@@ -51,9 +48,8 @@ const sceneRotationX = ref(scene.rotation.x * THREE.MathUtils.RAD2DEG)
 const sceneRotationY = ref(scene.rotation.y * THREE.MathUtils.RAD2DEG)
 const sceneRotationZ = ref(scene.rotation.z * THREE.MathUtils.RAD2DEG)
 
-// The ground grid's own height offset (see "地面" group below) is added on
-// top of the scene's y position rather than replacing it, so scaling/moving
-// the stage and nudging the ground plane's height don't fight each other.
+// 地面网格自身的高度偏移（见下方"地面"组）叠加在场景的 y 位置之上，
+// 而非替换它，使缩放/移动舞台与微调地面高度互不冲突。
 function applyGridPosition() {
   editor.grid.position.set(
     scenePositionX.value,
@@ -91,14 +87,13 @@ onMounted(() => {
   editor.grid.rotation.copy(scene.rotation)
 })
 
-// ----- ground grid -----
+// ----- 地面网格 -----
 //
-// showGround/groundOpacity drive editor.grid/editor.groundPlane directly,
-// the same pattern the scene transform above uses — this director console
-// never mounts EditorMenubar, so nothing else contends for grid.visible.
-// groundOpacity only touches the ground plane mesh's fill material; the
-// grid line helpers (grid1/grid2, THREE.GridHelper/LineSegments) are
-// untouched so the lines stay fully opaque.
+// showGround/groundOpacity 直接驱动 editor.grid/editor.groundPlane，
+// 与上方场景变换的模式相同——此导演控制台不挂载 EditorMenubar，
+// 因此没有其他地方争用 grid.visible。groundOpacity 仅影响地面平面网格的
+// 填充材质；网格线辅助器（grid1/grid2，THREE.GridHelper/LineSegments）不受影响，
+// 使线条保持完全不透明。
 
 const showGround = ref(true)
 const groundOpacity = ref(0.25)
@@ -127,66 +122,53 @@ onMounted(() => {
   editor.groundPlane.material.needsUpdate = true
 })
 
-// ----- panorama background -----
+// ----- 全景背景 -----
 //
-// Two independent layers, deliberately not tied to each other:
+// 两个独立图层，故意不互相绑定：
 //
-// - 天空颜色 is the scene's actual background fill — `scene.background` as a
-//   flat THREE.Color, via the shared sceneBackgroundChanged signal (same
-//   mechanism the full three-editor uses for its "Color" background type).
-//   A flat color has no orientation/depth, so it needs no parallax/zoom
-//   handling — it's just always there, behind everything.
+// - 天空颜色是场景实际的背景填充——作为平面 THREE.Color 的 `scene.background`，
+//   通过共享的 sceneBackgroundChanged 信号分发（与完整 three-editor
+//   的"Color"背景类型机制相同）。平面颜色无朝向/深度，因此无需视差/缩放
+//   处理——它始终存在于一切之后。
 //
-// - The panorama texture is a real, large sphere in editor.backdrop — not a
-//   native `scene.background` Equirectangular texture, and not a child of
-//   `scene` either. It's invisible (sphere.visible = false) whenever no
-//   texture is loaded, so with nothing selected 天空颜色 alone shows through
-//   untouched — no tinting, no fallback fill from the sphere.
+// - 全景纹理是 editor.backdrop 中一个真实的大型球体——既非原生的
+//   `scene.background` 等距矩形纹理，也非 `scene` 的子节点。未加载纹理时
+//   它不可见（sphere.visible = false），因此无选中对象时仅天空颜色
+//   独自显示——无染色、无来自球体的回退填充。
 //
-//   Three.js renders an Equirectangular scene.background at infinite
-//   distance (its box mesh recenters on the camera every frame and only
-//   reads camera *rotation*), so it never gets any parallax from camera
-//   translation: panning/zooming the viewport left it visibly frozen while
-//   everything else moved. A real mesh has no such special case — ordinary
-//   camera projection gives it correct parallax/zoom automatically, same as
-//   the grid.
+//   Three.js 将等距矩形 scene.background 渲染在无限远处（其盒子网格每帧
+//   重新对中相机，仅读取相机的*旋转*），因此它不会从相机平移中获得任何
+//   视差：平移/缩放视口时它明显冻结而其他一切都在移动。真实网格则无此特例——
+//   普通相机投影自动为其提供正确的视差/缩放，与网格一致。
 //
-//   It's deliberately NOT a child of `scene`: the panorama represents a
-//   fixed horizon, not part of the physical miniature stage, so it must
-//   stay unaffected by the 场景缩放/平移/旋转 controls above (which scale/move
-//   the grid + characters/机位 as "the stage"). editor.backdrop is a sibling
-//   THREE.Scene rendered in its own pass with the same camera (Viewport.ts's
-//   render()), so it keeps correct parallax/zoom while staying immune to
-//   `scene`'s own transform.
+//   它故意不是 `scene` 的子节点：全景代表固定的地平线，并非物理微缩舞台
+//   的一部分，因此必须不受上方的场景缩放/平移/旋转控件影响（这些控件将
+//   网格 + 角色/机位作为"舞台"进行缩放/移动）。editor.backdrop 是一个同级的
+//   THREE.Scene，以相同相机在自身通道中渲染（Viewport.ts 的 render()），
+//   因此它在保持正确视差/缩放的同时不受 `scene` 自身变换影响。
 //
-//   It's rendered right after `scene` but before `grid`/`sceneHelpers` (not
-//   before `scene`: scene.background is a flat Color, and Three.js
-//   force-clears the buffer whenever it renders a scene with a Color
-//   background regardless of autoClear, so anything drawn earlier than
-//   `scene` gets wiped the instant `scene` renders). That order is what
-//   makes the ground plane's translucent fill (editor.groundPlane, see
-//   below) blend against the panorama's real pixels: by the time the
-//   ground draws, the panorama is already sitting in the color buffer, so
-//   lowering 地面透明度 reveals the actual backdrop instead of a flat color.
-//   Rendering the sphere last (as sceneHelpers previously did) got the
-//   composite backwards — the ground either got painted over by the sphere
-//   entirely, or (once the sphere was depth-blocked) could only ever blend
-//   against whatever was drawn before it, never the panorama itself. Being
-//   its own scene rather than a sceneHelpers child also keeps it out of
-//   click-picking (Selector.ts only traverses sceneHelpers) and out of
-//   DirectorScenePanel's list, which only reads editor.scene.children.
+//   它在 `scene` 之后、`grid`/`sceneHelpers` 之前渲染（而非在 `scene` 之前：
+//   scene.background 是平面 Color，Three.js 在渲染带 Color 背景的场景时无论
+//   autoClear 如何都会强制清除缓冲区，因此先于 `scene` 绘制的任何内容都会
+//   在 `scene` 渲染瞬间被擦除）。正是该顺序使地面平面的半透明填充
+//   （editor.groundPlane，见下文）能对全景的真实像素进行混合：地面绘制时，
+//   全景已存在于颜色缓冲区中，因此降低地面透明度会显露实际背景
+//   而非平面颜色。将球体放在最后渲染（如 sceneHelpers 之前所做的）会导致
+//   合成顺序颠倒——地面要么被球体完全覆盖，要么（一旦球体被深度遮挡）
+//   只能与在它之前绘制的内容混合，永远无法与全景本身混合。将其作为独立场景
+//   而非 sceneHelpers 子节点还使其免于点击拾取（Selector.ts 仅遍历 sceneHelpers），
+//   也不出现在 DirectorScenePanel 的列表中（该列表仅读取 editor.scene.children）。
 //
-// scene.environment (ambient lighting/reflections) is a separate, legitimately
-// camera-independent concept, so it's still driven by the shared
-// sceneEnvironmentChanged signal.
+// scene.environment（环境光照/反射）是一个独立的、合理地与相机无关的概念，
+// 因此仍由共享的 sceneEnvironmentChanged 信号驱动。
 
 const panoramaTexture = ref<any>(null)
-const skyColor = ref("#060608")
+const skyColor = ref("#c2c2c2")
 const horizontalRotation = ref(0)
-// Ground grid/plane is a fixed 30x30 (Viewport.ts's GridHelper/PlaneGeometry),
-// so its footprint area is 900. At 100% 场景缩放 the sphere's great-circle
-// cross-section (π·r²) should be twice that, i.e. r = sqrt(2·900 / π) ≈ 23.9.
-const panoramaRadius = ref(24)
+// 地面网格/平面为固定的 30x30（Viewport.ts 的 GridHelper/PlaneGeometry），
+// 其边长为 30。在 100% 场景缩放下，球体横截面直径应为该边长的两倍，
+// 即 r = 30·2/2 = 30。
+const panoramaRadius = ref(30)
 
 let sphere: THREE.Mesh | null = null
 
@@ -223,21 +205,18 @@ function applyBackgroundColor() {
   )
 }
 
-// Autosave restores a previous session's scene — including scene.background
-// — directly via Editor.setScene(), bypassing sceneBackgroundChanged
-// entirely, and asynchronously (IndexedDB, via ThreeEditor.vue's own
-// onMounted — which, being the parent, fires *after* this component's
-// onMounted already pushed the default skyColor, since children mount
-// before their parent). setScene() dispatches sceneGraphChanged once it's
-// done, so this reconciles scene.background against skyColor right after:
-// - if the restored background is a Color, adopt it into the control so
-//   the swatch matches what's actually rendered;
-// - otherwise (null, or a stale non-Color background from an older
-//   autosave/architecture) this build's invariant is that scene.background
-//   is always a flat Color driven by skyColor, so reassert the current
-//   value instead of leaving the control's display stuck out of sync with
-//   a scene that silently fell back to the renderer's default gray clear
-//   color (Viewport.ts's `renderer.setClearColor(0xaaaaaa)`).
+// 自动保存会恢复上一个会话的场景——包括 scene.background——
+// 直接通过 Editor.setScene() 完成，完全绕过 sceneBackgroundChanged，
+// 且为异步操作（IndexedDB，通过 ThreeEditor.vue 自身的 onMounted——
+// 而作为父组件，它在*之后*触发，此时此组件的 onMounted 已推送了默认
+// skyColor，因为子组件先于父组件挂载）。setScene() 完成后会分发
+// sceneGraphChanged，因此此后立即将 scene.background 与 skyColor 对账：
+// - 若恢复的背景是 Color，则将其纳入控件，使色板与实际渲染内容一致；
+// - 否则（null，或来自旧自动保存/架构的陈旧非 Color 背景），此构建的
+//   不变式是 scene.background 始终为由 skyColor 驱动的平面 Color，
+//   因此重新断言当前值，而非让控件的显示与一个静默回退到渲染器默认
+//   灰色清除色（Viewport.ts 的 `renderer.setClearColor(0xaaaaaa)`）的场景
+//   保持脱节状态。
 function syncSkyColorFromScene() {
   const background = scene.background as THREE.Color | null
   if (background && (background as any).isColor) {

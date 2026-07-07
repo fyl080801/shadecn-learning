@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { computed, reactive, watch } from "vue"
 import * as THREE from "three"
 
@@ -365,7 +364,7 @@ for (const type of [
   }
 }
 
-const values = reactive<Record<string, number | boolean>>({})
+const values = reactive<Record<string, any>>({})
 
 const config = computed(() => configs[props.object?.geometry?.type])
 

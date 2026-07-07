@@ -1,7 +1,14 @@
-// @ts-nocheck
+
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 class SetScriptValueCommand extends Command {
+  object: any
+  script: any
+  attributeName: string
+  oldValue: any
+  newValue: any
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} object
@@ -11,11 +18,11 @@ class SetScriptValueCommand extends Command {
    * @constructor
    */
   constructor(
-    editor,
-    object = null,
-    script = "",
+    editor: Editor,
+    object: any = null,
+    script: any = "",
     attributeName = "",
-    newValue = null
+    newValue: any = null
   ) {
     super(editor)
 
@@ -44,15 +51,15 @@ class SetScriptValueCommand extends Command {
     this.editor.signals.scriptChanged.dispatch(this.script)
   }
 
-  update(cmd) {
+  update(cmd: SetScriptValueCommand) {
     this.newValue = cmd.newValue
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.objectUuid = this.object.uuid
-    output.index = this.editor.scripts[this.object.uuid].indexOf(this.script)
+    output.index = this.editor.scripts[this.object.uuid]!.indexOf(this.script)
     output.attributeName = this.attributeName
     output.oldValue = this.oldValue
     output.newValue = this.newValue
@@ -60,14 +67,14 @@ class SetScriptValueCommand extends Command {
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.oldValue = json.oldValue
     this.newValue = json.newValue
     this.attributeName = json.attributeName
     this.object = this.editor.objectByUuid(json.objectUuid)
-    this.script = this.editor.scripts[json.objectUuid][json.index]
+    this.script = this.editor.scripts[json.objectUuid]![json.index]
   }
 }
 

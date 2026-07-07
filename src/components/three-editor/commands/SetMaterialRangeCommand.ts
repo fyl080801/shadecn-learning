@@ -1,7 +1,14 @@
-// @ts-nocheck
+
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 class SetMaterialRangeCommand extends Command {
+  object: any
+  materialSlot: number
+  attributeName: string
+  oldRange: number[] | null
+  newRange: number[]
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} [object=null]
@@ -12,8 +19,8 @@ class SetMaterialRangeCommand extends Command {
    * @constructor
    */
   constructor(
-    editor,
-    object = null,
+    editor: Editor,
+    object: any = null,
     attributeName = "",
     newMinValue = -Infinity,
     newMaxValue = Infinity,
@@ -60,30 +67,30 @@ class SetMaterialRangeCommand extends Command {
       this.materialSlot
     )
 
-    material[this.attributeName] = [...this.oldRange]
+    material[this.attributeName] = [...this.oldRange!]
     material.needsUpdate = true
 
     this.editor.signals.objectChanged.dispatch(this.object)
     this.editor.signals.materialChanged.dispatch(this.object, this.materialSlot)
   }
 
-  update(cmd) {
+  update(cmd: SetMaterialRangeCommand) {
     this.newRange = [...cmd.newRange]
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.objectUuid = this.object.uuid
     output.attributeName = this.attributeName
-    output.oldRange = [...this.oldRange]
+    output.oldRange = [...this.oldRange!]
     output.newRange = [...this.newRange]
     output.materialSlot = this.materialSlot
 
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.attributeName = json.attributeName

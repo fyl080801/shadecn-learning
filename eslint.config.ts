@@ -4,18 +4,13 @@ import tseslint from "typescript-eslint"
 import pluginVue from "eslint-plugin-vue"
 import prettierConfig from "eslint-config-prettier"
 import vueParser from "vue-eslint-parser"
-import security from 'eslint-plugin-security'
+import security from "eslint-plugin-security"
 import { defineConfig } from "eslint/config"
 
 export default defineConfig(
   // Global ignores
   {
-    ignores: [
-      "dist",
-      "node_modules",
-      "src/components/ui/**",
-      "src/components/three-editor/**"
-    ]
+    ignores: ["dist", "node_modules", "src/components/ui/**"]
   },
   {
     plugins: {

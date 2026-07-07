@@ -1,4 +1,3 @@
-// @ts-nocheck
 import * as THREE from "three"
 
 import { TGALoader } from "three/addons"
@@ -12,11 +11,10 @@ import { GLTFImportDialog } from "./GLTFImportDialog"
 
 import { snapshotBindPose } from "./SkeletonBindPose"
 
-// FBXLoader stores the file's GlobalSettings.UnitScaleFactor (centimeters
-// per scene unit) on userData but never applies it. Many FBX exports
-// (e.g. Mixamo) use centimeters, so without this the imported object is
-// 100x too large relative to a scene authored in meters.
-function applyFBXUnitScale(object) {
+// FBXLoader 将文件的 GlobalSettings.UnitScaleFactor（每场景单位的厘米数）
+// 存储在 userData 上但从不应用它。许多 FBX 导出（如 Mixamo）使用厘米，
+// 因此不做处理的话导入的物体会比以米为单位的场景大 100 倍。
+export function applyFBXUnitScale(object: any) {
   const unitScaleFactor = object.userData.unitScaleFactor
 
   if (typeof unitScaleFactor === "number" && unitScaleFactor !== 100) {
@@ -25,23 +23,34 @@ function applyFBXUnitScale(object) {
 }
 
 import { unzipSync, strFromU8 } from "three/addons/libs/fflate.module.js"
+import type { Editor } from "./Editor"
 
-function Loader(editor) {
+interface Loader {
+  texturePath: string
+  loadItemList(items: DataTransferItemList): void
+  loadFiles(files: FileList | File[], filesMap?: any): void
+  loadFile(file: File, manager?: THREE.LoadingManager): void
+}
+
+function Loader(this: Loader, editor: Editor) {
   const scope = this
 
   this.texturePath = ""
 
-  this.loadItemList = function (items) {
-    LoaderUtils.getFilesFromItemList(items, function (files, filesMap) {
-      scope.loadFiles(files, filesMap)
-    })
+  this.loadItemList = function (items: any) {
+    LoaderUtils.getFilesFromItemList(
+      items,
+      function (files: any, filesMap: any) {
+        scope.loadFiles(files, filesMap)
+      }
+    )
   }
 
-  this.loadFiles = function (files, filesMap) {
+  this.loadFiles = function (files: any, filesMap?: any) {
     if (files.length > 0) {
       filesMap = filesMap || LoaderUtils.createFilesMap(files)
 
-      const normalizeLookupPath = function (path) {
+      const normalizeLookupPath = function (path: any) {
         let normalized = String(path || "").replace(/\\/g, "/")
         const queryIndex = normalized.indexOf("?")
         if (queryIndex !== -1) normalized = normalized.slice(0, queryIndex)
@@ -55,7 +64,7 @@ function Loader(editor) {
         try {
           normalized = decodeURIComponent(normalized)
         } catch (e) {
-          /* malformed URI — keep as-is */
+          /* 格式错误的 URI — 保持原样 */
         }
 
         normalized = normalized.normalize("NFC")
@@ -63,13 +72,13 @@ function Loader(editor) {
         return normalized
       }
 
-      const createFileFinder = function (map) {
-        const suffixMap = {}
+      const createFileFinder = function (map: any) {
+        const suffixMap: Record<string, any[]> = {}
         const warnedAmbiguous = new Set()
 
-        const addCandidate = function (suffix, candidate) {
+        const addCandidate = function (suffix: any, candidate: any) {
           if (!suffixMap[suffix]) suffixMap[suffix] = []
-          suffixMap[suffix].push(candidate)
+          suffixMap[suffix]!.push(candidate)
         }
 
         for (const rawKey in map) {
@@ -86,7 +95,7 @@ function Loader(editor) {
         }
 
         for (const suffix in suffixMap) {
-          suffixMap[suffix].sort(function (a, b) {
+          suffixMap[suffix]!.sort(function (a: any, b: any) {
             if (a.key.length !== b.key.length)
               return a.key.length - b.key.length
             if (a.key < b.key) return -1
@@ -95,7 +104,7 @@ function Loader(editor) {
           })
         }
 
-        return function findFile(url) {
+        return function findFile(url: any) {
           const lookup = normalizeLookupPath(url)
           if (lookup === "") return null
 
@@ -125,7 +134,7 @@ function Loader(editor) {
       const findFile = createFileFinder(filesMap)
 
       const manager = new THREE.LoadingManager()
-      manager.setURLModifier(function (url) {
+      manager.setURLModifier(function (url: string) {
         const resolved = findFile(url)
 
         if (resolved) {
@@ -145,12 +154,12 @@ function Loader(editor) {
     }
   }
 
-  this.loadFile = function (file, manager) {
+  this.loadFile = function (file: File, manager?: THREE.LoadingManager) {
     const filename = file.name
-    const extension = filename.split(".").pop().toLowerCase()
+    const extension = filename.split(".").pop()!.toLowerCase()
 
     const reader = new FileReader()
-    reader.addEventListener("progress", function (event) {
+    reader.addEventListener("progress", function (event: any) {
       const size =
         "(" + editor.utils.formatNumber(Math.floor(event.total / 1000)) + " KB)"
       const progress = Math.floor((event.loaded / event.total) * 100) + "%"
@@ -162,22 +171,22 @@ function Loader(editor) {
       case "3dm": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { Rhino3dmLoader } =
               await import("three/addons/loaders/3DMLoader.js")
 
-            const loader = new Rhino3dmLoader()
+            const loader: any = new Rhino3dmLoader()
             loader.setLibraryPath("/three-editor/libs/rhino3dm/")
             loader.parse(
               contents,
-              function (object) {
+              function (object: any) {
                 object.name = filename
 
                 editor.execute(new AddObjectCommand(editor, object))
               },
-              function (error) {
+              function (error: any) {
                 console.error(error)
               }
             )
@@ -192,11 +201,11 @@ function Loader(editor) {
       case "3ds": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const { TDSLoader } =
               await import("three/addons/loaders/TDSLoader.js")
 
-            const loader = new TDSLoader()
+            const loader: any = new TDSLoader()
             const object = loader.parse(event.target.result)
 
             editor.execute(new AddObjectCommand(editor, object))
@@ -211,11 +220,11 @@ function Loader(editor) {
       case "3mf": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const { ThreeMFLoader } =
               await import("three/addons/loaders/3MFLoader.js")
 
-            const loader = new ThreeMFLoader()
+            const loader: any = new ThreeMFLoader()
             const object = loader.parse(event.target.result)
 
             editor.execute(new AddObjectCommand(editor, object))
@@ -230,11 +239,11 @@ function Loader(editor) {
       case "amf": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const { AMFLoader } =
               await import("three/addons/loaders/AMFLoader.js")
 
-            const loader = new AMFLoader()
+            const loader: any = new AMFLoader()
             const amfobject = loader.parse(event.target.result)
 
             editor.execute(new AddObjectCommand(editor, amfobject))
@@ -249,13 +258,13 @@ function Loader(editor) {
       case "dae": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { ColladaLoader } =
               await import("three/addons/loaders/ColladaLoader.js")
 
-            const loader = new ColladaLoader(manager)
+            const loader: any = new ColladaLoader(manager)
             const collada = loader.parse(contents)
 
             collada.scene.name = filename
@@ -274,7 +283,7 @@ function Loader(editor) {
       case "drc": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { DRACOLoader } =
@@ -312,13 +321,13 @@ function Loader(editor) {
       case "fbx": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { FBXLoader } =
               await import("three/addons/loaders/FBXLoader.js")
 
-            const loader = new FBXLoader(manager)
+            const loader: any = new FBXLoader(manager)
             const object = loader.parse(contents)
 
             applyFBXUnitScale(object)
@@ -338,7 +347,7 @@ function Loader(editor) {
       case "glb": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             try {
@@ -347,7 +356,7 @@ function Loader(editor) {
 
               const loader = await createGLTFLoader()
 
-              loader.parse(contents, "", async function (result) {
+              loader.parse(contents, "", async function (result: any) {
                 const scene = result.scene
                 scene.name = filename
 
@@ -365,7 +374,7 @@ function Loader(editor) {
                 loader.ktx2Loader.dispose()
               })
             } catch (e) {
-              // Import cancelled
+              // 导入已取消
             }
           },
           false
@@ -378,7 +387,7 @@ function Loader(editor) {
       case "gltf": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             try {
@@ -387,7 +396,7 @@ function Loader(editor) {
 
               const loader = await createGLTFLoader(manager)
 
-              loader.parse(contents, "", async function (result) {
+              loader.parse(contents, "", async function (result: any) {
                 const scene = result.scene
                 scene.name = filename
 
@@ -405,7 +414,7 @@ function Loader(editor) {
                 loader.ktx2Loader.dispose()
               })
             } catch (e) {
-              // Import cancelled
+              // 导入已取消
             }
           },
           false
@@ -419,7 +428,7 @@ function Loader(editor) {
       case "json": {
         reader.addEventListener(
           "load",
-          function (event) {
+          function (event: any) {
             const contents = event.target.result
 
             // >= 3.0
@@ -445,11 +454,11 @@ function Loader(editor) {
       case "kmz": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const { KMZLoader } =
               await import("three/addons/loaders/KMZLoader.js")
 
-            const loader = new KMZLoader()
+            const loader: any = new KMZLoader()
             const collada = loader.parse(event.target.result)
 
             collada.scene.name = filename
@@ -469,15 +478,15 @@ function Loader(editor) {
       case "mpd": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const { LDrawLoader } =
               await import("three/addons/loaders/LDrawLoader.js")
 
-            const loader = new LDrawLoader()
+            const loader: any = new LDrawLoader()
             loader.setPath("../../examples/models/ldraw/officialLibrary/")
-            loader.parse(event.target.result, function (group) {
+            loader.parse(event.target.result, function (group: any) {
               group.name = filename
-              // Convert from LDraw coordinates: rotate 180 degrees around OX
+              // 从 LDraw 坐标系转换：绕 OX 轴旋转 180 度
               group.rotation.x = Math.PI
 
               editor.execute(new AddObjectCommand(editor, group))
@@ -493,16 +502,16 @@ function Loader(editor) {
       case "md2": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { MD2Loader } =
               await import("three/addons/loaders/MD2Loader.js")
 
-            const geometry = new MD2Loader().parse(contents)
+            const geometry: any = new MD2Loader().parse(contents)
             const material = new THREE.MeshStandardMaterial()
 
-            const mesh = new THREE.Mesh(geometry, material)
+            const mesh: any = new THREE.Mesh(geometry, material)
             mesh.mixer = new THREE.AnimationMixer(mesh)
             mesh.name = filename
 
@@ -519,7 +528,7 @@ function Loader(editor) {
       case "obj": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { OBJLoader } =
@@ -540,7 +549,7 @@ function Loader(editor) {
       case "pcd": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { PCDLoader } =
@@ -561,7 +570,7 @@ function Loader(editor) {
       case "ply": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { PLYLoader } =
@@ -595,7 +604,7 @@ function Loader(editor) {
       case "stl": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { STLLoader } =
@@ -624,13 +633,13 @@ function Loader(editor) {
       case "svg": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { SVGLoader } =
               await import("three/addons/loaders/SVGLoader.js")
 
-            const loader = new SVGLoader()
+            const loader: any = new SVGLoader()
             const paths = loader.parse(contents).paths
 
             //
@@ -645,9 +654,9 @@ function Loader(editor) {
             for (let i = 0; i < paths.length; i++) {
               const path = paths[i]
 
-              // fill
+              // 填充
 
-              const fillMaterial = SVGLoader.createFillMaterial(path)
+              const fillMaterial = (SVGLoader as any).createFillMaterial(path)
 
               if (fillMaterial) {
                 const shapes = path.toShapes()
@@ -663,9 +672,11 @@ function Loader(editor) {
                 }
               }
 
-              // stroke
+              // 描边
 
-              const strokeMaterial = SVGLoader.createStrokeMaterial(path)
+              const strokeMaterial = (SVGLoader as any).createStrokeMaterial(
+                path
+              )
 
               if (strokeMaterial) {
                 for (const subPath of path.subPaths) {
@@ -699,14 +710,14 @@ function Loader(editor) {
       case "usdz": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { USDLoader } =
               await import("three/addons/loaders/USDLoader.js")
 
-            const loader = new USDLoader(manager)
-            loader.parse(contents, "", function (group) {
+            const loader: any = new USDLoader(manager)
+            loader.parse(contents, "", function (group: any) {
               group.name = filename
               editor.execute(new AddObjectCommand(editor, group))
             })
@@ -721,7 +732,7 @@ function Loader(editor) {
       case "vox": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { VOXLoader } =
@@ -743,13 +754,13 @@ function Loader(editor) {
       case "wrl": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { VRMLLoader } =
               await import("three/addons/loaders/VRMLLoader.js")
 
-            const result = new VRMLLoader().parse(contents)
+            const result = (new VRMLLoader() as any).parse(contents)
 
             editor.execute(new AddObjectCommand(editor, result))
           },
@@ -763,13 +774,13 @@ function Loader(editor) {
       case "xyz": {
         reader.addEventListener(
           "load",
-          async function (event) {
+          async function (event: any) {
             const contents = event.target.result
 
             const { XYZLoader } =
               await import("three/addons/loaders/XYZLoader.js")
 
-            const geometry = new XYZLoader().parse(contents)
+            const geometry = (new XYZLoader() as any).parse(contents)
 
             const material = new THREE.PointsMaterial()
             material.vertexColors = geometry.hasAttribute("color")
@@ -789,7 +800,7 @@ function Loader(editor) {
       case "zip": {
         reader.addEventListener(
           "load",
-          function (event) {
+          function (event: any) {
             handleZIP(event.target.result)
           },
           false
@@ -805,7 +816,7 @@ function Loader(editor) {
       case "jpeg":
       case "png":
       case "tga":
-        break // Image files are handled as textures by other loaders
+        break // 图像文件由其他加载器作为纹理处理
 
       default:
         console.error("Unsupported file format (" + extension + ").")
@@ -814,7 +825,7 @@ function Loader(editor) {
     }
   }
 
-  function handleJSON(data) {
+  function handleJSON(data: any) {
     if (data.metadata === undefined) {
       // 2.0
 
@@ -866,20 +877,20 @@ function Loader(editor) {
     }
   }
 
-  async function handleZIP(contents) {
+  async function handleZIP(contents: any) {
     const zip = unzipSync(new Uint8Array(contents))
 
-    // Build a lookup map with NFC-normalized keys to handle
-    // unicode normalization differences (e.g. NFD vs NFC)
+    // 构建一个以 NFC 归一化键的查找表，以处理
+    // Unicode 归一化差异（如 NFD 与 NFC）
 
-    const zipLookup = {}
+    const zipLookup: Record<string, any> = {}
 
     for (const path in zip) {
       zipLookup[path.normalize("NFC")] = zip[path]
     }
 
     const manager = new THREE.LoadingManager()
-    manager.setURLModifier(function (url) {
+    manager.setURLModifier(function (url: string) {
       const normalized = decodeURIComponent(url).normalize("NFC")
       const file = zipLookup[normalized]
 
@@ -901,12 +912,12 @@ function Loader(editor) {
       const { MTLLoader } = await import("three/addons/loaders/MTLLoader.js")
       const { OBJLoader } = await import("three/addons/loaders/OBJLoader.js")
 
-      const materials = new MTLLoader(manager).parse(
-        strFromU8(zip["materials.mtl"])
+      const materials = (new MTLLoader(manager) as any).parse(
+        strFromU8(zip["materials.mtl"]!)
       )
-      const object = new OBJLoader()
+      const object = (new OBJLoader() as any)
         .setMaterials(materials)
-        .parse(strFromU8(zip["model.obj"]))
+        .parse(strFromU8(zip["model.obj"]!))
 
       editor.execute(new AddObjectCommand(editor, object))
       return
@@ -915,16 +926,16 @@ function Loader(editor) {
     //
 
     for (const path in zip) {
-      const file = zip[path]
+      const file = zip[path]!
 
-      const extension = path.split(".").pop().toLowerCase()
+      const extension = path.split(".").pop()!.toLowerCase()
 
       switch (extension) {
         case "fbx": {
           const { FBXLoader } =
             await import("three/addons/loaders/FBXLoader.js")
 
-          const loader = new FBXLoader(manager)
+          const loader: any = new FBXLoader(manager)
           const object = loader.parse(file.buffer)
 
           applyFBXUnitScale(object)
@@ -944,7 +955,7 @@ function Loader(editor) {
 
             const loader = await createGLTFLoader()
 
-            loader.parse(file.buffer, "", async function (result) {
+            loader.parse(file.buffer, "", async function (result: any) {
               const scene = result.scene
 
               scene.animations.push(...result.animations)
@@ -961,7 +972,7 @@ function Loader(editor) {
               loader.ktx2Loader.dispose()
             })
           } catch (e) {
-            // Import cancelled
+            // 导入已取消
           }
 
           break
@@ -974,7 +985,7 @@ function Loader(editor) {
 
             const loader = await createGLTFLoader(manager)
 
-            loader.parse(strFromU8(file), "", async function (result) {
+            loader.parse(strFromU8(file), "", async function (result: any) {
               const scene = result.scene
 
               scene.animations.push(...result.animations)
@@ -991,7 +1002,7 @@ function Loader(editor) {
               loader.ktx2Loader.dispose()
             })
           } catch (e) {
-            // Import cancelled
+            // 导入已取消
           }
 
           break
@@ -1000,7 +1011,7 @@ function Loader(editor) {
     }
   }
 
-  async function createGLTFLoader(manager) {
+  async function createGLTFLoader(manager?: THREE.LoadingManager) {
     const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js")
     const { DRACOLoader } = await import("three/addons/loaders/DRACOLoader.js")
     const { KTX2Loader } = await import("three/addons/loaders/KTX2Loader.js")
@@ -1015,7 +1026,7 @@ function Loader(editor) {
 
     editor.signals.rendererDetectKTX2Support.dispatch(ktx2Loader)
 
-    const loader = new GLTFLoader(manager)
+    const loader: any = new GLTFLoader(manager)
     loader.setDRACOLoader(dracoLoader)
     loader.setKTX2Loader(ktx2Loader)
     loader.setMeshoptDecoder(MeshoptDecoder)

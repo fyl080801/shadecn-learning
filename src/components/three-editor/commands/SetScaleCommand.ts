@@ -1,8 +1,14 @@
-// @ts-nocheck
+
+import * as THREE from "three"
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 import { Vector3 } from "three"
 
 class SetScaleCommand extends Command {
+  object: THREE.Object3D | null
+  oldScale?: THREE.Vector3
+  newScale?: THREE.Vector3
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} object
@@ -10,7 +16,12 @@ class SetScaleCommand extends Command {
    * @param {THREE.Vector3|null} optionalOldScale
    * @constructor
    */
-  constructor(editor, object = null, newScale = null, optionalOldScale = null) {
+  constructor(
+    editor: Editor,
+    object: THREE.Object3D | null = null,
+    newScale: THREE.Vector3 | null = null,
+    optionalOldScale: THREE.Vector3 | null = null
+  ) {
     super(editor)
 
     this.type = "SetScaleCommand"
@@ -30,32 +41,32 @@ class SetScaleCommand extends Command {
   }
 
   execute() {
-    this.object.scale.copy(this.newScale)
-    this.object.updateMatrixWorld(true)
+    this.object!.scale.copy(this.newScale!)
+    this.object!.updateMatrixWorld(true)
     this.editor.signals.objectChanged.dispatch(this.object)
   }
 
   undo() {
-    this.object.scale.copy(this.oldScale)
-    this.object.updateMatrixWorld(true)
+    this.object!.scale.copy(this.oldScale!)
+    this.object!.updateMatrixWorld(true)
     this.editor.signals.objectChanged.dispatch(this.object)
   }
 
-  update(command) {
-    this.newScale.copy(command.newScale)
+  update(command: SetScaleCommand) {
+    this.newScale!.copy(command.newScale!)
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
-    output.objectUuid = this.object.uuid
-    output.oldScale = this.oldScale.toArray()
-    output.newScale = this.newScale.toArray()
+    output.objectUuid = this.object!.uuid
+    output.oldScale = this.oldScale!.toArray()
+    output.newScale = this.newScale!.toArray()
 
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.object = this.editor.objectByUuid(json.objectUuid)

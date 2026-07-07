@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { onBeforeUnmount, onMounted, reactive, ref } from "vue"
 import * as THREE from "three"
 
@@ -50,9 +49,9 @@ function newEmptyProject() {
 function newExampleProject(file: string) {
   if (confirm(t("prompt/file/open"))) {
     const loader = new THREE.FileLoader()
-    loader.load("examples/" + file, function (text: string) {
+    loader.load("examples/" + file, function (text: string | ArrayBuffer) {
       editor.clear()
-      editor.fromJSON(JSON.parse(text))
+      editor.fromJSON(JSON.parse(text as string))
     })
   }
 }
@@ -128,9 +127,8 @@ function needsUniqueNames(scene: THREE.Object3D) {
   return duplicate && animated
 }
 
-// Gives every object a unique name and keeps the animation tracks that
-// reference them by name in sync. The renamed scene mirrors the result of a
-// glTF round-trip, where the loader makes all names unique, too.
+// 为每个对象赋予唯一名称，并保持按名称引用它们的动画轨道同步。
+// 重命名后的场景与 glTF 往返的结果一致，加载器也会将所有名称设为唯一。
 function ensureUniqueNames(scene: THREE.Object3D) {
   const trackBindings: { track: any; target: any; nodeName: string }[] = []
 
@@ -142,8 +140,8 @@ function ensureUniqueNames(scene: THREE.Object3D) {
         ).nodeName
         const target = THREE.PropertyBinding.findNode(owner, nodeName)
 
-        // References by UUID stay valid, so only track name-based ones.
-        if (target !== null && target.name === nodeName) {
+        // 按 UUID 的引用仍然有效，因此只跟踪基于名称的引用。
+        if (target !== null && (target as any).name === nodeName) {
           trackBindings.push({ track, target, nodeName })
         }
       }
@@ -182,7 +180,7 @@ function ensureUniqueNames(scene: THREE.Object3D) {
 }
 
 async function exportDRC() {
-  const object = editor.selected
+  const object: any = editor.selected
 
   if (object === null || object.isMesh === undefined) {
     alert(t("prompt/file/export/noMeshSelected"))
@@ -192,12 +190,12 @@ async function exportDRC() {
   const { DRACOExporter } =
     await import("three/addons/exporters/DRACOExporter.js")
 
-  const exporter = new DRACOExporter()
+  const exporter: any = new DRACOExporter()
 
   const options = {
     decodeSpeed: 5,
     encodeSpeed: 5,
-    encoderMethod: DRACOExporter.MESH_EDGEBREAKER_ENCODING,
+    encoderMethod: (DRACOExporter as any).MESH_EDGEBREAKER_ENCODING,
     quantization: [16, 8, 8, 8, 8],
     exportUvs: true,
     exportNormals: true,
@@ -212,7 +210,7 @@ async function exportGLB() {
   const scene = editor.scene
 
   if (needsUniqueNames(scene)) {
-    // see #25179
+    // 见 #25179
     if (confirm(t("prompt/file/export/duplicateNames")) === false) return
     ensureUniqueNames(scene)
   }
@@ -232,7 +230,7 @@ async function exportGLB() {
     function (result: any) {
       editor.utils.saveArrayBuffer(result, "scene.glb")
     },
-    undefined,
+    function () {},
     { binary: true, animations: optimizedAnimations }
   )
 }
@@ -260,7 +258,7 @@ async function exportGLTF() {
     function (result: any) {
       editor.utils.saveString(JSON.stringify(result, null, 2), "scene.gltf")
     },
-    undefined,
+    function () {},
     { animations: optimizedAnimations }
   )
 }
@@ -335,7 +333,7 @@ async function exportUSDZ() {
   )
 }
 
-// Edit menu
+// 编辑菜单
 
 const historyState = reactive({ canUndo: false, canRedo: false })
 
@@ -356,7 +354,7 @@ function redo() {
 function center() {
   const object = editor.selected
 
-  if (object === null || object.parent === null) return // avoid centering the camera or scene
+  if (object === null || object.parent === null) return // 避免居中相机或场景
 
   const aabb = new THREE.Box3().setFromObject(object)
   const center = aabb.getCenter(new THREE.Vector3())
@@ -372,7 +370,7 @@ function center() {
 async function cloneSelected() {
   let object = editor.selected
 
-  if (object === null || object.parent === null) return // avoid cloning the camera or scene
+  if (object === null || object.parent === null) return // 避免克隆相机或场景
 
   const { clone } = await import("three/addons/utils/SkeletonUtils.js")
   object = clone(object)
@@ -397,7 +395,7 @@ function deleteSelected() {
   }
 }
 
-// Add menu
+// 添加菜单
 
 function addObject(object: THREE.Object3D) {
   editor.execute(new AddObjectCommand(editor, object))
@@ -487,7 +485,6 @@ async function addText() {
       const text = "THREE"
 
       const geometry = new TextGeometry(text, {
-        text: text,
         font,
         size: 1,
         depth: 0.5,
@@ -587,7 +584,7 @@ function addPerspectiveCamera() {
   addObject(camera)
 }
 
-// View menu
+// 视图菜单
 
 const viewHelpers = reactive({
   gridHelper: true,
@@ -619,7 +616,7 @@ function toggleFullscreen() {
   }
 }
 
-// Render menu
+// 渲染菜单
 
 const hasVideoEncoder = "VideoEncoder" in window
 
@@ -631,21 +628,7 @@ function showVideoDialog() {
   mountClosableDialog(RenderVideoDialogView, { editor, strings })
 }
 
-// Help menu
-
-function openSourceCode() {
-  window.open("https://github.com/mrdoob/three/tree/master/editor", "_blank")
-}
-
-function openAbout() {
-  window.open("https://threejs.org", "_blank")
-}
-
-function openManual() {
-  window.open("https://github.com/mrdoob/three/wiki/Editor-Manual", "_blank")
-}
-
-// Status
+// 状态
 
 const autosave = ref(editor.config.getKey("autosave") !== false)
 const saving = ref(false)

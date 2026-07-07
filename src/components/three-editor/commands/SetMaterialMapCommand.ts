@@ -1,8 +1,15 @@
-// @ts-nocheck
+
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 import { ObjectLoader } from "three"
 
 class SetMaterialMapCommand extends Command {
+  object: any
+  materialSlot: number
+  mapName: string
+  oldMap: any
+  newMap: any
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} [object=null]
@@ -12,10 +19,10 @@ class SetMaterialMapCommand extends Command {
    * @constructor
    */
   constructor(
-    editor,
-    object = null,
+    editor: Editor,
+    object: any = null,
     mapName = "",
-    newMap = null,
+    newMap: any = null,
     materialSlot = -1
   ) {
     super(editor)
@@ -62,7 +69,7 @@ class SetMaterialMapCommand extends Command {
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.objectUuid = this.object.uuid
     output.mapName = this.mapName
@@ -72,16 +79,16 @@ class SetMaterialMapCommand extends Command {
 
     return output
 
-    // serializes a map (THREE.Texture)
+    // 序列化贴图（THREE.Texture）
 
-    function serializeMap(map) {
+    function serializeMap(map: any) {
       if (map === null || map === undefined) return null
 
       const meta = {
         geometries: {},
         materials: {},
         textures: {},
-        images: {}
+        images: {} as Record<string, any>
       }
 
       const json = map.toJSON(meta)
@@ -92,12 +99,12 @@ class SetMaterialMapCommand extends Command {
       return json
     }
 
-    // Note: The function 'extractFromCache' is copied from Object3D.toJSON()
+    // 注意：函数 'extractFromCache' 复制自 Object3D.toJSON()
 
-    // extract data from the cache hash
-    // remove metadata on each item
-    // and return as array
-    function extractFromCache(cache) {
+    // 从缓存哈希中提取数据
+    // 移除每项的元数据
+    // 并以数组形式返回
+    function extractFromCache(cache: Record<string, any>) {
       const values = []
       for (const key in cache) {
         const data = cache[key]
@@ -109,7 +116,7 @@ class SetMaterialMapCommand extends Command {
     }
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.object = this.editor.objectByUuid(json.objectUuid)
@@ -118,8 +125,8 @@ class SetMaterialMapCommand extends Command {
     this.newMap = parseTexture(json.newMap)
     this.materialSlot = json.materialSlot
 
-    function parseTexture(json) {
-      let map = null
+    function parseTexture(json: any) {
+      let map: any = null
       if (json !== null) {
         const loader = new ObjectLoader()
         const images = loader.parseImages(json.images)

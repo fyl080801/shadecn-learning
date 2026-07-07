@@ -28,9 +28,8 @@ const tools = [
 ] as const
 
 const mode = ref<(typeof tools)[number]["id"]>("translate")
-// While a bone is selected, only rotation is allowed: translating or scaling
-// a bone would offset it from its parent and visibly break the joint
-// connection, so those tools are disabled for the duration of the selection.
+// 选中骨骼时仅允许旋转：平移或缩放骨骼会使其偏离父级并明显破坏
+// 关节连接，因此在选中期间禁用这些工具。
 const selectedIsBone = ref(false)
 
 function setMode(id: (typeof tools)[number]["id"]) {

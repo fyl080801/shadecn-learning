@@ -1,7 +1,13 @@
-// @ts-nocheck
+
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 class SetShadowValueCommand extends Command {
+  object: any
+  attributeName: string
+  oldValue: any
+  newValue: any
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} object
@@ -9,7 +15,12 @@ class SetShadowValueCommand extends Command {
    * @param {number|string|boolean|Object|null} newValue
    * @constructor
    */
-  constructor(editor, object = null, attributeName = "", newValue = null) {
+  constructor(
+    editor: Editor,
+    object: any = null,
+    attributeName = "",
+    newValue: any = null
+  ) {
     super(editor)
 
     this.type = "SetShadowValueCommand"
@@ -33,12 +44,12 @@ class SetShadowValueCommand extends Command {
     this.editor.signals.objectChanged.dispatch(this.object)
   }
 
-  update(cmd) {
+  update(cmd: SetShadowValueCommand) {
     this.newValue = cmd.newValue
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.objectUuid = this.object.uuid
     output.attributeName = this.attributeName
@@ -48,7 +59,7 @@ class SetShadowValueCommand extends Command {
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.object = this.editor.objectByUuid(json.objectUuid)

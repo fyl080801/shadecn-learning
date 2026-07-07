@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { onBeforeUnmount, onMounted, ref } from "vue"
 import * as THREE from "three"
 
@@ -38,7 +37,7 @@ function findSkinnedMesh(object: any) {
   if (object.isSkinnedMesh) return object
 
   if (object.isBone) {
-    let found = null
+    let found: any = null
 
     editor.scene.traverse(function (child: any) {
       if (
@@ -113,10 +112,9 @@ function selectBone(bone: any) {
   editor.select(bone)
 }
 
-// Rotation is the only parameter exposed for a joint: translating or scaling
-// a bone would move it away from its parent and visibly break the joint
-// connection, whereas rotating it just re-orients the bone (and everything
-// downstream of it) around a fixed pivot, matching how a real skeleton poses.
+// 旋转是关节唯一暴露的参数：平移或缩放骨骼会使其偏离父级并明显破坏
+// 关节连接，而旋转只是围绕固定枢轴重新定向骨骼（及其下游的所有内容），
+// 与真实骨骼的摆姿方式一致。
 function updateRotation() {
   const bone = selectedBone.value
   if (!bone) return
@@ -224,8 +222,7 @@ onBeforeUnmount(() => {
         type="button"
         class="flex w-full items-center rounded px-1.5 py-1 text-left text-xs hover:bg-accent"
         :class="{
-          'bg-accent text-accent-foreground':
-            row.bone.uuid === selectedBoneUuid
+          'bg-accent text-accent-foreground': row.bone.uuid === selectedBoneUuid
         }"
         :style="{ paddingLeft: 6 + row.depth * 14 + 'px' }"
         @click="selectBone(row.bone)"

@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from "vue"
+import { onMounted } from "vue"
 
-import { createEditor, ThreeEditor, EditorViewport } from "@/components/three-editor"
+import {
+  createEditor,
+  ThreeEditor,
+  EditorViewport
+  // EditorViewportInfo
+} from "@/components/three-editor"
 import DirectorViewTabs from "@/components/director/DirectorViewTabs.vue"
 import DirectorScenePanel from "@/components/director/DirectorScenePanel.vue"
 import DirectorToolbar from "@/components/director/DirectorToolbar.vue"
@@ -9,21 +14,19 @@ import DirectorScenePropertiesPanel from "@/components/director/DirectorScenePro
 import DirectorObjectPropertiesPanel from "@/components/director/DirectorObjectPropertiesPanel.vue"
 import DirectorCharacterLabels from "@/components/director/DirectorCharacterLabels.vue"
 import { useDirectorRenderer } from "@/components/director/useDirectorRenderer"
+import { useDirectorDeleteShortcut } from "@/components/director/useDirectorDeleteShortcut"
+import { useCharacterUnlitMaterial } from "@/components/director/useCharacterUnlitMaterial"
+import { useCharacterSkeletonOverlay } from "@/components/director/useCharacterSkeletonOverlay"
 
 const editor = createEditor("director-console")
 
-// A locked graphic must not be selectable/draggable in the viewport — the
-// scene panel already skips select() for locked rows, but objects can also
-// be picked by clicking directly in the 3D viewport, so enforce it here too.
-function enforceLock(object: any) {
-  if (object?.userData?.locked) editor.deselect()
-}
+useDirectorDeleteShortcut(editor)
+useCharacterUnlitMaterial(editor)
+useCharacterSkeletonOverlay(editor)
 
 onMounted(() => {
-  editor.signals.objectSelected.add(enforceLock)
   useDirectorRenderer(editor)
 })
-onBeforeUnmount(() => editor.signals.objectSelected.remove(enforceLock))
 </script>
 
 <template>
@@ -43,9 +46,15 @@ onBeforeUnmount(() => editor.signals.objectSelected.remove(enforceLock))
         </aside>
 
         <main class="relative min-w-0 flex-1 bg-background">
-          <EditorViewport class="absolute inset-0" />
+          <EditorViewport
+            class="absolute inset-0"
+            :view-helper-offset="{ top: 0, right: 0 }"
+          />
           <DirectorCharacterLabels />
-          <DirectorToolbar class="absolute bottom-4 left-1/2 -translate-x-1/2" />
+          <DirectorToolbar
+            class="absolute bottom-4 left-1/2 -translate-x-1/2"
+          />
+          <!-- <EditorViewportInfo class="absolute left-[10px] z-10" /> -->
         </main>
 
         <aside class="w-72 shrink-0 border-l bg-card">

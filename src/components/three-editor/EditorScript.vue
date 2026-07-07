@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { onBeforeUnmount, onMounted, ref } from "vue"
 import { X } from "lucide-vue-next"
 
@@ -143,7 +142,7 @@ function validate(string: string) {
   switch (currentMode) {
     case "javascript":
       try {
-        new Function(string) // eslint-disable-line no-new-func
+        new Function(string)  
       } catch (error: any) {
         messages.push(error.message)
         valid = false
@@ -164,7 +163,7 @@ function validate(string: string) {
     case "glsl": {
       currentObject.material[currentScript] = string
       currentObject.material.needsUpdate = true
-      signals.materialChanged.dispatch(currentObject, 0) // TODO: Add multi-material support
+      signals.materialChanged.dispatch(currentObject, 0) // TODO: 添加多材质支持
 
       const programs = renderer ? renderer.info.programs : undefined
       const parseMessage = /^(?:ERROR|WARNING): \d+:(\d+): (.*)/g
@@ -321,7 +320,7 @@ onMounted(() => {
     state: createState("", undefined)
   })
 
-  // prevent backspace from deleting objects
+  // 阻止退格键删除对象
   view.dom.addEventListener("keydown", function (event) {
     event.stopPropagation()
   })

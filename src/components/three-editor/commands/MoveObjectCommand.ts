@@ -1,7 +1,16 @@
-// @ts-nocheck
+
+import * as THREE from "three"
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 class MoveObjectCommand extends Command {
+  object: THREE.Object3D | null
+  oldParent: THREE.Object3D | null
+  oldIndex: number | null
+  newParent: THREE.Object3D | null
+  newIndex: number | null
+  newBefore: THREE.Object3D | null
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} [object=null]
@@ -9,7 +18,12 @@ class MoveObjectCommand extends Command {
    * @param {THREE.Object3D|null} [newBefore=null]
    * @constructor
    */
-  constructor(editor, object = null, newParent = null, newBefore = null) {
+  constructor(
+    editor: Editor,
+    object: THREE.Object3D | null = null,
+    newParent: THREE.Object3D | null = null,
+    newBefore: THREE.Object3D | null = null
+  ) {
     super(editor)
 
     this.type = "MoveObjectCommand"
@@ -19,7 +33,7 @@ class MoveObjectCommand extends Command {
     this.oldParent = object !== null ? object.parent : null
     this.oldIndex =
       this.oldParent !== null
-        ? this.oldParent.children.indexOf(this.object)
+        ? this.oldParent.children.indexOf(this.object!)
         : null
     this.newParent = newParent
 
@@ -30,7 +44,12 @@ class MoveObjectCommand extends Command {
       this.newIndex = newParent !== null ? newParent.children.length : null
     }
 
-    if (this.oldParent === this.newParent && this.newIndex > this.oldIndex) {
+    if (
+      this.oldParent === this.newParent &&
+      this.newIndex !== null &&
+      this.oldIndex !== null &&
+      this.newIndex > this.oldIndex
+    ) {
       this.newIndex--
     }
 
@@ -38,13 +57,13 @@ class MoveObjectCommand extends Command {
   }
 
   execute() {
-    this.oldParent.remove(this.object)
+    this.oldParent!.remove(this.object!)
 
-    const children = this.newParent.children
-    children.splice(this.newIndex, 0, this.object)
-    this.object.parent = this.newParent
+    const children = this.newParent!.children
+    children.splice(this.newIndex!, 0, this.object!)
+    this.object!.parent = this.newParent
 
-    this.object.dispatchEvent({ type: "added" })
+    this.object!.dispatchEvent({ type: "added" })
     this.editor.signals.objectChanged.dispatch(this.object)
     this.editor.signals.objectChanged.dispatch(this.newParent)
     this.editor.signals.objectChanged.dispatch(this.oldParent)
@@ -52,13 +71,13 @@ class MoveObjectCommand extends Command {
   }
 
   undo() {
-    this.newParent.remove(this.object)
+    this.newParent!.remove(this.object!)
 
-    const children = this.oldParent.children
-    children.splice(this.oldIndex, 0, this.object)
-    this.object.parent = this.oldParent
+    const children = this.oldParent!.children
+    children.splice(this.oldIndex!, 0, this.object!)
+    this.object!.parent = this.oldParent
 
-    this.object.dispatchEvent({ type: "added" })
+    this.object!.dispatchEvent({ type: "added" })
     this.editor.signals.objectChanged.dispatch(this.object)
     this.editor.signals.objectChanged.dispatch(this.newParent)
     this.editor.signals.objectChanged.dispatch(this.oldParent)
@@ -66,18 +85,18 @@ class MoveObjectCommand extends Command {
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
-    output.objectUuid = this.object.uuid
-    output.newParentUuid = this.newParent.uuid
-    output.oldParentUuid = this.oldParent.uuid
+    output.objectUuid = this.object!.uuid
+    output.newParentUuid = this.newParent!.uuid
+    output.oldParentUuid = this.oldParent!.uuid
     output.newIndex = this.newIndex
     output.oldIndex = this.oldIndex
 
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.object = this.editor.objectByUuid(json.objectUuid)

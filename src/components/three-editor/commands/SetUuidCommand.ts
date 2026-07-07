@@ -1,14 +1,24 @@
-// @ts-nocheck
+
+import * as THREE from "three"
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 class SetUuidCommand extends Command {
+  object: THREE.Object3D | null
+  oldUuid: string | null
+  newUuid: string | null
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} object
    * @param {string|null} newUuid
    * @constructor
    */
-  constructor(editor, object = null, newUuid = null) {
+  constructor(
+    editor: Editor,
+    object: THREE.Object3D | null = null,
+    newUuid: string | null = null
+  ) {
     super(editor)
 
     this.type = "SetUuidCommand"
@@ -21,19 +31,19 @@ class SetUuidCommand extends Command {
   }
 
   execute() {
-    this.object.uuid = this.newUuid
+    this.object!.uuid = this.newUuid!
     this.editor.signals.objectChanged.dispatch(this.object)
     this.editor.signals.sceneGraphChanged.dispatch()
   }
 
   undo() {
-    this.object.uuid = this.oldUuid
+    this.object!.uuid = this.oldUuid!
     this.editor.signals.objectChanged.dispatch(this.object)
     this.editor.signals.sceneGraphChanged.dispatch()
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.oldUuid = this.oldUuid
     output.newUuid = this.newUuid
@@ -41,7 +51,7 @@ class SetUuidCommand extends Command {
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.oldUuid = json.oldUuid

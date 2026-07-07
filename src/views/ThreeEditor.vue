@@ -6,6 +6,8 @@ import {
   EditorSidebar,
   EditorToolbar,
   EditorViewport,
+  EditorViewportControls,
+  EditorViewportInfo,
   EditorPlayer,
   EditorScript,
   EditorAnimation
@@ -29,9 +31,13 @@ const editor = createEditor()
           <ResizablePanel :default-size="80" :min-size="30">
             <div class="relative h-full min-h-0">
               <EditorViewport class="absolute inset-0" />
+              <EditorViewportControls
+                class="absolute top-[10px] right-[10px] z-10"
+              />
               <EditorToolbar
                 class="absolute bottom-14 left-1/2 -translate-x-1/2"
               />
+              <EditorViewportInfo class="absolute left-[10px] z-10" />
               <EditorPlayer class="absolute inset-0" />
               <EditorScript class="absolute inset-0" />
             </div>

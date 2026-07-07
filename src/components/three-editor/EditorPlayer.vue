@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { onBeforeUnmount, onMounted, ref } from "vue"
 
 import { APP } from "./libs/app"
@@ -42,7 +41,7 @@ function onWindowResize() {
 }
 
 onMounted(() => {
-  player = new APP.Player()
+  player = new (APP.Player as unknown as new () => any)()
   containerRef.value?.appendChild(player.dom)
 
   window.addEventListener("resize", onWindowResize)

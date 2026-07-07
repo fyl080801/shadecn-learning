@@ -1,8 +1,14 @@
-// @ts-nocheck
+
+import * as THREE from "three"
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 import { Vector3 } from "three"
 
 class SetPositionCommand extends Command {
+  object: THREE.Object3D | null
+  oldPosition?: THREE.Vector3
+  newPosition?: THREE.Vector3
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} object
@@ -11,10 +17,10 @@ class SetPositionCommand extends Command {
    * @constructor
    */
   constructor(
-    editor,
-    object = null,
-    newPosition = null,
-    optionalOldPosition = null
+    editor: Editor,
+    object: THREE.Object3D | null = null,
+    newPosition: THREE.Vector3 | null = null,
+    optionalOldPosition: THREE.Vector3 | null = null
   ) {
     super(editor)
 
@@ -35,32 +41,32 @@ class SetPositionCommand extends Command {
   }
 
   execute() {
-    this.object.position.copy(this.newPosition)
-    this.object.updateMatrixWorld(true)
+    this.object!.position.copy(this.newPosition!)
+    this.object!.updateMatrixWorld(true)
     this.editor.signals.objectChanged.dispatch(this.object)
   }
 
   undo() {
-    this.object.position.copy(this.oldPosition)
-    this.object.updateMatrixWorld(true)
+    this.object!.position.copy(this.oldPosition!)
+    this.object!.updateMatrixWorld(true)
     this.editor.signals.objectChanged.dispatch(this.object)
   }
 
-  update(command) {
-    this.newPosition.copy(command.newPosition)
+  update(command: SetPositionCommand) {
+    this.newPosition!.copy(command.newPosition!)
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
-    output.objectUuid = this.object.uuid
-    output.oldPosition = this.oldPosition.toArray()
-    output.newPosition = this.newPosition.toArray()
+    output.objectUuid = this.object!.uuid
+    output.oldPosition = this.oldPosition!.toArray()
+    output.newPosition = this.newPosition!.toArray()
 
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.object = this.editor.objectByUuid(json.objectUuid)

@@ -8,12 +8,12 @@ import {
   SelectTrigger,
   SelectValue
 } from "@/components/ui/select"
+import { useEditor } from "./composables/useEditorContext"
 
-const props = defineProps<{
-  editor: any
-}>()
+defineOptions({ inheritAttrs: false })
 
-const signals = props.editor.signals
+const editor = useEditor()
+const signals = editor.signals
 
 const shadingOptions = [
   { value: "realistic", label: "realistic" },
@@ -27,7 +27,7 @@ const selectedCamera = ref("")
 const shading = ref("solid")
 
 function updateCameraList() {
-  const cameras = props.editor.cameras
+  const cameras = editor.cameras
   const options = Object.keys(cameras).map((key) => ({
     value: cameras[key].uuid,
     label: cameras[key].name
@@ -35,25 +35,25 @@ function updateCameraList() {
   cameraOptions.value = options
 
   const hasSelected = options.some(
-    (option) => option.value === props.editor.viewportCamera.uuid
+    (option) => option.value === editor.viewportCamera.uuid
   )
-  return hasSelected ? props.editor.viewportCamera : props.editor.camera
+  return hasSelected ? editor.viewportCamera : editor.camera
 }
 
 function update() {
   const selected = updateCameraList()
   selectedCamera.value = selected.uuid
-  props.editor.setViewportCamera(selected.uuid)
+  editor.setViewportCamera(selected.uuid)
 }
 
 function onCameraSelect(value: unknown) {
   selectedCamera.value = value as string
-  props.editor.setViewportCamera(value)
+  editor.setViewportCamera(value)
 }
 
 function onShadingSelect(value: unknown) {
   shading.value = value as string
-  props.editor.setViewportShading(value)
+  editor.setViewportShading(value)
 }
 
 function onObjectChanged(object: any) {
@@ -63,7 +63,7 @@ function onObjectChanged(object: any) {
 function onEditorCleared() {
   update()
   shading.value = "solid"
-  props.editor.setViewportShading("solid")
+  editor.setViewportShading("solid")
 }
 
 onMounted(() => {
@@ -86,7 +86,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="absolute top-[10px] right-[10px] z-10 flex gap-2">
+  <div v-bind="$attrs" class="flex gap-2">
     <Select :model-value="selectedCamera" @update:model-value="onCameraSelect">
       <SelectTrigger size="sm" class="bg-background/80 w-[140px]">
         <SelectValue />

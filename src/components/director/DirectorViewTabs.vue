@@ -30,8 +30,8 @@ onBeforeUnmount(() => {
   signals.cameraRemoved.remove(bumpCameras)
 })
 
-// The editor's own orbit camera (`editor.camera`) is always registered in
-// `editor.cameras` too — only the *other* ones are user-placed 机位.
+// 编辑器自身的轨道相机（`editor.camera`）也始终注册在
+// `editor.cameras` 中——只有*其他*相机才是用户放置的机位。
 const cameraOptions = computed(() => {
   camerasVersion.value
   return Object.values(editor.cameras).filter(

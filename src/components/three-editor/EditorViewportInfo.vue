@@ -1,21 +1,20 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue"
 
-const props = defineProps<{
-  editor: any
-}>()
+import { useEditor } from "./composables/useEditorContext"
 
-const signals = props.editor.signals
-const strings = props.editor.strings
+defineOptions({ inheritAttrs: false })
+
+const editor = useEditor()
+const signals = editor.signals
+const strings = editor.strings
 
 function t(key: string) {
   return strings.getKey(key)
 }
 
 function pluralize(count: number, singularKey: string, pluralKey: string) {
-  const pluralRules = new Intl.PluralRules(
-    props.editor.config.getKey("language")
-  )
+  const pluralRules = new Intl.PluralRules(editor.config.getKey("language"))
   return t(pluralRules.select(count) === "one" ? singularKey : pluralKey)
 }
 
@@ -30,7 +29,7 @@ const samples = ref(0)
 const showSamples = ref(false)
 
 function update() {
-  const scene = props.editor.scene
+  const scene = editor.scene
 
   let objectTotal = 0
   let vertexTotal = 0
@@ -66,9 +65,9 @@ function update() {
   vertexCount.value = vertexTotal
   triangleCount.value = triangleTotal
 
-  objects.value = props.editor.utils.formatNumber(objectTotal)
-  vertices.value = props.editor.utils.formatNumber(vertexTotal)
-  triangles.value = props.editor.utils.formatNumber(triangleTotal)
+  objects.value = editor.utils.formatNumber(objectTotal)
+  vertices.value = editor.utils.formatNumber(vertexTotal)
+  triangles.value = editor.utils.formatNumber(triangleTotal)
 }
 
 function updateFrametime(value: number) {
@@ -80,7 +79,7 @@ function onPathTracerUpdated(value: number) {
 }
 
 function onViewportShadingChanged() {
-  showSamples.value = props.editor.viewportShading === "realistic"
+  showSamples.value = editor.viewportShading === "realistic"
 }
 
 onMounted(() => {
@@ -108,7 +107,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="pointer-events-none absolute left-[10px] z-10 text-xs text-white lowercase"
+    v-bind="$attrs"
+    class="pointer-events-none text-xs text-white lowercase"
     :style="{ bottom: showSamples ? '62px' : '50px' }"
   >
     <div>

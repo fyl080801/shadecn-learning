@@ -90,8 +90,8 @@ const magFilterOptions = [
   { value: String(THREE.LinearFilter), label: "Linear" }
 ]
 
-// reka-ui's Select reserves the empty string as its "no value" sentinel, but
-// THREE.NoColorSpace *is* "" — so it needs a non-empty stand-in value here.
+// reka-ui 的 Select 将空字符串保留为"无值"哨兵，但
+// THREE.NoColorSpace 的值*就是* "" —— 因此这里需要一个非空的替代值。
 const COLOR_SPACE_NONE = "none"
 
 const colorSpaceOptions = [

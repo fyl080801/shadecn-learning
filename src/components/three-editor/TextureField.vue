@@ -22,7 +22,7 @@ function draw() {
   const context = canvas?.getContext("2d")
   if (!canvas || !context) return
 
-  // Always clear first, since the incoming texture may have transparency.
+  // 始终先清除，因为传入的纹理可能包含透明度。
   context.clearRect(0, 0, canvas.width, canvas.height)
 
   const texture = props.modelValue

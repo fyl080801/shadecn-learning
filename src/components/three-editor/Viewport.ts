@@ -1,4 +1,4 @@
-// @ts-nocheck
+
 import * as THREE from "three"
 import { PMREMGenerator } from "three/webgpu"
 
@@ -6,7 +6,7 @@ import { TransformControls } from "three/addons/controls/TransformControls.js"
 
 import { EditorControls } from "./EditorControls"
 
-import { ViewHelper } from "./Viewport.ViewHelper"
+import { ViewHelper, type ViewHelperOffset } from "./Viewport.ViewHelper"
 import { XR } from "./Viewport.XR"
 
 import { SetPositionCommand } from "./commands/SetPositionCommand"
@@ -16,8 +16,12 @@ import { SetScaleCommand } from "./commands/SetScaleCommand"
 import { ColorEnvironment } from "three/addons/environments/ColorEnvironment.js"
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js"
 import { ViewportPathtracer } from "./Viewport.Pathtracer"
+import type { Editor } from "./Editor"
 
-function Viewport(editor) {
+function Viewport(
+  editor: Editor,
+  options?: { viewHelperOffset?: ViewHelperOffset }
+): HTMLDivElement {
   const selector = editor.selector
   const signals = editor.signals
 
@@ -27,53 +31,50 @@ function Viewport(editor) {
 
   //
 
-  let renderer = null
-  let pmremGenerator = null
-  let pathtracer = null
+  let renderer: any = null
+  let pmremGenerator: any = null
+  let pathtracer: any = null
 
-  let camera = editor.camera
+  let camera: any = editor.camera
   const scene = editor.scene
   const sceneHelpers = editor.sceneHelpers
 
-  // Rendered right after `scene` but before `grid`/`sceneHelpers` (see
-  // render() below), so that anything drawn here is real background color
-  // already sitting in the buffer by the time the ground plane's
-  // translucent fill blends on top of it. Kept as its own scene rather than
-  // living in sceneHelpers so it can render ahead of grid/gizmos without
-  // them jumping the queue with it. Owned by Editor (see Editor.ts) so it
-  // exists before this Viewport is ever constructed.
+  // 在 `scene` 之后、`grid`/`sceneHelpers` 之前渲染（见下文
+  // render()），这样当地面平面的半透明填充叠加在其上时，
+  // 这里绘制的内容已经是缓冲区中真正的背景色了。作为独立场景
+  // 而非放在 sceneHelpers 中，使其能在网格/辅助器之前渲染，
+  // 而不会与它们争抢渲染顺序。由 Editor 拥有（见 Editor.ts），
+  // 以便在此 Viewport 构造之前就已存在。
   const backdrop = editor.backdrop
 
-  // helpers
+  // 辅助器
 
   const GRID_COLORS_LIGHT = [0x999999, 0x777777]
   const GRID_COLORS_DARK = [0x555555, 0x888888]
   const GRID_PLANE_COLOR_LIGHT = 0x3b82f6
   const GRID_PLANE_COLOR_DARK = 0x60a5fa
 
-  // Owned by Editor (see Editor.ts), not constructed here, for the same
-  // reason as `backdrop` above.
+  // 由 Editor 拥有（见 Editor.ts），不在此构造，原因同上文的 `backdrop`。
   const grid = editor.grid
   const [grid1, grid2] = grid.children
   const gridPlane = editor.groundPlane
 
-  const viewHelper = new ViewHelper(camera, container)
+  const viewHelper = new ViewHelper(camera, container, options?.viewHelperOffset)
 
   //
 
   const box = new THREE.Box3()
 
-  const selectionBox = new THREE.Box3Helper(box)
+  const selectionBox: any = new THREE.Box3Helper(box)
   selectionBox.material.depthTest = false
   selectionBox.material.transparent = true
   selectionBox.visible = false
-  sceneHelpers.add(selectionBox)
 
-  let objectPositionOnDown = null
-  let objectRotationOnDown = null
-  let objectScaleOnDown = null
+  let objectPositionOnDown: THREE.Vector3 | null = null
+  let objectRotationOnDown: THREE.Euler | null = null
+  let objectScaleOnDown: THREE.Vector3 | null = null
 
-  const transformControls = new TransformControls(camera)
+  const transformControls: any = new TransformControls(camera)
   transformControls.addEventListener("axis-changed", function () {
     if (editor.viewportShading !== "realistic") render()
   })
@@ -95,7 +96,7 @@ function Viewport(editor) {
     if (object !== undefined) {
       switch (transformControls.getMode()) {
         case "translate":
-          if (!objectPositionOnDown.equals(object.position)) {
+          if (!objectPositionOnDown!.equals(object.position)) {
             editor.execute(
               new SetPositionCommand(
                 editor,
@@ -109,7 +110,7 @@ function Viewport(editor) {
           break
 
         case "rotate":
-          if (!objectRotationOnDown.equals(object.rotation)) {
+          if (!objectRotationOnDown!.equals(object.rotation)) {
             editor.execute(
               new SetRotationCommand(
                 editor,
@@ -123,7 +124,7 @@ function Viewport(editor) {
           break
 
         case "scale":
-          if (!objectScaleOnDown.equals(object.scale)) {
+          if (!objectScaleOnDown!.equals(object.scale)) {
             editor.execute(
               new SetScaleCommand(
                 editor,
@@ -137,8 +138,8 @@ function Viewport(editor) {
           break
       }
 
-      // Drag frames used the cheap (non-precise) box for performance; true
-      // up to a precise box now that dragging has stopped.
+      // 拖拽期间出于性能使用了廉价（非精确）包围盒；拖拽停止后
+      // 更新为精确包围盒。
       if (editor.selected === object) {
         box.setFromObject(object, true)
       }
@@ -151,13 +152,13 @@ function Viewport(editor) {
 
   //
 
-  const xr = new XR(editor, transformControls) // eslint-disable-line no-unused-vars
+  new XR(editor, transformControls)
 
-  // events
+  // 事件
 
   function updateAspectRatio() {
     for (const uuid in editor.cameras) {
-      const camera = editor.cameras[uuid]
+      const camera: any = editor.cameras[uuid]
 
       const aspect = container.offsetWidth / container.offsetHeight
 
@@ -172,7 +173,7 @@ function Viewport(editor) {
 
       camera.updateProjectionMatrix()
 
-      const cameraHelper = editor.helpers[camera.id]
+      const cameraHelper: any = editor.helpers[camera.id]
       if (cameraHelper) cameraHelper.update()
     }
   }
@@ -181,7 +182,7 @@ function Viewport(editor) {
   const onUpPosition = new THREE.Vector2()
   const onDoubleClickPosition = new THREE.Vector2()
 
-  function getMousePosition(dom, x, y) {
+  function getMousePosition(dom: HTMLElement, x: number, y: number) {
     const rect = dom.getBoundingClientRect()
     return [(x - rect.left) / rect.width, (y - rect.top) / rect.height]
   }
@@ -195,7 +196,7 @@ function Viewport(editor) {
     }
   }
 
-  function onMouseDown(event) {
+  function onMouseDown(event: any) {
     // event.preventDefault();
 
     if (event.target !== renderer.domElement) return
@@ -206,7 +207,7 @@ function Viewport(editor) {
     document.addEventListener("mouseup", onMouseUp)
   }
 
-  function onMouseUp(event) {
+  function onMouseUp(event: any) {
     const array = getMousePosition(container, event.clientX, event.clientY)
     onUpPosition.fromArray(array)
 
@@ -215,7 +216,7 @@ function Viewport(editor) {
     document.removeEventListener("mouseup", onMouseUp)
   }
 
-  function onTouchStart(event) {
+  function onTouchStart(event: any) {
     const touch = event.changedTouches[0]
 
     const array = getMousePosition(container, touch.clientX, touch.clientY)
@@ -224,7 +225,7 @@ function Viewport(editor) {
     document.addEventListener("touchend", onTouchEnd)
   }
 
-  function onTouchEnd(event) {
+  function onTouchEnd(event: any) {
     const touch = event.changedTouches[0]
 
     const array = getMousePosition(container, touch.clientX, touch.clientY)
@@ -235,7 +236,7 @@ function Viewport(editor) {
     document.removeEventListener("touchend", onTouchEnd)
   }
 
-  function onDoubleClick(event) {
+  function onDoubleClick(event: any) {
     const array = getMousePosition(container, event.clientX, event.clientY)
     onDoubleClickPosition.fromArray(array)
 
@@ -245,7 +246,7 @@ function Viewport(editor) {
     )
 
     if (intersects.length > 0) {
-      const intersect = intersects[0]
+      const intersect = intersects[0]!
 
       signals.objectFocused.dispatch(intersect.object)
     }
@@ -255,8 +256,8 @@ function Viewport(editor) {
   container.addEventListener("touchstart", onTouchStart, { passive: false })
   container.addEventListener("dblclick", onDoubleClick)
 
-  // controls need to be added *after* main logic,
-  // otherwise controls.enabled doesn't work.
+  // 控制器需要在主逻辑*之后*添加，
+  // 否则 controls.enabled 不起作用。
 
   const controls = new EditorControls(camera)
   controls.addEventListener("change", function () {
@@ -267,7 +268,7 @@ function Viewport(editor) {
 
   editor.controls = controls
 
-  // signals
+  // 信号
 
   signals.editorCleared.add(function () {
     controls.center.set(0, 0, 0)
@@ -278,24 +279,24 @@ function Viewport(editor) {
     signals.sceneEnvironmentChanged.dispatch(editor.environmentType)
   })
 
-  signals.transformModeChanged.add(function (mode) {
+  signals.transformModeChanged.add(function (mode: any) {
     transformControls.setMode(mode)
 
     render()
   })
 
-  signals.snapChanged.add(function (dist) {
+  signals.snapChanged.add(function (dist: any) {
     transformControls.setTranslationSnap(dist)
   })
 
-  signals.spaceChanged.add(function (space) {
+  signals.spaceChanged.add(function (space: any) {
     transformControls.setSpace(space)
 
     render()
   })
 
   signals.rendererUpdated.add(function () {
-    scene.traverse(function (child) {
+    scene.traverse(function (child: any) {
       if (child.material !== undefined) {
         child.material.needsUpdate = true
       }
@@ -304,7 +305,7 @@ function Viewport(editor) {
     render()
   })
 
-  signals.rendererCreated.add(function (newRenderer) {
+  signals.rendererCreated.add(function (newRenderer: any) {
     if (renderer !== null) {
       renderer.setAnimationLoop(null)
 
@@ -361,7 +362,7 @@ function Viewport(editor) {
       pmremGenerator = new THREE.PMREMGenerator(renderer)
       pmremGenerator.compileEquirectangularShader()
 
-      pathtracer = new ViewportPathtracer(renderer)
+      pathtracer = ViewportPathtracer(renderer)
     } else {
       pmremGenerator = new PMREMGenerator(renderer)
 
@@ -375,7 +376,7 @@ function Viewport(editor) {
     render()
   })
 
-  signals.rendererDetectKTX2Support.add(function (ktx2Loader) {
+  signals.rendererDetectKTX2Support.add(function (ktx2Loader: any) {
     ktx2Loader.detectSupport(renderer)
   })
 
@@ -390,7 +391,7 @@ function Viewport(editor) {
     render()
   })
 
-  signals.objectSelected.add(function (object) {
+  signals.objectSelected.add(function (object: any) {
     selectionBox.visible = false
     transformControls.detach()
 
@@ -403,8 +404,8 @@ function Viewport(editor) {
 
       transformControls.attach(object)
 
-      // Bones only support rotation in this editor: translating/scaling a
-      // bone would offset it from its parent and break the joint connection.
+      // 在此编辑器中骨骼仅支持旋转：平移/缩放骨骼会使其偏离父级，
+      // 并破坏关节连接。
       if (object.isBone && transformControls.mode !== "rotate") {
         signals.transformModeChanged.dispatch("rotate")
       }
@@ -413,11 +414,11 @@ function Viewport(editor) {
     render()
   })
 
-  signals.objectFocused.add(function (object) {
+  signals.objectFocused.add(function (object: any) {
     controls.focus(object)
   })
 
-  signals.geometryChanged.add(function (object) {
+  signals.geometryChanged.add(function (object: any) {
     if (object !== undefined) {
       box.setFromObject(object, true)
     }
@@ -426,14 +427,12 @@ function Viewport(editor) {
     render()
   })
 
-  signals.objectChanged.add(function (object) {
+  signals.objectChanged.add(function (object: any) {
     if (editor.selected === object) {
-      // Precise mode walks and transforms every vertex of every mesh in the
-      // subtree, which for a skinned character (many bones + a dense mesh)
-      // is expensive enough to visibly stutter a translate drag when redone
-      // on every pointer-move. Fall back to the cheap (cached bounding box)
-      // pass while actively dragging and only pay for a precise box once
-      // the drag settles.
+      // 精确模式会遍历并变换子树中每个网格的每个顶点，对于蒙皮角色
+      // （大量骨骼 + 密集网格）来说，在每个 pointer-move 上重复执行
+      // 会导致明显的拖拽卡顿。拖拽进行时回退到廉价（缓存包围盒）
+      // 方式，仅在拖拽结束后才计算精确包围盒。
       box.setFromObject(object, !transformControls.dragging)
     }
 
@@ -441,16 +440,16 @@ function Viewport(editor) {
       object.updateProjectionMatrix()
     }
 
-    const helper = editor.helpers[object.id]
+    const helper: any = editor.helpers[object.id]
 
     if (helper !== undefined && helper.isSkeletonHelper !== true) {
       helper.update()
     }
 
-    // update light helper when light target is changed
+    // 灯光目标改变时更新灯光辅助器
 
     for (const id in editor.helpers) {
-      const helper = editor.helpers[id]
+      const helper: any = editor.helpers[id]
 
       if (helper.light && helper.light.target === object) {
         helper.update()
@@ -461,8 +460,8 @@ function Viewport(editor) {
     render()
   })
 
-  signals.objectRemoved.add(function (object) {
-    controls.enabled = true // see #14180
+  signals.objectRemoved.add(function (object: any) {
+    controls.enabled = true // 见 #14180
 
     if (object === transformControls.object) {
       transformControls.detach()
@@ -474,18 +473,18 @@ function Viewport(editor) {
     render()
   })
 
-  // background
+  // 背景
 
   signals.sceneBackgroundChanged.add(
     function (
-      backgroundType,
-      backgroundColor,
-      backgroundTexture,
-      backgroundEquirectangularTexture,
-      backgroundColorSpace,
-      backgroundBlurriness,
-      backgroundIntensity,
-      backgroundRotation
+      backgroundType: any,
+      backgroundColor: any,
+      backgroundTexture: any,
+      backgroundEquirectangularTexture: any,
+      backgroundColorSpace: any,
+      backgroundBlurriness: any,
+      backgroundIntensity: any,
+      backgroundRotation: any
     ) {
       editor.backgroundType = backgroundType
 
@@ -533,12 +532,12 @@ function Viewport(editor) {
     }
   )
 
-  // environment
+  // 环境
 
   let useBackgroundAsEnvironment = false
 
   signals.sceneEnvironmentChanged.add(
-    function (environmentType, environmentEquirectangularTexture) {
+    function (environmentType: any, environmentEquirectangularTexture: any) {
       editor.environmentType = environmentType
 
       scene.environment = null
@@ -549,23 +548,27 @@ function Viewport(editor) {
         case "Equirectangular":
           if (environmentEquirectangularTexture) {
             scene.environment = environmentEquirectangularTexture
-            scene.environment.mapping = THREE.EquirectangularReflectionMapping
+            ;(scene.environment as any).mapping =
+              THREE.EquirectangularReflectionMapping
           }
 
           break
 
-        case "Default":
+        case "Default": {
           useBackgroundAsEnvironment = true
 
-          if (scene.background !== null) {
-            if (scene.background.isColor) {
+          const background: any = scene.background
+
+          if (background !== null) {
+            if (background.isColor) {
               scene.environment = pmremGenerator.fromScene(
-                new ColorEnvironment(scene.background),
+                new ColorEnvironment(background),
                 0.04
               ).texture
-            } else if (scene.background.isTexture) {
-              scene.environment = scene.background
-              scene.environment.mapping = THREE.EquirectangularReflectionMapping
+            } else if (background.isTexture) {
+              scene.environment = background
+              ;(scene.environment as any).mapping =
+                THREE.EquirectangularReflectionMapping
               scene.environmentRotation.y = scene.backgroundRotation.y
             }
           } else {
@@ -576,6 +579,7 @@ function Viewport(editor) {
           }
 
           break
+        }
       }
 
       updatePTEnvironment()
@@ -583,10 +587,10 @@ function Viewport(editor) {
     }
   )
 
-  // fog
+  // 雾效
 
   signals.sceneFogChanged.add(
-    function (fogType, fogColor, fogNear, fogFar, fogDensity) {
+    function (fogType: any, fogColor: any, fogNear: any, fogFar: any, fogDensity: any) {
       switch (fogType) {
         case "None":
           scene.fog = null
@@ -604,16 +608,18 @@ function Viewport(editor) {
   )
 
   signals.sceneFogSettingsChanged.add(
-    function (fogType, fogColor, fogNear, fogFar, fogDensity) {
+    function (fogType: any, fogColor: any, fogNear: any, fogFar: any, fogDensity: any) {
+      const fog: any = scene.fog
+
       switch (fogType) {
         case "Fog":
-          scene.fog.color.setHex(fogColor)
-          scene.fog.near = fogNear
-          scene.fog.far = fogFar
+          fog.color.setHex(fogColor)
+          fog.near = fogNear
+          fog.far = fogFar
           break
         case "FogExp2":
-          scene.fog.color.setHex(fogColor)
-          scene.fog.density = fogDensity
+          fog.color.setHex(fogColor)
+          fog.density = fogDensity
           break
       }
 
@@ -622,7 +628,7 @@ function Viewport(editor) {
   )
 
   signals.viewportCameraChanged.add(function () {
-    const viewportCamera = editor.viewportCamera
+    const viewportCamera: any = editor.viewportCamera
 
     if (
       viewportCamera.isPerspectiveCamera ||
@@ -631,7 +637,7 @@ function Viewport(editor) {
       updateAspectRatio()
     }
 
-    // disable EditorControls when setting a user camera
+    // 设置用户相机时禁用 EditorControls
 
     controls.enabled = viewportCamera === editor.camera
 
@@ -680,10 +686,10 @@ function Viewport(editor) {
     render()
   })
 
-  signals.showHelpersChanged.add(function (appearanceStates) {
+  signals.showHelpersChanged.add(function (appearanceStates: any) {
     grid.visible = appearanceStates.gridHelper
 
-    sceneHelpers.traverse(function (object) {
+    sceneHelpers.traverse(function (object: any) {
       switch (object.type) {
         case "CameraHelper": {
           object.visible = appearanceStates.cameraHelpers
@@ -704,7 +710,7 @@ function Viewport(editor) {
         }
 
         default: {
-          // not a helper, skip.
+          // 不是辅助器，跳过。
         }
       }
     })
@@ -725,11 +731,11 @@ function Viewport(editor) {
     render()
   })
 
-  // animations
+  // 动画
 
   let prevActionsInUse = 0
 
-  const timer = new THREE.Timer() // only used for animations
+  const timer = new THREE.Timer() // 仅用于动画
 
   function animate() {
     timer.update()
@@ -739,7 +745,7 @@ function Viewport(editor) {
 
     let needsUpdate = false
 
-    // Animations
+    // 动画
 
     const actions = mixer.stats.actions
 
@@ -750,14 +756,14 @@ function Viewport(editor) {
       needsUpdate = true
 
       if (editor.selected !== null) {
-        editor.selected.updateWorldMatrix(false, true) // avoid frame late effect for certain skinned meshes (e.g. Michelle.glb)
-        selectionBox.box.setFromObject(editor.selected, true) // selection box should reflect current animation state
+        editor.selected.updateWorldMatrix(false, true) // 避免某些蒙皮网格（如 Michelle.glb）的帧延迟效果
+        selectionBox.box.setFromObject(editor.selected, true) // 选中框应反映当前动画状态
       }
 
       signals.morphTargetsUpdated.dispatch()
     }
 
-    // View Helper
+    // 视图辅助器
 
     if (viewHelper.animating === true) {
       viewHelper.update(delta)
@@ -815,14 +821,12 @@ function Viewport(editor) {
     startTime = performance.now()
 
     renderer.setViewport(0, 0, container.offsetWidth, container.offsetHeight)
-    // `scene` goes first (not `backdrop`) because a flat THREE.Color
-    // background makes Three.js force-clear the buffer whenever it renders
-    // a scene with a Color background, regardless of autoClear, so anything
-    // rendered *before* scene here would get wiped out the instant scene
-    // renders. Rendering backdrop right after, with autoClear off, lets it
-    // paint over that background fill wherever nothing else already drew,
-    // while still losing the depth test to real scene geometry that's
-    // nearer than it.
+    // `scene` 先渲染（而非 `backdrop`），因为使用平面 THREE.Color
+    // 背景时，Three.js 在渲染带颜色背景的场景时会强制清除缓冲区，
+    // 无论 autoClear 如何设置，所以在此处先于 scene 渲染的任何内容
+    // 都会在 scene 渲染瞬间被清除。随后在关闭 autoClear 的情况下
+    // 渲染 backdrop，使其能在未被其他内容覆盖之处绘制在该背景填充上，
+    // 同时仍会在深度测试中输给更近的真实场景几何体。
     renderer.render(scene, editor.viewportCamera)
 
     renderer.autoClear = false
@@ -842,7 +846,7 @@ function Viewport(editor) {
   return container
 }
 
-function updateGridColors(grid1, grid2, colors, gridPlane, planeColor) {
+function updateGridColors(grid1: any, grid2: any, colors: any, gridPlane: any, planeColor: any) {
   grid1.material.color.setHex(colors[0])
   grid2.material.color.setHex(colors[1])
   if (gridPlane && planeColor !== undefined)

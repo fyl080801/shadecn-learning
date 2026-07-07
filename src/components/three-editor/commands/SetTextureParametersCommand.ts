@@ -1,16 +1,21 @@
-// @ts-nocheck
+
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 const VECTOR_KEYS = ["offset", "repeat", "center"]
 
 class SetTextureParametersCommand extends Command {
+  texture: any
+  oldParameters: Record<string, any>
+  newParameters: Record<string, any>
+
   /**
    * @param {Editor} editor
    * @param {THREE.Texture} texture
    * @param {Object} newParameters
    * @constructor
    */
-  constructor(editor, texture = null, newParameters = {}) {
+  constructor(editor: Editor, texture: any = null, newParameters: Record<string, any> = {}) {
     super(editor)
 
     this.type = "SetTextureParametersCommand"
@@ -34,7 +39,7 @@ class SetTextureParametersCommand extends Command {
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.textureUuid = this.texture.uuid
     output.oldParameters = this.oldParameters
@@ -43,7 +48,7 @@ class SetTextureParametersCommand extends Command {
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.texture = findTextureByUuid(this.editor, json.textureUuid)
@@ -52,8 +57,8 @@ class SetTextureParametersCommand extends Command {
   }
 }
 
-function extractParameters(texture, reference) {
-  const result = {}
+function extractParameters(texture: any, reference: Record<string, any>) {
+  const result: Record<string, any> = {}
 
   for (const key in reference) {
     const value = texture[key]
@@ -68,7 +73,7 @@ function extractParameters(texture, reference) {
   return result
 }
 
-function applyParameters(texture, parameters) {
+function applyParameters(texture: any, parameters: Record<string, any>) {
   for (const key in parameters) {
     const value = parameters[key]
 
@@ -82,10 +87,10 @@ function applyParameters(texture, parameters) {
   texture.needsUpdate = true
 }
 
-function findTextureByUuid(editor, uuid) {
+function findTextureByUuid(editor: Editor, uuid: string) {
   let result = null
 
-  editor.scene.traverse((object) => {
+  editor.scene.traverse((object: any) => {
     if (object.material === undefined) return
 
     const materials = Array.isArray(object.material)

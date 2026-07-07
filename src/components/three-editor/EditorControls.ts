@@ -1,8 +1,21 @@
-// @ts-nocheck
 import * as THREE from "three"
 
-class EditorControls extends THREE.EventDispatcher {
-  constructor(object) {
+class EditorControls extends THREE.EventDispatcher<Record<string, any>> {
+  enabled: boolean
+  center: THREE.Vector3
+  panSpeed: number
+  zoomSpeed: number
+  rotationSpeed: number
+
+  setCamera: (camera: any) => void
+  focus: (target: any) => void
+  pan: (delta: THREE.Vector3) => void
+  zoom: (delta: THREE.Vector3) => void
+  rotate: (delta: THREE.Vector3) => void
+  connect: (element: any) => void
+  disconnect: () => void
+
+  constructor(object: any) {
     super()
 
     // API
@@ -13,38 +26,38 @@ class EditorControls extends THREE.EventDispatcher {
     this.zoomSpeed = 0.1
     this.rotationSpeed = 0.005
 
-    // internals
+    // 内部实现
 
-    var scope = this
-    var vector = new THREE.Vector3()
-    var delta = new THREE.Vector3()
-    var box = new THREE.Box3()
+    const scope = this
+    const vector = new THREE.Vector3()
+    const delta = new THREE.Vector3()
+    const box = new THREE.Box3()
 
-    var STATE = { NONE: -1, ROTATE: 0, ZOOM: 1, PAN: 2 }
-    var state = STATE.NONE
+    const STATE = { NONE: -1, ROTATE: 0, ZOOM: 1, PAN: 2 }
+    let state = STATE.NONE
 
-    var center = this.center
-    var normalMatrix = new THREE.Matrix3()
-    var pointer = new THREE.Vector2()
-    var pointerOld = new THREE.Vector2()
-    var spherical = new THREE.Spherical()
-    var sphere = new THREE.Sphere()
+    const center = this.center
+    const normalMatrix = new THREE.Matrix3()
+    const pointer = new THREE.Vector2()
+    const pointerOld = new THREE.Vector2()
+    const spherical = new THREE.Spherical()
+    const sphere = new THREE.Sphere()
 
-    var pointers = []
-    var pointerPositions = {}
+    const pointers: any[] = []
+    const pointerPositions: Record<string, any> = {}
 
-    var domElement = null
+    let domElement: any = null
 
-    // events
+    // 事件
 
-    var changeEvent = { type: "change" }
+    const changeEvent = { type: "change" }
 
-    this.setCamera = function (camera) {
+    this.setCamera = function (camera: any) {
       object = camera
     }
 
-    this.focus = function (target) {
-      var distance
+    this.focus = function (target: any) {
+      let distance
 
       box.setFromObject(target)
 
@@ -52,7 +65,7 @@ class EditorControls extends THREE.EventDispatcher {
         box.getCenter(center)
         distance = box.getBoundingSphere(sphere).radius
       } else {
-        // Focusing on an Group, AmbientLight, etc
+        // 聚焦于 Group、AmbientLight 等
 
         center.setFromMatrixPosition(target.matrixWorld)
         distance = 0.1
@@ -72,22 +85,22 @@ class EditorControls extends THREE.EventDispatcher {
       scope.dispatchEvent(changeEvent)
     }
 
-    this.pan = function (delta) {
-      var elementHeight = domElement ? domElement.clientHeight : 0
+    this.pan = function (delta: THREE.Vector3) {
+      const elementHeight = domElement ? domElement.clientHeight : 0
 
-      var panSpeed
+      let panSpeed
       if (!elementHeight) {
-        // fallback when not connected to an element yet
-        var distance = object.isOrthographicCamera
+        // 未连接到元素时的回退处理
+        const distance = object.isOrthographicCamera
           ? (object.top - object.bottom) / object.zoom
           : object.position.distanceTo(center)
         panSpeed = distance * scope.panSpeed
       } else if (object.isOrthographicCamera) {
         panSpeed = (object.top - object.bottom) / object.zoom / elementHeight
       } else {
-        // map screen pixels to world units 1:1 at the target distance,
-        // so the point under the cursor stays under the cursor while panning
-        var targetDistance =
+        // 将屏幕像素 1:1 映射到目标距离处的世界单位，
+        // 使光标下的点在平移时始终保持在光标下
+        const targetDistance =
           object.position.distanceTo(center) *
           Math.tan(((object.fov / 2) * Math.PI) / 180)
         panSpeed = (2 * targetDistance) / elementHeight
@@ -102,12 +115,12 @@ class EditorControls extends THREE.EventDispatcher {
       scope.dispatchEvent(changeEvent)
     }
 
-    this.zoom = function (delta) {
+    this.zoom = function (delta: THREE.Vector3) {
       if (object.isOrthographicCamera) {
         object.zoom = Math.max(0.0001, object.zoom * Math.pow(0.95, delta.z))
         object.updateProjectionMatrix()
       } else {
-        var distance = object.position.distanceTo(center)
+        const distance = object.position.distanceTo(center)
 
         delta.multiplyScalar(distance * scope.zoomSpeed)
 
@@ -121,7 +134,7 @@ class EditorControls extends THREE.EventDispatcher {
       scope.dispatchEvent(changeEvent)
     }
 
-    this.rotate = function (delta) {
+    this.rotate = function (delta: THREE.Vector3) {
       vector.copy(object.position).sub(center)
 
       spherical.setFromVector3(vector)
@@ -142,7 +155,7 @@ class EditorControls extends THREE.EventDispatcher {
 
     //
 
-    function onPointerDown(event) {
+    function onPointerDown(event: any) {
       if (scope.enabled === false) return
 
       if (pointers.length === 0) {
@@ -167,7 +180,7 @@ class EditorControls extends THREE.EventDispatcher {
       }
     }
 
-    function onPointerMove(event) {
+    function onPointerMove(event: any) {
       if (scope.enabled === false) return
 
       if (event.pointerType === "touch") {
@@ -177,7 +190,7 @@ class EditorControls extends THREE.EventDispatcher {
       }
     }
 
-    function onPointerUp(event) {
+    function onPointerUp(event: any) {
       removePointer(event)
 
       switch (pointers.length) {
@@ -196,7 +209,7 @@ class EditorControls extends THREE.EventDispatcher {
           var pointerId = pointers[0]
           var position = pointerPositions[pointerId]
 
-          // minimal placeholder event - allows state correction on pointer-up
+          // 最小占位事件——允许在指针释放时修正状态
           onTouchStart({
             pointerId: pointerId,
             pageX: position.x,
@@ -207,9 +220,9 @@ class EditorControls extends THREE.EventDispatcher {
       }
     }
 
-    // mouse
+    // 鼠标
 
-    function onMouseDown(event) {
+    function onMouseDown(event: any) {
       if (event.button === 0) {
         state = STATE.ROTATE
       } else if (event.button === 1) {
@@ -221,11 +234,11 @@ class EditorControls extends THREE.EventDispatcher {
       pointerOld.set(event.clientX, event.clientY)
     }
 
-    function onMouseMove(event) {
+    function onMouseMove(event: any) {
       pointer.set(event.clientX, event.clientY)
 
-      var movementX = pointer.x - pointerOld.x
-      var movementY = pointer.y - pointerOld.y
+      const movementX = pointer.x - pointerOld.x
+      const movementY = pointer.y - pointerOld.y
 
       if (state === STATE.ROTATE) {
         scope.rotate(delta.set(-movementX, -movementY, 0))
@@ -242,20 +255,20 @@ class EditorControls extends THREE.EventDispatcher {
       state = STATE.NONE
     }
 
-    function onMouseWheel(event) {
+    function onMouseWheel(event: any) {
       if (scope.enabled === false) return
 
       event.preventDefault()
 
-      // Normalize deltaY due to https://bugzilla.mozilla.org/show_bug.cgi?id=1392460
+      // 归一化 deltaY，原因见 https://bugzilla.mozilla.org/show_bug.cgi?id=1392460
       scope.zoom(delta.set(0, 0, event.deltaY > 0 ? 1 : -1))
     }
 
-    function contextmenu(event) {
+    function contextmenu(event: any) {
       event.preventDefault()
     }
 
-    this.connect = function (element) {
+    this.connect = function (element: any) {
       if (domElement !== null) this.disconnect()
 
       domElement = element
@@ -277,22 +290,22 @@ class EditorControls extends THREE.EventDispatcher {
       domElement = null
     }
 
-    // touch
+    // 触摸
 
-    var touches = [
+    const touches: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [
       new THREE.Vector3(),
       new THREE.Vector3(),
       new THREE.Vector3()
     ]
-    var prevTouches = [
+    const prevTouches: [THREE.Vector3, THREE.Vector3, THREE.Vector3] = [
       new THREE.Vector3(),
       new THREE.Vector3(),
       new THREE.Vector3()
     ]
 
-    var prevDistance = null
+    let prevDistance: number | null = null
 
-    function onTouchStart(event) {
+    function onTouchStart(event: any) {
       trackPointer(event)
 
       switch (pointers.length) {
@@ -322,13 +335,13 @@ class EditorControls extends THREE.EventDispatcher {
       prevTouches[1].copy(touches[1])
     }
 
-    function onTouchMove(event) {
+    function onTouchMove(event: any) {
       trackPointer(event)
 
-      function getClosest(touch, touches) {
-        var closest = touches[0]
+      function getClosest(touch: THREE.Vector3, touches: THREE.Vector3[]) {
+        let closest = touches[0]!
 
-        for (var touch2 of touches) {
+        for (const touch2 of touches) {
           if (closest.distanceTo(touch) > touch2.distanceTo(touch))
             closest = touch2
         }
@@ -360,9 +373,9 @@ class EditorControls extends THREE.EventDispatcher {
           touches[1]
             .set(position.x, position.y, 0)
             .divideScalar(window.devicePixelRatio)
-          // Divide by 10 to offset inherent over-sensitivity (https://github.com/mrdoob/three.js/issues/32442)
+          // 除以 10 以抵消固有的过度敏感（https://github.com/mrdoob/three.js/issues/32442）
           var distance = touches[0].distanceTo(touches[1]) / 10
-          scope.zoom(delta.set(0, 0, prevDistance - distance))
+          scope.zoom(delta.set(0, 0, prevDistance! - distance))
           prevDistance = distance
 
           var offset0 = touches[0]
@@ -383,14 +396,14 @@ class EditorControls extends THREE.EventDispatcher {
       prevTouches[1].copy(touches[1])
     }
 
-    function addPointer(event) {
+    function addPointer(event: any) {
       pointers.push(event.pointerId)
     }
 
-    function removePointer(event) {
+    function removePointer(event: any) {
       delete pointerPositions[event.pointerId]
 
-      for (var i = 0; i < pointers.length; i++) {
+      for (let i = 0; i < pointers.length; i++) {
         if (pointers[i] == event.pointerId) {
           pointers.splice(i, 1)
           return
@@ -398,16 +411,16 @@ class EditorControls extends THREE.EventDispatcher {
       }
     }
 
-    function isTrackingPointer(event) {
-      for (var i = 0; i < pointers.length; i++) {
+    function isTrackingPointer(event: any) {
+      for (let i = 0; i < pointers.length; i++) {
         if (pointers[i] == event.pointerId) return true
       }
 
       return false
     }
 
-    function trackPointer(event) {
-      var position = pointerPositions[event.pointerId]
+    function trackPointer(event: any) {
+      let position = pointerPositions[event.pointerId]
 
       if (position === undefined) {
         position = new THREE.Vector2()
@@ -417,15 +430,15 @@ class EditorControls extends THREE.EventDispatcher {
       position.set(event.pageX, event.pageY)
     }
 
-    function getSecondPointerPosition(event) {
-      var pointerId =
+    function getSecondPointerPosition(event: any) {
+      const pointerId =
         event.pointerId === pointers[0] ? pointers[1] : pointers[0]
 
       return pointerPositions[pointerId]
     }
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     if (json.center !== undefined) this.center.fromArray(json.center)
   }
 

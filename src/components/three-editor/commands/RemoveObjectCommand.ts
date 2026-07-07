@@ -1,15 +1,21 @@
-// @ts-nocheck
+
+import * as THREE from "three"
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 import { ObjectLoader } from "three"
 
 class RemoveObjectCommand extends Command {
+  object: THREE.Object3D | null
+  parent: THREE.Object3D | null
+  index?: number
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} [object=null]
    * @constructor
    */
-  constructor(editor, object = null) {
+  constructor(editor: Editor, object: THREE.Object3D | null = null) {
     super(editor)
 
     this.type = "RemoveObjectCommand"
@@ -18,7 +24,7 @@ class RemoveObjectCommand extends Command {
     this.parent = object !== null ? object.parent : null
 
     if (this.parent !== null) {
-      this.index = this.parent.children.indexOf(this.object)
+      this.index = this.parent.children.indexOf(this.object!)
     }
 
     if (object !== null) {
@@ -28,26 +34,26 @@ class RemoveObjectCommand extends Command {
   }
 
   execute() {
-    this.editor.removeObject(this.object)
+    this.editor.removeObject(this.object!)
     this.editor.deselect()
   }
 
   undo() {
-    this.editor.addObject(this.object, this.parent, this.index)
+    this.editor.addObject(this.object!, this.parent ?? undefined, this.index)
     this.editor.select(this.object)
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
-    output.object = this.object.toJSON()
+    output.object = this.object!.toJSON()
     output.index = this.index
-    output.parentUuid = this.parent.uuid
+    output.parentUuid = this.parent!.uuid
 
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.parent = this.editor.objectByUuid(json.parentUuid)
@@ -61,7 +67,7 @@ class RemoveObjectCommand extends Command {
 
     if (this.object === undefined) {
       const loader = new ObjectLoader()
-      this.object = loader.parse(json.object)
+      this.object = loader.parse(json.object) as unknown as THREE.Object3D
     }
   }
 }

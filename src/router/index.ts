@@ -1,8 +1,6 @@
 import { createRouter, createWebHistory } from "vue-router"
 import Home from "@/views/Home.vue"
 import About from "@/views/About.vue"
-import Example from "@/views/Example.vue"
-import Emu3DView from "@/views/Emu3DView.vue"
 import Demo3 from "@/views/Demo3.vue"
 import SnakeGame from "@/views/SnakeGame.vue"
 import Game2048 from "@/views/Game2048.vue"

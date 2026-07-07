@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue"
 import * as THREE from "three"
 import { ChevronDown, ChevronRight } from "lucide-vue-next"
@@ -32,7 +31,7 @@ const t = (key: string) => strings.getKey(key)
 
 const NO_COLOR_SPACE = "__none__"
 
-// ----- outliner -----
+// ----- 大纲 -----
 
 const expanded = reactive(new Map<string, boolean>())
 const selectedId = ref<number | null>(null)
@@ -108,7 +107,7 @@ function focusRow(object: any) {
   editor.focusById(object.id)
 }
 
-// ----- background -----
+// ----- 背景 -----
 
 const backgroundTypeOptions = ["Default", "Color", "Texture", "Equirectangular"]
 const backgroundType = ref("Default")
@@ -151,7 +150,7 @@ function onBackgroundTypeChange() {
   onBackgroundChanged()
 }
 
-// ----- environment -----
+// ----- 环境 -----
 
 const environmentTypeOptions = ["Default", "Equirectangular", "None"]
 const environmentType = ref("Default")
@@ -163,7 +162,7 @@ function onEnvironmentChanged() {
   )
 }
 
-// ----- fog -----
+// ----- 雾效 -----
 
 const fogTypeOptions = [
   { value: "None", label: "None" },
@@ -196,7 +195,7 @@ function onFogSettingsChanged() {
   )
 }
 
-// ----- sync from editor state -----
+// ----- 从编辑器状态同步 -----
 
 function refreshUI() {
   ensureDefaultExpanded()
@@ -364,7 +363,7 @@ onBeforeUnmount(() => {
 
     <ScrollArea class="min-h-0 flex-1">
       <div class="space-y-4 p-3">
-        <!-- background -->
+        <!-- 背景 -->
         <div class="space-y-2">
           <Label class="text-xs">{{ t("sidebar/scene/background") }}</Label>
           <div class="flex items-center gap-2">
@@ -479,7 +478,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- environment -->
+        <!-- 环境 -->
         <div class="space-y-2">
           <Label class="text-xs">{{ t("sidebar/scene/environment") }}</Label>
           <div class="flex items-center gap-2">
@@ -510,7 +509,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- fog -->
+        <!-- 雾效 -->
         <div class="space-y-2">
           <Label class="text-xs">{{ t("sidebar/scene/fog") }}</Label>
           <Select v-model="fogType" @update:model-value="onFogChanged">

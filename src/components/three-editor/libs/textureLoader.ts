@@ -1,8 +1,8 @@
 import * as THREE from "three"
 
-// Shared across every TextureField instance, mirroring the single
-// module-level cache the old UITexture widget used — loading the same file
-// into two different texture slots (e.g. map + bumpMap) reuses the parse.
+// 在所有 TextureField 实例之间共享，镜像旧 UITexture 组件使用的单一
+// 模块级缓存——将同一文件加载到两个不同的纹理槽（如 map + bumpMap）
+// 会复用解析结果。
 const cache = new Map<string, THREE.Texture>()
 
 function deliver(hash: string, texture: THREE.Texture) {
@@ -32,7 +32,7 @@ export function loadTextureFile(
 
     if (extension === "hdr" || extension === "pic") {
       reader.addEventListener("load", async (event) => {
-        // assuming RGBE/Radiance HDR image format
+        // 假设为 RGBE/Radiance HDR 图像格式
         const { HDRLoader } = await import("three/addons/loaders/HDRLoader.js")
 
         const loader = new HDRLoader()

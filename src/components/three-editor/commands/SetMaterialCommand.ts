@@ -1,8 +1,14 @@
-// @ts-nocheck
+
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 import { ObjectLoader } from "three"
 
 class SetMaterialCommand extends Command {
+  object: any
+  materialSlot: number
+  oldMaterial: any
+  newMaterial: any
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} object
@@ -10,7 +16,12 @@ class SetMaterialCommand extends Command {
    * @param {number} [materialSlot=-1]
    * @constructor
    */
-  constructor(editor, object = null, newMaterial = null, materialSlot = -1) {
+  constructor(
+    editor: Editor,
+    object: any = null,
+    newMaterial: any = null,
+    materialSlot = -1
+  ) {
     super(editor)
 
     this.type = "SetMaterialCommand"
@@ -45,7 +56,7 @@ class SetMaterialCommand extends Command {
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.objectUuid = this.object.uuid
     output.oldMaterial = this.oldMaterial.toJSON()
@@ -55,7 +66,7 @@ class SetMaterialCommand extends Command {
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.object = this.editor.objectByUuid(json.objectUuid)
@@ -63,7 +74,7 @@ class SetMaterialCommand extends Command {
     this.newMaterial = parseMaterial(json.newMaterial)
     this.materialSlot = json.materialSlot
 
-    function parseMaterial(json) {
+    function parseMaterial(json: any) {
       const loader = new ObjectLoader()
       const images = loader.parseImages(json.images)
       const textures = loader.parseTextures(json.textures, images)

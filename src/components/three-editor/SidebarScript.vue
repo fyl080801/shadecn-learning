@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { onBeforeUnmount, onMounted, ref } from "vue"
 
 import { useEditor } from "./composables/useEditorContext"

@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { computed, reactive, watch } from "vue"
 import * as THREE from "three"
 
@@ -73,7 +72,7 @@ function update() {
         new THREE.CatmullRomCurve3(
           values.points.map((p) => new THREE.Vector3(p.x, p.y, p.z)),
           values.closed,
-          values.curveType,
+          values.curveType as THREE.CurveType,
           values.tension
         ),
         values.tubularSegments,
@@ -85,13 +84,13 @@ function update() {
   )
 }
 
-function onPointsChange(points: Array<{ x: number; y: number; z: number }>) {
-  values.points = points
+function onPointsChange(points: Array<{ x: number; y: number; z?: number }>) {
+  values.points = points.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }))
   update()
 }
 
-function onCurveTypeChange(value: string) {
-  values.curveType = value
+function onCurveTypeChange(value: unknown) {
+  values.curveType = value as string
   update()
 }
 

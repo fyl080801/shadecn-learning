@@ -1,13 +1,163 @@
-// @ts-nocheck
 import * as THREE from "three"
-import signals from "signals"
+import signals, { Signal } from "signals"
 
-import { Config } from "./Config"
+import { Config, type ConfigApi } from "./Config"
 import { Loader } from "./Loader"
 import { History as _History } from "./History"
-import { Strings } from "./Strings"
-import { Storage as _Storage } from "./Storage"
+import { Strings, type StringsApi } from "./Strings"
+import { Storage as _Storage, type StorageApi } from "./Storage"
 import { Selector } from "./Selector"
+import type { Command } from "./Command"
+import type { EditorControls } from "./EditorControls"
+
+type EditorCamera = THREE.PerspectiveCamera | THREE.OrthographicCamera
+
+interface EditorSignals {
+  editScript: Signal
+  startPlayer: Signal
+  stopPlayer: Signal
+  enterXR: Signal
+  offerXR: Signal
+  leaveXR: Signal
+  editorCleared: Signal
+  savingStarted: Signal
+  savingFinished: Signal
+  transformModeChanged: Signal
+  snapChanged: Signal
+  spaceChanged: Signal
+  rendererCreated: Signal
+  rendererUpdated: Signal
+  rendererDetectKTX2Support: Signal
+  sceneBackgroundChanged: Signal
+  sceneEnvironmentChanged: Signal
+  sceneFogChanged: Signal
+  sceneFogSettingsChanged: Signal
+  sceneGraphChanged: Signal
+  sceneRendered: Signal
+  cameraChanged: Signal
+  cameraResetted: Signal
+  geometryChanged: Signal
+  objectSelected: Signal
+  objectFocused: Signal
+  objectAdded: Signal
+  objectChanged: Signal
+  objectRemoved: Signal
+  cameraAdded: Signal
+  cameraRemoved: Signal
+  helperAdded: Signal
+  helperRemoved: Signal
+  materialAdded: Signal
+  materialChanged: Signal
+  materialRemoved: Signal
+  scriptAdded: Signal
+  scriptChanged: Signal
+  scriptRemoved: Signal
+  windowResize: Signal
+  showHelpersChanged: Signal
+  refreshSidebarObject3D: Signal
+  historyChanged: Signal
+  viewportCameraChanged: Signal
+  viewportShadingChanged: Signal
+  intersectionsDetected: Signal
+  pathTracerUpdated: Signal
+  animationPanelChanged: Signal
+  morphTargetsUpdated: Signal
+}
+
+interface Editor {
+  signals: EditorSignals
+  config: ConfigApi
+  history: _History
+  selector: Selector
+  storage: StorageApi
+  strings: StringsApi
+  loader: Loader
+
+  camera: EditorCamera
+  scene: THREE.Scene
+  sceneHelpers: THREE.Scene
+  backdrop: THREE.Scene
+  grid: THREE.Group
+  groundPlane: THREE.Mesh
+
+  backgroundType: string
+  environmentType: string
+
+  object: Record<string, any>
+  geometries: Record<string, THREE.BufferGeometry>
+  materials: Record<string, THREE.Material>
+  textures: Record<string, THREE.Texture>
+  scripts: Record<string, any[]>
+  animations: Record<string, any>
+
+  materialsRefCounter: Map<THREE.Material, number>
+
+  mixer: THREE.AnimationMixer
+
+  selected: THREE.Object3D | null
+  helpers: Record<string, THREE.Object3D>
+
+  cameras: Record<string, THREE.Object3D>
+
+  viewportCamera: THREE.Object3D
+  viewportShading: string
+  viewportColor: THREE.Color
+
+  controls?: EditorControls
+
+  setScene(scene: THREE.Scene): void
+  addObject(
+    object: THREE.Object3D,
+    parent?: THREE.Object3D,
+    index?: number
+  ): void
+  nameObject(object: THREE.Object3D, name: string): void
+  removeObject(object: THREE.Object3D): void
+  addGeometry(geometry: THREE.BufferGeometry): void
+  setGeometryName(geometry: THREE.BufferGeometry, name: string): void
+  addMaterial(material: THREE.Material | THREE.Material[]): void
+  addMaterialToRefCounter(material: THREE.Material): void
+  removeMaterial(material: THREE.Material | THREE.Material[]): void
+  removeMaterialFromRefCounter(material: THREE.Material): void
+  getMaterialById(id: number): THREE.Material | undefined
+  setMaterialName(material: THREE.Material, name: string): void
+  addTexture(texture: THREE.Texture): void
+  addCamera(camera: THREE.Object3D): void
+  removeCamera(camera: THREE.Object3D): void
+  addHelper(object: THREE.Object3D, helper?: THREE.Object3D): void
+  removeHelper(object: THREE.Object3D): void
+  addScript(object: THREE.Object3D, script: any): void
+  removeScript(object: THREE.Object3D, script: any): void
+  getObjectMaterial(object: any, slot?: number): any
+  setObjectMaterial(
+    object: any,
+    slot: number | undefined,
+    newMaterial: any
+  ): void
+  setCameraType(type: string): void
+  setViewportCamera(uuid: string): void
+  setViewportShading(value: string): void
+  select(object: THREE.Object3D | null): void
+  selectById(id: number): void
+  selectByUuid(uuid: string): void
+  deselect(): void
+  focus(object?: THREE.Object3D): void
+  focusById(id: number): void
+  clear(): void
+  fromJSON(json: any): Promise<void>
+  toJSON(): any
+  objectByUuid(uuid: string): THREE.Object3D | null
+  execute(cmd: Command, optionalName?: string): void
+  undo(): void
+  redo(): void
+
+  utils: {
+    save: (blob: Blob, filename?: string) => void
+    saveArrayBuffer: (buffer: ArrayBuffer, filename?: string) => void
+    saveString: (text: string, filename?: string) => void
+    formatNumber: (number: number) => string
+  }
+}
 
 const _DEFAULT_CAMERA = new THREE.PerspectiveCamera(50, 1, 0.001, 1e10)
 _DEFAULT_CAMERA.name = "Camera"
@@ -15,26 +165,26 @@ _DEFAULT_CAMERA.position.set(0, 5, 10)
 _DEFAULT_CAMERA.lookAt(new THREE.Vector3())
 const _ORTHOGRAPHIC_FRUSTUM_SIZE = 100
 
-function Editor(namespace) {
+function Editor(this: Editor, namespace?: string) {
   const Signal = signals.Signal
 
   this.signals = {
-    // script
+    // 脚本
 
     editScript: new Signal(),
 
-    // player
+    // 播放器
 
     startPlayer: new Signal(),
     stopPlayer: new Signal(),
 
-    // xr
+    // XR
 
     enterXR: new Signal(),
     offerXR: new Signal(),
     leaveXR: new Signal(),
 
-    // notifications
+    // 通知
 
     editorCleared: new Signal(),
 
@@ -99,13 +249,13 @@ function Editor(namespace) {
     morphTargetsUpdated: new Signal()
   }
 
-  this.config = new Config(namespace)
+  this.config = Config(namespace)
   this.history = new _History(this)
   this.selector = new Selector(this)
-  this.storage = new _Storage(namespace)
-  this.strings = new Strings(this.config)
+  this.storage = _Storage(namespace)
+  this.strings = Strings(this.config)
 
-  this.loader = new Loader(this)
+  this.loader = new (Loader as unknown as new (editor: Editor) => Loader)(this)
 
   this.camera = _DEFAULT_CAMERA.clone()
 
@@ -115,19 +265,19 @@ function Editor(namespace) {
   this.sceneHelpers = new THREE.Scene()
   this.sceneHelpers.add(new THREE.HemisphereLight(0xffffff, 0x888888, 2))
 
-  // A sibling scene, rendered by Viewport in its own pass with the same
-  // camera. Anything added here (e.g. a fixed background mesh) gets ordinary
-  // camera-relative parallax/zoom, unlike `scene.background`, which Three.js
-  // renders at infinite distance and only reorients with camera *rotation*.
-  // Kept outside `scene` so it's unaffected by scene.scale/position/rotation
-  // and outside `sceneHelpers` so it isn't picked up by Selector's raycasts.
+  // 一个同级场景，由 Viewport 在自己的渲染通道中以相同相机渲染。
+  // 添加到这里的任何内容（如固定的背景网格）都会获得普通的
+  // 相机相关视差/缩放，不像 `scene.background`，Three.js 会将其
+  // 渲染在无限远处，且仅随相机*旋转*重新定向。
+  // 保留在 `scene` 之外，使其不受 scene.scale/position/rotation 影响，
+  // 同时保留在 `sceneHelpers` 之外，使其不会被 Selector 的射线拾取。
   this.backdrop = new THREE.Scene()
 
-  // Ground reference grid + its translucent fill plane. Kept outside `scene`
-  // so it isn't part of the authored scene graph (autosave, export, the
-  // scene panel) while still being transformable in lockstep with it.
-  // Constructed here (not by Viewport) so these are always present as soon
-  // as an Editor exists, regardless of whether/when a viewport mounts.
+  // 地面参考网格及其半透明填充平面。保留在 `scene` 之外，
+  // 使其不属于创作的场景图（自动保存、导出、场景面板），
+  // 同时仍能与其同步变换。
+  // 在此构造（而非由 Viewport 构造），以便一旦 Editor 存在，
+  // 这些对象就始终存在，无论视口是否/何时挂载。
   this.grid = new THREE.Group()
 
   const grid1 = new THREE.GridHelper(30, 30)
@@ -163,7 +313,7 @@ function Editor(namespace) {
   this.textures = {}
   this.scripts = {}
 
-  this.materialsRefCounter = new Map() // tracks how often is a material used by a 3D object
+  this.materialsRefCounter = new Map() // 跟踪材质被 3D 对象使用的次数
 
   this.mixer = new THREE.AnimationMixer(this.scene)
 
@@ -180,7 +330,7 @@ function Editor(namespace) {
 }
 
 Editor.prototype = {
-  setScene: function (scene) {
+  setScene: function (scene: THREE.Scene) {
     this.scene.uuid = scene.uuid
     this.scene.name = scene.name
 
@@ -192,7 +342,7 @@ Editor.prototype = {
 
     this.scene.userData = JSON.parse(JSON.stringify(scene.userData))
 
-    // avoid render per object
+    // 避免逐对象渲染
 
     this.signals.sceneGraphChanged.active = false
 
@@ -211,10 +361,14 @@ Editor.prototype = {
 
   //
 
-  addObject: function (object, parent, index) {
-    var scope = this
+  addObject: function (
+    object: THREE.Object3D,
+    parent?: THREE.Object3D,
+    index?: number
+  ) {
+    const scope = this
 
-    object.traverse(function (child) {
+    object.traverse(function (child: any) {
       if (child.geometry !== undefined) scope.addGeometry(child.geometry)
       if (child.material !== undefined) scope.addMaterial(child.material)
 
@@ -225,7 +379,7 @@ Editor.prototype = {
     if (parent === undefined) {
       this.scene.add(object)
     } else {
-      parent.children.splice(index, 0, object)
+      parent.children.splice(index ?? 0, 0, object)
       object.parent = parent
     }
 
@@ -233,41 +387,41 @@ Editor.prototype = {
     this.signals.sceneGraphChanged.dispatch()
   },
 
-  nameObject: function (object, name) {
+  nameObject: function (object: THREE.Object3D, name: string) {
     object.name = name
     this.signals.sceneGraphChanged.dispatch()
   },
 
-  removeObject: function (object) {
-    if (object.parent === null) return // avoid deleting the camera or scene
+  removeObject: function (object: THREE.Object3D) {
+    if (object.parent === null) return // 避免删除相机或场景
 
-    var scope = this
+    const scope = this
 
-    object.traverse(function (child) {
+    object.traverse(function (child: any) {
       scope.removeCamera(child)
       scope.removeHelper(child)
 
       if (child.material !== undefined) scope.removeMaterial(child.material)
     })
 
-    object.parent.remove(object)
+    object.parent!.remove(object)
 
     this.signals.objectRemoved.dispatch(object)
     this.signals.sceneGraphChanged.dispatch()
   },
 
-  addGeometry: function (geometry) {
+  addGeometry: function (geometry: THREE.BufferGeometry) {
     this.geometries[geometry.uuid] = geometry
   },
 
-  setGeometryName: function (geometry, name) {
+  setGeometryName: function (geometry: THREE.BufferGeometry, name: string) {
     geometry.name = name
     this.signals.sceneGraphChanged.dispatch()
   },
 
-  addMaterial: function (material) {
+  addMaterial: function (material: THREE.Material | THREE.Material[]) {
     if (Array.isArray(material)) {
-      for (var i = 0, l = material.length; i < l; i++) {
+      for (let i = 0, l = material.length; i < l; i++) {
         this.addMaterialToRefCounter(material[i])
       }
     } else {
@@ -277,10 +431,10 @@ Editor.prototype = {
     this.signals.materialAdded.dispatch()
   },
 
-  addMaterialToRefCounter: function (material) {
-    var materialsRefCounter = this.materialsRefCounter
+  addMaterialToRefCounter: function (material: THREE.Material) {
+    const materialsRefCounter = this.materialsRefCounter
 
-    var count = materialsRefCounter.get(material)
+    let count = materialsRefCounter.get(material)
 
     if (count === undefined) {
       materialsRefCounter.set(material, 1)
@@ -291,9 +445,9 @@ Editor.prototype = {
     }
   },
 
-  removeMaterial: function (material) {
+  removeMaterial: function (material: THREE.Material | THREE.Material[]) {
     if (Array.isArray(material)) {
-      for (var i = 0, l = material.length; i < l; i++) {
+      for (let i = 0, l = material.length; i < l; i++) {
         this.removeMaterialFromRefCounter(material[i])
       }
     } else {
@@ -303,10 +457,10 @@ Editor.prototype = {
     this.signals.materialRemoved.dispatch()
   },
 
-  removeMaterialFromRefCounter: function (material) {
-    var materialsRefCounter = this.materialsRefCounter
+  removeMaterialFromRefCounter: function (material: THREE.Material) {
+    const materialsRefCounter = this.materialsRefCounter
 
-    var count = materialsRefCounter.get(material)
+    let count = materialsRefCounter.get(material)!
     count--
 
     if (count === 0) {
@@ -317,12 +471,13 @@ Editor.prototype = {
     }
   },
 
-  getMaterialById: function (id) {
-    var material
-    var materials = Object.values(this.materials)
+  getMaterialById: function (id: number) {
+    let material: THREE.Material | undefined
+    const materialsMap: Record<string, THREE.Material> = this.materials
+    const materials = Object.values(materialsMap)
 
-    for (var i = 0; i < materials.length; i++) {
-      if (materials[i].id === id) {
+    for (let i = 0; i < materials.length; i++) {
+      if ((materials[i] as any).id === id) {
         material = materials[i]
         break
       }
@@ -331,26 +486,26 @@ Editor.prototype = {
     return material
   },
 
-  setMaterialName: function (material, name) {
+  setMaterialName: function (material: THREE.Material, name: string) {
     material.name = name
     this.signals.sceneGraphChanged.dispatch()
   },
 
-  addTexture: function (texture) {
+  addTexture: function (texture: THREE.Texture) {
     this.textures[texture.uuid] = texture
   },
 
   //
 
-  addCamera: function (camera) {
-    if (camera.isCamera) {
+  addCamera: function (camera: THREE.Object3D) {
+    if ((camera as any).isCamera) {
       this.cameras[camera.uuid] = camera
 
       this.signals.cameraAdded.dispatch(camera)
     }
   },
 
-  removeCamera: function (camera) {
+  removeCamera: function (camera: THREE.Object3D) {
     if (this.cameras[camera.uuid] !== undefined) {
       delete this.cameras[camera.uuid]
 
@@ -361,13 +516,13 @@ Editor.prototype = {
   //
 
   addHelper: (function () {
-    var geometry = new THREE.SphereGeometry(2, 4, 2)
-    var material = new THREE.MeshBasicMaterial({
+    const geometry = new THREE.SphereGeometry(2, 4, 2)
+    const material = new THREE.MeshBasicMaterial({
       color: 0xff0000,
       visible: false
     })
 
-    return function (object, helper) {
+    return function (this: Editor, object: any, helper?: any) {
       if (helper === undefined) {
         if (object.isCamera) {
           helper = new THREE.CameraHelper(object)
@@ -380,7 +535,7 @@ Editor.prototype = {
           const light = object
           const editor = this
 
-          helper.updateMatrixWorld = function () {
+          helper.updateMatrixWorld = function (this: any) {
             light.getWorldPosition(this.position)
 
             const distance = editor.viewportCamera.position.distanceTo(
@@ -412,7 +567,7 @@ Editor.prototype = {
         ) {
           helper = new THREE.SkeletonHelper(object)
         } else {
-          // no helper for this object type
+          // 此对象类型没有辅助器
           return
         }
 
@@ -429,9 +584,9 @@ Editor.prototype = {
     }
   })(),
 
-  removeHelper: function (object) {
+  removeHelper: function (object: THREE.Object3D) {
     if (this.helpers[object.id] !== undefined) {
-      var helper = this.helpers[object.id]
+      const helper: any = this.helpers[object.id]
       helper.parent.remove(helper)
       helper.dispose()
 
@@ -443,7 +598,7 @@ Editor.prototype = {
 
   //
 
-  addScript: function (object, script) {
+  addScript: function (object: THREE.Object3D, script: any) {
     if (this.scripts[object.uuid] === undefined) {
       this.scripts[object.uuid] = []
     }
@@ -453,10 +608,10 @@ Editor.prototype = {
     this.signals.scriptAdded.dispatch(script)
   },
 
-  removeScript: function (object, script) {
+  removeScript: function (object: THREE.Object3D, script: any) {
     if (this.scripts[object.uuid] === undefined) return
 
-    var index = this.scripts[object.uuid].indexOf(script)
+    const index = this.scripts[object.uuid].indexOf(script)
 
     if (index !== -1) {
       this.scripts[object.uuid].splice(index, 1)
@@ -465,8 +620,8 @@ Editor.prototype = {
     this.signals.scriptRemoved.dispatch(script)
   },
 
-  getObjectMaterial: function (object, slot) {
-    var material = object.material
+  getObjectMaterial: function (object: any, slot?: number) {
+    let material = object.material
 
     if (Array.isArray(material) && slot !== undefined) {
       material = material[slot]
@@ -475,7 +630,11 @@ Editor.prototype = {
     return material
   },
 
-  setObjectMaterial: function (object, slot, newMaterial) {
+  setObjectMaterial: function (
+    object: any,
+    slot: number | undefined,
+    newMaterial: any
+  ) {
     if (Array.isArray(object.material) && slot !== undefined) {
       object.material[slot] = newMaterial
     } else {
@@ -483,10 +642,10 @@ Editor.prototype = {
     }
   },
 
-  setCameraType: function (type) {
+  setCameraType: function (type: string) {
     const oldCamera = this.camera
 
-    const isOrthographic = oldCamera.isOrthographicCamera === true
+    const isOrthographic = (oldCamera as any).isOrthographicCamera === true
 
     if (
       (type === "orthographic" && isOrthographic) ||
@@ -494,12 +653,12 @@ Editor.prototype = {
     )
       return
 
-    // the orbit point the framing should be preserved around
+    // 取景时应围绕的轨道点
 
     const center = this.controls ? this.controls.center : new THREE.Vector3()
     const distance = oldCamera.position.distanceTo(center)
 
-    let newCamera
+    let newCamera: THREE.OrthographicCamera | THREE.PerspectiveCamera
 
     if (type === "orthographic") {
       const halfSize = _ORTHOGRAPHIC_FRUSTUM_SIZE / 2
@@ -514,7 +673,7 @@ Editor.prototype = {
       newCamera.position.copy(oldCamera.position)
       newCamera.quaternion.copy(oldCamera.quaternion)
 
-      // derive the zoom so the orthographic framing matches the perspective view at the orbit center
+      // 推导缩放值，使正交取景与轨道中心处的透视视图一致
 
       const halfFOV = (THREE.MathUtils.DEG2RAD * oldCamera.fov) / 2
       newCamera.zoom =
@@ -524,7 +683,7 @@ Editor.prototype = {
       newCamera = new THREE.PerspectiveCamera(50, 1, 0.001, 1e10)
       newCamera.quaternion.copy(oldCamera.quaternion)
 
-      // reposition along the view direction so the perspective framing matches the orthographic view
+      // 沿视线方向重新定位，使透视取景与正交视图一致
 
       const halfFOV = (THREE.MathUtils.DEG2RAD * newCamera.fov) / 2
       const targetDistance =
@@ -550,40 +709,40 @@ Editor.prototype = {
 
     this.signals.cameraResetted.dispatch()
 
-    // keep the selection (and thus the sidebar) in sync with the new camera instance
+    // 保持选中对象（以及侧边栏）与新相机实例同步
 
     if (this.selected === oldCamera) this.select(newCamera)
   },
 
-  setViewportCamera: function (uuid) {
+  setViewportCamera: function (uuid: string) {
     this.viewportCamera = this.cameras[uuid] || this.camera
     this.signals.viewportCameraChanged.dispatch()
   },
 
-  setViewportShading: function (value) {
+  setViewportShading: function (value: string) {
     this.viewportShading = value
     this.signals.viewportShadingChanged.dispatch()
   },
 
   //
 
-  select: function (object) {
+  select: function (object: THREE.Object3D | null) {
     this.selector.select(object)
   },
 
-  selectById: function (id) {
+  selectById: function (id: number) {
     if (id === this.camera.id) {
       this.select(this.camera)
       return
     }
 
-    this.select(this.scene.getObjectById(id))
+    this.select(this.scene.getObjectById(id) ?? null)
   },
 
-  selectByUuid: function (uuid) {
-    var scope = this
+  selectByUuid: function (uuid: string) {
+    const scope = this
 
-    this.scene.traverse(function (child) {
+    this.scene.traverse(function (child: THREE.Object3D) {
       if (child.uuid === uuid) {
         scope.select(child)
       }
@@ -594,13 +753,13 @@ Editor.prototype = {
     this.selector.deselect()
   },
 
-  focus: function (object) {
+  focus: function (object?: THREE.Object3D) {
     if (object !== undefined) {
       this.signals.objectFocused.dispatch(object)
     }
   },
 
-  focusById: function (id) {
+  focusById: function (id: number) {
     this.focus(this.scene.getObjectById(id))
   },
 
@@ -618,12 +777,12 @@ Editor.prototype = {
     this.scene.environment = null
     this.scene.fog = null
 
-    var objects = this.scene.children
+    const objects = this.scene.children
 
     this.signals.sceneGraphChanged.active = false
 
     while (objects.length > 0) {
-      this.removeObject(objects[0])
+      this.removeObject(objects[0]!)
     }
 
     this.signals.sceneGraphChanged.active = true
@@ -648,9 +807,9 @@ Editor.prototype = {
 
   //
 
-  fromJSON: async function (json) {
-    var loader = new THREE.ObjectLoader()
-    var camera = await loader.parseAsync(json.camera)
+  fromJSON: async function (json: any) {
+    const loader = new THREE.ObjectLoader()
+    const camera: any = await loader.parseAsync(json.camera)
 
     this.setCameraType(
       camera.isOrthographicCamera ? "orthographic" : "perspective"
@@ -659,15 +818,15 @@ Editor.prototype = {
     const existingUuid = this.camera.uuid
     const incomingUuid = camera.uuid
 
-    // copy all properties, including uuid
+    // 复制所有属性，包括 uuid
     this.camera.copy(camera)
     this.camera.uuid = incomingUuid
 
-    delete this.cameras[existingUuid] // remove old entry [existingUuid, this.camera]
-    this.cameras[incomingUuid] = this.camera // add new entry [incomingUuid, this.camera]
+    delete this.cameras[existingUuid] // 移除旧条目 [existingUuid, this.camera]
+    this.cameras[incomingUuid] = this.camera // 添加新条目 [incomingUuid, this.camera]
 
     if (json.controls !== undefined) {
-      this.controls.fromJSON(json.controls)
+      this.controls!.fromJSON(json.controls)
     }
 
     this.signals.cameraResetted.dispatch()
@@ -675,7 +834,9 @@ Editor.prototype = {
     this.history.fromJSON(json.history)
     this.scripts = json.scripts
 
-    const scene = await loader.parseAsync(json.scene)
+    const scene = (await loader.parseAsync(
+      json.scene
+    )) as unknown as THREE.Scene
 
     this.backgroundType = json.backgroundType || "Default"
     this.environmentType = json.environmentType || "Default"
@@ -684,13 +845,13 @@ Editor.prototype = {
   },
 
   toJSON: function () {
-    // scripts clean up
+    // 脚本清理
 
-    var scene = this.scene
-    var scripts = this.scripts
+    const scene = this.scene
+    const scripts = this.scripts
 
-    for (var key in scripts) {
-      var script = scripts[key]
+    for (const key in scripts) {
+      const script = scripts[key]!
 
       if (
         script.length === 0 ||
@@ -712,7 +873,7 @@ Editor.prototype = {
         )
       },
       camera: this.viewportCamera.toJSON(),
-      controls: this.controls.toJSON(),
+      controls: this.controls!.toJSON(),
       scene: this.scene.toJSON(),
       scripts: this.scripts,
       history: this.history.toJSON(),
@@ -721,11 +882,11 @@ Editor.prototype = {
     }
   },
 
-  objectByUuid: function (uuid) {
-    return this.scene.getObjectByProperty("uuid", uuid, true)
+  objectByUuid: function (uuid: string) {
+    return this.scene.getObjectByProperty("uuid", uuid, true) ?? null
   },
 
-  execute: function (cmd, optionalName) {
+  execute: function (cmd: Command, optionalName?: string) {
     this.history.execute(cmd, optionalName)
   },
 
@@ -747,7 +908,7 @@ Editor.prototype = {
 
 const link = document.createElement("a")
 
-function save(blob, filename) {
+function save(blob: Blob, filename?: string) {
   if (link.href) {
     URL.revokeObjectURL(link.href)
   }
@@ -757,15 +918,15 @@ function save(blob, filename) {
   link.dispatchEvent(new MouseEvent("click"))
 }
 
-function saveArrayBuffer(buffer, filename) {
+function saveArrayBuffer(buffer: ArrayBuffer, filename?: string) {
   save(new Blob([buffer], { type: "application/octet-stream" }), filename)
 }
 
-function saveString(text, filename) {
+function saveString(text: string, filename?: string) {
   save(new Blob([text], { type: "text/plain" }), filename)
 }
 
-function formatNumber(number) {
+function formatNumber(number: number) {
   return new Intl.NumberFormat("en-us", { useGrouping: true }).format(number)
 }
 

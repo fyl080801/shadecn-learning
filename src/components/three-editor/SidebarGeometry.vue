@@ -1,6 +1,5 @@
 <script setup lang="ts">
-// @ts-nocheck
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
+import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import * as THREE from "three"
 import { VertexNormalsHelper } from "three/addons/helpers/VertexNormalsHelper.js"
 

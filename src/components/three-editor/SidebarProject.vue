@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import * as THREE from "three"
 import { WebGPURenderer } from "three/webgpu"
@@ -33,7 +32,7 @@ const signals = editor.signals
 const strings = editor.strings
 const t = (key: string) => strings.getKey(key)
 
-// ===== App =====
+// ===== 应用 =====
 
 const projectTitle = ref(config.getKey("project/title"))
 const projectEditable = ref(config.getKey("project/editable"))
@@ -82,69 +81,93 @@ function onPublish() {
 
   const manager = new THREE.LoadingManager(function () {
     const zipped = zipSync(toZip, { level: 9 })
-    const blob = new Blob([zipped.buffer], { type: "application/zip" })
+    const blob = new Blob([zipped.buffer as ArrayBuffer], {
+      type: "application/zip"
+    })
     editor.utils.save(blob, (title !== "" ? title : "untitled") + ".zip")
   })
 
   const loader = new THREE.FileLoader(manager)
-  loader.load("js/libs/app/index.html", function (content: string) {
-    content = content.replace("<!-- title -->", title)
+  loader.load(
+    "js/libs/app/index.html",
+    function (content: string | ArrayBuffer) {
+      content = content as string
 
-    const IMPORTMAP = {
-      WebGLRenderer: {
-        imports: {
-          three: "./js/three.module.js"
-        }
-      },
-      WebGPURenderer: {
-        imports: {
-          three: "./js/three.webgpu.js",
-          "three/webgpu": "./js/three.webgpu.js"
+      content = content.replace("<!-- title -->", title)
+
+      const IMPORTMAP = {
+        WebGLRenderer: {
+          imports: {
+            three: "./js/three.module.js"
+          }
+        },
+        WebGPURenderer: {
+          imports: {
+            three: "./js/three.webgpu.js",
+            "three/webgpu": "./js/three.webgpu.js"
+          }
         }
       }
+      const importmap = JSON.stringify(
+        (IMPORTMAP as any)[rendererType],
+        null,
+        "\t"
+      )
+      content = content.replace(
+        "<!-- importmap -->",
+        indent("\n" + indent(importmap, 1) + "\n", 2)
+      )
+
+      let editButton = ""
+
+      if (config.getKey("project/editable")) {
+        editButton = [
+          "\t\t\tlet button = document.createElement( 'a' );",
+          "\t\t\tbutton.href = 'https://threejs.org/editor/#file=' + location.href.split( '/' ).slice( 0, - 1 ).join( '/' ) + '/app.json';",
+          "\t\t\tbutton.style.cssText = 'position: absolute; bottom: 20px; right: 20px; padding: 10px 16px; color: #fff; border: 1px solid #fff; border-radius: 20px; text-decoration: none;';",
+          "\t\t\tbutton.target = '_blank';",
+          "\t\t\tbutton.textContent = 'EDIT';",
+          "\t\t\tdocument.body.appendChild( button );"
+        ].join("\n")
+      }
+
+      content = content.replace("\t\t\t/* edit button */", editButton)
+
+      toZip["index.html"] = strToU8(content)
     }
-    const importmap = JSON.stringify(
-      (IMPORTMAP as any)[rendererType],
-      null,
-      "\t"
-    )
-    content = content.replace(
-      "<!-- importmap -->",
-      indent("\n" + indent(importmap, 1) + "\n", 2)
-    )
+  )
+  loader.load("js/libs/app.js", function (content: string | ArrayBuffer) {
+    content = content as string
 
-    let editButton = ""
-
-    if (config.getKey("project/editable")) {
-      editButton = [
-        "\t\t\tlet button = document.createElement( 'a' );",
-        "\t\t\tbutton.href = 'https://threejs.org/editor/#file=' + location.href.split( '/' ).slice( 0, - 1 ).join( '/' ) + '/app.json';",
-        "\t\t\tbutton.style.cssText = 'position: absolute; bottom: 20px; right: 20px; padding: 10px 16px; color: #fff; border: 1px solid #fff; border-radius: 20px; text-decoration: none;';",
-        "\t\t\tbutton.target = '_blank';",
-        "\t\t\tbutton.textContent = 'EDIT';",
-        "\t\t\tdocument.body.appendChild( button );"
-      ].join("\n")
-    }
-
-    content = content.replace("\t\t\t/* edit button */", editButton)
-
-    toZip["index.html"] = strToU8(content)
-  })
-  loader.load("js/libs/app.js", function (content: string) {
     toZip["js/app.js"] = strToU8(content)
   })
-  loader.load("../build/three.core.js", function (content: string) {
-    toZip["js/three.core.js"] = strToU8(content)
-  })
+  loader.load(
+    "../build/three.core.js",
+    function (content: string | ArrayBuffer) {
+      content = content as string
+
+      toZip["js/three.core.js"] = strToU8(content)
+    }
+  )
 
   if (rendererType === "WebGPURenderer") {
-    loader.load("../build/three.webgpu.js", function (content: string) {
-      toZip["js/three.webgpu.js"] = strToU8(content)
-    })
+    loader.load(
+      "../build/three.webgpu.js",
+      function (content: string | ArrayBuffer) {
+        content = content as string
+
+        toZip["js/three.webgpu.js"] = strToU8(content)
+      }
+    )
   } else {
-    loader.load("../build/three.module.js", function (content: string) {
-      toZip["js/three.module.js"] = strToU8(content)
-    })
+    loader.load(
+      "../build/three.module.js",
+      function (content: string | ArrayBuffer) {
+        content = content as string
+
+        toZip["js/three.module.js"] = strToU8(content)
+      }
+    )
   }
 }
 
@@ -153,7 +176,7 @@ function onEditorCleared() {
   config.setKey("project/title", "")
 }
 
-// ===== Renderer =====
+// ===== 渲染器 =====
 
 const cameraType = ref(config.getKey("project/camera"))
 const rendererType = ref(config.getKey("project/renderer/type"))
@@ -214,10 +237,9 @@ function updateToneMapping() {
 }
 
 async function createRenderer() {
-  // reversedDepthBuffer is intentionally left off: three.js applies it to
-  // *any* camera rendered through this renderer, including the ViewHelper's
-  // internal orthographic gizmo camera, which corrupts its projection matrix
-  // and breaks click-to-rotate on the viewport axis widget.
+  // reversedDepthBuffer 被有意忽略：three.js 会将其应用于通过此渲染器渲染的
+  // *任何*相机，包括 ViewHelper 内部的正交 gizmo 相机，这会破坏其投影矩阵
+  // 并导致视口坐标轴组件的点击旋转失效。
   if (rendererType.value === "WebGPURenderer") {
     currentRenderer = new WebGPURenderer({ antialias: antialias.value })
     await currentRenderer.init()
@@ -274,7 +296,7 @@ function onRendererUpdated() {
   )
 }
 
-// ===== Resources =====
+// ===== 资源 =====
 
 function textureType(texture: any) {
   if (texture.isCanvasTexture) return "CanvasTexture"
@@ -410,12 +432,10 @@ function assignMaterial() {
 onMounted(() => {
   signals.editorCleared.add(onEditorCleared)
 
-  // Deferred to a microtask so this always runs after the *entire* initial
-  // component tree has finished mounting, regardless of whether the sidebar
-  // or the viewport happens to mount first in the DOM. Dispatching
-  // rendererCreated synchronously here would race Viewport.ts's own mount
-  // (which registers the listener that sets up pmremGenerator) whenever the
-  // sidebar is placed/mounted before the viewport in the layout.
+  // 延迟到微任务中执行，使此处始终在*整个*初始组件树挂载完成后运行，
+  // 无论侧边栏还是视口在 DOM 中先挂载。若在此处同步分发
+  // rendererCreated，当侧边栏在布局中先于视口放置/挂载时会与
+  // Viewport.ts 自身的挂载（它注册了设置 pmremGenerator 的监听器）产生竞态。
   queueMicrotask(createRenderer)
 
   signals.cameraResetted.add(onCameraResetted)

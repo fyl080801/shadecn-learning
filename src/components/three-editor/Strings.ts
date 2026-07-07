@@ -1,8 +1,13 @@
-// @ts-nocheck
-function Strings(config) {
+import type { ConfigApi } from "./Config"
+
+export interface StringsApi {
+  getKey(key: string): string
+}
+
+function Strings(config: ConfigApi): StringsApi {
   const language = config.getKey("language")
 
-  const values = {
+  const values: Record<string, Record<string, string>> = {
     fa: {
       "prompt/file/open": "تمام داده های ذخیره نشده پاک خواهند شد آیا مطمئنید؟",
       "prompt/file/failedToOpenProject": "خطایی در باز کردن پروژه پیش آمده",
@@ -2763,8 +2768,8 @@ function Strings(config) {
   }
 
   return {
-    getKey: function (key) {
-      return values[language][key] || "???"
+    getKey: function (key: string) {
+      return values[language]?.[key] || "???"
     }
   }
 }

@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import * as THREE from "three"
 
@@ -79,7 +78,7 @@ const renderOrder = ref(0)
 const userData = ref("")
 const userDataValid = ref(true)
 
-// ----- visibility of conditional rows -----
+// ----- 条件行的可见性 -----
 
 const showFov = computed(() => selected.value?.fov !== undefined)
 const showLeft = computed(() => selected.value?.left !== undefined)
@@ -99,9 +98,8 @@ const showPenumbra = computed(() => selected.value?.penumbra !== undefined)
 const showDecay = computed(() => selected.value?.decay !== undefined)
 
 const showRotationScale = computed(() => !selected.value?.isLight)
-// Bones only expose rotation: translating/scaling a bone would change its
-// offset from its parent and visibly break the joint connection, so those
-// controls are hidden here (still editable generically for non-bone objects).
+// 骨骼仅暴露旋转：平移/缩放骨骼会改变其相对父级的偏移，
+// 并明显破坏关节连接，因此这些控件在此处隐藏（对于非骨骼对象仍可通用编辑）。
 const showPosition = computed(() => !selected.value?.isBone)
 const showScale = computed(
   () => showRotationScale.value && !selected.value?.isBone
@@ -118,7 +116,7 @@ const showReceiveShadow = computed(
 )
 const showShadowDetails = computed(() => selected.value?.shadow !== undefined)
 
-// ----- helpers -----
+// ----- 辅助函数 -----
 
 function hexToInt(hex: string) {
   return parseInt(hex.replace("#", ""), 16)
@@ -128,7 +126,7 @@ function intToHex(value: number) {
   return "#" + value.toString(16).padStart(6, "0")
 }
 
-// ----- update object from UI -----
+// ----- 从 UI 更新对象 -----
 
 function update() {
   const object = editor.selected
@@ -380,7 +378,7 @@ function exportJson() {
   editor.utils.save(new Blob([output]), `${objectName.value || "object"}.json`)
 }
 
-// ----- sync UI from object -----
+// ----- 从对象同步 UI -----
 
 function syncFromObject(object: any) {
   objectType.value = object.type

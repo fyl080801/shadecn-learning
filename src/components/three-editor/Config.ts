@@ -1,5 +1,10 @@
-// @ts-nocheck
-function Config(namespace) {
+export interface ConfigApi {
+  getKey(key: string): any
+  setKey(...keyValuePairs: any[]): void
+  clear(): void
+}
+
+function Config(namespace?: string): ConfigApi {
   const name = namespace || "threejs-editor"
 
   const userLanguage = navigator.language.split("-")[0]
@@ -10,7 +15,7 @@ function Config(namespace) {
     ? userLanguage
     : "en"
 
-  const storage = {
+  const storage: Record<string, any> = {
     language: suggestedLanguage,
 
     autosave: true,
@@ -50,21 +55,21 @@ function Config(namespace) {
   }
 
   return {
-    getKey: function (key) {
+    getKey: function (key: string) {
       return storage[key]
     },
 
-    setKey: function () {
-      // key, value, key, value ...
+    setKey: function (...keyValuePairs: any[]) {
+      // 键、值、键、值……
 
-      for (let i = 0, l = arguments.length; i < l; i += 2) {
-        storage[arguments[i]] = arguments[i + 1]
+      for (let i = 0, l = keyValuePairs.length; i < l; i += 2) {
+        storage[keyValuePairs[i]] = keyValuePairs[i + 1]
       }
 
       window.localStorage[name] = JSON.stringify(storage)
 
       console.log(
-        "[" + /\d\d\:\d\d\:\d\d/.exec(new Date())[0] + "]",
+        "[" + /\d\d\:\d\d\:\d\d/.exec(String(new Date()))![0] + "]",
         "Saved config to LocalStorage."
       )
     },

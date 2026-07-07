@@ -1,10 +1,21 @@
-// @ts-nocheck
+
 import { WebGLPathTracer } from "three-gpu-pathtracer"
 
-function ViewportPathtracer(renderer) {
-  let pathTracer = null
+interface ViewportPathtracerApi {
+  init(scene: any, camera: any): void
+  setSize(): void
+  setBackground(): void
+  setEnvironment(): void
+  updateMaterials(): void
+  update(): void
+  reset(): void
+  getSamples(): number | undefined
+}
 
-  function init(scene, camera) {
+function ViewportPathtracer(renderer: any): ViewportPathtracerApi {
+  let pathTracer: any = null
+
+  function init(scene: any, camera: any) {
     if (pathTracer === null) {
       pathTracer = new WebGLPathTracer(renderer)
       pathTracer.filterGlossyFactor = 0.5
@@ -16,14 +27,14 @@ function ViewportPathtracer(renderer) {
   function setSize(/* width, height */) {
     if (pathTracer === null) return
 
-    // path tracer size automatically updates based on the canvas
+    // 路径追踪器尺寸根据画布自动更新
     pathTracer.updateCamera()
   }
 
   function setBackground(/* background, blurriness */) {
     if (pathTracer === null) return
 
-    // update environment settings based on initialized scene fields
+    // 根据已初始化的场景字段更新环境设置
     pathTracer.updateEnvironment()
   }
 

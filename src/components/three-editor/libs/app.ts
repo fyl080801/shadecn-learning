@@ -1,14 +1,31 @@
-// @ts-nocheck
+
 import * as THREE from "three"
 
+interface Player {
+  dom: HTMLDivElement
+  canvas: HTMLCanvasElement | null
+  width: number
+  height: number
+  load(json: any): Promise<void>
+  setCamera(value: any): void
+  setScene(value: any): void
+  setPixelRatio(pixelRatio: number): void
+  setClearColor(color: any): void
+  setSize(width: number, height: number): void
+  play(): void
+  stop(): void
+  render(time: number): void
+  dispose(): void
+}
+
 const APP = {
-  Player: function () {
-    let renderer
+  Player: function (this: Player) {
+    let renderer: any
 
     const loader = new THREE.ObjectLoader()
-    let camera, scene
+    let camera: any, scene: any
 
-    let events = {}
+    let events: Record<string, any[]> = {}
 
     const dom = document.createElement("div")
 
@@ -18,10 +35,10 @@ const APP = {
     this.width = 500
     this.height = 500
 
-    this.load = async function (json) {
+    this.load = async function (this: Player, json: any) {
       const project = json.project
 
-      // Create renderer based on project settings
+      // 根据项目设置创建渲染器
 
       if (renderer !== undefined) {
         renderer.dispose()
@@ -73,9 +90,9 @@ const APP = {
       }
 
       let scriptWrapParams = "player,renderer,scene,camera"
-      const scriptWrapResultObj = {}
+      const scriptWrapResultObj: Record<string, any> = {}
 
-      for (var eventKey in events) {
+      for (const eventKey in events) {
         scriptWrapParams += "," + eventKey
         scriptWrapResultObj[eventKey] = eventKey
       }
@@ -119,24 +136,24 @@ const APP = {
       dispatch(events.init, arguments)
     }
 
-    this.setCamera = function (value) {
+    this.setCamera = function (this: Player, value: any) {
       camera = value
       setCameraAspect(camera, this.width / this.height)
     }
 
-    this.setScene = function (value) {
+    this.setScene = function (value: any) {
       scene = value
     }
 
-    this.setPixelRatio = function (pixelRatio) {
+    this.setPixelRatio = function (pixelRatio: number) {
       renderer.setPixelRatio(pixelRatio)
     }
 
-    this.setClearColor = function (color) {
+    this.setClearColor = function (color: any) {
       renderer.setClearColor(color)
     }
 
-    this.setSize = function (width, height) {
+    this.setSize = function (this: Player, width: number, height: number) {
       this.width = width
       this.height = height
 
@@ -149,7 +166,7 @@ const APP = {
       }
     }
 
-    function setCameraAspect(camera, aspect) {
+    function setCameraAspect(camera: any, aspect: number) {
       if (camera.isPerspectiveCamera) {
         camera.aspect = aspect
       } else {
@@ -162,13 +179,15 @@ const APP = {
       camera.updateProjectionMatrix()
     }
 
-    function dispatch(array, event) {
+    function dispatch(array: any[] | undefined, event: any) {
+      if (!array) return
+
       for (let i = 0, l = array.length; i < l; i++) {
         array[i](event)
       }
     }
 
-    let time, startTime, prevTime
+    let time: number, startTime: number, prevTime: number
 
     function animate() {
       time = performance.now()
@@ -178,7 +197,7 @@ const APP = {
           time: time - startTime,
           delta: time - prevTime
         })
-      } catch (e) {
+      } catch (e: any) {
         console.error(e.message || e, e.stack || "")
       }
 
@@ -213,7 +232,7 @@ const APP = {
       renderer.setAnimationLoop(null)
     }
 
-    this.render = function (time) {
+    this.render = function (time: number) {
       dispatch(events.update, { time: time * 1000, delta: 0 /* TODO */ })
 
       renderer.render(scene, camera)
@@ -230,23 +249,23 @@ const APP = {
 
     //
 
-    function onKeyDown(event) {
+    function onKeyDown(event: any) {
       dispatch(events.keydown, event)
     }
 
-    function onKeyUp(event) {
+    function onKeyUp(event: any) {
       dispatch(events.keyup, event)
     }
 
-    function onPointerDown(event) {
+    function onPointerDown(event: any) {
       dispatch(events.pointerdown, event)
     }
 
-    function onPointerUp(event) {
+    function onPointerUp(event: any) {
       dispatch(events.pointerup, event)
     }
 
-    function onPointerMove(event) {
+    function onPointerMove(event: any) {
       dispatch(events.pointermove, event)
     }
   }

@@ -1,7 +1,14 @@
-// @ts-nocheck
+
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 class SetMaterialValueCommand extends Command {
+  object: any
+  materialSlot: number
+  attributeName: string
+  oldValue: any
+  newValue: any
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} [object=null]
@@ -11,10 +18,10 @@ class SetMaterialValueCommand extends Command {
    * @constructor
    */
   constructor(
-    editor,
-    object = null,
+    editor: Editor,
+    object: any = null,
     attributeName = "",
-    newValue = null,
+    newValue: any = null,
     materialSlot = -1
   ) {
     super(editor)
@@ -62,12 +69,12 @@ class SetMaterialValueCommand extends Command {
     this.editor.signals.materialChanged.dispatch(this.object, this.materialSlot)
   }
 
-  update(cmd) {
+  update(cmd: SetMaterialValueCommand) {
     this.newValue = cmd.newValue
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.objectUuid = this.object.uuid
     output.attributeName = this.attributeName
@@ -78,7 +85,7 @@ class SetMaterialValueCommand extends Command {
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.attributeName = json.attributeName

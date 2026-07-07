@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { reactive, watch } from "vue"
 import { TextGeometry } from "three/addons/geometries/TextGeometry.js"
 

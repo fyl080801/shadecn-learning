@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { onBeforeUnmount, onMounted, reactive, ref } from "vue"
 
 import { useEditor } from "./composables/useEditorContext"
@@ -27,7 +26,7 @@ const t = (key: string) => strings.getKey(key)
 
 const IS_MAC = navigator.platform.toUpperCase().indexOf("MAC") >= 0
 
-// ----- language -----
+// ----- 语言 -----
 
 const languageLocales = ["en", "fr", "zh", "ja", "ko", "fa"]
 const languageOptions = languageLocales.map((locale) => ({
@@ -41,7 +40,7 @@ function onLanguageChange() {
   config.setKey("language", language.value)
 }
 
-// ----- shortcuts -----
+// ----- 快捷键 -----
 
 const shortcutNames = [
   "translate",
@@ -72,7 +71,7 @@ function onShortcutChange(name: string) {
   }
 }
 
-function onShortcutKeyup(name: string, event: KeyboardEvent) {
+function onShortcutKeyup(event: KeyboardEvent) {
   if (isValidKeyBinding(event.key)) {
     ;(event.target as HTMLInputElement).blur()
   }
@@ -81,11 +80,11 @@ function onShortcutKeyup(name: string, event: KeyboardEvent) {
 function onDocumentKeydown(event: KeyboardEvent) {
   switch (event.key.toLowerCase()) {
     case "backspace":
-      event.preventDefault() // prevent browser back
-
-    // fall-through
-
     case "delete": {
+      if (event.key.toLowerCase() === "backspace") {
+        event.preventDefault() // 阻止浏览器后退
+      }
+
       const object = editor.selected
 
       if (object === null || object.parent === null) return
@@ -118,7 +117,7 @@ function onDocumentKeydown(event: KeyboardEvent) {
 
     case config.getKey("settings/shortcuts/undo"):
       if (IS_MAC ? event.metaKey : event.ctrlKey) {
-        event.preventDefault() // Prevent browser specific hotkeys
+        event.preventDefault() // 阻止浏览器特定的快捷键
 
         if (event.shiftKey) {
           editor.redo()
@@ -146,7 +145,7 @@ function onDocumentKeydown(event: KeyboardEvent) {
   }
 }
 
-// ----- history -----
+// ----- 历史 -----
 
 const persistentHistory = ref(!!config.getKey("settings/history"))
 const historyEntries = ref<
@@ -265,7 +264,7 @@ onBeforeUnmount(() => {
           class="border-input h-7 w-10 rounded-md border bg-transparent px-2 text-center text-xs lowercase"
           @click="($event.target as HTMLInputElement).select()"
           @change="onShortcutChange(name)"
-          @keyup="onShortcutKeyup(name, $event)"
+          @keyup="onShortcutKeyup($event)"
         />
       </div>
     </div>

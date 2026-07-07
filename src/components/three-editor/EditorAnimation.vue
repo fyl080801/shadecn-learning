@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { onBeforeUnmount, onMounted, ref } from "vue"
 import { Pause, Play, Square } from "lucide-vue-next"
 
@@ -20,14 +19,13 @@ const timeText = ref("0.00")
 const durationText = ref("0.00")
 const timeScale = ref(1)
 
-const rootRef = ref<HTMLDivElement | null>(null)
 const timelineAreaRef = ref<HTMLDivElement | null>(null)
 const trackListRef = ref<HTMLDivElement | null>(null)
 const playheadRef = ref<HTMLDivElement | null>(null)
 
 const labelWidth = 150
 
-// Track colors by type
+// 按类型区分轨道颜色
 const trackColors: Record<string, string> = {
   position: "#4CAF50",
   quaternion: "#2196F3",
@@ -40,11 +38,11 @@ const trackColors: Record<string, string> = {
 function getTrackColor(trackName: string) {
   for (const type in trackColors) {
     if (trackName.endsWith("." + type)) {
-      return trackColors[type]
+      return trackColors[type]!
     }
   }
 
-  return trackColors.default
+  return trackColors.default!
 }
 
 function getTrackType(trackName: string) {
@@ -410,7 +408,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    ref="rootRef"
     class="te-animation flex h-full flex-col overflow-hidden border-t bg-muted/40"
   >
     <div

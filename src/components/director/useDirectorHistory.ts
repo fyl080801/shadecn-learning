@@ -1,11 +1,9 @@
 import { onBeforeUnmount, onMounted, ref } from "vue"
 
-// The three-editor vendor code only wires up Cmd/Ctrl+Z and the undo/redo
-// actions inside SidebarSettings.vue (its keyboard-shortcut handler) and
-// EditorMenubar.vue (its Edit menu) — the director console mounts neither,
-// so `editor.history` was reachable but nothing ever called undo()/redo().
-// This gives the toolbar buttons and the standard keyboard shortcut without
-// pulling in the rest of the settings/menubar UI.
+// three-editor 厂商代码仅在 SidebarSettings.vue（其键盘快捷键处理器）和
+// EditorMenubar.vue（其编辑菜单）中接入了 Cmd/Ctrl+Z 及撤销/重做操作——导演控制台
+// 不挂载这两个组件，因此 `editor.history` 虽可访问，却没有任何地方调用 undo()/redo()。
+// 此处为工具栏按钮和标准键盘快捷键提供支持，而无需引入其余设置/菜单栏 UI。
 export function useDirectorHistory(editor: any) {
   const signals = editor.signals
   const history = editor.history

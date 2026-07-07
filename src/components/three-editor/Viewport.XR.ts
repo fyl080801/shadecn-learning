@@ -1,33 +1,34 @@
-// @ts-nocheck
+
 import * as THREE from "three"
 
 import { HTMLMesh } from "three/addons/interactive/HTMLMesh.js"
 import { InteractiveGroup } from "three/addons/interactive/InteractiveGroup.js"
 
 import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFactory.js"
+import type { Editor } from "./Editor"
 
 class XR {
-  constructor(editor, controls) {
+  constructor(editor: Editor, controls: any) {
     const selector = editor.selector
     const signals = editor.signals
 
-    let controllers = null
-    let group = null
-    let renderer = null
+    let controllers: any = null
+    let group: any = null
+    let renderer: any = null
 
     const camera = new THREE.PerspectiveCamera()
 
-    const onSessionStarted = async (session) => {
-      if (editor.camera.isPerspectiveCamera) {
-        camera.copy(editor.camera)
+    const onSessionStarted = async (session: any) => {
+      if ((editor.camera as any).isPerspectiveCamera) {
+        camera.copy(editor.camera as any)
       } else {
-        // an orthographic default camera can't be mirrored into a perspective XR camera
+        // 正交默认相机无法镜像为透视 XR 相机
 
         camera.position.copy(editor.camera.position)
         camera.quaternion.copy(editor.camera.quaternion)
       }
 
-      const sidebar = document.getElementById("sidebar")
+      const sidebar = document.getElementById("sidebar")!
       sidebar.style.width = "350px"
       sidebar.style.height = "700px"
 
@@ -44,7 +45,7 @@ class XR {
 
         const raycaster = new THREE.Raycaster()
 
-        function onSelect(event) {
+        function onSelect(event: any) {
           const controller = event.target
 
           controller1.userData.active = false
@@ -65,16 +66,16 @@ class XR {
           const intersects = selector.getIntersects(raycaster)
 
           if (intersects.length > 0) {
-            // Ignore menu clicks
+            // 忽略菜单点击
 
-            const intersect = intersects[0]
+            const intersect = intersects[0]!
             if (intersect.object === group.children[0]) return
           }
 
           signals.intersectionsDetected.dispatch(intersects)
         }
 
-        function onControllerEvent(event) {
+        function onControllerEvent(event: any) {
           const controller = event.target
 
           if (controller.userData.active === false) return
@@ -131,12 +132,12 @@ class XR {
         )
         controllers.add(controllerGrip2)
 
-        // menu
+        // 菜单
 
         group = new InteractiveGroup()
 
         const mesh = new HTMLMesh(sidebar)
-        mesh.name = "picker" // Make Selector be aware of the menu
+        mesh.name = "picker" // 让 Selector 感知菜单
         mesh.position.set(0.5, 1.0, -0.5)
         mesh.rotation.y = -0.5
         group.add(mesh)
@@ -158,40 +159,44 @@ class XR {
       editor.sceneHelpers.remove(group)
       editor.sceneHelpers.remove(controllers)
 
-      const sidebar = document.getElementById("sidebar")
+      const sidebar = document.getElementById("sidebar")!
       sidebar.style.width = ""
       sidebar.style.height = ""
 
       renderer.xr.removeEventListener("sessionend", onSessionEnded)
       renderer.xr.enabled = false
 
-      editor.camera.copy(camera)
+      ;(editor.camera as any).copy(camera)
 
       signals.windowResize.dispatch()
       signals.leaveXR.dispatch()
     }
 
-    // signals
+    // 信号
 
     const sessionInit = { optionalFeatures: ["local-floor"] }
 
-    signals.enterXR.add((mode) => {
+    signals.enterXR.add((mode: any) => {
       if ("xr" in navigator) {
-        navigator.xr.requestSession(mode, sessionInit).then(onSessionStarted)
+        ;(navigator.xr as any)
+          .requestSession(mode, sessionInit)
+          .then(onSessionStarted)
       }
     })
 
-    signals.offerXR.add(function (mode) {
+    signals.offerXR.add(function (mode: any) {
       if ("xr" in navigator) {
-        navigator.xr.offerSession(mode, sessionInit).then(onSessionStarted)
+        ;(navigator.xr as any).offerSession(mode, sessionInit).then(onSessionStarted)
 
         signals.leaveXR.add(function () {
-          navigator.xr.offerSession(mode, sessionInit).then(onSessionStarted)
+          ;(navigator.xr as any)
+            .offerSession(mode, sessionInit)
+            .then(onSessionStarted)
         })
       }
     })
 
-    signals.rendererCreated.add((value) => {
+    signals.rendererCreated.add((value: any) => {
       renderer = value
     })
   }

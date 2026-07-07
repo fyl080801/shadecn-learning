@@ -63,7 +63,7 @@ async function onRender() {
   const editor = props.editor
 
   if (shadingType.value === "realistic") {
-    let isMaterialsValid: boolean = true
+    let isMaterialsValid = true
 
     editor.scene.traverseVisible((object: any) => {
       if (object.isMesh) {
@@ -129,7 +129,7 @@ async function onRender() {
   if (project.toneMappingExposure !== undefined)
     renderer.toneMappingExposure = project.toneMappingExposure
 
-  // popup
+  // 弹窗
 
   const width = imageWidth.value / window.devicePixelRatio
   const height = imageHeight.value / window.devicePixelRatio

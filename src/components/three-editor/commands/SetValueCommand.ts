@@ -1,7 +1,14 @@
-// @ts-nocheck
+
+import * as THREE from "three"
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 class SetValueCommand extends Command {
+  object: any
+  attributeName: string
+  oldValue: any
+  newValue: any
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} object
@@ -9,7 +16,12 @@ class SetValueCommand extends Command {
    * @param {number|string|boolean|Object|null} newValue
    * @constructor
    */
-  constructor(editor, object = null, attributeName = "", newValue = null) {
+  constructor(
+    editor: Editor,
+    object: THREE.Object3D | null = null,
+    attributeName = "",
+    newValue: any = null
+  ) {
     super(editor)
 
     this.type = "SetValueCommand"
@@ -18,7 +30,7 @@ class SetValueCommand extends Command {
 
     this.object = object
     this.attributeName = attributeName
-    this.oldValue = object !== null ? object[attributeName] : null
+    this.oldValue = object !== null ? (object as any)[attributeName] : null
     this.newValue = newValue
   }
 
@@ -34,12 +46,12 @@ class SetValueCommand extends Command {
     // this.editor.signals.sceneGraphChanged.dispatch();
   }
 
-  update(cmd) {
+  update(cmd: SetValueCommand) {
     this.newValue = cmd.newValue
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.objectUuid = this.object.uuid
     output.attributeName = this.attributeName
@@ -49,7 +61,7 @@ class SetValueCommand extends Command {
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.attributeName = json.attributeName

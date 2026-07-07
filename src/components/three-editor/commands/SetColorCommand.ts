@@ -1,7 +1,13 @@
-// @ts-nocheck
+
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 class SetColorCommand extends Command {
+  object: any
+  attributeName: string
+  oldValue: number | null
+  newValue: number | null
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} [object=null]
@@ -9,7 +15,12 @@ class SetColorCommand extends Command {
    * @param {?number} [newValue=null] Integer representing a hex color value
    * @constructor
    */
-  constructor(editor, object = null, attributeName = "", newValue = null) {
+  constructor(
+    editor: Editor,
+    object: any = null,
+    attributeName = "",
+    newValue: number | null = null
+  ) {
     super(editor)
 
     this.type = "SetColorCommand"
@@ -33,12 +44,12 @@ class SetColorCommand extends Command {
     this.editor.signals.objectChanged.dispatch(this.object)
   }
 
-  update(cmd) {
+  update(cmd: SetColorCommand) {
     this.newValue = cmd.newValue
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.objectUuid = this.object.uuid
     output.attributeName = this.attributeName
@@ -48,7 +59,7 @@ class SetColorCommand extends Command {
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.object = this.editor.objectByUuid(json.objectUuid)

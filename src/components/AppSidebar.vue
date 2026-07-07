@@ -9,7 +9,6 @@ import {
   X,
   Home,
   Info,
-  Box,
   Gamepad2,
   Grid3X3,
   Layers,

@@ -1,4 +1,4 @@
-// @ts-nocheck
+
 export { AddObjectCommand } from "./AddObjectCommand"
 export { AddScriptCommand } from "./AddScriptCommand"
 export { MoveObjectCommand } from "./MoveObjectCommand"

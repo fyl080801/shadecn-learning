@@ -33,7 +33,7 @@ function tick() {
     if (!object.userData?.isCharacter || !object.visible) continue
 
     object.getWorldPosition(projected)
-    projected.y += 1.9 // float above the character's head
+    projected.y += 1.9 // 浮在角色头顶上方
     projected.project(camera)
 
     if (projected.z > 1) continue

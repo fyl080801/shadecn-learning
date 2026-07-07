@@ -1,7 +1,14 @@
-// @ts-nocheck
+
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 class SetMaterialVectorCommand extends Command {
+  object: any
+  materialSlot: number
+  attributeName: string
+  oldValue: any
+  newValue: any
+
   /**
    *
    * @param {Editor} editor
@@ -12,10 +19,10 @@ class SetMaterialVectorCommand extends Command {
    * @constructor
    */
   constructor(
-    editor,
-    object = null,
+    editor: Editor,
+    object: any = null,
     attributeName = "",
-    newValue = null,
+    newValue: any = null,
     materialSlot = -1
   ) {
     super(editor)
@@ -59,12 +66,12 @@ class SetMaterialVectorCommand extends Command {
     this.editor.signals.materialChanged.dispatch(this.object, this.materialSlot)
   }
 
-  update(cmd) {
+  update(cmd: SetMaterialVectorCommand) {
     this.newValue = cmd.newValue
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.objectUuid = this.object.uuid
     output.attributeName = this.attributeName
@@ -75,7 +82,7 @@ class SetMaterialVectorCommand extends Command {
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.object = this.editor.objectByUuid(json.objectUuid)

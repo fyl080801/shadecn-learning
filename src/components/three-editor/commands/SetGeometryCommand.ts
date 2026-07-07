@@ -1,15 +1,20 @@
-// @ts-nocheck
+
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 import { ObjectLoader } from "three"
 
 class SetGeometryCommand extends Command {
+  object: any
+  oldGeometry: any
+  newGeometry: any
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} [object=null]
    * @param {THREE.Geometry|null} [newGeometry=null]
    * @constructor
    */
-  constructor(editor, object = null, newGeometry = null) {
+  constructor(editor: Editor, object: any = null, newGeometry: any = null) {
     super(editor)
 
     this.type = "SetGeometryCommand"
@@ -39,12 +44,12 @@ class SetGeometryCommand extends Command {
     this.editor.signals.sceneGraphChanged.dispatch()
   }
 
-  update(cmd) {
+  update(cmd: SetGeometryCommand) {
     this.newGeometry = cmd.newGeometry
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.objectUuid = this.object.uuid
     output.oldGeometry = this.oldGeometry.toJSON()
@@ -53,7 +58,7 @@ class SetGeometryCommand extends Command {
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.object = this.editor.objectByUuid(json.objectUuid)
@@ -61,7 +66,7 @@ class SetGeometryCommand extends Command {
     this.oldGeometry = parseGeometry(json.oldGeometry)
     this.newGeometry = parseGeometry(json.newGeometry)
 
-    function parseGeometry(data) {
+    function parseGeometry(data: any) {
       const loader = new ObjectLoader()
       return loader.parseGeometries([data])[data.uuid]
     }

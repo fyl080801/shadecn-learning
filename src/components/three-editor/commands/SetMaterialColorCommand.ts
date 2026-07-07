@@ -1,7 +1,14 @@
-// @ts-nocheck
+
 import { Command } from "../Command"
+import type { Editor } from "../Editor"
 
 class SetMaterialColorCommand extends Command {
+  object: any
+  materialSlot: number
+  attributeName: string
+  oldValue: number | null
+  newValue: number | null
+
   /**
    * @param {Editor} editor
    * @param {THREE.Object3D|null} [object=null]
@@ -11,10 +18,10 @@ class SetMaterialColorCommand extends Command {
    * @constructor
    */
   constructor(
-    editor,
-    object = null,
+    editor: Editor,
+    object: any = null,
     attributeName = "",
-    newValue = null,
+    newValue: number | null = null,
     materialSlot = -1
   ) {
     super(editor)
@@ -58,12 +65,12 @@ class SetMaterialColorCommand extends Command {
     this.editor.signals.materialChanged.dispatch(this.object, this.materialSlot)
   }
 
-  update(cmd) {
+  update(cmd: SetMaterialColorCommand) {
     this.newValue = cmd.newValue
   }
 
   toJSON() {
-    const output = super.toJSON(this)
+    const output = super.toJSON()
 
     output.objectUuid = this.object.uuid
     output.attributeName = this.attributeName
@@ -74,7 +81,7 @@ class SetMaterialColorCommand extends Command {
     return output
   }
 
-  fromJSON(json) {
+  fromJSON(json: any) {
     super.fromJSON(json)
 
     this.object = this.editor.objectByUuid(json.objectUuid)

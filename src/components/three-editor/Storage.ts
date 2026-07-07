@@ -1,5 +1,11 @@
-// @ts-nocheck
-function Storage(namespace) {
+export interface StorageApi {
+  init(callback?: () => void): void
+  get(callback: (data: any) => void): void
+  set(data: any): void
+  clear(): void
+}
+
+function Storage(namespace?: string): StorageApi {
   const indexedDB = window.indexedDB
 
   if (indexedDB === undefined) {
@@ -15,13 +21,13 @@ function Storage(namespace) {
   const name = namespace || "threejs-editor"
   const version = 1
 
-  let database
+  let database: IDBDatabase | undefined
 
   return {
     init: function (callback) {
       const request = indexedDB.open(name, version)
       request.onupgradeneeded = function (event) {
-        const db = event.target.result
+        const db = (event.target as IDBOpenDBRequest).result
 
         if (db.objectStoreNames.contains("states") === false) {
           db.createObjectStore("states")
@@ -29,9 +35,9 @@ function Storage(namespace) {
       }
 
       request.onsuccess = function (event) {
-        database = event.target.result
+        database = (event.target as IDBOpenDBRequest).result
 
-        callback()
+        callback?.()
       }
 
       request.onerror = function (event) {
@@ -40,23 +46,23 @@ function Storage(namespace) {
     },
 
     get: function (callback) {
-      const transaction = database.transaction(["states"], "readonly")
+      const transaction = database!.transaction(["states"], "readonly")
       const objectStore = transaction.objectStore("states")
       const request = objectStore.get(0)
       request.onsuccess = function (event) {
-        callback(event.target.result)
+        callback((event.target as IDBRequest).result)
       }
     },
 
     set: function (data) {
       const start = performance.now()
 
-      const transaction = database.transaction(["states"], "readwrite")
+      const transaction = database!.transaction(["states"], "readwrite")
       const objectStore = transaction.objectStore("states")
       const request = objectStore.put(data, 0)
       request.onsuccess = function () {
         console.log(
-          "[" + /\d\d\:\d\d\:\d\d/.exec(new Date())[0] + "]",
+          "[" + /\d\d\:\d\d\:\d\d/.exec(String(new Date()))![0] + "]",
           "Saved state to IndexedDB. " +
             (performance.now() - start).toFixed(2) +
             "ms"
@@ -72,7 +78,7 @@ function Storage(namespace) {
       const request = objectStore.clear()
       request.onsuccess = function () {
         console.log(
-          "[" + /\d\d\:\d\d\:\d\d/.exec(new Date())[0] + "]",
+          "[" + /\d\d\:\d\d\:\d\d/.exec(String(new Date()))![0] + "]",
           "Cleared IndexedDB."
         )
       }

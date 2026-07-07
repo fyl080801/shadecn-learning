@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { onBeforeUnmount, onMounted, reactive, ref, shallowRef } from "vue"
 import * as THREE from "three"
 
@@ -103,7 +102,7 @@ const colorMaps = [
   "envMap"
 ]
 
-// ----- row configuration -----
+// ----- 行配置 -----
 
 const numberRows = [
   { key: "shininess", label: t("sidebar/material/shininess") },
@@ -273,7 +272,7 @@ const mapRows = [
   { key: "thicknessMap", label: t("sidebar/material/thicknessmap") }
 ]
 
-// ----- state -----
+// ----- 状态 -----
 
 const currentObject = shallowRef<any>(null)
 const currentSlot = ref(0)
@@ -298,7 +297,7 @@ const mapHasTexture = reactive<Record<string, boolean>>({})
 
 const mapTextures = reactive<Record<string, any>>({})
 
-// ----- helpers -----
+// ----- 辅助函数 -----
 
 function hexToInt(hex: string) {
   return parseInt(hex.replace("#", ""), 16)
@@ -459,7 +458,7 @@ async function onMapSettings(row: any) {
     const parameters = await dialog.show()
     editor.execute(new SetTextureParametersCommand(editor, texture, parameters))
   } catch (error) {
-    // dialog cancelled
+    // 对话框已取消
   }
 }
 
@@ -512,8 +511,8 @@ function onUserDataChange() {
   }
 }
 
-function onSlotSelect(value: string) {
-  const slot = Number(value)
+function onSlotSelect(value: unknown) {
+  const slot = Number(value as string)
   if (slot !== currentSlot.value) {
     currentSlot.value = slot
     editor.signals.materialChanged.dispatch(
@@ -523,14 +522,17 @@ function onSlotSelect(value: string) {
   }
 }
 
-function onMaterialTypeChange(newTypeName: string) {
+function onMaterialTypeChange(value: unknown) {
+  const newTypeName = value as string
   const object = currentObject.value
   if (!object) return
 
   const currentMaterial = editor.getObjectMaterial(object, currentSlot.value)
   if (currentMaterial.type === newTypeName) return
 
-  const newMaterial = new materialClasses[newTypeName]()
+  const newMaterial = new (materialClasses as Record<string, any>)[
+    newTypeName
+  ]()
 
   if (newMaterial.type === "RawShaderMaterial") {
     newMaterial.vertexShader = vertexShaderVariables + newMaterial.vertexShader
@@ -610,7 +612,7 @@ function onProgram(part: string) {
   signals.editScript.dispatch(currentObject.value, part)
 }
 
-// ----- refresh -----
+// ----- 刷新 -----
 
 function refreshUI() {
   const object = currentObject.value

@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { X } from "lucide-vue-next"
 
 import { Button } from "@/components/ui/button"
