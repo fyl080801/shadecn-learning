@@ -79,6 +79,10 @@ interface Editor {
   backdrop: THREE.Scene
   grid: THREE.Group
   groundPlane: THREE.Mesh
+  // 地面填充的覆盖范围。`null` 表示默认与网格等大的方形填充
+  // （three-editor 自身行为）；为数字时表示以该半径的圆形填充覆盖
+  // 全景球的赤道切面（导演台行为）。由 `setGroundExtent` 切换。
+  groundExtent: number | null
 
   backgroundType: string
   environmentType: string
@@ -137,6 +141,7 @@ interface Editor {
   setCameraType(type: string): void
   setViewportCamera(uuid: string): void
   setViewportShading(value: string): void
+  setGroundExtent(extent: number | null): void
   select(object: THREE.Object3D | null): void
   selectById(id: number): void
   selectByUuid(uuid: string): void
@@ -164,6 +169,19 @@ _DEFAULT_CAMERA.name = "Camera"
 _DEFAULT_CAMERA.position.set(0, 5, 10)
 _DEFAULT_CAMERA.lookAt(new THREE.Vector3())
 const _ORTHOGRAPHIC_FRUSTUM_SIZE = 100
+
+// 默认地面填充的边长，与 GridHelper 的尺寸保持一致。
+const GROUND_DEFAULT_SIZE = 30
+
+// 根据填充范围构建地面平面几何体：
+// - `null`：与地面网格等大的方形（three-editor 默认行为）。
+// - 数字：以该值为半径的圆形，用于覆盖全景球的赤道切面（导演台行为）。
+function createGroundGeometry(extent: number | null): THREE.BufferGeometry {
+  if (extent === null) {
+    return new THREE.PlaneGeometry(GROUND_DEFAULT_SIZE, GROUND_DEFAULT_SIZE)
+  }
+  return new THREE.CircleGeometry(extent, 64)
+}
 
 function Editor(this: Editor, namespace?: string) {
   const Signal = signals.Signal
@@ -291,7 +309,7 @@ function Editor(this: Editor, namespace?: string) {
   this.grid.add(grid2)
 
   this.groundPlane = new THREE.Mesh(
-    new THREE.PlaneGeometry(30, 30),
+    createGroundGeometry(null),
     new THREE.MeshBasicMaterial({
       color: 0x3b82f6,
       transparent: true,
@@ -303,6 +321,10 @@ function Editor(this: Editor, namespace?: string) {
   this.groundPlane.rotation.x = -Math.PI / 2
   this.groundPlane.position.y = -0.001
   this.grid.add(this.groundPlane)
+
+  // 默认与网格等大的方形填充；导演台通过 `setGroundExtent` 切换为
+  // 覆盖全景球赤道切面的圆形填充。
+  this.groundExtent = null
 
   this.backgroundType = "Default"
   this.environmentType = "Default"
@@ -724,6 +746,18 @@ Editor.prototype = {
     this.signals.viewportShadingChanged.dispatch()
   },
 
+  // 切换地面平面填充的覆盖范围（见 `groundExtent`）。`null` 还原为与网格
+  // 等大的默认方形填充；数字则构建该半径的圆形填充以覆盖全景球赤道切面。
+  // 仅替换几何体，颜色/透明度等材质属性保持不变（包括 Viewport.ts 随明暗
+  // 主题应用的 GRID_PLANE_COLOR）。
+  setGroundExtent: function (extent: number | null) {
+    this.groundExtent = extent
+    const plane = this.groundPlane
+    plane.geometry.dispose()
+    plane.geometry = createGroundGeometry(extent)
+    this.signals.sceneGraphChanged.dispatch()
+  },
+
   //
 
   select: function (object: THREE.Object3D | null) {
@@ -872,7 +906,14 @@ Editor.prototype = {
           "project/renderer/toneMappingExposure"
         )
       },
-      camera: this.viewportCamera.toJSON(),
+      // 始终保存编辑器轨道相机（this.camera），而非当前视口相机。
+      // 机位视角下 viewportCamera 是场景中的用户相机，若保存它，刷新后
+      // fromJSON 会把该用户相机的 uuid 复制到 editor.camera 上，与场景里
+      // 同一台相机产生 uuid 冲突——editor.cameras[uuid] 最终指向场景相机，
+      // 导致导演视角下 setViewportCamera(editor.camera.uuid) 解析到场景相机，
+      // 轨道控制器被禁用、画面无法移动。保存轨道相机可避免冲突，并使刷新后
+      // 始终回到导演视角（activeView 默认即 "director"）。
+      camera: this.camera.toJSON(),
       controls: this.controls!.toJSON(),
       scene: this.scene.toJSON(),
       scripts: this.scripts,

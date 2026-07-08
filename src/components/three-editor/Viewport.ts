@@ -65,6 +65,11 @@ function Viewport(
 
   const box = new THREE.Box3()
 
+  // 全景 backdrop 在机位视角下重对齐到相机时使用的临时量（见 render()）。
+  const _backdropVec = new THREE.Vector3()
+  const _backdropPrevPos = new THREE.Vector3()
+  const _backdropPrevScale = new THREE.Vector3()
+
   const selectionBox: any = new THREE.Box3Helper(box)
   selectionBox.material.depthTest = false
   selectionBox.material.transparent = true
@@ -145,10 +150,14 @@ function Viewport(
       }
     }
 
-    controls.enabled = true
+    // 仅在导演视角恢复轨道控制；机位视角下轨道控制器始终关闭。
+    controls.enabled = editor.viewportCamera === editor.camera
   })
 
-  sceneHelpers.add(transformControls.getHelper())
+  // 变换 gizmo：在导演视角随 sceneHelpers 一同渲染；机位视角下单独渲染
+  // （见 render()），使机位视角也能选中并拖拽编辑对象。
+  const transformHelper = transformControls.getHelper()
+  sceneHelpers.add(transformHelper)
 
   //
 
@@ -189,7 +198,10 @@ function Viewport(
 
   function handleClick() {
     if (onDownPosition.distanceTo(onUpPosition) === 0) {
-      const intersects = selector.getPointerIntersects(onUpPosition, camera)
+      const intersects = selector.getPointerIntersects(
+        onUpPosition,
+        editor.viewportCamera as THREE.Camera
+      )
       signals.intersectionsDetected.dispatch(intersects)
 
       render()
@@ -242,7 +254,7 @@ function Viewport(
 
     const intersects = selector.getPointerIntersects(
       onDoubleClickPosition,
-      camera
+      editor.viewportCamera as THREE.Camera
     )
 
     if (intersects.length > 0) {
@@ -461,7 +473,8 @@ function Viewport(
   })
 
   signals.objectRemoved.add(function (object: any) {
-    controls.enabled = true // 见 #14180
+    // 见 #14180：仅在导演视角恢复轨道控制。
+    controls.enabled = editor.viewportCamera === editor.camera
 
     if (object === transformControls.object) {
       transformControls.detach()
@@ -637,9 +650,14 @@ function Viewport(
       updateAspectRatio()
     }
 
-    // 设置用户相机时禁用 EditorControls
+    // 设置用户相机时禁用 EditorControls（机位视角下不通过轨道控制器移动相机，
+    // 相机本身由属性面板编辑；选中对象的变换由 TransformControls 完成）。
 
     controls.enabled = viewportCamera === editor.camera
+
+    // 拾取与变换 gizmo 都以实际渲染所用的视口相机为准，这样在机位视角下
+    // 也能按所见的画面选中并拖拽对象。
+    transformControls.camera = viewportCamera
 
     initPT()
     render()
@@ -723,9 +741,11 @@ function Viewport(
       camera = editor.camera
 
       controls.setCamera(camera)
-      transformControls.camera = camera
       viewHelper.camera = camera
     }
+
+    // 无论是否回退轨道相机，变换 gizmo 始终跟随当前视口相机。
+    transformControls.camera = editor.viewportCamera
 
     updateAspectRatio()
     render()
@@ -830,12 +850,67 @@ function Viewport(
     renderer.render(scene, editor.viewportCamera)
 
     renderer.autoClear = false
-    renderer.render(backdrop, editor.viewportCamera)
 
-    if (camera === editor.viewportCamera) {
-      if (grid.visible === true) renderer.render(grid, camera)
-      if (sceneHelpers.visible === true) renderer.render(sceneHelpers, camera)
+    // 全景球（editor.backdrop 中的网格）默认半径 30，且不随场景缩放/平移
+    // 变换——它是固定的地平线背景。导演视角下编辑器轨道相机 far 足够大
+    // （见 Editor.ts 的 _DEFAULT_CAMERA，far=1e10），可直接用视口相机渲染，
+    // 并保留相机平移带来的真实视差。
+    //
+    // 但机位视角下用户相机的 far 被刻意调小（见 DirectorToolbar 的
+    // addCameraWithModel，为缩短 CameraHelper 视锥线而设为 15），半径 30 的
+    // 全景球已落在 far 平面之外被整体裁剪，因此看不到贴图。这里在机位
+    // 视角下临时把 backdrop 平移到相机位置并缩放至恰好落入视锥内再渲染，
+    // 随后还原——等价于让全景球作为 skybox 跟随相机。仍以同一相机（同一
+    // near/far 投影）渲染，深度与场景几何体保持同一尺度，全景仍被近处
+    // 几何体正确遮挡；仅损失机位视角下的视差（对远场地平线可忽略）。
+    const viewportCamera: any = editor.viewportCamera
+    if (viewportCamera !== editor.camera) {
+      let panoramaRadius = 0
+      backdrop.traverse(function (child: any) {
+        if (child.isMesh && child.visible && child.geometry) {
+          if (child.geometry.boundingSphere === null)
+            child.geometry.computeBoundingSphere()
+          const r = child.geometry.boundingSphere?.radius ?? 0
+          if (r > panoramaRadius) panoramaRadius = r
+        }
+      })
+      if (
+        panoramaRadius > 0 &&
+        viewportCamera.far > viewportCamera.near
+      ) {
+        viewportCamera.getWorldPosition(_backdropVec)
+        _backdropPrevPos.copy(backdrop.position)
+        _backdropPrevScale.copy(backdrop.scale)
+        backdrop.position.copy(_backdropVec)
+        backdrop.scale.setScalar(
+          (viewportCamera.far * 0.9) / panoramaRadius
+        )
+        renderer.render(backdrop, viewportCamera)
+        backdrop.position.copy(_backdropPrevPos)
+        backdrop.scale.copy(_backdropPrevScale)
+      } else {
+        renderer.render(backdrop, viewportCamera)
+      }
+    } else {
+      renderer.render(backdrop, editor.viewportCamera)
+    }
+
+    // 地面网格（grid 线 + 地面平面）属于舞台布置，而非纯编辑器辅助器，
+    // 在机位视角下也应透过机位相机可见——并且地面平面的半透明填充需在
+    // backdrop（全景）之后渲染，才能与全景像素正确混合（见上方注释）。
+    // 因此用视口相机渲染 grid，独立于仅限编辑器相机的辅助器守卫。
+    if (grid.visible === true) renderer.render(grid, editor.viewportCamera)
+
+    // 编辑器辅助器与 viewHelper（轴向罗盘）仅在导演视角下显示，不进入机位画面。
+    if (editor.viewportCamera === editor.camera) {
+      if (sceneHelpers.visible === true)
+        renderer.render(sceneHelpers, editor.viewportCamera)
       if (renderer.xr.isPresenting !== true) viewHelper.render(renderer)
+    } else {
+      // 机位视角：仅渲染变换 gizmo（随 sceneHelpers 之外单独渲染），
+      // 使选中对象可在机位画面中拖拽编辑，而不带入相机/灯光/骨架等编辑器辅助器。
+      if (transformHelper.visible === true)
+        renderer.render(transformHelper, editor.viewportCamera)
     }
     renderer.autoClear = true
 

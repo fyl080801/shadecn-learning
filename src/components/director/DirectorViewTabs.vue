@@ -2,13 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from "@/components/ui/select"
 import { useEditor } from "@/components/three-editor/composables/useEditorContext"
 import { activeCameraUuid, activeView } from "./directorState"
 
@@ -46,7 +39,15 @@ function applyViewportCamera() {
   }
 
   const options = cameraOptions.value
+
+  // 选中了摄像机时，机位视角与选中对象保持同步；否则在无有效机位时默认取第一个。
+  const selectedObject = editor.selected
   if (
+    selectedObject?.isCamera &&
+    options.some((camera) => camera.uuid === selectedObject.uuid)
+  ) {
+    activeCameraUuid.value = selectedObject.uuid
+  } else if (
     !activeCameraUuid.value ||
     !options.some((camera) => camera.uuid === activeCameraUuid.value)
   ) {
@@ -61,7 +62,9 @@ watch([activeView, activeCameraUuid, cameraOptions], applyViewportCamera, {
 })
 
 function onObjectSelected(object: any) {
-  if (activeView.value === "camera" && object?.isCamera) {
+  // 无论当前处于哪种视角，选中摄像机都同步激活机位，
+  // 这样从导演视角切到机位视角时能直接透到所选机位。
+  if (object?.isCamera) {
     activeCameraUuid.value = object.uuid
   }
 }
@@ -80,23 +83,5 @@ onBeforeUnmount(() => signals.objectSelected.remove(onObjectSelected))
         </TabsTrigger>
       </TabsList>
     </Tabs>
-
-    <Select
-      v-if="activeView === 'camera' && cameraOptions.length > 1"
-      v-model="activeCameraUuid"
-    >
-      <SelectTrigger size="sm" class="w-36">
-        <SelectValue placeholder="选择机位" />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem
-          v-for="camera in cameraOptions"
-          :key="camera.uuid"
-          :value="camera.uuid"
-        >
-          {{ camera.name || "机位" }}
-        </SelectItem>
-      </SelectContent>
-    </Select>
   </div>
 </template>

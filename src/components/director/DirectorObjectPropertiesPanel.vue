@@ -8,9 +8,7 @@ import {
   watch
 } from "vue"
 import * as THREE from "three"
-import { Video } from "lucide-vue-next"
 
-import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Slider } from "@/components/ui/slider"
@@ -29,7 +27,6 @@ import { SetScaleCommand } from "@/components/three-editor/commands/SetScaleComm
 import { SetValueCommand } from "@/components/three-editor/commands/SetValueCommand"
 import { SetMaterialColorCommand } from "@/components/three-editor/commands/SetMaterialColorCommand"
 import { MultiCmdsCommand } from "@/components/three-editor/commands/MultiCmdsCommand"
-import { activeCameraUuid, activeView } from "./directorState"
 import {
   isCharacterObject,
   ensureSkeletonLines,
@@ -61,11 +58,7 @@ const uniformScale = ref(1)
 const color = ref("#9aa5b1")
 const visible = ref(true)
 
-const fov = ref(50)
-const near = ref(0.1)
-const far = ref(1000)
-
-const isCamera = computed(() => !!selected.value?.isCamera)
+// 摄像机由专门的 DirectorCameraPropertiesPanel 处理，此面板对其隐藏。
 const isMesh = computed(() => !!selected.value?.isMesh)
 const isCharacter = computed(() => isCharacterObject(selected.value))
 const activeTab = ref<"properties" | "pose">("properties")
@@ -139,19 +132,15 @@ function syncFromObject(object: any) {
 
   visible.value = object.visible
 
-  if (object.isCamera) {
-    fov.value = object.fov ?? 50
-    near.value = object.near ?? 0.1
-    far.value = object.far ?? 1000
-  }
-
   if (object.isMesh && object.material && !Array.isArray(object.material)) {
     color.value = "#" + object.material.color.getHexString()
   } else if (isCharacterObject(object)) {
-    for (const mesh of characterMeshes(object)) {
-      color.value = "#" + mesh.material.color.getHexString()
-      break
-    }
+    // 颜色选择器应显示主体颜色而非（略深的）关节球颜色，因此优先取
+    // 非 "Joints" 网格的材质颜色作为当前色。
+    const meshes = characterMeshes(object)
+    const body =
+      meshes.find((mesh) => !isJointMesh(mesh)) ?? meshes[0]
+    if (body) color.value = "#" + body.material.color.getHexString()
 
     removeStockSkeletonHelpers(editor, object)
     ensureSkeletonLines(editor, object).visible = activeTab.value === "pose"
@@ -159,6 +148,16 @@ function syncFromObject(object: any) {
 }
 
 function onObjectSelected(object: any) {
+  // 取消选择或切换到其它对象时，先前被选中角色的骨架叠加层不会随
+  // activeTab 的 watch 联动隐藏——因为 selected.value 在 watch 触发前
+  // 已被置空，watch 中的 isCharacterObject(object) 判定为假而不执行。
+  // 因此在切换前显式隐藏旧角色的骨架线，保证骨架仅在"角色被选中且
+  // 面板处于姿势选项卡"时才可见。
+  const previous = selected.value
+  if (previous && previous !== object && isCharacterObject(previous)) {
+    ensureSkeletonLines(editor, previous).visible = false
+    signals.objectChanged.dispatch(previous)
+  }
   selected.value = object
   activeTab.value = "properties"
   if (object) syncFromObject(object)
@@ -263,6 +262,25 @@ function characterMeshes(object: any): any[] {
   return meshes
 }
 
+// Mixamo 素体（Y Bot / X Bot）由两个蒙皮网格组成：以 "Surface" 结尾的主体
+// 网格，与以 "Joints" 结尾的关节球网格（每个关节处的小球）。编辑颜色时，
+// 关节球应使用比主体略深的同色调，以便与主体区分。对于不遵循该命名的
+// 导入角色，没有关节球网格，所有网格统一使用主体颜色（行为不变）。
+const JOINT_MESH_SUFFIX = /Joints$/i
+
+// 关节球相对主体的变暗系数：将 RGB 各分量乘以该系数，得到同色相但略深的色调。
+const JOINT_COLOR_DARKEN = 0.65
+
+function isJointMesh(mesh: any): boolean {
+  return JOINT_MESH_SUFFIX.test(mesh.name ?? "")
+}
+
+function darkenHex(hex: number, factor: number): number {
+  const color = new THREE.Color(hex)
+  color.multiplyScalar(factor)
+  return color.getHex()
+}
+
 // removeStockSkeletonHelpers/ensureSkeletonLines/removeSkeletonLines/
 // skeletonLineName live in characterPose.ts so useCharacterSkeletonOverlay.ts
 // (the scene-wide sweep on restore) can share them.
@@ -281,28 +299,17 @@ function commitColor() {
   }
 
   if (isCharacterObject(object)) {
+    const jointHex = darkenHex(hex, JOINT_COLOR_DARKEN)
     const cmds = characterMeshes(object)
-      .filter((mesh) => mesh.material.color.getHex() !== hex)
-      .map((mesh) => new SetMaterialColorCommand(editor, mesh, "color", hex))
+      .filter((mesh) => {
+        const target = isJointMesh(mesh) ? jointHex : hex
+        return mesh.material.color.getHex() !== target
+      })
+      .map((mesh) => {
+        const target = isJointMesh(mesh) ? jointHex : hex
+        return new SetMaterialColorCommand(editor, mesh, "color", target)
+      })
     if (cmds.length) editor.execute(new MultiCmdsCommand(editor, cmds))
-  }
-}
-
-function commitCameraFields() {
-  const object = selected.value
-  if (!object?.isCamera) return
-
-  if (Math.abs(object.fov - fov.value) >= 0.01) {
-    editor.execute(new SetValueCommand(editor, object, "fov", fov.value))
-    object.updateProjectionMatrix()
-  }
-  if (Math.abs(object.near - near.value) >= 0.001) {
-    editor.execute(new SetValueCommand(editor, object, "near", near.value))
-    object.updateProjectionMatrix()
-  }
-  if (Math.abs(object.far - far.value) >= 0.01) {
-    editor.execute(new SetValueCommand(editor, object, "far", far.value))
-    object.updateProjectionMatrix()
   }
 }
 
@@ -311,18 +318,11 @@ function toggleVisible(value: boolean) {
   if (!object) return
   editor.execute(new SetValueCommand(editor, object, "visible", value))
 }
-
-function previewFromCamera() {
-  const object = selected.value
-  if (!object?.isCamera) return
-  activeView.value = "camera"
-  activeCameraUuid.value = object.uuid
-}
 </script>
 
 <template>
-  <ScrollArea v-show="selected" class="h-full">
-    <div v-if="selected" class="flex flex-col gap-4 p-3">
+  <ScrollArea v-show="selected && !selected.isCamera" class="h-full">
+    <div v-if="selected && !selected.isCamera" class="flex flex-col gap-4 p-3">
       <template v-if="isCharacter">
         <div class="text-xs font-medium text-muted-foreground">角色</div>
         <Tabs v-model="activeTab">
@@ -483,63 +483,6 @@ function previewFromCamera() {
         </div>
 
         <Separator />
-
-        <div v-if="isCamera" class="space-y-2">
-          <Label class="text-xs">机位参数</Label>
-          <div class="grid grid-cols-3 gap-2">
-            <div class="space-y-1">
-              <span class="text-[10px] text-muted-foreground">FOV</span>
-              <NumberField
-                v-model="fov"
-                :step="1"
-                :min="1"
-                :max="170"
-                @update:model-value="commitCameraFields"
-              >
-                <NumberFieldContent
-                  ><NumberFieldInput class="h-7 text-xs"
-                /></NumberFieldContent>
-              </NumberField>
-            </div>
-            <div class="space-y-1">
-              <span class="text-[10px] text-muted-foreground">Near</span>
-              <NumberField
-                v-model="near"
-                :step="0.1"
-                :min="0.001"
-                @update:model-value="commitCameraFields"
-              >
-                <NumberFieldContent
-                  ><NumberFieldInput class="h-7 text-xs"
-                /></NumberFieldContent>
-              </NumberField>
-            </div>
-            <div class="space-y-1">
-              <span class="text-[10px] text-muted-foreground">Far</span>
-              <NumberField
-                v-model="far"
-                :step="10"
-                @update:model-value="commitCameraFields"
-              >
-                <NumberFieldContent
-                  ><NumberFieldInput class="h-7 text-xs"
-                /></NumberFieldContent>
-              </NumberField>
-            </div>
-          </div>
-
-          <Button
-            variant="outline"
-            size="sm"
-            class="w-full"
-            @click="previewFromCamera"
-          >
-            <Video class="size-3.5" />
-            切换到此机位视角
-          </Button>
-
-          <Separator />
-        </div>
 
         <div class="flex items-center justify-between">
           <Label class="text-xs">可见性</Label>

@@ -33,6 +33,7 @@ import { AddObjectCommand } from "@/components/three-editor/commands/AddObjectCo
 import { applyFBXUnitScale } from "@/components/three-editor/Loader"
 import { snapshotBindPose } from "@/components/three-editor/SkeletonBindPose"
 import { applyUnlitCharacterMaterial } from "./characterPose"
+import { DIRECTOR_SHOT_FAR } from "./cameraFrustum"
 import { useDirectorHistory } from "./useDirectorHistory"
 import {
   DropdownMenu,
@@ -45,6 +46,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import xBotUrl from "@/assets/X Bot.fbx?url"
 import yBotUrl from "@/assets/Y Bot.fbx?url"
+import cameraGlbUrl from "@/assets/camera.glb?url"
 
 const editor = useEditor()
 const signals = editor.signals
@@ -177,11 +179,58 @@ function addGeometryPreset(item: (typeof geometryPresets)[number]) {
   mesh.name = nextName(item.label)
   editor.execute(new AddObjectCommand(editor, mesh))
 }
+// 每次添加机位时延迟加载 GLTFLoader（与 addCharacterPreset 中对 FBXLoader 的
+// 处理一致），将 camera.glb 解析出的模型作为机位在原点处的可见网格——机位本身
+// 处理一致），将 camera.glb 解析出的模型作为机位在原点处的可见网格——机位本身
+// 是不可见的 PerspectiveCamera，CameraHelper 仅绘制视锥边线，因此需要一个实体
+// 模型来表示机位原点。
+async function addCameraPosition() {
+  const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js")
+  const loader = new GLTFLoader()
 
-function addCameraPosition() {
-  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000)
+  loader.load(
+    cameraGlbUrl,
+    (result: any) => {
+      const model = result.scene as THREE.Group
+      model.name = "cameraModel"
+      // camera.glb 的镜头朝 +Z，而 THREE 相机看向 -Z，绕 Y 轴旋转 180° 使镜头
+      // 朝向拍摄方向 (-Z)。
+      model.rotation.y = Math.PI
+      // 模型原始尺寸约 1m，作为机位原点标志偏大，进一步缩小。
+      model.scale.setScalar(0.3)
+      model.updateMatrix()
+      // camera.glb 的镜头为前端圆柱（模型空间内沿 z 轴约 0.43→0.91，中心
+      // (0, 0.05, 0.67)，由该 glb 的几何结构测得——包围盒中心是机身中心而非
+      // 镜头中心，故不能用于定位）。将镜头中心经旋转/缩放变换后反向平移到
+      // 相机原点 (0,0,0)，使机位的位置点（gizmo/视锥顶点）正好落在镜头中心。
+      const lensCenterModel = new THREE.Vector3(0, 0.05, 0.67)
+      const lensCenterLocal = lensCenterModel.clone().applyMatrix4(model.matrix)
+      model.position.copy(lensCenterLocal).negate()
+      // 用于 useCameraModelVisibility 在该机位作为视口相机时将其隐藏，
+      // 以免机位模型挡住自身画面。
+      model.userData.isCameraModel = true
+
+      addCameraWithModel(model)
+    },
+    undefined,
+    (error: any) => {
+      console.error("加载机位模型失败", error)
+      // 回退：仍添加一个无机位模型的机位。
+      addCameraWithModel(null)
+    }
+  )
+}
+
+function addCameraWithModel(model: THREE.Group | null) {
+  // far 保持固定，供该机位被切换为视口相机时实际渲染裁剪使用；
+  // FOV 示意椎体（固定底面 + 侧棱上随 FOV 远近移动的横截面）另由
+  // useCameraFrustumFootprint 绘制，与此 far 无关；该 far 不受 FOV 变化影响
+  //（见 cameraFrustum.ts），仅供实际渲染裁剪使用。
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, DIRECTOR_SHOT_FAR)
   camera.name = nextName("机位")
   camera.position.set(0, 2, 5)
+  camera.userData.isDirectorShot = true
+  if (model) camera.add(model)
 
   editor.execute(new AddObjectCommand(editor, camera))
 }

@@ -14,7 +14,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useEditor } from "@/components/three-editor/composables/useEditorContext"
 import TextureField from "@/components/three-editor/TextureField.vue"
-import { showCharacterLabels } from "./directorState"
+import { activeView, showCharacterLabels } from "./directorState"
 
 const editor = useEditor()
 const signals = editor.signals
@@ -265,17 +265,23 @@ watch(panoramaRadius, (value) => {
   const radius = Array.isArray(value) ? value[0] : value
   mesh.geometry.dispose()
   mesh.geometry = new THREE.SphereGeometry(radius, 48, 32)
+  // 地面填充随全景球半径扩展，覆盖到全景球的赤道切面。
+  editor.setGroundExtent(radius)
   requestRender()
 })
 
 onMounted(() => {
   ensureSphere()
   applyBackgroundColor()
+  // 导演台专属：将地面颜色填充扩展为覆盖全景球赤道切面的圆形，
+  // 半径随全景球半径。three-editor 默认保持与网格等大的方形填充。
+  editor.setGroundExtent(panoramaRadius.value)
 })
 </script>
 
 <template>
-  <ScrollArea v-show="!selected" class="h-full">
+<!-- 机位视角下无选中对象时由摄像机属性面板接管，此面板让位 -->
+  <ScrollArea v-show="!selected && activeView !== 'camera'" class="h-full">
     <div class="flex flex-col gap-4 p-3">
       <div class="text-xs font-medium text-muted-foreground">3D场景</div>
 

@@ -34,8 +34,20 @@ class Selector {
           // 而组（通过 userData.isCharacter 进行标签/追踪）
           // 始终不会移动。
           let node: any = object
+         while (node) {
+           if (node.userData?.isCharacter) {
+             object = node
+             break
+           }
+           node = node.parent
+         }
+
+          // 同理，机位原点以 camera.glb 子网格呈现（见 DirectorToolbar.vue 的
+          // addCameraPosition），点击模型的任意部分都应选中机位（相机）本身，
+          // 而非模型网格。
+          node = object
           while (node) {
-            if (node.userData?.isCharacter) {
+            if ((node as any).isCamera) {
               object = node
               break
             }

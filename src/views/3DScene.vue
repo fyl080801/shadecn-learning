@@ -12,17 +12,24 @@ import DirectorScenePanel from "@/components/director/DirectorScenePanel.vue"
 import DirectorToolbar from "@/components/director/DirectorToolbar.vue"
 import DirectorScenePropertiesPanel from "@/components/director/DirectorScenePropertiesPanel.vue"
 import DirectorObjectPropertiesPanel from "@/components/director/DirectorObjectPropertiesPanel.vue"
+import DirectorCameraPropertiesPanel from "@/components/director/DirectorCameraPropertiesPanel.vue"
+import { useCameraLookAt } from "@/components/director/cameraLookAt"
+import { useCameraFrustumFootprint } from "@/components/director/useCameraFrustumFootprint"
 import DirectorCharacterLabels from "@/components/director/DirectorCharacterLabels.vue"
 import { useDirectorRenderer } from "@/components/director/useDirectorRenderer"
 import { useDirectorDeleteShortcut } from "@/components/director/useDirectorDeleteShortcut"
 import { useCharacterUnlitMaterial } from "@/components/director/useCharacterUnlitMaterial"
 import { useCharacterSkeletonOverlay } from "@/components/director/useCharacterSkeletonOverlay"
+import { useCameraModelVisibility } from "@/components/director/useCameraModelVisibility"
 
 const editor = createEditor("director-console")
 
 useDirectorDeleteShortcut(editor)
 useCharacterUnlitMaterial(editor)
 useCharacterSkeletonOverlay(editor)
+useCameraModelVisibility(editor)
+useCameraLookAt(editor)
+useCameraFrustumFootprint(editor)
 
 onMounted(() => {
   useDirectorRenderer(editor)
@@ -60,6 +67,7 @@ onMounted(() => {
         <aside class="w-72 shrink-0 border-l bg-card">
           <DirectorScenePropertiesPanel />
           <DirectorObjectPropertiesPanel />
+          <DirectorCameraPropertiesPanel />
         </aside>
       </div>
     </div>
