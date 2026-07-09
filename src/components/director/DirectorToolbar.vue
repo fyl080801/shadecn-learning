@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue"
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import {
   Box,
   Camera,
   Circle,
   Cone,
   Cylinder,
-  Move,
+ Move,
   PersonStanding,
   Pyramid,
   Redo2,
@@ -35,10 +35,14 @@ import { snapshotBindPose } from "@/components/three-editor/SkeletonBindPose"
 import { applyUnlitCharacterMaterial } from "./characterPose"
 import { DIRECTOR_SHOT_FAR } from "./cameraFrustum"
 import { useDirectorHistory } from "./useDirectorHistory"
+import { aspectRatio, type AspectRatioKey } from "./directorState"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -85,6 +89,45 @@ onMounted(() => {
 onBeforeUnmount(() => {
   signals.transformModeChanged.remove(onModeChanged)
   signals.objectSelected.remove(onSelectionChanged)
+})
+
+// 画幅比例取景框：仅在场景中存在用户放置的机位时才显示该按钮
+// （编辑器自身的轨道相机 editor.camera 始终注册在 editor.cameras 中，
+//  故将其排除）。
+const aspectRatioOptions: AspectRatioKey[] = [
+  "auto",
+  "21:9",
+  "16:9",
+  "4:3",
+  "1:1",
+  "3:4",
+  "9:16"
+]
+const camerasVersion = ref(0)
+function bumpCameras() {
+  camerasVersion.value++
+}
+const hasShotCamera = computed(() => {
+  camerasVersion.value
+  return (
+    Object.values(editor.cameras).filter((c: any) => c !== editor.camera)
+      .length > 0
+  )
+})
+
+onMounted(() => {
+  signals.cameraAdded.add(bumpCameras)
+  signals.cameraRemoved.add(bumpCameras)
+})
+
+onBeforeUnmount(() => {
+  signals.cameraAdded.remove(bumpCameras)
+  signals.cameraRemoved.remove(bumpCameras)
+})
+
+// 场景中无机位时复位取景框，避免按钮隐藏后取景框仍残留。
+watch(hasShotCamera, (has) => {
+  if (!has) aspectRatio.value = "auto"
 })
 
 function nextName(prefix: string) {
@@ -366,6 +409,40 @@ function clearScene() {
     <Button variant="ghost" size="sm" @click="addCameraPosition">
       <Camera class="size-4" />
     </Button>
+
+    <TooltipProvider :delay-duration="300">
+      <Tooltip>
+        <DropdownMenu>
+          <TooltipTrigger as-child>
+            <DropdownMenuTrigger as-child>
+              <Button
+                variant="ghost"
+                size="sm"
+                :disabled="!hasShotCamera"
+                :class="
+                  aspectRatio !== 'auto' && 'bg-accent text-accent-foreground'
+                "
+              >
+                <RectangleHorizontal class="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <DropdownMenuContent align="start" class="min-w-[7rem]">
+            <DropdownMenuLabel>选择画幅比例</DropdownMenuLabel>
+            <DropdownMenuRadioGroup v-model="aspectRatio">
+              <DropdownMenuRadioItem
+                v-for="item in aspectRatioOptions"
+                :key="item"
+                :value="item"
+              >
+                {{ item === "auto" ? "自动" : item }}
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <TooltipContent>选择画幅比例</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
 
     <Separator orientation="vertical" class="h-6" />
 

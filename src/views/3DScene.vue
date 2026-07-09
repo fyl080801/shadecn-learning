@@ -16,6 +16,7 @@ import DirectorCameraPropertiesPanel from "@/components/director/DirectorCameraP
 import { useCameraLookAt } from "@/components/director/cameraLookAt"
 import { useCameraFrustumFootprint } from "@/components/director/useCameraFrustumFootprint"
 import DirectorCharacterLabels from "@/components/director/DirectorCharacterLabels.vue"
+import DirectorAspectRatioOverlay from "@/components/director/DirectorAspectRatioOverlay.vue"
 import { useDirectorRenderer } from "@/components/director/useDirectorRenderer"
 import { useDirectorDeleteShortcut } from "@/components/director/useDirectorDeleteShortcut"
 import { useCharacterUnlitMaterial } from "@/components/director/useCharacterUnlitMaterial"
@@ -57,6 +58,8 @@ onMounted(() => {
             class="absolute inset-0"
             :view-helper-offset="{ top: 0, right: 0 }"
           />
+          <!-- 画幅比例取景框与周边模糊，纯 CSS 叠加层，不进入视口渲染 -->
+          <DirectorAspectRatioOverlay />
           <DirectorCharacterLabels />
           <DirectorToolbar
             class="absolute bottom-4 left-1/2 -translate-x-1/2"
