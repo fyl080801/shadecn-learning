@@ -11,31 +11,95 @@
 | 命令 | 作用 |
 |---|---|
 | `pnpm dev` | 开发（Node/Hono + Vite 中间件，watch 模式），http://127.0.0.1:3000 |
-| `pnpm build` | `vue-tsc -b` 类型检查 → `vite build` 输出 `dist/` |
-| `pnpm start` | 生产模式启动（`NODE_ENV=production`，服务 `dist/`） |
+| `pnpm build` | `build:client` + `build:server`，产物全部落在 `output/` |
+| `pnpm build:client` | `vue-tsc -b` 类型检查 → `vite build` 输出 `output/public` |
+| `pnpm build:server` | `tsc --noEmit` 类型检查 → esbuild 打包出 `output/server/index.js` |
+| `pnpm start` | 生产模式启动（`NODE_ENV=production node output/server/index.js`） |
 | `pnpm preview` | `build` + `start` |
 
-**前端打包，后端不打包** —— 后端用 `tsx` 直接运行 `.ts`，所以 `tsx` 和 `prisma` 都在 `dependencies` 而不是 `devDependencies`。
+### 2.2 依赖划分
 
-### 2.2 Dockerfile（两阶段）
+仓库根 `package.json` 的两组依赖是有严格含义的：
 
-**build 阶段**
+| 组 | 含义 | 内容 |
+|---|---|---|
+| `dependencies` | **生产运行时**真正要装的 | `hono` / `@hono/node-server`、`yjs` / `y-protocols` / `lib0` / `ws`、`@prisma/client` / `@prisma/adapter-better-sqlite3`、`prisma`（启动时跑迁移） |
+| `devDependencies` | 开发和构建期才要的 | 前端全家桶（vue、vue-router、three、tailwind、reka-ui、codemirror、vue-flow、y-websocket…）+ 工具链（vite、esbuild、tsx、vue-tsc、eslint、vitest…） |
 
-1. 基于 `node:22-alpine`，安装 `python3 make g++` —— **better-sqlite3 在 musl 上没有预编译包，必须现场编译**；
-2. 先只拷 `package.json` / `pnpm-lock.yaml` / `prisma.config.ts` / `prisma/`，再 `pnpm install --frozen-lockfile`（`postinstall` 会跑 `prisma generate`，所以 schema 必须先到位）；
-3. 拷入全部源码后**再 `prisma generate` 一次**，确保 `server/generated/prisma` 是最新 schema 的产物；
-4. `vite build`；
-5. `pnpm prune --prod`。
+**前端库为什么算 dev**：它们全都被 `vite build` 打进了 `output/public`，运行时一个都不用装。
+同理 `tsx` 也降级成 dev —— 生产跑的是打包后的 `server/index.js`，不再解释执行 `.ts`。
 
-**运行时阶段**
+这条约定由构建脚本兜底：`scripts/build-server.mjs` 会拿 esbuild 反推出来的运行时依赖去比对根
+`dependencies`，只要有一个落在 `devDependencies` 里就**直接构建失败**，并提示把它挪过去。
+用 `shadcn-vue` 之类的 CLI 装完新包记得检查一下装到哪组了。
 
-- 只拷 `node_modules` / `package.json` / `prisma.config.ts` / `prisma/` / `server/` / `dist/`；
-- `ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data`；
-- 建好 `/app/data` 并声明为 `VOLUME`；
-- `EXPOSE 3000`；
-- 启动命令：**先 `prisma migrate deploy`，再 `tsx server/index.ts`**。
+### 2.3 产物布局
 
-> ⚠️ 跨架构构建：build 阶段带了 `--platform=$BUILDPLATFORM`。在 amd64 机器上构 arm64 镜像时，better-sqlite3 编译出来的是 amd64 的 `.node`。这种情况必须去掉那个 `--platform`，或改用 QEMU 构建。
+**前后端都构建，产物只有 `output/` 一个目录**（已 gitignore）。它必须是一个
+**完整可运行的 app 目录**：拷到任何地方 `npm install --omit=dev && npm start` 就能跑，
+`docker build ./output` 就能出镜像，**不依赖仓库里的任何源码**。
+
+```
+output/
+  package.json        # 运行时依赖（版本锁死）+ start / migrate 脚本
+  server/
+    index.js          # 打包后的后端入口（ESM，node 22），带 .map
+    dev-*.js          # 动态 import 切出来的开发分支 chunk，生产不会加载
+  public/             # 前端静态资源 = 后端的静态资源目录
+    index.html
+    assets/...
+  prisma/             # schema + migrations，给启动时的 migrate deploy 用
+  prisma.config.js    # 产物自带的 prisma CLI 配置
+  Dockerfile          # 构建上下文就是 output/ 自己
+  .dockerignore
+  README.md           # 产物怎么跑 / 怎么打镜像
+```
+
+`package.json` 的 `dependencies` 不是照抄仓库那份，而是**从 esbuild 的 external 列表反推**
+出来的实际运行时依赖（`@hono/node-server`、`hono`、`@prisma/client`、
+`@prisma/adapter-better-sqlite3`、`yjs`、`y-protocols`、`lib0`、`ws`，外加跑迁移用的
+`prisma`），版本锁到构建当次实际装的那一个。`vite` 只出现在永不加载的 dev chunk 里，
+不进这份清单。前端那一堆（vue / three / tailwind…）已经打进 `public/`，运行时一个都不需要。
+
+> `node_modules` 不在产物里 —— better-sqlite3 是原生模块，必须在目标平台上装。
+> 产物里锁的是直接依赖的版本，间接依赖没有 lockfile 兜底。
+
+- **前端静态资源直接构建进后端的静态资源目录**：`vite.config.ts` 里 `build.outDir = output/public`，后端生产模式就吐这个目录（可用 `STATIC_DIR` 覆盖）。
+- 后端由 `scripts/build-server.mjs`（esbuild）打包：仓库内的相对导入全部内联（含 `server/generated/prisma` 那份生成的 client），`node_modules` 里的包保持 external，运行时从应用根目录的 `node_modules` 解析。
+- `splitting: true` 是硬要求：`frontend/index.ts` 里的 `await import('./dev.ts')` 必须留成真正的动态 import，否则 `vite` 会被提升成顶层静态依赖 —— 而 `vite` 是 devDependency，生产环境根本不会装，一启动就崩。
+- 打包时 define 了 `__APP_BUNDLE__`，`server/runtime.ts` 靠它区分「源码运行」和「产物运行」：产物运行时应用根目录取进程 cwd（容器里就是 `/app`），静态资源取产物自己旁边的 `public/`。
+- 运行产物**不再需要 `tsx`**；`prisma` 进产物的 `dependencies`，因为容器启动时要跑 `prisma migrate deploy`。
+- 产物里的 `prisma.config.js` / `Dockerfile` / `.dockerignore` / `README.md` 是从 `scripts/output-image/` 原样拷进去的 —— 要改这几个文件改模板，别改产物。
+
+### 2.4 直接基于产物打镜像（推荐）
+
+```bash
+pnpm build
+docker build -t shadecn-learning ./output
+```
+
+`output/Dockerfile` 两个阶段：
+
+1. **deps** —— 只 `COPY package.json` 再 `npm install --omit=dev`，装的就是那 9 个运行时依赖；
+   装 `python3 make g++`，**better-sqlite3 在 musl 上没有预编译包，必须现场编译**；
+2. **运行时** —— 拷 deps 阶段的 `node_modules` + 产物本身，`ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data`，
+   建好 `/app/data` 并声明为 `VOLUME`，`EXPOSE 3000`，启动命令是
+   **先 `npx prisma migrate deploy`，再 `node server/index.js`**。
+
+镜像里没有源码、没有 pnpm、没有构建期依赖，`WORKDIR /app` 就是产物根目录 ——
+服务端的「应用根目录」取进程 cwd，正好也是 `/app`，和 `prisma.config.js` 看到的是同一个库。
+
+### 2.5 从源码一把梭（仓库根 `Dockerfile`）
+
+CI 里想一条命令从源码出镜像就用它，三个阶段：
+
+1. **build** —— 全量 `pnpm install --frozen-lockfile` → `prisma generate` → `pnpm build`，产出 `/app/output`；
+2. **deps** —— 和 `output/Dockerfile` 的 deps 阶段一样，只从 `/app/output/package.json` 装生产依赖；
+3. **运行时** —— `COPY --from=build /app/output ./`，其余同上。
+
+> ⚠️ 跨架构构建：build 阶段带了 `--platform=$BUILDPLATFORM`（构建产物与架构无关，随构建机跑最快）；
+> deps 阶段**故意不带**，跑在目标平台上，这样 better-sqlite3 编译出来的才是目标架构的 `.node`。
+> 在 amd64 上构 arm64 镜像需要 QEMU/binfmt 支持。
 
 ## 3. Kubernetes 部署需求
 
@@ -81,7 +145,10 @@ kubectl -n dev create secret generic shadecn-learning-auth \
 
 ## 4. 验收标准
 
-- [ ] `docker build` 在干净环境下成功，better-sqlite3 编译通过。
+- [ ] `pnpm build` 后 `output/` 里同时有 `server/index.js` 和 `public/index.html`，`pnpm start` 能直接起服务。
+- [ ] 把 `output/` 单独拷到别处（拿不到仓库的 `node_modules`），`npm install --omit=dev && npm run migrate && npm start` 能跑起来，页面、`/api/*`、登录跳转都正常。
+- [ ] `docker build ./output` 与仓库根 `docker build .` 都能出可运行镜像，better-sqlite3 编译通过。
+- [ ] 把任意一个运行时依赖挪进 `devDependencies`，`pnpm build:server` 必须失败并指名道姓。
 - [ ] 容器首次启动时自动建库、跑完迁移再对外服务。
 - [ ] 删除 Pod 重建后，`/app/data` 中的数据仍在（用户和会话不丢）。
 - [ ] 通过 Ingress 完整走通 Keycloak 登录回跳。

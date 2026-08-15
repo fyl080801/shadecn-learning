@@ -12,6 +12,8 @@ export default defineConfig(
   {
     ignores: [
       "dist",
+      // `pnpm build` 的产物
+      "output",
       "node_modules",
       "src/components/ui/**",
       // Prisma 生成的 client
@@ -52,9 +54,12 @@ export default defineConfig(
   {
     files: [
       "server/**/*.ts",
+      // 构建脚本和随产物发出去的模板，都是 node 环境
+      "scripts/**/*.{js,mjs}",
       "vite.config.ts",
       "vitest.config.ts",
-      "eslint.config.ts"
+      "eslint.config.ts",
+      "prisma.config.ts"
     ],
     languageOptions: {
       globals: {

@@ -1,0 +1,29 @@
+# 这个 Dockerfile 由 `pnpm build` 拷进 output/，构建上下文就是 output/ 本身：
+#
+#   pnpm build && docker build -t shadecn-learning ./output
+#
+# 镜像里不需要源码、不需要 tsx、也不需要 prisma generate ——
+# 后端已经打包成 server/index.js，Prisma client 也内联进去了，
+# 这里只装 output/package.json 里那几个运行时依赖。
+#
+# 基础镜像走内网镜像源（和仓库根 Dockerfile 的运行时阶段一致）；
+# 在外网环境构建就把它换回官方的 node:22-alpine。
+FROM 192.168.68.95:31443/docker.io/library/node:22-alpine AS deps
+# better-sqlite3 在 musl 上没有预编译包，得现场编译
+RUN apk add --no-cache python3 make g++
+WORKDIR /app
+COPY package.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+
+FROM 192.168.68.95:31443/docker.io/library/node:22-alpine
+WORKDIR /app
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data
+COPY --from=deps /app/node_modules ./node_modules
+# 打包产物本身：server/（后端）、public/（前端静态资源）、prisma/（迁移）
+COPY . .
+# SQLite 落在 /app/data，挂卷进来才不会随容器一起没
+RUN mkdir -p /app/data
+VOLUME ["/app/data"]
+EXPOSE 3000
+# 起服务前先把迁移跑上，库文件不存在会自动建
+CMD ["sh", "-c", "npx prisma migrate deploy && node server/index.js"]

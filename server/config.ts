@@ -1,13 +1,26 @@
 import './env.ts'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { appRoot, isBundle, moduleDir } from './runtime.ts'
 
-/** 仓库根目录（server/ 的上一级）：Vite 的 root、index.html、dist 都以它为准 */
-export const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+/** 应用根目录：dev 下 Vite 的 root、index.html、data/ 都以它为准 */
+export const rootDir = appRoot
 
-/** 生产构建产物目录 */
-export const distDir = path.join(rootDir, 'dist')
+/** 构建产物根目录：`pnpm build` 把后端和前端都放这儿 */
+export const outputDir = path.join(rootDir, 'output')
+
+/**
+ * 后端的静态资源目录 —— 前端 `vite build` 的产物就落在这里，生产模式直接吐它。
+ *
+ * - 构建产物运行：自己旁边的 output/public（output/server/index.js → ../public）；
+ * - 源码运行（tsx，NODE_ENV=production）：output/public；
+ * - STATIC_DIR 可整个覆盖（相对路径按应用根目录算）。
+ */
+export const staticDir = process.env.STATIC_DIR
+  ? resolveFromRoot(process.env.STATIC_DIR)
+  : isBundle
+    ? path.resolve(moduleDir, '..', 'public')
+    : path.join(outputDir, 'public')
 
 /** 没显式设 NODE_ENV=production 就按开发处理（开发时由后端挂 Vite 中间件） */
 export const isDev = (process.env.NODE_ENV ?? 'development') !== 'production'

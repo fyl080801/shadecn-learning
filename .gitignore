@@ -10,6 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+# `pnpm build` 的产物：output/server（后端）+ output/public（前端静态资源）
+output
 *.local
 coverage
 

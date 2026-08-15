@@ -68,6 +68,26 @@ describe('数据库路径解析', () => {
   })
 })
 
+describe('静态资源目录', () => {
+  it('默认是 <应用根>/output/public（`vite build` 的产物）', async () => {
+    vi.stubEnv('STATIC_DIR', undefined)
+    const config = await loadConfig()
+    expect(config.staticDir).toBe(path.join(rootDir, 'output', 'public'))
+  })
+
+  it('STATIC_DIR 的相对路径按应用根目录算', async () => {
+    vi.stubEnv('STATIC_DIR', 'public-dist')
+    const config = await loadConfig()
+    expect(config.staticDir).toBe(path.join(rootDir, 'public-dist'))
+  })
+
+  it('STATIC_DIR 是绝对路径就直接用', async () => {
+    vi.stubEnv('STATIC_DIR', '/srv/www')
+    const config = await loadConfig()
+    expect(config.staticDir).toBe('/srv/www')
+  })
+})
+
 describe('appOrigin / cookie', () => {
   it('去掉结尾的斜杠，redirect_uri 才不会出现双斜杠', async () => {
     vi.stubEnv('APP_ORIGIN', 'https://app.example.com///')

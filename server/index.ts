@@ -4,7 +4,7 @@ import { app } from './app.ts'
 import { authorizeUpgrade } from './auth/ws.ts'
 import { sweepExpired } from './auth/session.ts'
 import { attachCollabServer, COLLAB_PATH } from './collab/index.ts'
-import { assertAuthConfig, authEnabled, host, isDev, port } from './config.ts'
+import { assertAuthConfig, authEnabled, host, isDev, port, staticDir } from './config.ts'
 import { disconnectDb } from './db.ts'
 import { attachFrontend } from './frontend/index.ts'
 
@@ -38,7 +38,7 @@ const sweepTimer = setInterval(sweep, 60 * 60 * 1000)
 sweepTimer.unref()
 
 server.listen(port, host, () => {
-  const mode = isDev ? 'dev（Vite 中间件）' : 'prod（dist 静态资源）'
+  const mode = isDev ? 'dev（Vite 中间件）' : `prod（静态资源 ${staticDir}）`
   console.log(`${mode} 服务已启动  http://${host}:${port}`)
   console.log(`Yjs websocket        ws://${host}:${port}${COLLAB_PATH}/<room>`)
   console.log(`登录                 ${authEnabled ? 'Keycloak（/login）' : '未启用'}`)

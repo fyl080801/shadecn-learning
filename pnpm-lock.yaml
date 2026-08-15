@@ -8,6 +8,34 @@ importers:
 
   .:
     dependencies:
+      '@hono/node-server':
+        specifier: ^2.1.1
+        version: 2.1.1(hono@4.13.2)
+      '@prisma/adapter-better-sqlite3':
+        specifier: ^7.9.1
+        version: 7.9.1
+      '@prisma/client':
+        specifier: ^7.9.1
+        version: 7.9.1(prisma@7.9.1(@types/react@19.2.18)(better-sqlite3@12.11.1)(magicast@0.5.4)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3))(typescript@5.9.3)
+      hono:
+        specifier: ^4.13.2
+        version: 4.13.2
+      lib0:
+        specifier: ^0.2.117
+        version: 0.2.117
+      prisma:
+        specifier: ^7.9.1
+        version: 7.9.1(@types/react@19.2.18)(better-sqlite3@12.11.1)(magicast@0.5.4)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)
+      ws:
+        specifier: ^8.21.3
+        version: 8.21.3
+      y-protocols:
+        specifier: ^1.0.7
+        version: 1.0.7(yjs@13.6.32)
+      yjs:
+        specifier: ^13.6.32
+        version: 13.6.32
+    devDependencies:
       '@codemirror/lang-javascript':
         specifier: ^6.2.5
         version: 6.2.5
@@ -20,100 +48,15 @@ importers:
       '@codemirror/theme-one-dark':
         specifier: ^6.1.3
         version: 6.1.3
-      '@hono/node-server':
-        specifier: ^2.1.1
-        version: 2.1.1(hono@4.13.2)
-      '@lucide/vue':
-        specifier: ^1.23.0
-        version: 1.23.0(vue@3.5.29(typescript@5.9.3))
-      '@prisma/adapter-better-sqlite3':
-        specifier: ^7.9.1
-        version: 7.9.1
-      '@prisma/client':
-        specifier: ^7.9.1
-        version: 7.9.1(prisma@7.9.1(@types/react@19.2.18)(better-sqlite3@12.11.1)(magicast@0.5.4)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3))(typescript@5.9.3)
-      '@tailwindcss/vite':
-        specifier: ^4.2.1
-        version: 4.2.1(vite@7.3.1(@types/node@24.12.0)(jiti@2.7.0)(lightningcss@1.31.1)(stylus@0.57.0)(tsx@4.23.12)(yaml@2.8.2))
-      '@vue-flow/background':
-        specifier: ^1.3.2
-        version: 1.3.2(@vue-flow/core@1.48.2(vue@3.5.29(typescript@5.9.3)))(vue@3.5.29(typescript@5.9.3))
-      '@vue-flow/controls':
-        specifier: ^1.1.3
-        version: 1.1.3(@vue-flow/core@1.48.2(vue@3.5.29(typescript@5.9.3)))(vue@3.5.29(typescript@5.9.3))
-      '@vue-flow/core':
-        specifier: ^1.48.2
-        version: 1.48.2(vue@3.5.29(typescript@5.9.3))
-      '@vue-flow/minimap':
-        specifier: ^1.5.4
-        version: 1.5.4(@vue-flow/core@1.48.2(vue@3.5.29(typescript@5.9.3)))(vue@3.5.29(typescript@5.9.3))
-      '@vueuse/core':
-        specifier: ^14.2.1
-        version: 14.2.1(vue@3.5.29(typescript@5.9.3))
-      class-variance-authority:
-        specifier: ^0.7.1
-        version: 0.7.1
-      clsx:
-        specifier: ^2.1.1
-        version: 2.1.1
-      codemirror:
-        specifier: ^6.0.2
-        version: 6.0.2
-      hono:
-        specifier: ^4.13.2
-        version: 4.13.2
-      lib0:
-        specifier: ^0.2.117
-        version: 0.2.117
-      lucide-vue-next:
-        specifier: ^0.577.0
-        version: 0.577.0(vue@3.5.29(typescript@5.9.3))
-      prisma:
-        specifier: ^7.9.1
-        version: 7.9.1(@types/react@19.2.18)(better-sqlite3@12.11.1)(magicast@0.5.4)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)
-      reka-ui:
-        specifier: ^2.9.0
-        version: 2.9.0(vue@3.5.29(typescript@5.9.3))
-      signals:
-        specifier: ^1.0.0
-        version: 1.0.0
-      tailwind-merge:
-        specifier: ^3.5.0
-        version: 3.5.0
-      tailwindcss:
-        specifier: ^4.2.1
-        version: 4.2.1
-      three:
-        specifier: ^0.183.2
-        version: 0.183.2
-      three-gpu-pathtracer:
-        specifier: ^0.0.24
-        version: 0.0.24(three-mesh-bvh@0.9.10(three@0.183.2))(three@0.183.2)(xatlas-web@0.1.0)
-      tsx:
-        specifier: ^4.23.12
-        version: 4.23.12
-      vue:
-        specifier: ^3.5.25
-        version: 3.5.29(typescript@5.9.3)
-      vue-router:
-        specifier: ^5.0.3
-        version: 5.0.3(@vue/compiler-sfc@3.5.29)(vue@3.5.29(typescript@5.9.3))
-      ws:
-        specifier: ^8.21.3
-        version: 8.21.3
-      y-protocols:
-        specifier: ^1.0.7
-        version: 1.0.7(yjs@13.6.32)
-      y-websocket:
-        specifier: ^3.1.0
-        version: 3.1.0(yjs@13.6.32)
-      yjs:
-        specifier: ^13.6.32
-        version: 13.6.32
-    devDependencies:
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.4.1(jiti@2.7.0))
+      '@lucide/vue':
+        specifier: ^1.23.0
+        version: 1.23.0(vue@3.5.29(typescript@5.9.3))
+      '@tailwindcss/vite':
+        specifier: ^4.2.1
+        version: 4.2.1(vite@7.3.1(@types/node@24.12.0)(jiti@2.7.0)(lightningcss@1.31.1)(stylus@0.57.0)(tsx@4.23.12)(yaml@2.8.2))
       '@types/node':
         specifier: ^24.10.1
         version: 24.12.0
@@ -129,12 +72,39 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^4.1.10
         version: 4.1.10(vitest@4.1.10)
+      '@vue-flow/background':
+        specifier: ^1.3.2
+        version: 1.3.2(@vue-flow/core@1.48.2(vue@3.5.29(typescript@5.9.3)))(vue@3.5.29(typescript@5.9.3))
+      '@vue-flow/controls':
+        specifier: ^1.1.3
+        version: 1.1.3(@vue-flow/core@1.48.2(vue@3.5.29(typescript@5.9.3)))(vue@3.5.29(typescript@5.9.3))
+      '@vue-flow/core':
+        specifier: ^1.48.2
+        version: 1.48.2(vue@3.5.29(typescript@5.9.3))
+      '@vue-flow/minimap':
+        specifier: ^1.5.4
+        version: 1.5.4(@vue-flow/core@1.48.2(vue@3.5.29(typescript@5.9.3)))(vue@3.5.29(typescript@5.9.3))
       '@vue/test-utils':
         specifier: ^2.4.11
         version: 2.4.11(@vue/compiler-dom@3.5.29)(@vue/server-renderer@3.5.29(vue@3.5.29(typescript@5.9.3)))(vue@3.5.29(typescript@5.9.3))
       '@vue/tsconfig':
         specifier: ^0.8.1
         version: 0.8.1(typescript@5.9.3)(vue@3.5.29(typescript@5.9.3))
+      '@vueuse/core':
+        specifier: ^14.2.1
+        version: 14.2.1(vue@3.5.29(typescript@5.9.3))
+      class-variance-authority:
+        specifier: ^0.7.1
+        version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
+      codemirror:
+        specifier: ^6.0.2
+        version: 6.0.2
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       eslint:
         specifier: ^10.4.1
         version: 10.4.1(jiti@2.7.0)
@@ -153,9 +123,33 @@ importers:
       jsdom:
         specifier: ^30.0.1
         version: 30.0.1(@noble/hashes@1.8.0)
+      lucide-vue-next:
+        specifier: ^0.577.0
+        version: 0.577.0(vue@3.5.29(typescript@5.9.3))
+      reka-ui:
+        specifier: ^2.9.0
+        version: 2.9.0(vue@3.5.29(typescript@5.9.3))
       shadcn-vue:
         specifier: ^2.7.4
         version: 2.7.4(eslint@10.4.1(jiti@2.7.0))(magicast@0.5.4)(vue@3.5.29(typescript@5.9.3))
+      signals:
+        specifier: ^1.0.0
+        version: 1.0.0
+      tailwind-merge:
+        specifier: ^3.5.0
+        version: 3.5.0
+      tailwindcss:
+        specifier: ^4.2.1
+        version: 4.2.1
+      three:
+        specifier: ^0.183.2
+        version: 0.183.2
+      three-gpu-pathtracer:
+        specifier: ^0.0.24
+        version: 0.0.24(three-mesh-bvh@0.9.10(three@0.183.2))(three@0.183.2)(xatlas-web@0.1.0)
+      tsx:
+        specifier: ^4.23.12
+        version: 4.23.12
       tw-animate-css:
         specifier: ^1.4.0
         version: 1.4.0
@@ -171,9 +165,18 @@ importers:
       vitest:
         specifier: ^4.1.10
         version: 4.1.10(@types/node@24.12.0)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1(@noble/hashes@1.8.0))(vite@7.3.1(@types/node@24.12.0)(jiti@2.7.0)(lightningcss@1.31.1)(stylus@0.57.0)(tsx@4.23.12)(yaml@2.8.2))
+      vue:
+        specifier: ^3.5.25
+        version: 3.5.29(typescript@5.9.3)
+      vue-router:
+        specifier: ^5.0.3
+        version: 5.0.3(@vue/compiler-sfc@3.5.29)(vue@3.5.29(typescript@5.9.3))
       vue-tsc:
         specifier: ^3.1.5
         version: 3.2.5(typescript@5.9.3)
+      y-websocket:
+        specifier: ^3.1.0
+        version: 3.1.0(yjs@13.6.32)
 
 packages:
 

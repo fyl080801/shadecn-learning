@@ -11,6 +11,11 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  build: {
+    // 前端产物直接落进后端的静态资源目录：output/ 里就是一份完整可跑的东西
+    outDir: path.resolve(__dirname, 'output/public'),
+    emptyOutDir: true,
+  },
 })
 
 // 注意：dev 时不再由 vite 自己起服务，而是被 server/frontend/dev.ts 以中间件模式挂到

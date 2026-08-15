@@ -14,8 +14,8 @@
 
 ### 2.1 运行方式
 
-- 用 `tsx` 直接运行 TypeScript，**服务端不做打包**。开发用 `tsx watch`，生产用 `tsx`。
-- 唯一入口是 `server/index.ts`；`pnpm dev` / `pnpm start` 都指向它。
+- 开发用 `tsx watch` 直接跑 TypeScript；生产跑 esbuild 打包出来的 `output/server/index.js`，**不需要 tsx**（见 [REQ-DEPLOY](12-deployment.md)）。
+- 源码入口只有 `server/index.ts` 一个：`pnpm dev` 直接跑它，`pnpm start` 跑它的打包产物。
 - `NODE_ENV !== 'production'` 即视为开发环境。
 
 ### 2.2 启动顺序
@@ -56,7 +56,7 @@
 
 ### 2.6 生产环境的前端
 
-- 用 `serveStatic` 提供 `dist/`，未知路径回退到 `index.html`（SPA 路由）。
+- 用 `serveStatic` 提供**后端的静态资源目录**（`config.staticDir`，默认 `output/public`，`STATIC_DIR` 可覆盖），未知路径回退到 `index.html`（SPA 路由）。
 - `vite.config.ts` 是唯一的构建配置来源，`vite build` 和 middleware 模式共用它；里面**不应该**再有 `server.proxy`。
 
 ### 2.7 API 路由约定
@@ -74,13 +74,16 @@
 
 ### 2.8 配置项
 
-`server/config.ts` 统一导出：`rootDir` / `distDir` / `isDev` / `port` / `host` / `isApiPath()` / `dataDir` / `databaseUrl` / `ensureDatabaseDir()` / `appOrigin` / `authConfig` / `authEnabled` / `assertAuthConfig()`。
+`server/config.ts` 统一导出：`rootDir` / `outputDir` / `staticDir` / `isDev` / `port` / `host` / `isApiPath()` / `dataDir` / `databaseUrl` / `ensureDatabaseDir()` / `appOrigin` / `authConfig` / `authEnabled` / `assertAuthConfig()`。
+
+`rootDir`（应用根目录）来自 `server/runtime.ts`：源码运行是 `server/` 的上一级（仓库根），构建产物运行是进程 cwd —— 产物躺在 `output/` 下，拿 `output/` 当根会让 `data/` 和 prisma CLI 对不上。
 
 | 变量 | 默认值 |
 |---|---|
 | `PORT` | 3000 |
 | `HOST` | 127.0.0.1（容器内为 0.0.0.0） |
 | `NODE_ENV` | 非 `production` 即开发环境 |
+| `STATIC_DIR` | `output/public`（相对路径按应用根目录算） |
 
 > 注意：`config.ts` 在模块加载时把环境变量固化成常量。测试中要换环境必须 `vi.resetModules()` + 动态 `import()`。
 

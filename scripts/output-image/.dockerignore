@@ -1,0 +1,5 @@
+# output/ 作为构建上下文时要排掉的东西（本地跑过 `npm install` / 起过服务才会有）
+node_modules
+data
+.env
+*.log
