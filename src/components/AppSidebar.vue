@@ -32,7 +32,8 @@ const navItems: NavItem[] = [
   { label: "lightscene", to: "/lightscene", icon: Sun },
   { label: "richeditor", to: "/richeditor", icon: Sun },
   { label: "Three Editor", to: "/three-editor", icon: Boxes },
-  { label: "3D导演台", to: "/3d-scene", icon: Video }
+  { label: "3D导演台", to: "/3d-scene", icon: Video },
+  { label: "VueFlow", to: "/vue-flow", icon: Video }
 ]
 
 const route = useRoute()

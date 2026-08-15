@@ -20,24 +20,31 @@ spec:
           image: 192.168.68.95:31443/apps/shadecn-learning:0135b73
           imagePullPolicy: Always
           ports:
-            - containerPort: 80
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: "3000"
           resources:
             requests:
-              cpu: 50m
-              memory: 32Mi
-            limits:
-              cpu: 250m
+              cpu: 100m
               memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
           livenessProbe:
             httpGet:
-              path: /
-              port: 80
+              path: /api/health
+              port: 3000
             initialDelaySeconds: 5
             periodSeconds: 30
           readinessProbe:
             httpGet:
-              path: /
-              port: 80
+              path: /api/health
+              port: 3000
             initialDelaySeconds: 3
             periodSeconds: 10
       imagePullSecrets:

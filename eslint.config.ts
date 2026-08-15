@@ -42,6 +42,16 @@ export default defineConfig(
     }
   },
 
+  // Node 后端 —— Node 全局变量
+  {
+    files: ["server/**/*.ts", "vite.config.ts", "eslint.config.ts"],
+    languageOptions: {
+      globals: {
+        ...globals.node
+      }
+    }
+  },
+
   // Vue-specific parser config
   {
     files: ["**/*.vue"],
