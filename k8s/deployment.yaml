@@ -4,26 +4,21 @@ metadata:
   name: shadecn-learning-data
   namespace: dev
 spec:
+  # 集群里 local-path 和 nfs-homenas 都标了 default，必须显式指定
+  storageClassName: nfs-homenas
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
       storage: 1Gi
 ---
-# Keycloak 的 client secret 和会话密钥。真值别提交，用：
+# 注意：Secret 故意不放在 git 里（ArgoCD 开了 selfHeal，会拿仓库里的占位值把真值刷掉）。
+# 它是带外创建的，用 .env 里的值：
+#   set -a; . ./.env; set +a
 #   kubectl -n dev create secret generic shadecn-learning-auth \
-#     --from-literal=KEYCLOAK_CLIENT_SECRET=xxx \
-#     --from-literal=SESSION_SECRET=$(openssl rand -hex 32)
-apiVersion: v1
-kind: Secret
-metadata:
-  name: shadecn-learning-auth
-  namespace: dev
-type: Opaque
-stringData:
-  KEYCLOAK_CLIENT_SECRET: ""
-  SESSION_SECRET: "change-me"
----
+#     --from-literal=KEYCLOAK_CLIENT_SECRET="$KEYCLOAK_CLIENT_SECRET" \
+#     --from-literal=SESSION_SECRET="$SESSION_SECRET" \
+#     --dry-run=client -o yaml | kubectl apply -f -
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -64,9 +59,11 @@ spec:
             - name: APP_ORIGIN
               value: https://demo.fyl080801.uk
             - name: KEYCLOAK_ISSUER
-              value: https://keycloak.example.com/realms/myrealm
+              value: https://keycloak.fyl080801.uk/realms/master
             - name: KEYCLOAK_CLIENT_ID
-              value: shadcn-learning
+              value: sample
+            - name: KEYCLOAK_SCOPE
+              value: openid profile email
           envFrom:
             - secretRef:
                 name: shadecn-learning-auth
@@ -80,17 +77,22 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          # 启动要先跑 prisma migrate deploy，给足冷启动时间
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            periodSeconds: 5
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /api/health
               port: 3000
-            initialDelaySeconds: 5
             periodSeconds: 30
           readinessProbe:
             httpGet:
               path: /api/health
               port: 3000
-            initialDelaySeconds: 3
             periodSeconds: 10
       volumes:
         - name: data

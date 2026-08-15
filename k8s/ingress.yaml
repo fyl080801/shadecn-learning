@@ -5,6 +5,9 @@ metadata:
   namespace: dev
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-dns01-cloudflare
+    # /ws/* 上的 Yjs 长连接：默认 60s 读超时会把闲置的协作连接掐掉
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 spec:
   ingressClassName: nginx
   tls:
