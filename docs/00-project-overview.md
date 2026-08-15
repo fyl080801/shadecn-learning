@@ -29,7 +29,7 @@
 
 ### 3.1 登录
 
-- 除 `/login` 外，所有页面必须登录后才能访问，详见 [REQ-AUTH](02-auth-keycloak.md)。
+- 除服务端渲染的 `/login` 外，所有页面必须登录后才能访问；拦截发生在 Node 中间件里，未登录连前端产物都拿不到，详见 [REQ-AUTH](02-auth-keycloak.md)。
 - 浏览器端**不得**持有任何 token；所有受保护请求依赖 httpOnly Cookie。
 
 ### 3.2 同源

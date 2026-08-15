@@ -15,6 +15,7 @@ import {
   Sun,
   Boxes,
   Video,
+  Workflow,
   LogIn,
   LogOut,
   User as UserIcon
@@ -37,7 +38,7 @@ const navItems: NavItem[] = [
   { label: "richeditor", to: "/richeditor", icon: Sun },
   { label: "Three Editor", to: "/three-editor", icon: Boxes },
   { label: "3D导演台", to: "/3d-scene", icon: Video },
-  { label: "VueFlow", to: "/vue-flow", icon: Video }
+  { label: "画布项目", to: "/projects", icon: Workflow }
 ]
 
 const { user, displayName, isAuthenticated, authEnabled, startLogin, startLogout } =

@@ -19,6 +19,7 @@
 | REQ-DEMO | 演示页与小游戏 | [10-demo-pages.md](10-demo-pages.md) | 已实现 |
 | REQ-QA | 质量保障：测试、类型、Lint | [11-quality-testing.md](11-quality-testing.md) | 已实现 |
 | REQ-DEPLOY | 构建与部署 | [12-deployment.md](12-deployment.md) | 已实现 |
+| REQ-CANVAS | 项目、画布管理与操作历史 | [13-flow-canvas-management.md](13-flow-canvas-management.md) | 已实现 |
 
 ## 状态口径
 

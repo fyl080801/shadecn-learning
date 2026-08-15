@@ -67,6 +67,13 @@ export function loginUrl(redirect = "/") {
   return `/api/auth/login?redirect=${encodeURIComponent(redirect)}`
 }
 
+/**
+ * 登录页是服务端渲染的（不是 SPA 路由），所以只能整页跳过去。
+ */
+export function goToLoginPage(redirect = "/") {
+  window.location.replace(`/login?redirect=${encodeURIComponent(redirect)}`)
+}
+
 /** 登录/登出都是整页跳转：要经过 Keycloak，SPA 内部跳没用 */
 export function startLogin(redirect = "/") {
   window.location.assign(loginUrl(redirect))

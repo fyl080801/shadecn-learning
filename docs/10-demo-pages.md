@@ -75,8 +75,8 @@
 
 | 文件 | 内容 |
 |---|---|
-| `src/views/Example.vue` | 可拖拽的点，与方块四角连线，实时显示坐标（`InteractiveSquare.vue`） |
-| `src/views/Emu3DView.vue` | 纯 CSS 3D transform 立方体，拖拽旋转并显示 X/Y 角度（`Cube3D.vue`） |
+| `src/views/demos/Example.vue` | 可拖拽的点，与方块四角连线，实时显示坐标（`InteractiveSquare.vue`） |
+| `src/views/three/Emu3DView.vue` | 纯 CSS 3D transform 立方体，拖拽旋转并显示 X/Y 角度（`Cube3D.vue`） |
 
 需要决定：恢复路由，还是删除。
 

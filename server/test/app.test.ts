@@ -60,7 +60,9 @@ describe('404 / 500 处理', () => {
   })
 
   it('非 /api 的未命中返回纯文本（正常情况下会被前端中间件接走）', async () => {
-    const res = await app.request('/some/page')
+    // 已登录才走得到这一步，匿名会先被页面闸门拦下
+    const { cookie } = await signIn()
+    const res = await app.request('/some/page', { headers: { cookie } })
 
     expect(res.status).toBe(404)
     expect(res.headers.get('content-type')).toContain('text/plain')

@@ -12,7 +12,9 @@
 
 ```
 浏览器                     Node/Hono                      Keycloak
-  │  GET /login（前端页面）
+  │  GET /（未登录）────────►│ 页面闸门：没有会话
+  │  ◄── 302 /login ─────────│
+  │  GET /login ────────────►│ 服务端模板渲染登录页（不加载前端 bundle）
   │  点「使用 Keycloak 登录」
   │  GET /api/auth/login ────►│
   │                           │ 生成 state / nonce / PKCE verifier
@@ -29,7 +31,7 @@
   │  ◄── 302 回原页面 ─────────│
 ```
 
-之后每个 `/api/*` 请求：中间件取 `sid` → 查 Session → access_token 快过期就用 refresh_token 续一次 → 把用户挂到 `c.get('user')`。刷新失败（Keycloak 侧会话已结束）则删除本地会话并清 Cookie，前端下一跳回登录页。
+之后**每个**请求（不只是 `/api/*`）：中间件取 `sid` → 查 Session → access_token 快过期就用 refresh_token 续一次 → 把用户挂到 `c.get('user')`。刷新失败（Keycloak 侧会话已结束）则删除本地会话并清 Cookie，下一跳回登录页。
 
 `/ws/*` 的 WebSocket 握手走同一套：握手本身是普通 HTTP 请求，同源会带 Cookie；校验不过直接回 401 并断开。
 
@@ -45,7 +47,20 @@
 | `GET /api/auth/callback` | 消费 state、换 token、验 id_token、建会话、302 回原页面 |
 | `GET /api/auth/logout` | 销毁本地会话、撤销 refresh_token，并跳 Keycloak RP-initiated logout |
 
+| `GET /login` | **服务端模板渲染**的登录页（不是 SPA 路由）；带 `?redirect=` / `?error=`；已登录则 302 回 redirect |
+
 `/api/auth/*` 与 `/api/health` 属于公开路径，其余 `/api/*` 一律经过登录校验。
+
+### 3.1.1 页面闸门（非 `/api` 的请求）
+
+登录校验必须在 **Node 中间件**里完成，不能依赖前端路由守卫 —— 未登录的浏览器不应该拿到任何前端产物：
+
+- 除 `/login`、`/favicon.ico`、`/vite.svg` 外，所有非 `/api` 请求都要有会话；
+- 未登录且是整页导航（`Sec-Fetch-Mode: navigate` 或 `Accept: text/html`）→ **302** 到 `/login?redirect=<原地址>`；
+- 未登录的其它请求（`/assets/*.js`、dev 下的 `/src/**`、`/@vite/*`、XHR）→ **401**，绝不回 HTML；
+- `/api/*` 不走这道闸门，仍然按 JSON 401 处理（前端 `apiFetch` 靠它判断会话失效）。
+
+因此 `index.html` 与整个 SPA bundle 只会发给已登录的会话，禁用 JS 或直接 `curl` 也绕不过去。
 
 ### 3.2 OIDC 对接
 
@@ -88,9 +103,11 @@
 | `fetchSession()` | 请求一次 `/api/auth/me` 并缓存结果 |
 | `useAuth()` | `user` / `roles` / `isAuthenticated` / `authEnabled` / `hasRole` / `displayName` / `startLogin` / `startLogout` |
 | `apiFetch()` | 带凭据的 fetch 封装，遇 401 自动进入登录流程 |
+| `goToLoginPage()` | 整页 `location.replace` 到服务端渲染的 `/login` |
 
 - 登录 / 登出是**整页跳转**到 `/api/auth/login`、`/api/auth/logout`，不是 XHR。
-- 登录页 `/login`：一个「使用 Keycloak 登录」按钮；当回调带 `?error=` 时在页面上展示错误横幅。
+- 登录页由服务端渲染，SPA 路由表里**没有** `/login`，也没有对应的 Vue 组件。
+- 前端路由守卫只是兜底：正常情况下未登录根本加载不到 SPA，守卫处理的是「用着用着会话过期」，此时整页跳 `/login`。
 
 ### 3.8 未配置时的降级
 
@@ -142,6 +159,8 @@ pnpm dev                  # http://127.0.0.1:3000
 ## 5. 验收标准
 
 - [ ] 完整走通登录 → 访问受保护页面 → 登出 → 再访问受保护页面被弹回登录页。
+- [ ] 未登录时 `curl -H 'accept: text/html' /` 返回 302，`curl /assets/*.js`、`curl /src/main.ts` 返回 401 —— 拿不到任何前端产物。
+- [ ] `/login` 的响应里没有 `<script>`，不请求 `/api/*`。
 - [ ] 浏览器 DevTools 中除 `sid` / `oidc_tx` 外看不到任何 token；`sid` 为 httpOnly。
 - [ ] 同一个 `state` 重放回调必须失败。
 - [ ] `?redirect=//evil.com`、`?redirect=/\evil.com` 都回退到 `/`。

@@ -44,7 +44,7 @@
 ### 2.5 测试方式
 
 - 后端路由通过 `app.request()` 驱动，**走完整中间件栈**（会话、鉴权、错误处理），不允许直接调用 handler 函数。
-- 前端组件测试用 `@vue/test-utils`。
+- 前端组件测试用 `@vue/test-utils`。视图测试只桩 `@/lib/api`，组件本身、shadcn-vue 组件和 reka-ui 的交互都是真跑的 —— 那些「点了没反应」的坑正是出在这一层。jsdom 里要注意：菜单/对话框走 teleport，元素在 `document.body` 上，`wrapper` 里找不到；`DropdownMenuTrigger` 认 `click`，`TabsTrigger` 认 `mousedown`；`PointerEvent` 和 pointer capture 需要自己补桩。
 - 路由守卫测试导入**真实的** `@/router`，只桩掉 `/api/auth/me`。
 
 ### 2.6 模块级缓存的处理
@@ -53,9 +53,9 @@
 
 ### 2.7 当前覆盖范围
 
-**后端**：`app`（路由挂载与 404/500）、`config`、`auth/oidc`、`auth/session`、`auth/middleware`、`routes/auth`、`routes/health`、`routes/notes`、`store/notes`。
+**后端**：`app`（路由挂载与 404/500）、`config`、`auth/oidc`、`auth/session`、`auth/middleware`、`frontend/guard`（页面闸门与服务端渲染的登录页）、`routes/auth`、`routes/health`、`routes/notes`、`store/notes`。
 
-**前端**：`lib/utils`、`lib/auth`（`fetchSession` / `apiFetch` 完整契约）、`prompt-input` 的 `serialize`（round-trip）与 `operations`（transform / undo / batch）、路由守卫、`Login.vue` 组件。
+**前端**：`lib/utils`、`lib/format`、`lib/id`、`lib/auth`（`fetchSession` / `apiFetch` 完整契约）、`prompt-input` 的 `serialize`（round-trip）与 `operations`（transform / undo / batch）、路由守卫（会话失效 → 整页跳 `/login`）、`stores/flow`（apply / undo / redo / 事务合并 / 防抖提交 / 409）与命令注册表、`views/canvas/ProjectHome`（删画布 / 移除成员的二次确认真的发出请求）。
 
 ### 2.8 编写约定
 

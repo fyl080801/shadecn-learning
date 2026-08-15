@@ -3,8 +3,13 @@ import type { User } from '../../generated/prisma/client.ts'
 
 export { prisma }
 
-/** 每个用例前清库。Session 有外键，先删子表 */
+/** 每个用例前清库。都有外键，先删子表 */
 export async function resetDb() {
+  await prisma.flowOperation.deleteMany()
+  await prisma.flow.deleteMany()
+  await prisma.projectInvite.deleteMany()
+  await prisma.projectMember.deleteMany()
+  await prisma.project.deleteMany()
   await prisma.session.deleteMany()
   await prisma.authRequest.deleteMany()
   await prisma.user.deleteMany()

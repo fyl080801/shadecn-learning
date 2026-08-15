@@ -24,16 +24,10 @@ import {
   toSessionUser,
   upsertUser,
 } from '../auth/session.ts'
+import { safeRedirect } from '../auth/redirect.ts'
 
 /** 授权请求的有效期：从点「登录」到 Keycloak 跳回来 */
 const AUTH_REQUEST_TTL = 10 * 60 * 1000
-
-/** 只允许跳回站内路径，挡掉 open redirect（//evil.com、/\evil.com 都不行） */
-function safeRedirect(target: string | undefined): string {
-  if (!target || !target.startsWith('/')) return '/'
-  if (target.startsWith('//') || target.startsWith('/\\')) return '/'
-  return target
-}
 
 function clientIp(headers: Headers) {
   const forwarded = headers.get('x-forwarded-for')

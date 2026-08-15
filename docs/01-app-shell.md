@@ -9,7 +9,8 @@
 ### 2.1 整体布局
 
 - 应用占满视口高度（`h-screen`），左侧固定侧栏 + 右侧 `<RouterView>`。
-- 当路由声明 `meta.layout === 'blank'` 时，**不套侧栏**，直接整屏渲染视图。目前只有 `/login` 使用。
+- 所有 SPA 路由都套侧栏：登录页由服务端模板渲染（见 [REQ-AUTH](02-auth-keycloak.md) 3.1.1），不进 SPA，因此外壳里不再有「无侧栏」分支。
+  > 这一条会被 [REQ-CANVAS](13-flow-canvas-management.md) 打破：画布编辑器 `/flows/:id` 要独占整屏，需要引入 `meta.layout = 'bare'` 与之对应的无侧栏分支。落地时本节与 2.4 的「不需要 `meta.layout`」一并修订。
 - 右侧内容区自己管理滚动，`body` 不应出现滚动条。
 
 ### 2.2 侧栏导航
@@ -34,28 +35,41 @@
 
 - 使用 vue-router 5，history 模式（无 hash）。
 - 路由表在 `src/router/index.ts` 中平铺声明，一个视图 = 一条路由。
-- 路由 `meta` 支持两个字段，需在模块声明中补全类型：
-  - `public?: boolean` — 免登录页面；
-  - `layout?: 'blank'` — 不套侧栏布局。
+- 路由表里**只有需要登录的页面**：`/login` 不是 SPA 路由，未登录的浏览器根本拿不到这份 bundle，所以不需要 `meta.public` 这类字段。`meta.layout = 'bare'` 是例外，用来标记不套侧栏的整屏页面（见 2.1 与 [REQ-CANVAS](13-flow-canvas-management.md)）。
 - 体量大的页面（编辑器、导演台、流程图等）必须用动态 `import()` 懒加载；轻量页面可以静态导入。
+
+#### 2.4.1 标签页标题
+
+- 统一格式：**`区域` 或 `区域 - 具体名`**，例如「画布项目」「画布 - 下单主流程」。
+- 每条路由在 `meta.title` 里声明区域名，`router.afterEach` 负责写进 `document.title`；挂在 `afterEach` 而不是 `beforeEach`，是为了让被守卫拦下的导航不改标题。
+- 名字要等数据加载才知道的页面（项目主页、画布编辑器、邀请页）再用 `usePageTitle(区域, () => 名字)` 覆盖成两段式 —— 数据没到时先只显示区域名，到了自动补上，改名也会实时跟着变。
+
+#### 2.4.2 视图目录
+
+**路由表平铺，视图文件按功能分目录** —— `src/router/index.ts` 是唯一 import `src/views/` 的地方，所以挪动视图只会牵动这一个文件。
+
+| 目录 | 装什么 |
+|---|---|
+| `views/` 根 | `Home.vue` / `About.vue` —— 不属于任何功能的外壳页 |
+| `views/canvas/` | [REQ-CANVAS](13-flow-canvas-management.md)：`Projects` / `ProjectHome` / `InviteAccept` / `FlowEditor` |
+| `views/three/` | 3D 相关：`ThreeEditor`（[REQ-3DEDITOR](06-three-editor.md)）、`3DScene`（[REQ-DIRECTOR](07-director-console.md)）、`Canvas3D` / `LightScene` 占位页、`Emu3DView` |
+| `views/games/` | 小游戏：`Demo3` / `SnakeGame` / `Game2048` |
+| `views/demos/` | 单页能力验证：`FlowChart`（[REQ-FLOW](09-flow-chart.md)）、`RichEditor`（[REQ-PROMPT](08-prompt-input.md)）、`HiC`、`Example` |
+
+新增页面先想清楚归哪一格；哪一格都不像，说明它可能该是个独立需求。
 
 ### 2.5 登录守卫
 
-全局 `beforeEach` 的判定顺序：
+登录与否的**判定在服务端**（Node 中间件，见 [REQ-AUTH](02-auth-keycloak.md) 3.1.1）。前端守卫只是兜底，处理「用着用着会话过期」：
 
 1. 调用 `fetchSession()` 拿登录态（内部缓存，整个会话只请求一次 `/api/auth/me`）。
-2. 后端未启用鉴权 → 全站放行，登录页也可正常打开。
-3. 目标路由是 `meta.public`：
-   - 若是登录页且**已登录**，跳转到 `?redirect=` 指定的站内路径（必须以 `/` 开头），否则回 `/`；
-   - 其余情况放行。
-4. 未登录 → 重定向到 `/login?redirect=<目标 fullPath>`。
-5. 其余放行。
+2. 后端未启用鉴权，或已登录 → 放行。
+3. 否则 `location.replace('/login?redirect=<目标 fullPath>')` 并中断这次导航 —— 登录页是服务端渲染的整页，SPA 内部跳不过去。
 
 ### 2.6 当前路由表
 
 | 路径 | 名称 | 说明 | 加载方式 |
 |---|---|---|---|
-| `/login` | Login | 登录页，唯一公开路由，blank 布局 | 静态 |
 | `/` | Home | 首页 / 计数器演示 | 静态 |
 | `/about` | About | 项目介绍 | 静态 |
 | `/demo3` | Demo3 | 打砖块 | 静态 |
@@ -67,7 +81,11 @@
 | `/hic` | HtmlInCanvas | Canvas `drawElementImage` 演示 | 懒加载 |
 | `/three-editor` | ThreeEditor | Three.js 场景编辑器 | 懒加载 |
 | `/3d-scene` | 3DScene | 3D 导演台 | 懒加载 |
-| `/vue-flow` | VueFlow | 流程图画布 | 懒加载 |
+| `/vue-flow` | VueFlow | 流程图画布 demo（[REQ-FLOW](09-flow-chart.md)），已从侧栏移除，仅保留路由 | 懒加载 |
+| `/projects` | Projects | 项目列表（[REQ-CANVAS](13-flow-canvas-management.md)），侧栏入口「画布项目」 | 懒加载 |
+| `/projects/:projectId` | ProjectHome | 项目主页：画布 / 成员同页 Tab | 懒加载 |
+| `/invite/:token` | InviteAccept | 邀请落地页 | 懒加载 |
+| `/flows/:flowId` | FlowEditor | 画布编辑器，**`meta.layout = 'bare'`（无侧栏）** | 懒加载 |
 
 ## 3. 已知缺口
 
@@ -77,7 +95,7 @@
 
 ## 4. 验收标准
 
-- [ ] 未登录访问任意非公开路由，会被带 `redirect` 参数送到登录页；登录成功后回到原页面。
+- [ ] 未登录访问任意页面，在**服务端**就被 302 到 `/login?redirect=<原地址>`，浏览器不会加载任何前端产物；登录成功后回到原页面。
 - [ ] 已登录时访问 `/login` 会被弹回目标页，不会停在登录页。
 - [ ] 后端未配置 Keycloak 时，全站可直接访问，侧栏不显示用户区。
 - [ ] 桌面端折叠 / 展开侧栏后，内容区宽度跟随变化且有过渡动画。

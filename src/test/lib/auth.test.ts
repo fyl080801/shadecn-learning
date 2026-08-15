@@ -15,6 +15,7 @@ interface MePayload {
 
 let fetchMock: ReturnType<typeof vi.fn>
 let assign: ReturnType<typeof vi.fn>
+let replace: ReturnType<typeof vi.fn>
 
 const meResponse = (payload: MePayload = {}, status = 200) =>
   new Response(
@@ -43,8 +44,10 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock)
 
   assign = vi.fn()
+  replace = vi.fn()
   vi.stubGlobal("location", {
     assign,
+    replace,
     pathname: "/2048",
     search: "?a=1",
     href: "http://localhost/2048?a=1"
@@ -214,6 +217,14 @@ describe("登录 / 登出跳转", () => {
     startLogin("/2048")
 
     expect(assign).toHaveBeenCalledWith("/api/auth/login?redirect=%2F2048")
+  })
+
+  it("goToLoginPage 整页跳到服务端渲染的登录页，用 replace 不留历史", async () => {
+    const { goToLoginPage } = await loadAuth()
+    goToLoginPage("/2048?x=1")
+
+    expect(replace).toHaveBeenCalledWith("/login?redirect=%2F2048%3Fx%3D1")
+    expect(assign).not.toHaveBeenCalled()
   })
 
   it("startLogout 整页跳到后端登出入口", async () => {

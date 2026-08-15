@@ -4,6 +4,9 @@ import type { Router } from "vue-router"
 /**
  * 路由守卫用的是真实的 router 和真实的 lib/auth，只把 /api/auth/me 打桩，
  * 这样「登录态怎么来的」和「守卫怎么判的」是一起被约束住的。
+ *
+ * 注意：未登录的第一道闸门在服务端（server/frontend/guard.ts），未登录压根
+ * 拿不到这份 bundle。这里测的是会话中途失效的兜底：整页跳到 /login。
  */
 interface MePayload {
   enabled?: boolean
@@ -20,6 +23,8 @@ const alice = {
   avatarUrl: null,
   roles: ["admin"]
 }
+
+let replace: ReturnType<typeof vi.fn>
 
 async function loadRouter(payload: MePayload = {}): Promise<Router> {
   vi.stubGlobal(
@@ -49,29 +54,35 @@ const loggedIn = () => loadRouter({ authenticated: true, user: alice })
 beforeEach(() => {
   // 每个用例都从 / 开始，避免上一个用例把地址栏留在了别处
   window.history.replaceState({}, "", "/")
+
+  replace = vi.fn()
+  vi.stubGlobal("location", {
+    replace,
+    assign: vi.fn(),
+    origin: "http://localhost:3000",
+    href: "http://localhost:3000/",
+    pathname: "/",
+    search: "",
+    hash: ""
+  })
 })
 
-describe("未登录时", () => {
-  it("访问受保护页面被送去登录页，并记下原地址", async () => {
+describe("会话失效时", () => {
+  it("导航被拦下，整页跳到服务端登录页并带上原地址", async () => {
     const router = await anonymous()
     await router.push("/2048")
 
-    expect(router.currentRoute.value.name).toBe("Login")
-    expect(router.currentRoute.value.query.redirect).toBe("/2048")
+    expect(replace).toHaveBeenCalledWith("/login?redirect=%2F2048")
+    expect(router.currentRoute.value.path).toBe("/")
   })
 
   it("带 query 的地址也完整记下来（用的是 fullPath）", async () => {
     const router = await anonymous()
     await router.push("/snake?level=3")
 
-    expect(router.currentRoute.value.query.redirect).toBe("/snake?level=3")
-  })
-
-  it("登录页本身是 public，直接能打开", async () => {
-    const router = await anonymous()
-    await router.push("/login")
-
-    expect(router.currentRoute.value.name).toBe("Login")
+    expect(replace).toHaveBeenCalledWith(
+      `/login?redirect=${encodeURIComponent("/snake?level=3")}`
+    )
   })
 
   it("只问一次 /api/auth/me，之后的导航走缓存", async () => {
@@ -85,41 +96,12 @@ describe("未登录时", () => {
 })
 
 describe("已登录时", () => {
-  it("受保护页面正常进入", async () => {
+  it("受保护页面正常进入，不跳登录页", async () => {
     const router = await loggedIn()
     await router.push("/2048")
 
     expect(router.currentRoute.value.name).toBe("Game2048")
-  })
-
-  it("再去登录页会被弹回首页", async () => {
-    const router = await loggedIn()
-    await router.push("/login")
-
-    expect(router.currentRoute.value.path).toBe("/")
-  })
-
-  it("带 redirect 的登录页会跳回那个地址", async () => {
-    const router = await loggedIn()
-    await router.push("/login?redirect=/2048")
-
-    expect(router.currentRoute.value.name).toBe("Game2048")
-  })
-
-  it("登录页上非站内的 redirect 被忽略，回首页", async () => {
-    const router = await loggedIn()
-    await router.push("/login?redirect=https%3A%2F%2Fevil.example")
-
-    expect(router.currentRoute.value.path).toBe("/")
-  })
-
-  it("协议相对地址跳不出本站（vue-router 当成站内路径解析）", async () => {
-    const router = await loggedIn()
-    await router.push("/login?redirect=%2F%2Fevil.example%2Fpwn")
-
-    // 真正的 open redirect 防线在后端 safeRedirect；这里保证前端也没把人送出去
-    expect(window.location.origin).toBe("http://localhost:3000")
-    expect(router.currentRoute.value.fullPath.startsWith("http")).toBe(false)
+    expect(replace).not.toHaveBeenCalled()
   })
 })
 
@@ -129,41 +111,14 @@ describe("后端没配 Keycloak 时", () => {
     await router.push("/2048")
 
     expect(router.currentRoute.value.name).toBe("Game2048")
-  })
-
-  it("登录页也还能打开（页面上会提示没配）", async () => {
-    const router = await loadRouter({ enabled: false })
-    await router.push("/login")
-
-    expect(router.currentRoute.value.name).toBe("Login")
+    expect(replace).not.toHaveBeenCalled()
   })
 })
 
 describe("路由表约定", () => {
-  it("只有 /login 是免登录的，其余都要登录", async () => {
+  it("SPA 里没有 /login —— 登录页由服务端模板渲染", async () => {
     const router = await anonymous()
-    const publicRoutes = router
-      .getRoutes()
-      .filter((r) => r.meta.public)
-      .map((r) => r.path)
 
-    expect(publicRoutes).toEqual(["/login"])
-  })
-
-  it("/login 用 blank 布局（不套侧边栏）", async () => {
-    const router = await anonymous()
-    const login = router.getRoutes().find((r) => r.name === "Login")
-
-    expect(login?.meta.layout).toBe("blank")
-  })
-
-  it("其它页面都不设 layout，走默认的侧边栏布局", async () => {
-    const router = await anonymous()
-    const withLayout = router
-      .getRoutes()
-      .filter((r) => r.meta.layout !== undefined)
-      .map((r) => r.name)
-
-    expect(withLayout).toEqual(["Login"])
+    expect(router.getRoutes().some((r) => r.path === "/login")).toBe(false)
   })
 })
