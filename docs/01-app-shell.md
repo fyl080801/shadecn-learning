@@ -8,9 +8,11 @@
 
 ### 2.1 整体布局
 
-- 应用占满视口高度（`h-screen`），左侧固定侧栏 + 右侧 `<RouterView>`。
-- 所有 SPA 路由都套侧栏：登录页由服务端模板渲染（见 [REQ-AUTH](02-auth-keycloak.md) 3.1.1），不进 SPA，因此外壳里不再有「无侧栏」分支。
-  > 这一条会被 [REQ-CANVAS](13-flow-canvas-management.md) 打破：画布编辑器 `/flows/:id` 要独占整屏，需要引入 `meta.layout = 'bare'` 与之对应的无侧栏分支。落地时本节与 2.4 的「不需要 `meta.layout`」一并修订。
+- 应用占满视口高度（`h-screen`）。
+- **布局是模板页，不是外壳里的条件分支。** `src/layouts/` 下一个布局一个组件，路由表里作为父级路由挂载，页面渲染在布局自己的 `<RouterView>` 上；`App.vue` 只剩一个 `<RouterView />` 和全局 `Toaster`。
+  - `SidebarLayout` —— 左侧固定侧栏 + 右侧内容区，绝大多数页面用它。
+  - `BlankLayout` —— 整屏，无侧栏，给需要独占屏幕的页面用（目前只有画布编辑器 `/flows/:id`，见 [REQ-CANVAS](13-flow-canvas-management.md)）。
+- 无侧栏**不是登录态的例外**：登录页由服务端模板渲染（见 [REQ-AUTH](02-auth-keycloak.md) 3.1.1），根本不进 SPA；`BlankLayout` 下的路由同样是登录后才进得来。
 - 右侧内容区自己管理滚动，`body` 不应出现滚动条。
 
 ### 2.2 侧栏导航
@@ -34,8 +36,8 @@
 ### 2.4 路由
 
 - 使用 vue-router 5，history 模式（无 hash）。
-- 路由表在 `src/router/index.ts` 中平铺声明，一个视图 = 一条路由。
-- 路由表里**只有需要登录的页面**：`/login` 不是 SPA 路由，未登录的浏览器根本拿不到这份 bundle，所以不需要 `meta.public` 这类字段。`meta.layout = 'bare'` 是例外，用来标记不套侧栏的整屏页面（见 2.1 与 [REQ-CANVAS](13-flow-canvas-management.md)）。
+- 路由表在 `src/router/index.ts` 中声明，一个视图 = 一条路由；顶层只有两条记录，就是 2.1 的两张模板页，页面都作为它们的 `children` 平铺在下面。
+- 路由表里**只有需要登录的页面**：`/login` 不是 SPA 路由，未登录的浏览器根本拿不到这份 bundle，所以不需要 `meta.public` 这类字段；页面套哪张模板页由它挂在哪条父级路由下决定，也不需要 `meta.layout` 这类字段。
 - 体量大的页面（编辑器、导演台、流程图等）必须用动态 `import()` 懒加载；轻量页面可以静态导入。
 
 #### 2.4.1 标签页标题
@@ -85,7 +87,7 @@
 | `/projects` | Projects | 项目列表（[REQ-CANVAS](13-flow-canvas-management.md)），侧栏入口「画布项目」 | 懒加载 |
 | `/projects/:projectId` | ProjectHome | 项目主页：画布 / 成员同页 Tab | 懒加载 |
 | `/invite/:token` | InviteAccept | 邀请落地页 | 懒加载 |
-| `/flows/:flowId` | FlowEditor | 画布编辑器，**`meta.layout = 'bare'`（无侧栏）** | 懒加载 |
+| `/flows/:flowId` | FlowEditor | 画布编辑器，**唯一挂在 `BlankLayout` 下的路由（无侧栏）** | 懒加载 |
 
 ## 3. 已知缺口
 

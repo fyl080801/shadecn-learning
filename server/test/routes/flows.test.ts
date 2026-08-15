@@ -367,6 +367,114 @@ describe('POST /api/flows/:id/duplicate', () => {
   })
 })
 
+describe('PATCH /api/flows/:id/user-state', () => {
+  /** 取详情里那份「我自己的」状态 */
+  async function userStateOf(who: Actor, flowId: string) {
+    const res = await who.request(`/api/flows/${flowId}`)
+    const body = (await res.json()) as { userState: Record<string, unknown> }
+    return body.userState
+  }
+
+  it('存下来的视口只回给存它的人，别人看到的是自己的', async () => {
+    const alice = await actor()
+    const bob = await actor('bob')
+    const projectId = await createProject(alice)
+    await joinViaInvite(alice, projectId, bob)
+    const flowId = await createFlow(alice, projectId)
+
+    const res = await alice.json(`/api/flows/${flowId}/user-state`, 'PATCH', {
+      viewport: { x: 10, y: 20, zoom: 1.5 },
+    })
+    expect(res.status).toBe(204)
+
+    expect(await userStateOf(alice, flowId)).toEqual({ viewport: { x: 10, y: 20, zoom: 1.5 } })
+    // bob 还没存过：拿到空对象，由前端回落到快照里那份兜底视口
+    expect(await userStateOf(bob, flowId)).toEqual({})
+
+    await bob.json(`/api/flows/${flowId}/user-state`, 'PATCH', {
+      viewport: { x: -5, y: 0, zoom: 0.5 },
+    })
+    expect(await userStateOf(alice, flowId)).toEqual({ viewport: { x: 10, y: 20, zoom: 1.5 } })
+    expect(await userStateOf(bob, flowId)).toEqual({ viewport: { x: -5, y: 0, zoom: 0.5 } })
+  })
+
+  it('再存一次是覆盖，一个人一张画布只有一行', async () => {
+    const alice = await actor()
+    const projectId = await createProject(alice)
+    const flowId = await createFlow(alice, projectId)
+
+    await alice.json(`/api/flows/${flowId}/user-state`, 'PATCH', {
+      viewport: { x: 1, y: 1, zoom: 1 },
+    })
+    await alice.json(`/api/flows/${flowId}/user-state`, 'PATCH', {
+      viewport: { x: 2, y: 2, zoom: 2 },
+    })
+
+    expect(await userStateOf(alice, flowId)).toEqual({ viewport: { x: 2, y: 2, zoom: 2 } })
+    expect(await prisma.flowUserState.count({ where: { flowId } })).toBe(1)
+  })
+
+  it('视图操作不动画布数据：revision 不涨，也不写操作日志', async () => {
+    const alice = await actor()
+    const projectId = await createProject(alice)
+    const flowId = await createFlow(alice, projectId)
+
+    await alice.json(`/api/flows/${flowId}/user-state`, 'PATCH', {
+      viewport: { x: 3, y: 4, zoom: 1 },
+    })
+
+    const detail = (await (await alice.request(`/api/flows/${flowId}`)).json()) as {
+      revision: number
+      graph: FlowGraph
+    }
+    expect(detail.revision).toBe(0)
+    // 快照里那份兜底视口没被个人视口改写
+    expect(detail.graph.viewport).toEqual({ x: 0, y: 0, zoom: 1 })
+    expect(await prisma.flowOperation.count({ where: { flowId } })).toBe(0)
+  })
+
+  it('校验：未知分区、坏视口、空 body → 400', async () => {
+    const alice = await actor()
+    const projectId = await createProject(alice)
+    const flowId = await createFlow(alice, projectId)
+
+    const patch = (body: unknown) => alice.json(`/api/flows/${flowId}/user-state`, 'PATCH', body)
+
+    expect((await patch({ 谁知道呢: 1 })).status).toBe(400)
+    expect((await patch({ viewport: { x: 1, y: 2 } })).status).toBe(400)
+    expect((await patch({ viewport: { x: 1, y: 2, zoom: 0 } })).status).toBe(400)
+    expect((await patch({ viewport: { x: 1, y: 2, zoom: Number.NaN } })).status).toBe(400)
+    expect((await patch({})).status).toBe(400)
+  })
+
+  it('非成员存不了：跟读一样是 404，不泄露画布存不存在', async () => {
+    const alice = await actor()
+    const stranger = await actor('stranger')
+    const projectId = await createProject(alice)
+    const flowId = await createFlow(alice, projectId)
+
+    const res = await stranger.json(`/api/flows/${flowId}/user-state`, 'PATCH', {
+      viewport: { x: 1, y: 1, zoom: 1 },
+    })
+    expect(res.status).toBe(404)
+    expect(await prisma.flowUserState.count({ where: { flowId } })).toBe(0)
+  })
+
+  it('画布删掉，附带的用户状态一起没', async () => {
+    const alice = await actor()
+    const projectId = await createProject(alice)
+    const flowId = await createFlow(alice, projectId)
+
+    await alice.json(`/api/flows/${flowId}/user-state`, 'PATCH', {
+      viewport: { x: 1, y: 1, zoom: 1 },
+    })
+    // 软删只是过滤，行还在；真正的级联删除靠外键，这里直接删库里那行画布
+    await prisma.flow.delete({ where: { id: flowId } })
+
+    expect(await prisma.flowUserState.count({ where: { flowId } })).toBe(0)
+  })
+})
+
 describe('GET /api/flows/:id/operations', () => {
   it('按 seq 升序分页，支持 sinceSeq', async () => {
     const alice = await actor()

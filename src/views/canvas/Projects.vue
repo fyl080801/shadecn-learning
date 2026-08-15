@@ -31,6 +31,7 @@ import {
 import { projectApi } from "@/lib/api"
 import type { ProjectSummary } from "@/types/flow"
 import { formatDateTime } from "@/lib/format"
+import { useAsyncAction } from "@/composables/useAsyncAction"
 
 /**
  * 项目列表 —— 应用里画布的入口。
@@ -100,35 +101,28 @@ function goPage(next: number) {
 
 const creating = ref(false)
 const draft = ref({ name: "", description: "" })
-const submitting = ref(false)
 
 function openCreate() {
   draft.value = { name: "", description: "" }
   creating.value = true
 }
 
-async function submitCreate() {
+// 按钮和回车是同一个入口，连点 / 连按都只会建出一个项目
+const { run: submitCreate, pending: submitting } = useAsyncAction(async () => {
   const name = draft.value.name.trim()
   if (!name) {
     toast.error("请填写项目名称")
     return
   }
 
-  submitting.value = true
-  try {
-    const project = await projectApi.create({
-      name,
-      description: draft.value.description.trim() || null
-    })
-    creating.value = false
-    toast.success(`项目「${project.name}」已创建`)
-    void router.push(`/projects/${project.id}`)
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "创建失败")
-  } finally {
-    submitting.value = false
-  }
-}
+  const project = await projectApi.create({
+    name,
+    description: draft.value.description.trim() || null
+  })
+  creating.value = false
+  toast.success(`项目「${project.name}」已创建`)
+  void router.push(`/projects/${project.id}`)
+}, { errorMessage: "创建失败" })
 </script>
 
 <template>
@@ -158,7 +152,7 @@ async function submitCreate() {
       class="flex flex-col items-center gap-3 rounded-lg border border-dashed p-12 text-center"
     >
       <p class="text-sm text-destructive">{{ error }}</p>
-      <Button variant="outline" size="sm" @click="load">重试</Button>
+      <Button variant="outline" size="sm" @click="load()">重试</Button>
     </div>
 
     <div
@@ -246,7 +240,7 @@ async function submitCreate() {
               v-model="draft.name"
               placeholder="例如：订单系统"
               maxlength="80"
-              @keydown.enter="submitCreate"
+              @keydown.enter="submitCreate()"
             />
           </div>
           <div class="space-y-2">
@@ -256,8 +250,8 @@ async function submitCreate() {
         </div>
 
         <DialogFooter>
-          <Button variant="outline" @click="creating = false">取消</Button>
-          <Button :disabled="submitting" @click="submitCreate">创建</Button>
+          <Button variant="outline" :disabled="submitting" @click="creating = false">取消</Button>
+          <Button :loading="submitting" @click="submitCreate()">创建</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

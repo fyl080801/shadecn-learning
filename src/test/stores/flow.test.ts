@@ -4,6 +4,7 @@ import {
   FLUSH_DEBOUNCE,
   FLUSH_OP_THRESHOLD,
   HISTORY_LIMIT,
+  USER_STATE_DEBOUNCE,
   invertOps,
   useFlowStore
 } from "@/stores/flow"
@@ -44,11 +45,15 @@ function detail(overrides: Partial<FlowDetail> = {}): FlowDetail {
       edges: [],
       meta: {}
     },
+    userState: {},
     ...overrides
   }
 }
 
-/** 打桩 /api/flows/:id/commit，记录每次请求体 */
+/**
+ * 打桩 /api/flows/:id/commit，记录每次请求体。
+ * 按用户存的状态（/user-state）走的是另一条链路，这里一律 204 放行、不计入 calls。
+ */
 function stubCommit(
   responder: (body: {
     baseRevision: number
@@ -60,7 +65,9 @@ function stubCommit(
     transactions: { id: string; kind: string; label: string; ts: number; ops: FlowOp[] }[]
   }[] = []
 
-  const fetchStub = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchStub = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (!String(input).endsWith("/commit")) return new Response(null, { status: 204 })
+
     const body = JSON.parse(String(init?.body)) as (typeof calls)[number]
     calls.push(body)
     const result = responder(body)
@@ -345,11 +352,11 @@ describe("提交", () => {
 
   it("提交的 graph 是当前全量快照", async () => {
     vi.useFakeTimers()
-    const fetchBodies: string[] = []
+    const sent: { url: string; body: string }[] = []
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-        fetchBodies.push(String(init?.body))
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        sent.push({ url: String(input), body: String(init?.body) })
         return new Response(JSON.stringify({ revision: 1 }), {
           status: 200,
           headers: { "content-type": "application/json" }
@@ -363,11 +370,14 @@ describe("提交", () => {
     store.apply([addNodeOp("n1", 10, 20)], "新增 n1")
     await vi.advanceTimersByTimeAsync(FLUSH_DEBOUNCE)
 
-    const sent = JSON.parse(fetchBodies[0]!) as {
+    // 视口自己有一条更早的请求，这里要挑出 commit 那条
+    const commit = sent.find((item) => item.url.endsWith("/commit"))
+    const body = JSON.parse(commit!.body) as {
       graph: { nodes: { id: string }[]; viewport: { zoom: number } }
     }
-    expect(sent.graph.nodes.map((item) => item.id)).toEqual(["n1"])
-    expect(sent.graph.viewport).toEqual({ x: 5, y: 6, zoom: 2 })
+    expect(body.graph.nodes.map((item) => item.id)).toEqual(["n1"])
+    // 我平移/缩放不改共享快照里那份兜底视口 —— 视图操作和数据变化是两条路
+    expect(body.graph.viewport).toEqual({ x: 0, y: 0, zoom: 1 })
   })
 
   it("409 → 进入 conflict 并停止自动提交", async () => {
@@ -466,6 +476,107 @@ describe("提交", () => {
     expect(fetchStub).toHaveBeenCalledTimes(2)
     expect(store.pending).toHaveLength(0)
     expect(store.saveState).toBe("saved")
+  })
+})
+
+describe("视口 —— 按用户存，不进历史", () => {
+  /** 记录所有请求，方便按 URL 分辨走的是哪条链路 */
+  function stubAll() {
+    const sent: { url: string; method: string; body: string }[] = []
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        sent.push({
+          url: String(input),
+          method: init?.method ?? "GET",
+          body: String(init?.body)
+        })
+        return new Response(null, { status: 204 })
+      })
+    )
+    return sent
+  }
+
+  it("平移 / 缩放不进撤销栈、不算未保存", () => {
+    stubAll()
+    const store = useFlowStore()
+    store.load(detail())
+
+    store.setViewport({ x: 12, y: 34, zoom: 1.5 })
+
+    expect(store.canUndo).toBe(false)
+    expect(store.pending).toHaveLength(0)
+    expect(store.dirty).toBe(false)
+    expect(store.saveState).toBe("saved")
+  })
+
+  it("防抖后 PATCH /user-state，只带改过的分区", async () => {
+    vi.useFakeTimers()
+    const sent = stubAll()
+    const store = useFlowStore()
+    store.load(detail())
+
+    store.setViewport({ x: 12, y: 34, zoom: 1.5 })
+    expect(sent).toHaveLength(0)
+
+    await vi.advanceTimersByTimeAsync(USER_STATE_DEBOUNCE)
+
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.url).toBe("/api/flows/flow-1/user-state")
+    expect(sent[0]!.method).toBe("PATCH")
+    expect(JSON.parse(sent[0]!.body)).toEqual({ viewport: { x: 12, y: 34, zoom: 1.5 } })
+  })
+
+  it("连续移动只发最后一次", async () => {
+    vi.useFakeTimers()
+    const sent = stubAll()
+    const store = useFlowStore()
+    store.load(detail())
+
+    store.setViewport({ x: 1, y: 1, zoom: 1 })
+    await vi.advanceTimersByTimeAsync(USER_STATE_DEBOUNCE / 2)
+    store.setViewport({ x: 2, y: 2, zoom: 1 })
+    await vi.advanceTimersByTimeAsync(USER_STATE_DEBOUNCE)
+
+    expect(sent).toHaveLength(1)
+    expect(JSON.parse(sent[0]!.body)).toEqual({ viewport: { x: 2, y: 2, zoom: 1 } })
+  })
+
+  it("load 优先用我自己的视口，没有才回落到快照里那份", () => {
+    stubAll()
+    const store = useFlowStore()
+
+    store.load(detail({ userState: { viewport: { x: 7, y: 8, zoom: 3 } } }))
+    expect(store.viewport).toEqual({ x: 7, y: 8, zoom: 3 })
+
+    store.load(
+      detail({ graph: { ...detail().graph, viewport: { x: 1, y: 2, zoom: 0.5 } } })
+    )
+    expect(store.viewport).toEqual({ x: 1, y: 2, zoom: 0.5 })
+  })
+
+  it("存不上不报错，值留着下次再试", async () => {
+    vi.useFakeTimers()
+    let calls = 0
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls += 1
+        if (calls === 1) throw new TypeError("网络断了")
+        return new Response(null, { status: 204 })
+      })
+    )
+
+    const store = useFlowStore()
+    store.load(detail())
+    store.setViewport({ x: 9, y: 9, zoom: 2 })
+    await vi.advanceTimersByTimeAsync(USER_STATE_DEBOUNCE)
+    expect(calls).toBe(1)
+    expect(store.saveState).toBe("saved")
+
+    // 下一次触发（这里用离开前的强制落库）把上次没存成的补上
+    await store.saveNow()
+    expect(calls).toBe(2)
   })
 })
 

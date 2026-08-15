@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue"
-import { Menu, Plus, Trash2, Workflow } from "lucide-vue-next"
+import { Copy, Menu, Plus, Trash2, Workflow } from "lucide-vue-next"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -29,7 +29,7 @@ import { useFlowEditor } from "@/composables/flow"
  * 页面是 bare 布局没有应用侧栏，所以这枚胶囊是「出去」的唯一入口，
  * 也是画布级动作（新建 / 复制 / 删除）的收口处。
  */
-const { store, canvas, document: doc } = useFlowEditor()
+const { store, document: doc } = useFlowEditor()
 
 const editingName = ref(false)
 const nameDraft = ref("")
@@ -56,7 +56,7 @@ const confirmingDelete = ref(false)
       size="icon"
       class="size-8 rounded-full"
       title="返回项目"
-      @click="doc.backToProject"
+      @click="doc.backToProject()"
     >
       <Workflow class="text-primary" />
     </Button>
@@ -81,7 +81,9 @@ const confirmingDelete = ref(false)
 
     <button
       class="whitespace-nowrap px-1 text-xs text-muted-foreground"
-      :class="doc.saveActionable.value ? 'text-destructive hover:underline' : ''"
+      :class="
+        doc.saveActionable.value ? 'text-destructive hover:underline' : ''
+      "
       @click="doc.onSaveIndicatorClick"
     >
       {{ doc.saveText.value }}
@@ -94,18 +96,26 @@ const confirmingDelete = ref(false)
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" class="w-40">
-        <DropdownMenuItem @select="canvas.addNode()">
+        <!-- 复制 / 新建都要先把未保存的落库，慢，进行中就把入口按住 -->
+        <DropdownMenuItem :disabled="doc.creatingSibling.value" @select="doc.createSibling()">
           <Plus />
-          新建节点
+          新建画布
         </DropdownMenuItem>
-        <DropdownMenuItem @select="doc.createSibling()">新建画布</DropdownMenuItem>
-        <DropdownMenuItem @select="doc.duplicate()">复制</DropdownMenuItem>
-        <DropdownMenuItem variant="destructive" @select="confirmingDelete = true">
+        <DropdownMenuItem :disabled="doc.duplicating.value" @select="doc.duplicate()">
+          <Copy />
+          复制
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          variant="destructive"
+          @select="confirmingDelete = true"
+        >
           <Trash2 />
           删除
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem @select="doc.backToProject()">返回画布首页</DropdownMenuItem>
+        <DropdownMenuItem @select="doc.backToProject()"
+          >返回项目</DropdownMenuItem
+        >
       </DropdownMenuContent>
     </DropdownMenu>
   </div>
@@ -113,12 +123,16 @@ const confirmingDelete = ref(false)
   <AlertDialog v-model:open="confirmingDelete">
     <AlertDialogContent>
       <AlertDialogHeader>
-        <AlertDialogTitle>删除画布「{{ store.meta?.name }}」？</AlertDialogTitle>
+        <AlertDialogTitle
+          >删除画布「{{ store.meta?.name }}」？</AlertDialogTitle
+        >
         <AlertDialogDescription>删除后不可恢复。</AlertDialogDescription>
       </AlertDialogHeader>
       <AlertDialogFooter>
         <AlertDialogCancel>取消</AlertDialogCancel>
-        <AlertDialogAction @click="doc.remove()">删除</AlertDialogAction>
+        <AlertDialogAction :disabled="doc.removing.value" @click="doc.remove()">
+          删除
+        </AlertDialogAction>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>

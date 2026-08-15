@@ -6,17 +6,15 @@ import { projects as store, type InviteInvalidReason } from '../store/projects.t
 type Env = { Variables: AuthVariables & ProjectVariables }
 
 /**
- * 邀请链接是加入项目的唯一入口。
- * 这两个端点按 token 鉴权而非成员身份 —— 被邀请者此刻当然还不是成员，
+ * 分享链接是加入项目的唯一入口。
+ * 这两个端点按 token 鉴权而非成员身份 —— 访问者此刻当然还不是成员，
  * 但必须已登录（未登录会先被页面网关挡去登录页）。
  */
 
-/** 失效原因给各自的文案，不要一律「链接无效」 */
+/** 失效原因给各自的文案，不要一律「链接无效」。链接被重置后旧 token 查不到，走 not_found */
 const REASON_TEXT: Record<InviteInvalidReason, string> = {
-  not_found: '邀请链接无效',
-  expired: '邀请链接已过期',
-  revoked: '邀请链接已被撤销',
-  exhausted: '邀请链接的使用次数已用完',
+  not_found: '分享链接无效或已被重置',
+  expired: '分享链接已过期',
   project_deleted: '项目已被删除',
   project_full: '项目成员数已达上限',
 }

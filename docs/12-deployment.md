@@ -23,7 +23,7 @@
 
 | 组 | 含义 | 内容 |
 |---|---|---|
-| `dependencies` | **生产运行时**真正要装的 | `hono` / `@hono/node-server`、`yjs` / `y-protocols` / `lib0` / `ws`、`@prisma/client` / `@prisma/adapter-better-sqlite3`、`prisma`（启动时跑迁移） |
+| `dependencies` | **生产运行时**真正要装的 | `hono` / `@hono/node-server`、`yjs` / `y-protocols` / `lib0` / `ws`、`@prisma/client` + 两个 driver adapter（`@prisma/adapter-better-sqlite3` / `@prisma/adapter-pg`）、`prisma`（启动时跑迁移） |
 | `devDependencies` | 开发和构建期才要的 | 前端全家桶（vue、vue-router、three、tailwind、reka-ui、codemirror、vue-flow、y-websocket…）+ 工具链（vite、esbuild、tsx、vue-tsc、eslint、vitest…） |
 
 **前端库为什么算 dev**：它们全都被 `vite build` 打进了 `output/public`，运行时一个都不用装。
@@ -56,13 +56,27 @@ output/
 ```
 
 `package.json` 的 `dependencies` 不是照抄仓库那份，而是**从 esbuild 的 external 列表反推**
-出来的实际运行时依赖（`@hono/node-server`、`hono`、`@prisma/client`、
-`@prisma/adapter-better-sqlite3`、`yjs`、`y-protocols`、`lib0`、`ws`，外加跑迁移用的
+出来的实际运行时依赖（`@hono/node-server`、`hono`、`@prisma/client`、当次 provider 对应的那个
+driver adapter、`yjs`、`y-protocols`、`lib0`、`ws`，外加跑迁移用的
 `prisma`），版本锁到构建当次实际装的那一个。`vite` 只出现在永不加载的 dev chunk 里，
 不进这份清单。前端那一堆（vue / three / tailwind…）已经打进 `public/`，运行时一个都不需要。
 
 > `node_modules` 不在产物里 —— better-sqlite3 是原生模块，必须在目标平台上装。
 > 产物里锁的是直接依赖的版本，间接依赖没有 lockfile 兜底。
+
+**产物是绑定 provider 的**：Prisma 生成的 client 在编译期就把 sqlite 或 postgres 的查询编译器
+打了进去，换不了。所以构建时的 `DB_PROVIDER` / `DATABASE_URL` 决定了这份产物连哪种库：
+
+```bash
+pnpm db:generate && pnpm build                                   # SQLite 产物
+DB_PROVIDER=postgresql DATABASE_URL=postgresql://… \
+  pnpm db:generate && DB_PROVIDER=postgresql pnpm build          # PostgreSQL 产物
+```
+
+`build:server` 会核对生成的 client 和构建目标是不是同一种库，对不上直接失败。产物里
+`prisma/` 只放当次 provider 的 schema 和迁移历史（铺平成 `prisma/schema.prisma` +
+`prisma/migrations/`，目录形状不随 provider 变），用不上的那个 driver adapter 也不会进
+`dependencies` —— PG 部署因此不必为 better-sqlite3 装一套编译工具链。
 
 - **前端静态资源直接构建进后端的静态资源目录**：`vite.config.ts` 里 `build.outDir = output/public`，后端生产模式就吐这个目录（可用 `STATIC_DIR` 覆盖）。
 - 后端由 `scripts/build-server.mjs`（esbuild）打包：仓库内的相对导入全部内联（含 `server/generated/prisma` 那份生成的 client），`node_modules` 里的包保持 external，运行时从应用根目录的 `node_modules` 解析。
@@ -81,7 +95,8 @@ docker build -t shadecn-learning ./output
 `output/Dockerfile` 两个阶段：
 
 1. **deps** —— 只 `COPY package.json` 再 `npm install --omit=dev`，装的就是那 9 个运行时依赖；
-   装 `python3 make g++`，**better-sqlite3 在 musl 上没有预编译包，必须现场编译**；
+   装 `python3 make g++`，**better-sqlite3 在 musl 上没有预编译包，必须现场编译**
+   （PG 产物里没有 better-sqlite3，这套工具链是白装的；Dockerfile 是两种产物共用的模板，不为此分叉）；
 2. **运行时** —— 拷 deps 阶段的 `node_modules` + 产物本身，`ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data`，
    建好 `/app/data` 并声明为 `VOLUME`，`EXPOSE 3000`，启动命令是
    **先 `npx prisma migrate deploy`，再 `node server/index.js`**。
@@ -110,17 +125,19 @@ CI 里想一条命令从源码出镜像就用它，三个阶段：
 - **`replicas: 1`**、**`strategy: Recreate`**。
   原因有两条，任一条都足够：SQLite 是单文件（ReadWriteOnce 的卷不允许两个 Pod 同时挂载）；Yjs 文档全在进程内存里（多副本之间无法同步）。
   滚动更新会短暂存在两个 Pod，因此必须用 `Recreate`。
+  换成 PostgreSQL 只解掉第一条 —— **第二条还在，副本数依然只能是 1**，直到协同文档不再只存在于进程内存里。
 
 ### 3.2 存储
 
 - 1Gi PVC，`ReadWriteOnce`，挂到 `/app/data`。
 - `DATA_DIR=/app/data`，库文件即 `/app/data/app.db`。
+- 换成 PostgreSQL 时 PVC 和 `DATA_DIR` 都可以去掉：镜像里没有任何要落盘的东西。
 
 ### 3.3 配置
 
 明文环境变量（在 Deployment 里）：`NODE_ENV`、`HOST`、`PORT`、`DATA_DIR`、`APP_ORIGIN`、`KEYCLOAK_ISSUER`、`KEYCLOAK_CLIENT_ID`。
 
-密钥走 Secret（`envFrom.secretRef`）：`KEYCLOAK_CLIENT_SECRET`、`SESSION_SECRET`。
+密钥走 Secret（`envFrom.secretRef`）：`KEYCLOAK_CLIENT_SECRET`、`SESSION_SECRET`，PG 部署再加一个 `DATABASE_URL`（连接串里有密码，**不能**写进 Deployment 的明文 env）。
 
 ```bash
 kubectl -n dev create secret generic shadecn-learning-auth \
@@ -155,10 +172,12 @@ kubectl -n dev create secret generic shadecn-learning-auth \
 - [ ] 通过 Ingress 能建立 `/ws/<room>` WebSocket 连接。
 - [ ] 缺少 `KEYCLOAK_ISSUER` 时容器启动失败并给出明确报错（不能静默放行）。
 - [ ] `/api/health` 返回 200，探针不误杀。
+- [ ] `DB_PROVIDER=postgresql` 构建出的产物里没有 `@prisma/adapter-better-sqlite3`，`prisma/migrations/` 是 PG 那套。
+- [ ] client 和构建目标 provider 不一致时，`pnpm build:server` 失败并指出该跑哪条命令。
 
 ## 5. 本期不做
 
-- 水平扩展 / 高可用（架构上被 SQLite + 内存文档挡住）。
+- 水平扩展 / 高可用（换成 PG 只解掉存储那一半，Yjs 文档仍在进程内存里）。
 - CI/CD 流水线（镜像目前是手工构建推送）。
 - 蓝绿 / 金丝雀发布。
 - 数据库备份与灾备。
@@ -167,5 +186,6 @@ kubectl -n dev create secret generic shadecn-learning-auth \
 ## 6. 待确认事项
 
 - 镜像 tag 目前是提交短 hash 手写进 yaml，是否改为 CI 自动替换。
-- 需要多副本时的演进路线：换 Postgres + 给 Yjs 加跨进程广播，还是接受单副本。
+- 需要多副本时的演进路线：切到 PostgreSQL（存储这半已经就绪）+ 给 Yjs 加跨进程广播，还是接受单副本。
+- k8s 清单目前只写了 SQLite 形态（PVC + `DATA_DIR`）。要不要再出一份 PG 形态的 overlay，还是靠部署时手改。
 - 是否需要为静态资源单独配 CDN / 缓存策略。

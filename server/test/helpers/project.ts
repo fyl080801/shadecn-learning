@@ -55,10 +55,16 @@ export async function createFlow(
   return body.id
 }
 
-/** 让 invitee 通过一条新邀请加入项目 */
+/** 让 invitee 通过项目的分享链接加入 */
 export async function joinViaInvite(admin: Actor, projectId: string, invitee: Actor) {
-  const created = await admin.json(`/api/projects/${projectId}/invites`, 'POST', {})
-  const invite = (await created.json()) as { token: string }
-  await invitee.json(`/api/invites/${invite.token}/accept`, 'POST')
+  const token = await shareToken(admin, projectId)
+  await invitee.json(`/api/invites/${token}/accept`, 'POST')
+  return token
+}
+
+/** 取项目的分享链接 token（没有就由服务端当场建一条） */
+export async function shareToken(admin: Actor, projectId: string) {
+  const res = await admin.request(`/api/projects/${projectId}/invite`)
+  const invite = (await res.json()) as { token: string }
   return invite.token
 }

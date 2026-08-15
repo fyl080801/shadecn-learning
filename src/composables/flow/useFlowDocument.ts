@@ -4,6 +4,7 @@ import { toast } from "vue-sonner"
 import { flowApi } from "@/lib/api"
 import { formatTime } from "@/lib/format"
 import { usePageTitle } from "@/composables/usePageTitle"
+import { useAsyncAction } from "@/composables/useAsyncAction"
 import type { useFlowStore } from "@/stores/flow"
 
 type FlowStore = ReturnType<typeof useFlowStore>
@@ -71,68 +72,63 @@ export function useFlowDocument(flowId: Ref<string>, store: FlowStore) {
 
   // —— 文档动作 ——
 
-  /** 离开这张画布之前，把没提交的先落库 */
+  /**
+   * 离开这张画布之前，把没提交的先落库。
+   * 不看 `dirty` 就直接调 `saveNow`：`dirty` 只算画布内容，
+   * 而「只挪了一下视口」也得存 —— saveNow 里两条链路各自判断有没有活要干。
+   */
   async function flushBeforeLeave() {
-    if (!store.dirty) return
     await store.saveNow()
   }
 
-  async function rename(next: string) {
-    const name = next.trim()
-    if (!store.meta || !name || name === store.meta.name) return
+  /**
+   * 下面这些都要先 `flushBeforeLeave()` 再发请求，中间有两次 await，
+   * 是最容易被连点打穿的一类动作 —— 一律走 useAsyncAction，重复触发当场丢弃。
+   */
 
-    // 先改本地：改名不进撤销历史，失败了也只是提示一下
-    store.renameLocally(name)
-    try {
+  const { run: rename } = useAsyncAction(
+    async (next: string) => {
+      const name = next.trim()
+      if (!store.meta || !name || name === store.meta.name) return
+
+      // 先改本地：改名不进撤销历史，失败了也只是提示一下
+      store.renameLocally(name)
       await flowApi.update(flowId.value, { name })
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "改名失败")
-    }
-  }
+    },
+    { errorMessage: "改名失败" }
+  )
 
   function projectPath() {
     const projectId = store.meta?.projectId
     return projectId ? `/projects/${projectId}` : "/projects"
   }
 
-  async function backToProject() {
+  const { run: backToProject } = useAsyncAction(async () => {
     await flushBeforeLeave()
     void router.push(projectPath())
-  }
+  })
 
-  async function createSibling() {
+  const { run: createSibling, pending: creatingSibling } = useAsyncAction(async () => {
     const projectId = store.meta?.projectId
     if (!projectId) return
 
     await flushBeforeLeave()
-    try {
-      const flow = await flowApi.create(projectId, { name: "无标题" })
-      void router.push(`/flows/${flow.id}`)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "创建失败")
-    }
-  }
+    const flow = await flowApi.create(projectId, { name: "无标题" })
+    void router.push(`/flows/${flow.id}`)
+  }, { errorMessage: "创建失败" })
 
-  async function duplicate() {
+  const { run: duplicate, pending: duplicating } = useAsyncAction(async () => {
     await flushBeforeLeave()
-    try {
-      const copy = await flowApi.duplicate(flowId.value)
-      toast.success(`已复制为「${copy.name}」`)
-      void router.push(`/flows/${copy.id}`)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "复制失败")
-    }
-  }
+    const copy = await flowApi.duplicate(flowId.value)
+    toast.success(`已复制为「${copy.name}」`)
+    void router.push(`/flows/${copy.id}`)
+  }, { errorMessage: "复制失败" })
 
-  async function remove() {
+  const { run: remove, pending: removing } = useAsyncAction(async () => {
     const target = projectPath()
-    try {
-      await flowApi.remove(flowId.value)
-      void router.push(target)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "删除失败")
-    }
-  }
+    await flowApi.remove(flowId.value)
+    void router.push(target)
+  }, { errorMessage: "删除失败" })
 
   return {
     loading,
@@ -145,8 +141,11 @@ export function useFlowDocument(flowId: Ref<string>, store: FlowStore) {
     rename,
     backToProject,
     createSibling,
+    creatingSibling,
     duplicate,
-    remove
+    duplicating,
+    remove,
+    removing
   }
 }
 

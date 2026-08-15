@@ -71,9 +71,20 @@ export interface FlowEdge {
   }
 }
 
+/** 视口：画布看哪儿、放多大 */
+export interface FlowViewport {
+  x: number
+  y: number
+  zoom: number
+}
+
 export interface FlowGraph {
   schemaVersion: number
-  viewport: { x: number; y: number; zoom: number }
+  /**
+   * 画布级的兜底视口。真正生效的是**每人自己的**视口（见 FlowUserState），
+   * 这里这份只在某人第一次打开、还没有自己的记录时用。
+   */
+  viewport: FlowViewport
   nodes: FlowNode[]
   edges: FlowEdge[]
   /** 画布级自定义数据，同样透传 */
@@ -169,15 +180,8 @@ export function parseGraph(input: unknown): ParseResult<FlowGraph> {
     return { ok: false, error: `不支持的 graph.schemaVersion：${String(input.schemaVersion)}` }
   }
 
-  const viewport = input.viewport
-  if (
-    !isRecord(viewport) ||
-    !isFiniteNumber(viewport.x) ||
-    !isFiniteNumber(viewport.y) ||
-    !isFiniteNumber(viewport.zoom)
-  ) {
-    return { ok: false, error: 'graph.viewport 必须是 { x, y, zoom } 三个有限数字' }
-  }
+  const viewport = parseViewport(input.viewport)
+  if (!viewport.ok) return { ok: false, error: `graph.${viewport.error}` }
 
   if (!Array.isArray(input.nodes)) return { ok: false, error: 'graph.nodes 必须是数组' }
   if (!Array.isArray(input.edges)) return { ok: false, error: 'graph.edges 必须是数组' }
@@ -251,6 +255,68 @@ export function readGraph(serialized: string): FlowGraph {
   } catch {
     return emptyGraph()
   }
+}
+
+/** 校验视口。zoom 必须是正数：0 或负数在渲染层是没有意义的 */
+export function parseViewport(input: unknown): ParseResult<FlowViewport> {
+  if (
+    !isRecord(input) ||
+    !isFiniteNumber(input.x) ||
+    !isFiniteNumber(input.y) ||
+    !isFiniteNumber(input.zoom)
+  ) {
+    return { ok: false, error: 'viewport 必须是 { x, y, zoom } 三个有限数字' }
+  }
+  if (input.zoom <= 0) return { ok: false, error: 'viewport.zoom 必须大于 0' }
+  return { ok: true, value: { x: input.x, y: input.y, zoom: input.zoom } }
+}
+
+// —— 按用户存的画布状态 ——
+
+/**
+ * 「每人自己一份」的状态分区表。**这是唯一的扩展点**：
+ * 以后还想按用户存别的（面板宽度、折叠了哪些节点、个人主题…），
+ * 就在这里加一行 `键名: 校验函数`，再在 src/types/flow.ts 补上对应类型 —— 表结构不用动。
+ *
+ * 不认识的 key 一律拒收：这张表不是任意 KV，收进来的东西必须有人负责校验。
+ */
+export const FLOW_USER_STATE_PARSERS: Record<string, (input: unknown) => ParseResult<unknown>> = {
+  viewport: parseViewport,
+}
+
+export type FlowUserStateKey = keyof typeof FLOW_USER_STATE_PARSERS
+export type FlowUserState = Record<string, unknown>
+
+/** 单个分区序列化后的字节上限：这里存的是「我怎么看」，不是内容，不该长 */
+export const USER_STATE_VALUE_BYTES = 16 * 1024
+
+/**
+ * 校验一次按用户存的状态更新（PATCH 语义：只带要改的分区）。
+ * 每个分区各自校验，任一分区不合法就整体拒绝 —— 不做「对一半存一半」。
+ */
+export function parseUserStatePatch(input: unknown): ParseResult<FlowUserState> {
+  if (!isRecord(input)) return { ok: false, error: '请求体必须是对象' }
+
+  const keys = Object.keys(input)
+  if (keys.length === 0) return { ok: false, error: '至少要带一个状态分区' }
+
+  const value: FlowUserState = {}
+  for (const key of keys) {
+    const parse = FLOW_USER_STATE_PARSERS[key]
+    if (!parse) return { ok: false, error: `未知的状态分区：${key}` }
+
+    const parsed = parse(input[key])
+    if (!parsed.ok) return { ok: false, error: `${key}：${parsed.error}` }
+
+    const size = Buffer.byteLength(JSON.stringify(parsed.value), 'utf8')
+    if (size > USER_STATE_VALUE_BYTES) {
+      return { ok: false, error: `${key}：${size} 字节，超过上限 ${USER_STATE_VALUE_BYTES}` }
+    }
+
+    value[key] = parsed.value
+  }
+
+  return { ok: true, value }
 }
 
 /** 校验一批待提交的事务 */

@@ -10,7 +10,7 @@ import { Background } from "@vue-flow/background"
 import { MiniMap } from "@vue-flow/minimap"
 
 import ProcessNode from "@/components/flow/ProcessNode.vue"
-import FlowViewControls from "@/components/flow/FlowViewControls.vue"
+// import FlowViewControls from "@/components/flow/FlowViewControls.vue"
 import { useFlowEditor } from "@/composables/flow"
 
 /**
@@ -24,7 +24,11 @@ const { canvas, selection } = useFlowEditor()
 
 <template>
   <!-- 滚轮缩放拦在捕获阶段，必须挂在 VueFlow 外面这层 -->
-  <div class="h-full w-full" @wheel.capture="canvas.onWheelZoom">
+  <div
+    class="h-full w-full"
+    :class="{ 'flow-canvas-panning': canvas.spacePanning.value }"
+    @wheel.capture="canvas.onWheelZoom"
+  >
     <VueFlow
       :nodes="canvas.nodes.value"
       :edges="canvas.edges.value"
@@ -35,6 +39,8 @@ const { canvas, selection } = useFlowEditor()
       :target-position="Position.Left"
       :pan-on-scroll="true"
       :pan-on-scroll-mode="PanOnScrollMode.Vertical"
+      :pan-on-drag="canvas.panOnDrag.value"
+      :nodes-draggable="canvas.nodesDraggable.value"
       :zoom-on-scroll="false"
       :zoom-on-pinch="false"
       class="h-full w-full"
@@ -44,7 +50,7 @@ const { canvas, selection } = useFlowEditor()
       @move-end="canvas.syncViewport"
     >
       <Background :gap="16" />
-      <FlowViewControls />
+      <!-- <FlowViewControls /> -->
       <MiniMap pannable zoomable />
 
       <!-- 给上层留的扩展位：想往画布里再塞浮层（对齐线、批注…）从这儿进 -->

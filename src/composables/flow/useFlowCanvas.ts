@@ -1,5 +1,5 @@
-import { computed } from "vue"
-import { until } from "@vueuse/core"
+import { computed, ref, watchEffect } from "vue"
+import { until, useEventListener } from "@vueuse/core"
 import {
   useVueFlow,
   type Connection,
@@ -8,10 +8,14 @@ import {
   type NodeChange
 } from "@vue-flow/core"
 import { createId } from "@/lib/id"
+import { isEditableTarget } from "./editable"
 import type { useFlowStore } from "@/stores/flow"
 import { defaultNodeData, type FlowEdge, type FlowNode, type FlowOp } from "@/types/flow"
 
 type FlowStore = ReturnType<typeof useFlowStore>
+
+/** 画布空白处的指针行为 */
+export type FlowInteractionMode = "select" | "pan"
 
 /** 连续新增时的层叠偏移，避免节点完全重叠（第一个仍然正好在中心） */
 const CASCADE_STEP = 24
@@ -37,12 +41,79 @@ export function useFlowCanvas(store: FlowStore) {
     onPaneReady,
     onConnect,
     onNodeDragStart,
-    onNodeDragStop
+    onNodeDragStop,
+    selectionKeyCode
   } = useVueFlow()
 
   /** 交给 Vue Flow 渲染的数据；store 里存的就是它认识的形状 */
   const nodes = computed<Node[]>(() => store.nodes as unknown as Node[])
   const edges = computed<Edge[]>(() => store.edges as unknown as Edge[])
+
+  // —— 指针模式 ——
+
+  /** 空白处按下左键做什么：`select` 拉框选，`pan` 拖动画布 */
+  const interactionMode = ref<FlowInteractionMode>("select")
+
+  /**
+   * 按住空格 = 临时拖画布，松手就回到原来的模式 —— 这是个手势，不是模式，
+   * 所以不写进 `interactionMode`（工具栏上的高亮不该跟着闪）。
+   *
+   * Vue Flow 自带的 `panActivationKeyCode`（默认就是 Space）在这里不够用：
+   * 它只放行 d3 的 filter 前半段，后面那条「`panOnDrag` 是数组且不含 0 就拒绝
+   * 左键按下」照样把左键拦掉，而框选模式下 `panOnDrag` 正是 `[1]`。
+   */
+  const spacePanning = ref(false)
+
+  useEventListener(window, "keydown", (event: KeyboardEvent) => {
+    if (event.code !== "Space" || isEditableTarget(event.target)) return
+    // 空格默认会滚页面、会「按下」当前聚焦的按钮，按住平移期间都不该发生
+    event.preventDefault()
+    spacePanning.value = true
+  })
+
+  useEventListener(window, "keyup", (event: KeyboardEvent) => {
+    if (event.code !== "Space") return
+    spacePanning.value = false
+  })
+
+  // 切走标签页收不到 keyup，回来别卡在平移状态
+  useEventListener(window, "blur", () => {
+    spacePanning.value = false
+  })
+
+  /**
+   * 框选模式下左键留给选区，平移改用中键 —— 不然想框选就得先切模式，
+   * 而中键拖画布是这类编辑器里通用的手势。
+   *
+   * 按住空格时给 `true`（而不是 `[0, 1]`）：Vue Flow 的 `shouldSelectOnDrag`
+   * 判的是 `panOnDrag !== true`，只有布尔 true 才能把左键从框选那边要回来。
+   */
+  const panOnDrag = computed<boolean | number[]>(() =>
+    spacePanning.value || interactionMode.value === "pan" ? true : [1]
+  )
+
+  /**
+   * 空格期间节点不可拖：节点的 d3-drag 会吃掉 mousedown，不关掉的话
+   * 鼠标停在节点上按下拖的还是节点，而不是画布。
+   */
+  const nodesDraggable = computed(() => !spacePanning.value)
+
+  /**
+   * Vue Flow 1.x 没有 `selectionOnDrag` 这个开关：它把 `selectionKeyCode === true`
+   * 当成「一直处于框选状态」（内部的 shouldSelectOnDrag 就是这么判的），
+   * 并且此时 `panOnDrag` 必须是不含 0 的数组，否则左键还是被平移抢走。
+   *
+   * 写进 store 而不是当 `<VueFlow>` 的 prop 传：该 prop 的运行时类型只声明了
+   * Boolean | null，传字符串会被 Vue 判成类型不符并在控制台告警。
+   * 拖动模式下退回默认的 Shift —— 按住 Shift 依然能框选。
+   */
+  watchEffect(() => {
+    selectionKeyCode.value = interactionMode.value === "select" ? true : "Shift"
+  })
+
+  function setInteractionMode(mode: FlowInteractionMode) {
+    interactionMode.value = mode
+  }
 
   // —— 拖动 ——
 
@@ -97,7 +168,7 @@ export function useFlowCanvas(store: FlowStore) {
       sourceHandle: connection.sourceHandle ?? null,
       targetHandle: connection.targetHandle ?? null,
       type: "smoothstep",
-      animated: true,
+      animated: false,
       data: { config: {} }
     }
     store.apply([{ type: "edge.add", targetId: id, before: null, after: edge }], "连线")
@@ -105,17 +176,27 @@ export function useFlowCanvas(store: FlowStore) {
 
   // —— 视口 ——
 
-  /** 视口不进历史、不产生操作，只在保存快照时随行 */
+  /**
+   * 视口是**视图状态**：不进历史、不产生操作、不涨 revision，
+   * 由 store 走「按用户存」那条路防抖落库 —— 各人看各人的。
+   */
   function syncViewport() {
     store.setViewport(getViewport())
   }
 
   onPaneReady(() => {
+    // 我自己存过视口就照原样恢复，哪怕它正好等于默认值
+    if (store.userState.viewport) {
+      setViewport(store.viewport)
+      return
+    }
+
     const { x, y, zoom } = store.viewport
-    // 存过视口就恢复它；全新画布才 fitView（且不放大超过 1 倍，
+    // 快照里那份兜底视口非默认值就用它；否则 fitView（且不放大超过 1 倍，
     // 否则 Vue Flow 默认会放到 4 倍，节点大得离谱）
     if (store.nodes.length > 0 && (x !== 0 || y !== 0 || zoom !== 1)) {
       setViewport(store.viewport)
+      syncViewport()
     } else {
       fitView({ maxZoom: 1, padding: 0.2 })
       syncViewport()
@@ -198,7 +279,19 @@ export function useFlowCanvas(store: FlowStore) {
     return id
   }
 
-  return { nodes, edges, onNodesChange, onWheelZoom, syncViewport, addNode }
+  return {
+    nodes,
+    edges,
+    interactionMode,
+    spacePanning,
+    panOnDrag,
+    nodesDraggable,
+    setInteractionMode,
+    onNodesChange,
+    onWheelZoom,
+    syncViewport,
+    addNode
+  }
 }
 
 export type FlowCanvas = ReturnType<typeof useFlowCanvas>

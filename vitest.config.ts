@@ -1,7 +1,7 @@
 import path from 'node:path'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vitest/config'
-import { TEST_DATABASE_URL } from './server/test/paths'
+import { TEST_DATABASE_URL, TEST_DB_PROVIDER } from './server/test/paths'
 
 const rootDir = import.meta.dirname
 
@@ -38,7 +38,7 @@ export default defineConfig({
           setupFiles: ['server/test/setup.ts'],
           // 建测试库 + 跑迁移，整轮只做一次
           globalSetup: ['server/test/global-setup.ts'],
-          // 所有测试文件共用一个 SQLite 文件，串行跑避免互相踩数据
+          // 所有测试文件共用一个库（SQLite 文件 / 同一个 PG schema），串行跑避免互相踩数据
           fileParallelism: false,
           /**
            * 固定环境变量。这一步很关键：server/env.ts 会 loadEnvFile 读仓库根目录的
@@ -48,6 +48,7 @@ export default defineConfig({
           env: {
             NODE_ENV: 'test',
             DATABASE_URL: TEST_DATABASE_URL,
+            DB_PROVIDER: TEST_DB_PROVIDER,
             APP_ORIGIN: 'http://127.0.0.1:3000',
             PORT: '3000',
             HOST: '127.0.0.1',

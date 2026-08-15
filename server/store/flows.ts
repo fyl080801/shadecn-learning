@@ -2,9 +2,12 @@ import { prisma } from '../db.ts'
 import {
   type FlowGraph,
   type FlowTransaction,
+  type FlowUserState,
   emptyGraph,
   readGraph,
 } from './flow-types.ts'
+import { flowUserState } from './flow-user-state.ts'
+import { nameContains } from './text.ts'
 
 /**
  * 画布与操作日志的数据访问层。
@@ -36,6 +39,11 @@ export interface FlowSummary {
 
 export interface FlowDetail extends FlowSummary {
   graph: FlowGraph
+  /**
+   * 请求者**自己**的画布状态（视口等），刚建/刚复制出来的是空对象。
+   * 没有的分区前端各自回落到默认值（视口回落到 graph.viewport）。
+   */
+  userState: FlowUserState
 }
 
 export interface FlowOperationView {
@@ -132,7 +140,7 @@ export const flows = {
     const where = {
       projectId,
       deletedAt: null,
-      ...(options.keyword ? { name: { contains: options.keyword } } : {}),
+      ...(options.keyword ? { name: nameContains(options.keyword) } : {}),
       ...(options.status ? { status: options.status } : {}),
     }
 
@@ -171,7 +179,7 @@ export const flows = {
       },
       select: SUMMARY_SELECT,
     })
-    return { ...toSummary(row), graph }
+    return { ...toSummary(row), graph, userState: {} }
   },
 
   /** 只取归属信息，给鉴权中间件用 —— 不读 graph */
@@ -183,13 +191,19 @@ export const flows = {
     return row?.projectId ?? null
   },
 
-  async get(flowId: string): Promise<FlowDetail | null> {
+  /** 详情永远是「谁在看」的详情：userState 那部分因人而异 */
+  async get(flowId: string, userId: string): Promise<FlowDetail | null> {
     const row = await prisma.flow.findFirst({
       where: { id: flowId, deletedAt: null, project: { deletedAt: null } },
       select: { ...SUMMARY_SELECT, graph: true },
     })
     if (!row) return null
-    return { ...toSummary(row), graph: readGraph(row.graph) }
+
+    return {
+      ...toSummary(row),
+      graph: readGraph(row.graph),
+      userState: await flowUserState.get(flowId, userId),
+    }
   },
 
   async update(
@@ -240,7 +254,8 @@ export const flows = {
       },
       select: { ...SUMMARY_SELECT, graph: true },
     })
-    return { ...toSummary(row), graph: readGraph(row.graph) }
+    // 副本是新画布：谁都还没在它上面留下过视口
+    return { ...toSummary(row), graph: readGraph(row.graph), userState: {} }
   },
 
   /**

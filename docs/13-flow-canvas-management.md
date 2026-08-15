@@ -1,13 +1,13 @@
 # REQ-CANVAS 项目、画布管理与操作历史
 
-> 状态：**已实现** —— 后端（5 张表 + 三组路由 + 权限中间件）、Pinia store、四个页面均已落地，测试覆盖见第 5 节。
+> 状态：**已实现** —— 后端（6 张表 + 三组路由 + 权限中间件）、Pinia store、四个页面均已落地，测试覆盖见第 5 节。
 >
 > 前置：[REQ-FLOW](09-flow-chart.md) 已经验证了 Vue Flow 的交互定制（滚轮手感、自定义节点、连线）。本需求接着往上叠**项目 + 多画布 + 持久化 + 操作历史**，`/vue-flow` 那个单页 demo 变成「打开某一张画布」的编辑器形态。
 
 ## 1. 目标
 
 1. 引入**项目**作为画布的上一层容器：项目管成员，成员身份决定画布的访问权。
-2. 加入项目的**唯一方式是邀请链接**，由项目管理员生成；创建者即管理员。
+2. 加入项目的**唯一方式是分享链接**：一个项目一条、不限使用人数，管理员打开分享面板即拿到；创建者即管理员。
 3. 一个项目里能存在**多张画布**，由数据库维护；列表分页展示，可新建 / 重命名 / 复制 / 删除 / 打开。
 4. 画布内容在前端由 **Pinia** 持有，所有变更走**操作（operation）**通道，从而天然支持**撤销 / 重做**。
 5. 产生的操作**同时写库**：既留下审计/回放的可能，也让「刷新页面内容不丢」成立。
@@ -19,7 +19,7 @@
 |---|---|
 | 项目 / Project | 画布的容器与权限边界，成员的集合 |
 | 成员 / Member | 项目内的一个用户，角色为管理员或普通成员 |
-| 邀请链接 / Invite | 一个带随机 token 的链接，是加入项目的唯一入口 |
+| 分享链接 / Invite | 一个带随机 token 的链接，是加入项目的唯一入口；一个项目只有一条 |
 | 画布 / Flow | 一张图，列表里的一行，编辑器里的一个文档 |
 | 图内容 / Graph | 画布的全量内容：`nodes` + `edges` + `viewport` |
 | 操作 / Operation | 一次可撤销的最小语义变更，例如「新增节点」「移动节点」 |
@@ -63,15 +63,17 @@ interface ProjectMember {
 
 角色只有两级，本期不做自定义角色：
 
-- **admin** —— 创建者自动获得。能改项目名/描述、生成与撤销邀请链接、移除成员、删除项目，以及 member 的全部能力。
+- **admin** —— 创建者自动获得。能改项目名/描述、看与重置分享链接、移除成员、删除项目，以及 member 的全部能力。
 - **member** —— 能看项目、看成员列表、对项目内画布做全部增删改。
 
-### 3.3 邀请链接（`ProjectInvite`）
+### 3.3 分享链接（`ProjectInvite`）
+
+**一个项目只有一条**（`projectId` 唯一），**不限使用人数**，唯一的失效闸是 `expiresAt`。管理员打开分享面板即拿到链接 —— 没有「生成」这一步；链接发漏了就「重置」，原地换 token，旧链接立刻查不到。
 
 ```ts
 interface ProjectInvite {
   id: string
-  projectId: string
+  projectId: string             // 唯一：一个项目一条
   /** 32 字节随机数的 URL-safe base64，链接形如 /invite/<token> */
   token: string
   /** 接受后获得的角色，本期恒为 'member' */
@@ -79,13 +81,10 @@ interface ProjectInvite {
   createdById: string
   createdAt: string
   expiresAt: string             // 默认创建后 7 天
-  maxUses: number | null        // null = 不限次数
-  usedCount: number
-  revokedAt: string | null      // 手动撤销
 }
 ```
 
-**未登录用户点开邀请链接是可用的**：`/invite/<token>` 是普通页面路径，会被 `server/frontend/guard.ts` 拦下并 302 到 `/login?redirect=/invite/<token>`，登录完自动跳回，落在「确认加入」界面上。这条路径不需要额外开白名单。
+**未登录用户点开分享链接是可用的**：`/invite/<token>` 是普通页面路径，会被 `server/frontend/guard.ts` 拦下并 302 到 `/login?redirect=/invite/<token>`，登录完自动跳回，落在「确认加入」界面上。这条路径不需要额外开白名单。
 
 ### 3.4 画布列表项（`FlowSummary`）
 
@@ -116,8 +115,33 @@ interface FlowSummary {
 ```ts
 interface FlowDetail extends FlowSummary {
   graph: FlowGraph
+  /** 请求者自己的视图状态，见 3.5.1；没存过的分区不出现 */
+  userState: FlowUserState
 }
 ```
+
+#### 3.5.1 按用户存的视图状态（`FlowUserState`）
+
+**画布上的东西分两类，走两条完全不同的路：**
+
+| | 画布数据（内容） | 视图状态（我怎么看） |
+|---|---|---|
+| 例子 | 增删节点、连线、改配置、移动节点 | 平移画布、缩放 |
+| 谁的 | 全项目共享，一份 | **每人一份** |
+| 存哪 | `Flow.graph` 快照 + `FlowOperation` 日志 | `FlowUserState` |
+| 进操作历史 | 是（可撤销/重做） | **否** —— 撤销不该把视野拽回去 |
+| 涨 `revision` | 是（有乐观锁，会 409） | 否（没有冲突一说） |
+| 怎么触发 | `store.apply(ops, label)` → 防抖 `POST /commit` | `store.setViewport()` → 防抖 `PATCH /user-state` |
+
+```ts
+/** 扩展点：加一种按用户存的东西 = 加一个可选字段，表结构不动 */
+interface FlowUserState {
+  viewport?: { x: number; y: number; zoom: number }
+  // 以后：面板宽度、折叠了哪些节点、个人偏好…
+}
+```
+
+加一个分区要动三处、都不改表：`src/types/flow.ts` 的 `FlowUserState` 加字段、服务端 `server/store/flow-types.ts` 的 `FLOW_USER_STATE_PARSERS` 加一条校验（**不认识的 key 一律 400** —— 这张表不是任意 KV）、前端 `store.setUserState('新字段', 值)`（防抖、失败重试、离开前落库都是现成的）。
 
 ### 3.6 图内容（`FlowGraph`）—— 落库时序列化成一个 JSON 字符串
 
@@ -131,6 +155,8 @@ interface FlowGraph {
   meta: Record<string, unknown>
 }
 ```
+
+> `graph.viewport` 只是**兜底**：某人第一次打开、还没有自己的 `userState.viewport` 时用它，之后一律用个人视口。它**不跟着谁的平移缩放走** —— 提交快照时原样写回，否则我拖一下画布就改了别人的共享数据。
 
 ### 3.7 节点（`FlowNode`）—— 布局层与业务层分离
 
@@ -226,10 +252,10 @@ interface FlowTransaction {
 - 客户端的钟不可信，所以服务端另盖一个 `serverTs`：**排序以 `serverTs` 为准**，`clientTs` 只作为客户端自述的产生时刻保留。
 - 客户端生成的 id（事务 / 节点 / 连线）统一走 `src/lib/id.ts` 的 `createId(prefix)`，形如 `<前缀>_<时间戳 base36>_<随机段>`。随机段不能省：两个客户端可能在同一毫秒各加一个节点，只靠时间戳会撞出同一个 id。
 
-- `viewport` 的变化**不是操作**：它不进历史栈，也不产生操作记录，只在退出/定时保存时随快照写回。
+- `viewport` 的变化**不是操作**：它不进历史栈、不产生操作记录、不涨 `revision`，走的是 3.5.1 那条「按用户存」的独立链路（`PATCH /user-state`），撤销也带不回去。
 - `node.move` 支持**合并**：同一节点连续拖动在拖拽结束前合并成一条（`before` 取拖拽开始时的位置）。
 
-### 3.10 数据库模型（Prisma，新增四张表）
+### 3.10 数据库模型（Prisma，新增六张表）
 
 ```prisma
 /// 画布的容器与权限边界。
@@ -269,23 +295,18 @@ model ProjectMember {
   @@index([userId])
 }
 
-/// 邀请链接。token 明文存储 —— 它本身就是要发给别人的凭据，
-/// 且失效靠 expiresAt / revokedAt / maxUses 三道闸，不靠不可读。
+/// 分享链接，一个项目一条。token 明文存储 —— 它本身就是要发给别人的凭据；
+/// 不限使用次数，唯一的闸是 expiresAt，重置就是原地换 token。
 model ProjectInvite {
-  id          String    @id @default(cuid())
-  projectId   String
-  token       String    @unique
-  role        String    @default("member")
+  id          String   @id @default(cuid())
+  projectId   String   @unique
+  token       String   @unique
+  role        String   @default("member")
   createdById String
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime @default(now())
   expiresAt   DateTime
-  maxUses     Int?
-  usedCount   Int       @default(0)
-  revokedAt   DateTime?
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-
-  @@index([projectId, revokedAt])
 }
 
 /// 一张画布。graph 是全量快照，操作日志在 FlowOperation 里。
@@ -312,8 +333,29 @@ model Flow {
 
   project    Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
   operations FlowOperation[]
+  userStates FlowUserState[]
 
   @@index([projectId, deletedAt, updatedAt])
+}
+
+/// 画布上「属于某个人」的视图状态：视口，以后还有面板开合、个人偏好…
+/// 按 key 分区存 JSON 字符串 —— 加一种要存的东西 = 加一个 key，不用改表。
+/// 合法的 key 与各自的校验在 server/store/flow-types.ts 的 FLOW_USER_STATE_PARSERS。
+model FlowUserState {
+  id        String   @id @default(cuid())
+  flowId    String
+  userId    String
+  /// 状态分区名，例如 viewport
+  key       String
+  /// 该分区的值，JSON 字符串
+  value     String
+  updatedAt DateTime @updatedAt
+
+  flow Flow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([flowId, userId, key])
+  @@index([userId])
 }
 
 /// 操作日志，只追加、不修改、不删除（删画布时级联）。
@@ -363,7 +405,7 @@ model FlowOperation {
 
 **项目头部**（常驻，不随 Tab 切换）
 - 项目名与描述；admin 可就地编辑。
-- 右侧操作：`邀请成员`（仅 admin）、`删除项目`（仅 admin，二次确认，软删）。
+- 右侧操作：`分享`（仅 admin）、`删除项目`（仅 admin，二次确认，软删）。
 
 **Tab 1 · 画布**（默认选中）
 - 表格形态的 listview，列：名称、描述、状态、节点/连线数、创建者、更新时间、操作。
@@ -376,28 +418,29 @@ model FlowOperation {
 
 **Tab 2 · 成员**
 - 成员列表：头像、名字、邮箱、角色、加入时间。**所有成员都能看**，不只是 admin。
-- admin 额外看到：每行的「移除」按钮（不能移除自己）、以及项目头部的邀请入口。
-- 邀请面板（admin 打开的对话框，不是新页面）：`生成邀请链接` → 展示完整 URL + 一键复制 + 过期时间；下方列出该项目当前**有效**的邀请，每条可「撤销」。
-- 生成时可选有效期（1 天 / 7 天 / 30 天，默认 7 天）与使用次数上限（不限 / 1 次 / 10 次，默认不限）。
+- admin 额外看到：每行的「移除」按钮（不能移除自己）、以及项目头部的分享入口。
+- 分享面板（admin 打开的对话框，不是新页面）：**打开即有链接**，主体就是「只读链接输入框 + 复制」；底部一行脚注放有效期（1 天 / 7 天 / 30 天，默认 7 天）、过期时间和「重置链接」。
+- 改有效期**不换 token** —— 已经发出去的链接不该因为续期而失效；「重置链接」才换 token，二次确认后旧链接立刻失效。
 
-### 4.3 邀请与加入（`/invite/:token`）
+### 4.3 分享与加入（`/invite/:token`）
 
 - 页面先调 `GET /api/invites/:token` 预览：显示「你被邀请加入 **XXX 项目**（N 位成员）」+ `加入` / `取消` 两个按钮。**不做点开即加入** —— 用户得看清楚自己要进哪儿。
 - 未登录时由页面网关 302 到登录，登录后自动跳回本页（见 3.3）。
 - 点「加入」→ `POST /api/invites/:token/accept` → 成功后跳到 `/projects/:id`。
-- 各种失效状态给出明确文案，不要一律「链接无效」：已过期、已被撤销、使用次数已满、项目已删除。
-- **已经是成员**时：预览接口直接告知，按钮变成「进入项目」，点了直接跳转（accept 接口本身也幂等，重复调用不报错、不涨 `usedCount`）。
+- 各种失效状态给出明确文案，不要一律「链接无效」：已过期、链接无效或已被重置、项目已删除、成员数已满。
+- **已经是成员**时：预览接口直接告知，按钮变成「进入项目」，点了直接跳转（accept 接口本身也幂等，重复调用不报错、不写第二条成员记录）。
 
 ### 4.4 画布编辑器（`/flows/:id`）—— 独立整页
 
 **从画布列表点进来是跳到一个独立页面，不套项目主页那层带菜单的外壳。** 编辑器要整块屏幕，侧边栏和项目主页的分区在这里都是干扰。
 
-这对应用外壳（[REQ-SHELL](01-app-shell.md)）是个改动：`App.vue` 当前无条件渲染 `AppSidebar`，「每个 SPA 路由都带菜单」这条约束到此为止。做法是路由 `meta` 上加一个布局标记（如 `meta: { layout: 'bare' }`），`App.vue` 据此决定渲不渲染 `AppSidebar`；`/flows/:id` 是第一个 bare 路由。注意这**不是**登录态的例外 —— 它依然是登录后才能进的页面，只是不带菜单。
+这对应用外壳（[REQ-SHELL](01-app-shell.md)）是个改动：「每个 SPA 路由都带菜单」这条约束到此为止。做法见 [REQ-SHELL 2.1](01-app-shell.md#21-整体布局) —— 带不带菜单由**模板页**区分，`/flows/:id` 挂在 `BlankLayout` 下，是第一条也是目前唯一一条不套侧栏的路由。注意这**不是**登录态的例外 —— 它依然是登录后才能进的页面，只是不带菜单。
 
-> 改的只是 `App.vue` 里「渲不渲染」这一个判断，`AppSidebar.vue` 的布局与行为都不动 —— 只是把导航项里的「VueFlow」换成指向 `/projects` 的「画布项目」（`/vue-flow` 那个 demo 路由本身保留，只是不再挂在菜单上）。
+> `AppSidebar.vue` 的布局与行为都不动 —— 只是把导航项里的「VueFlow」换成指向 `/projects` 的「画布项目」（`/vue-flow` 那个 demo 路由本身保留，只是不再挂在菜单上）。
 
 - 进入时 `GET /api/flows/:id` 取全量，灌进 Pinia store，按 `graph.viewport` 恢复视口。
 - 沿用 [REQ-FLOW](09-flow-chart.md) 的全部交互（滚轮平移、Ctrl+滚轮以光标为锚点缩放、自定义节点、连线）。
+- 空白处左键的行为由底部工具栏的**指针模式**决定（框选 / 拖动画布），中键任何时候都能拖画布。此外**按住空格键**是临时的拖动手势：按住期间左键在哪按下（含节点上）都是平移画布、光标变抓手、节点暂时不可拖，松开立刻回到原来的模式 —— 模式按钮的高亮不跟着变，因为它是手势不是模式。
 #### 4.4.1 悬浮胶囊工具条（左上角）
 
 页面没有应用菜单，编辑器自己的入口收在**左上角一枚悬浮胶囊**里，浮在画布之上（圆角、半透明背景 + 模糊、与画布内容有明显层次）。从左到右三段：
@@ -447,6 +490,7 @@ store 的职责边界：
 - **历史深度上限 100**，超出丢弃最旧的（并在 UI 上不提示）。
 - **历史栈只在内存里**：刷新页面即清空，撤销不能跨会话；但画布内容本身不丢（已提交的都在库里）。这是有意为之 —— 跨会话撤销需要把栈也持久化，属于过度设计。
 - **持久化**：`pending` 非空时，防抖 800ms（或累计 20 条操作、或 `Ctrl+S`）触发一次 `POST /api/flows/:id/commit`；提交期间新产生的操作进入下一批，不阻塞编辑。
+- **视图状态是另一条路**：`setViewport()` / `setUserState(key, 值)` 只改本地 + 防抖 600ms 发一次 `PATCH /user-state`，既不进 `undoStack` 也不进 `pending`，因此不会让保存指示器变成「未保存」。存失败不弹提示（丢了最多是下次打开回到上一个存住的视图），值留在队列里下次再发；`saveNow()`（`Ctrl+S` / 离开前）会把两条路一起 flush。
 - Vue Flow 的双向绑定不能绕开 store：节点拖动结束（`nodeDragStop`）、连线建立（`connect`）等事件转成 `FlowOp` 后走 `apply`。
 
 #### 4.5.1 命令注册表（`src/stores/flow/commands/`）
@@ -507,11 +551,11 @@ export interface FlowCommand {
 |---|---|---|---|
 | GET | `/api/projects/:id/members` | member | 成员列表（本期不分页，上限见 4.9） |
 | DELETE | `/api/projects/:id/members/:userId` | admin | 移除成员；不能移除自己 → 400 |
-| GET | `/api/projects/:id/invites` | admin | 该项目当前有效的邀请列表 |
-| POST | `/api/projects/:id/invites` | admin | 生成邀请。body `{ expiresInDays?: 1\|7\|30, maxUses?: number\|null }`；**201** + `ProjectInvite`（含 token 与拼好的完整 URL） |
-| DELETE | `/api/projects/:id/invites/:inviteId` | admin | 撤销（写 `revokedAt`），204 |
-| GET | `/api/invites/:token` | 登录 | 邀请预览 `{ valid, reason?, projectId, projectName, memberCount, alreadyMember }`；**不校验成员身份**（被邀请者当然还不是成员），但要求已登录 |
-| POST | `/api/invites/:token/accept` | 登录 | 接受，写入 `ProjectMember` 并 `usedCount + 1`，返回 `{ projectId }`；已是成员则幂等返回、不涨计数 |
+| GET | `/api/projects/:id/invite` | admin | 该项目的分享链接（含 token 与拼好的完整 URL）。**幂等且会写**：没有链接、或已过期就当场换一条新的 |
+| PATCH | `/api/projects/:id/invite` | admin | 改有效期。body `{ expiresInDays: 1\|7\|30 }`；**token 不变** |
+| POST | `/api/projects/:id/invite/reset` | admin | 重置：换 token，旧链接立刻失效。body `{ expiresInDays?: 1\|7\|30 }` |
+| GET | `/api/invites/:token` | 登录 | 链接预览 `{ valid, reason?, projectId, projectName, memberCount, alreadyMember }`；**不校验成员身份**（访问者当然还不是成员），但要求已登录 |
+| POST | `/api/invites/:token/accept` | 登录 | 接受，写入 `ProjectMember`，返回 `{ projectId }`；已是成员则幂等返回 |
 
 **画布**
 
@@ -519,10 +563,11 @@ export interface FlowCommand {
 |---|---|---|---|
 | GET | `/api/projects/:id/flows` | member | 项目内画布分页。query：`page`（默认 1）、`pageSize`（默认 20，上限 100）、`keyword`、`status`、`sort`（`updatedAt:desc` 等）。**响应不含 graph** |
 | POST | `/api/projects/:id/flows` | member | 新建。body `{ name, description? }`；**201** + `FlowDetail`（空 graph） |
-| GET | `/api/flows/:id` | member | 详情，含 graph |
+| GET | `/api/flows/:id` | member | 详情，含 graph 与**请求者自己**的 `userState`（见 3.5.1） |
 | PATCH | `/api/flows/:id` | member | 改名 / 描述 / 状态 / 标签；**不能**改 graph、不能改 projectId |
 | DELETE | `/api/flows/:id` | member | 软删除，204 空 body |
 | POST | `/api/flows/:id/duplicate` | member | 在同项目内复制一份（名称加「副本」后缀），201；操作日志不复制，新画布 `revision` 从 0 起 |
+| PATCH | `/api/flows/:id/user-state` | member | 存**我自己**的视图状态（视口…），body 只带要改的分区，204。不涨 `revision`、不写操作日志、没有乐观锁 |
 | POST | `/api/flows/:id/commit` | member | 提交事务，见 4.6。成功返回 `{ revision }` |
 | GET | `/api/flows/:id/operations` | member | 操作日志分页（`page` / `pageSize` / `sinceSeq`），供调试与将来的回放 |
 
@@ -542,9 +587,10 @@ export interface FlowCommand {
 
 - 项目 `name`、画布 `name`：非空字符串，trim 后 1..80 字符。
 - `pageSize`：1..100 的整数，越界 → 400。
-- 邀请 `expiresInDays` 只接受 1 / 7 / 30；`maxUses` 为 null 或 1..1000 的整数。
-- 单项目成员上限 200、画布上限 500、有效邀请上限 20，超出 → 400 并给出明确文案。
+- 分享链接 `expiresInDays` 只接受 1 / 7 / 30。
+- 单项目成员上限 200、画布上限 500，超出 → 400 并给出明确文案。
 - `graph`：必须能被解析为 `FlowGraph`；`schemaVersion` 未知 → 400；节点 id 重复 → 400；边引用了不存在的节点 id → 400。
+- `user-state`：body 必须是非空对象；**未登记的分区 key → 400**；每个分区按 `FLOW_USER_STATE_PARSERS` 里自己的规则校验（视口要求 `x`/`y`/`zoom` 都是有限数字且 `zoom > 0`）；单个分区序列化后 16KB 封顶。任一分区不合法就整体拒绝，不「对一半存一半」。
 - 单个画布上限：节点 2000、边 4000、序列化后的 graph 2MB，超出 → 413。
 - 单次 commit 的 `transactions` 上限 200 条。
 
@@ -554,11 +600,13 @@ export interface FlowCommand {
 
 - [ ] 新建项目后，`ProjectMember` 里存在创建者的 admin 行，成员列表能看到自己。
 - [ ] 项目列表只出现我是成员的项目；别人的项目 id 直接访问返回 404。
-- [ ] admin 生成邀请链接，另一个账号点开 → 看到项目名与成员数 → 点「加入」→ 落到项目主页，成员列表多一行。
-- [ ] 未登录点开邀请链接 → 跳登录 → 登录后自动回到邀请确认页，而不是首页。
-- [ ] 同一条邀请链接重复点「加入」不会产生第二条成员记录，`usedCount` 也不重复增长。
-- [ ] 过期 / 已撤销 / 次数用尽三种失效状态给出各自的文案，不是同一句「链接无效」。
-- [ ] member 调用生成邀请、移除成员、改项目名、删项目，全部返回 403。
+- [ ] admin 点「分享」→ 面板里**直接就有链接**（不需要先选有效期再生成），另一个账号点开 → 看到项目名与成员数 → 点「加入」→ 落到项目主页，成员列表多一行。
+- [ ] 同一条链接可以被任意多人使用，人数不设限。
+- [ ] 未登录点开分享链接 → 跳登录 → 登录后自动回到确认加入页，而不是首页。
+- [ ] 同一条链接重复点「加入」不会产生第二条成员记录。
+- [ ] 改有效期后 token 不变；「重置链接」后旧链接立刻失效，新链接可用；项目始终只有一条链接。
+- [ ] 过期 / 无效（含被重置）/ 项目已删各给各的文案，不是同一句「链接无效」。
+- [ ] member 调用看分享链接、重置链接、移除成员、改项目名、删项目，全部返回 403。
 - [ ] admin 移除自己返回 400。
 - [ ] 成员被移除后，立刻访问该项目及其画布返回 404。
 - [ ] 项目主页在**一个路由**内用同页 Tab 展示画布与成员；来回切 Tab 不改变 URL、不重新请求、不闪 loading。
@@ -580,21 +628,24 @@ export interface FlowCommand {
 - [ ] 同项目两个成员同时打开同一张画布，后提交的一方拿到 409、给出「请重新加载」提示并停止自动提交，不会静默覆盖。
 - [ ] 同一个事务重复提交（模拟网络重试）不会在 `FlowOperation` 里留下两条记录。
 - [ ] 节点 `data.config` 里塞任意结构的 JSON，存取一字不差。
+- [ ] 平移/缩放后刷新，视口回到离开时的位置；撤销按钮不会因为只挪了画布而变亮，撤销也拽不回视野。
+- [ ] 同一张画布两个人各自平移到不同位置，互不影响；第三个人第一次打开时按快照里的兜底视口（或 fitView）。
 - [ ] A 项目的成员访问 B 项目的画布 id 返回 404；未登录访问任一 `/api/projects*` / `/api/flows*` 返回 401。
 
 **测试覆盖**
 
 - [ ] `server/test/routes/projects.test.ts` —— 创建即 admin、成员隔离 404、admin/member 权限分界 403。
-- [ ] `server/test/routes/invites.test.ts` —— 生成、预览、接受、幂等、三种失效、次数上限。
-- [ ] `server/test/routes/flows.test.ts` —— 分页、校验、跨项目 404、乐观锁 409、commit 幂等。
-- [ ] `src/test/stores/flow.test.ts` —— apply / undo / redo / 事务合并 / 历史上限 100 / 防抖提交 / 409 / 断网补提交。
+- [ ] `server/test/routes/invites.test.ts` —— 幂等取链接、过期自动换新、改有效期不换 token、重置、预览、接受、多人复用、失效文案。
+- [ ] `server/test/routes/flows.test.ts` —— 分页、校验、跨项目 404、乐观锁 409、commit 幂等、`user-state` 各存各的 / 覆盖 / 不涨 revision / 校验 / 非成员 404 / 随画布级联删除。
+- [ ] `src/test/stores/flow.test.ts` —— apply / undo / redo / 事务合并 / 历史上限 100 / 防抖提交 / 409 / 断网补提交 / 视口不进历史且走独立防抖链路。
 - [ ] `src/test/stores/flow-commands.test.ts` —— 注册表：九种内置命令齐全、每条的 `inverse` 能双向对上、重复注册报错、未知类型告警跳过、运行时新注册的命令能直接被 `apply` / `undo` 用起来。
 
 ## 6. 本期不做
 
 - **多人实时协同编辑**（那是 [REQ-COLLAB](04-realtime-collab.md) 的事）。本期按单编辑者设计：没有在线状态、没有光标共享、没有合并策略，冲突只是「后写的人被拦下并重新加载」。
 - 编辑锁 / 抢占提示（「张三正在编辑这张画布」）。
-- 邮箱邀请、按用户名直接添加成员、加入申请与审批 —— **邀请链接是唯一入口**。
+- 邮箱邀请、按用户名直接添加成员、加入申请与审批 —— **分享链接是唯一入口**。
+- 一个项目多条分享链接、按人/按用途分发、使用次数上限、链接维度的加入记录。
 - 转让管理员、多管理员之外的自定义角色、画布级别的细粒度权限（项目内成员平权）。
 - 主动退出项目（先只有被 admin 移除）。
 - 项目层面的操作审计（谁改了项目名、谁移除了谁）。

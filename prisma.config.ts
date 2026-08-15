@@ -1,6 +1,11 @@
-import { mkdirSync } from 'node:fs'
-import path from 'node:path'
 import { defineConfig } from 'prisma/config'
+import {
+  ensureDatabaseDir,
+  migrationsPathOf,
+  resolveDatabaseUrl,
+  resolveProvider,
+  schemaPathOf,
+} from './prisma/db-provider.mjs'
 
 // 用 node 自带的 .env 读取，省掉 dotenv 依赖（node >= 20.12 就有 loadEnvFile）
 try {
@@ -9,27 +14,18 @@ try {
   // 没有 .env 就走进程里已有的环境变量
 }
 
-// 这段要和 server/config.ts 里的解析保持一致：
-// DATA_DIR / DATABASE_URL 的相对路径都按仓库根目录算，
-// 这样 CLI（迁移）和服务端进程打开的是同一个库文件。
-const rootDir = import.meta.dirname
-const fromRoot = (target: string) => (path.isAbsolute(target) ? target : path.join(rootDir, target))
-
-const dataDir = fromRoot(process.env['DATA_DIR'] ?? 'data')
-const configured = process.env['DATABASE_URL'] ?? `file:${path.join(dataDir, 'app.db')}`
-const url = configured.startsWith('file:')
-  ? `file:${fromRoot(configured.slice('file:'.length))}`
-  : configured
-
-// better-sqlite3 / prisma 都不会自动建目录
-if (url.startsWith('file:')) {
-  mkdirSync(path.dirname(url.slice('file:'.length)), { recursive: true })
-}
+// provider 和连接串的解析规则见 prisma/db-provider.mjs，
+// server/config.ts 里有一份等价实现 —— CLI（迁移）和服务端进程必须落到同一个库上。
+const provider = resolveProvider()
+const url = resolveDatabaseUrl(process.env, provider)
+ensureDatabaseDir(url)
 
 export default defineConfig({
-  schema: 'prisma/schema.prisma',
+  // 两份 schema 由 `pnpm db:schema` 从 prisma/models.prisma 生成
+  schema: schemaPathOf(provider),
   migrations: {
-    path: 'prisma/migrations',
+    // 迁移历史按 provider 分开：DDL 方言不同，不能混用同一套文件
+    path: migrationsPathOf(provider),
   },
   datasource: { url },
 })

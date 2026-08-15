@@ -53,6 +53,12 @@ spec:
             - name: PORT
               value: "3000"
             # SQLite 落在挂载卷上（库文件 = $DATA_DIR/app.db）
+            #
+            # 换 PostgreSQL：这三样一起改 ——
+            #   1. 镜像要用 DB_PROVIDER=postgresql 构建（产物绑定 provider，见 docs/12）；
+            #   2. 这里删掉 DATA_DIR，连同下面的 volumeMounts / volumes 和 PVC；
+            #   3. DATABASE_URL 放进 shadecn-learning-auth 这个 Secret（连接串带密码，不能写明文 env）。
+            # replicas 仍然只能是 1：Yjs 文档还在进程内存里。
             - name: DATA_DIR
               value: /app/data
             # 对外地址，用来拼 redirect_uri；必须和 Keycloak client 里配的一致

@@ -121,4 +121,32 @@ describe("路由表约定", () => {
 
     expect(router.getRoutes().some((r) => r.path === "/login")).toBe(false)
   })
+
+  it("带菜单与不带菜单由模板页区分：普通页面套 SidebarLayout", async () => {
+    const router = await loggedIn()
+    const { default: SidebarLayout } = await import(
+      "@/layouts/SidebarLayout.vue"
+    )
+
+    const matched = router.resolve("/projects").matched
+
+    expect(matched).toHaveLength(2)
+    expect(matched[0]?.components?.default).toBe(SidebarLayout)
+  })
+
+  it("两张模板页都占着 '/'，根路径仍然落在首页而不是空布局上", async () => {
+    const router = await loggedIn()
+
+    expect(router.resolve("/").name).toBe("Home")
+  })
+
+  it("画布编辑器套的是 BlankLayout —— 整屏、无侧栏", async () => {
+    const router = await loggedIn()
+    const { default: BlankLayout } = await import("@/layouts/BlankLayout.vue")
+
+    const matched = router.resolve("/flows/f1").matched
+
+    expect(matched).toHaveLength(2)
+    expect(matched[0]?.components?.default).toBe(BlankLayout)
+  })
 })

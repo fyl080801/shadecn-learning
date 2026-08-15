@@ -12,6 +12,7 @@ import {
   type FlowSummary,
   type FlowTransaction,
   type FlowTransactionKind,
+  type FlowUserState,
   type FlowViewport
 } from "@/types/flow"
 import { clone } from "./commands/helpers"
@@ -43,6 +44,8 @@ export const HISTORY_LIMIT = 100
 export const FLUSH_OP_THRESHOLD = 20
 /** 提交防抖窗口（毫秒） */
 export const FLUSH_DEBOUNCE = 800
+/** 按用户存的状态（视口…）的防抖窗口；它不进历史，存得勤一点也不贵 */
+export const USER_STATE_DEBOUNCE = 600
 
 export type SaveState = "saved" | "dirty" | "saving" | "error" | "conflict"
 
@@ -65,8 +68,19 @@ export const useFlowStore = defineStore("flow", () => {
   const meta = ref<FlowSummary | null>(null)
   const nodes = ref<FlowNode[]>([])
   const edges = ref<FlowEdge[]>([])
+  /** 我当前看哪儿。**视图状态，不是画布数据** —— 只走按用户存那条路 */
   const viewport = ref<FlowViewport>({ x: 0, y: 0, zoom: 1 })
+  /**
+   * 快照里那份视口，加载进来是什么就一直是什么。
+   *
+   * 它只是「谁都还没在这张画布上留下过视口时」的兜底。提交时原样写回，
+   * **不跟着我平移/缩放走** —— 否则我拖一下画布就改了别人的共享数据，
+   * 视图操作和数据变化又混到一起了。
+   */
+  const graphViewport = ref<FlowViewport>({ x: 0, y: 0, zoom: 1 })
   const graphMeta = ref<Record<string, unknown>>({})
+  /** 按用户存的状态（视口…）；每人一份，跟画布内容分开走 */
+  const userState = ref<FlowUserState>({})
 
   const baseRevision = ref(0)
   const undoStack = shallowRef<FlowTransaction[]>([])
@@ -176,7 +190,8 @@ export const useFlowStore = defineStore("flow", () => {
   function currentGraph(): FlowGraph {
     return {
       schemaVersion: 1,
-      viewport: { ...viewport.value },
+      // 注意是 graphViewport 不是 viewport：见上面的注释，个人视口不写进共享快照
+      viewport: { ...graphViewport.value },
       nodes: clone(nodes.value),
       edges: clone(edges.value),
       meta: { ...graphMeta.value }
@@ -258,10 +273,68 @@ export const useFlowStore = defineStore("flow", () => {
     if (pending.value.length > 0 && (saveState.value as SaveState) === "dirty") scheduleFlush()
   }
 
+  // —— 按用户存的状态 ——
+
+  /**
+   * 视口这类状态**不是画布内容**：不进历史、不进操作日志、不涨 revision，
+   * 因此也没有乐观锁和冲突 —— 只平移一下画布同样要能存下来，
+   * 走的是独立的一条防抖链路（`PATCH /user-state`）。
+   *
+   * 加一种新的按用户存的东西：在 `FlowUserState` 加个字段、服务端加条校验，
+   * 然后调 `setUserState('新字段', 值)` —— 防抖、重试、离开前落库都是现成的。
+   */
+  let userStateTimer: ReturnType<typeof setTimeout> | null = null
+  /** 待落库的分区：只发改过的那些，没动过的不覆盖 */
+  let userStatePatch: FlowUserState = {}
+  let userStateInflight: Promise<void> | null = null
+
+  function clearUserStateTimer() {
+    if (userStateTimer !== null) {
+      clearTimeout(userStateTimer)
+      userStateTimer = null
+    }
+  }
+
+  function setUserState<K extends keyof FlowUserState>(key: K, value: FlowUserState[K]) {
+    userState.value = { ...userState.value, [key]: value }
+    userStatePatch[key] = value
+
+    clearUserStateTimer()
+    userStateTimer = setTimeout(() => {
+      userStateTimer = null
+      void flushUserState()
+    }, USER_STATE_DEBOUNCE)
+  }
+
+  async function flushUserState(): Promise<void> {
+    clearUserStateTimer()
+    if (userStateInflight) return userStateInflight
+    if (!meta.value) return
+
+    const patch = userStatePatch
+    if (Object.keys(patch).length === 0) return
+    userStatePatch = {}
+
+    const flowId = meta.value.id
+    userStateInflight = (async () => {
+      try {
+        await flowApi.patchUserState(flowId, patch)
+      } catch {
+        // 存不上不该弹提示打断人：这类状态丢了最多是下次打开回到上一个存住的视图。
+        // 把没存成的合回队列（期间产生的新值优先），下次移动或离开时再试。
+        userStatePatch = { ...patch, ...userStatePatch }
+      } finally {
+        userStateInflight = null
+      }
+    })()
+
+    await userStateInflight
+  }
+
   /** Ctrl+S / 离开页面前：立刻提交并等它结束 */
   async function saveNow() {
     if (saveState.value === "error") saveState.value = "dirty"
-    await flush()
+    await Promise.all([flush(), flushUserState()])
   }
 
   // —— 生命周期 ——
@@ -271,9 +344,15 @@ export const useFlowStore = defineStore("flow", () => {
     meta.value = { ...detail }
     nodes.value = clone(graph.nodes ?? [])
     edges.value = clone(graph.edges ?? [])
-    viewport.value = { ...(graph.viewport ?? { x: 0, y: 0, zoom: 1 }) }
     graphMeta.value = { ...(graph.meta ?? {}) }
     baseRevision.value = detail.revision
+
+    // 视口先看「我自己上次看哪儿」，没有才回落到快照里那份兜底的
+    userState.value = { ...(detail.userState ?? {}) }
+    userStatePatch = {}
+    clearUserStateTimer()
+    graphViewport.value = { ...(graph.viewport ?? { x: 0, y: 0, zoom: 1 }) }
+    viewport.value = { ...(userState.value.viewport ?? graphViewport.value) }
 
     undoStack.value = []
     redoStack.value = []
@@ -290,11 +369,18 @@ export const useFlowStore = defineStore("flow", () => {
 
   function reset() {
     clearTimer()
+    // 卸载时（关标签页、跳走）把还没落库的视口补一发，不等结果 ——
+    // 路由跳走那条路已经 await 过一次，这里是兜底
+    void flushUserState()
+    clearUserStateTimer()
+    userStatePatch = {}
+    userState.value = {}
     openTx = null
     meta.value = null
     nodes.value = []
     edges.value = []
     viewport.value = { x: 0, y: 0, zoom: 1 }
+    graphViewport.value = { x: 0, y: 0, zoom: 1 }
     graphMeta.value = {}
     baseRevision.value = 0
     undoStack.value = []
@@ -305,9 +391,15 @@ export const useFlowStore = defineStore("flow", () => {
     lastSavedAt.value = null
   }
 
-  /** 视口不进历史、不产生操作，只在保存快照时随行 */
+  /**
+   * 视口不进历史、不产生操作。它按用户存：谁看哪儿是谁自己的事，
+   * 不会因为别人拖了一下画布就把我的视野也挪走。
+   * 快照里那份 `graph.viewport` 只留作「第一次打开」的兜底。
+   */
   function setViewport(next: FlowViewport) {
-    viewport.value = { ...next }
+    const value = { ...next }
+    viewport.value = value
+    setUserState("viewport", value)
   }
 
   function renameLocally(name: string) {
@@ -321,6 +413,7 @@ export const useFlowStore = defineStore("flow", () => {
     edges,
     viewport,
     graphMeta,
+    userState,
     baseRevision,
     undoStack,
     redoStack,
@@ -339,10 +432,12 @@ export const useFlowStore = defineStore("flow", () => {
     undo,
     redo,
     flush,
+    flushUserState,
     saveNow,
     load,
     reset,
     setViewport,
+    setUserState,
     renameLocally,
     currentGraph
   }

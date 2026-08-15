@@ -1,7 +1,13 @@
 import { Hono } from 'hono'
 import type { AuthVariables } from '../auth/middleware.ts'
 import { currentUserId, requireFlowMember, type ProjectVariables } from '../auth/project.ts'
-import { GRAPH_LIMITS, parseGraph, parseTransactions } from '../store/flow-types.ts'
+import {
+  GRAPH_LIMITS,
+  parseGraph,
+  parseTransactions,
+  parseUserStatePatch,
+} from '../store/flow-types.ts'
+import { flowUserState } from '../store/flow-user-state.ts'
 import { FLOW_STATUSES, flows as store, type FlowStatus } from '../store/flows.ts'
 import { INVALID_JSON, parseDescription, parseName, parsePagination, readJson } from './params.ts'
 
@@ -21,6 +27,7 @@ interface CommitPayload {
 }
 
 const NOT_FOUND = { error: 'Not Found', message: '画布不存在' } as const
+const UNAUTHORIZED = { error: 'Unauthorized', message: '需要登录' } as const
 
 export const flows = new Hono<Env>()
   // 画布的访问权来自项目成员身份；非成员一律 404
@@ -28,7 +35,11 @@ export const flows = new Hono<Env>()
   .use('/:flowId/*', requireFlowMember)
 
   .get('/:flowId', async (c) => {
-    const flow = await store.get(c.req.param('flowId'))
+    const userId = await currentUserId(c)
+    if (!userId) return c.json(UNAUTHORIZED, 401)
+
+    // userState（视口等）是**这个人**的，所以详情要带上请求者身份
+    const flow = await store.get(c.req.param('flowId'), userId)
     if (!flow) return c.json(NOT_FOUND, 404)
     return c.json(flow)
   })
@@ -75,9 +86,30 @@ export const flows = new Hono<Env>()
     return c.body(null, 204)
   })
 
+  /**
+   * 按用户存的画布状态（视口…）。PATCH 语义：只带要改的分区，没带的原样留着。
+   *
+   * 单独一条路由、不搭 commit 的车：这些状态不是画布内容 ——
+   * 不进快照、不进操作日志、不涨 revision，也就没有乐观锁和冲突一说，
+   * 只平移一下画布同样要能存下来。加新分区不用动这里。
+   */
+  .patch('/:flowId/user-state', async (c) => {
+    const userId = await currentUserId(c)
+    if (!userId) return c.json(UNAUTHORIZED, 401)
+
+    const body = await readJson<unknown>(c.req)
+    if (!body) return c.json({ error: INVALID_JSON }, 400)
+
+    const patch = parseUserStatePatch(body)
+    if (!patch.ok) return c.json({ error: patch.error }, 400)
+
+    await flowUserState.patch(c.req.param('flowId'), userId, patch.value)
+    return c.body(null, 204)
+  })
+
   .post('/:flowId/duplicate', async (c) => {
     const userId = await currentUserId(c)
-    if (!userId) return c.json({ error: 'Unauthorized', message: '需要登录' }, 401)
+    if (!userId) return c.json(UNAUTHORIZED, 401)
 
     const copy = await store.duplicate(c.req.param('flowId'), userId)
     if (!copy) return c.json(NOT_FOUND, 404)

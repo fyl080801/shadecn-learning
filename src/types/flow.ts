@@ -34,6 +34,7 @@ export interface ProjectMemberView {
   invitedById: string | null
 }
 
+/** 项目的分享链接，一个项目只有一条；不限使用次数，只有有效期 */
 export interface ProjectInviteView {
   id: string
   projectId: string
@@ -44,18 +45,9 @@ export interface ProjectInviteView {
   createdById: string
   createdAt: string
   expiresAt: string
-  maxUses: number | null
-  usedCount: number
-  revokedAt: string | null
 }
 
-export type InviteInvalidReason =
-  | "not_found"
-  | "expired"
-  | "revoked"
-  | "exhausted"
-  | "project_deleted"
-  | "project_full"
+export type InviteInvalidReason = "not_found" | "expired" | "project_deleted" | "project_full"
 
 export interface InvitePreview {
   valid: boolean
@@ -89,6 +81,22 @@ export interface FlowSummary {
 
 export interface FlowDetail extends FlowSummary {
   graph: FlowGraph
+  /** 当前用户自己的画布状态；没存过的分区不出现 */
+  userState: FlowUserState
+}
+
+// —— 按用户存的画布状态 ——
+
+/**
+ * 「每人自己一份」的状态：视口是第一个分区，以后还会有别的
+ * （面板宽度、折叠了哪些节点…）。
+ *
+ * **扩展点**：加一个分区 = 这里加一个可选字段 + 服务端
+ * `server/store/flow-types.ts` 的 `FLOW_USER_STATE_PARSERS` 加一条校验，
+ * 表结构和接口都不用动。字段一律可选：老数据里没有它。
+ */
+export interface FlowUserState {
+  viewport?: FlowViewport
 }
 
 // —— 图内容 ——

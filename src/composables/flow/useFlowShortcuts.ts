@@ -1,13 +1,8 @@
 import { useEventListener } from "@vueuse/core"
 import { onBeforeRouteLeave } from "vue-router"
 import type { FlowEditorContext } from "./context"
-
-/** 输入框里按 Ctrl+Z 应该是撤销输入，不是撤销画布操作 */
-function isEditableTarget(target: EventTarget | null) {
-  const el = target as HTMLElement | null
-  if (!el) return false
-  return el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)
-}
+// 输入框里按 Ctrl+Z 应该是撤销输入，不是撤销画布操作
+import { isEditableTarget } from "./editable"
 
 /**
  * 编辑器的全局快捷键与「别把没保存的改动弄丢」两道保险。

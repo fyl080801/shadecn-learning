@@ -30,9 +30,10 @@ describe('isApiPath()', () => {
 
 describe('数据库路径解析', () => {
   beforeEach(() => {
-    // 测试环境默认给了 DATABASE_URL，这几个用例要从零开始算
+    // 测试环境默认给了 DATABASE_URL / DB_PROVIDER，这几个用例要从零开始算
     vi.stubEnv('DATABASE_URL', undefined)
     vi.stubEnv('DATA_DIR', undefined)
+    vi.stubEnv('DB_PROVIDER', undefined)
   })
 
   it('默认落在 <仓库根>/data/app.db', async () => {
@@ -65,6 +66,49 @@ describe('数据库路径解析', () => {
     vi.stubEnv('DATABASE_URL', 'postgresql://localhost:5432/app')
     const config = await loadConfig()
     expect(config.databaseUrl).toBe('postgresql://localhost:5432/app')
+  })
+})
+
+describe('数据库 provider 解析', () => {
+  beforeEach(() => {
+    vi.stubEnv('DATABASE_URL', undefined)
+    vi.stubEnv('DATA_DIR', undefined)
+    vi.stubEnv('DB_PROVIDER', undefined)
+  })
+
+  it('什么都不设 → sqlite', async () => {
+    expect((await loadConfig()).dbProvider).toBe('sqlite')
+  })
+
+  it.each([
+    ['postgresql://user:pw@localhost:5432/app', 'postgresql'],
+    ['postgres://user:pw@localhost:5432/app', 'postgresql'],
+    ['file:./data/app.db', 'sqlite'],
+  ])('从 DATABASE_URL 的协议推断：%s → %s', async (url, expected) => {
+    vi.stubEnv('DATABASE_URL', url)
+    expect((await loadConfig()).dbProvider).toBe(expected)
+  })
+
+  it('显式的 DB_PROVIDER 说了算', async () => {
+    vi.stubEnv('DB_PROVIDER', 'postgresql')
+    vi.stubEnv('DATABASE_URL', 'postgresql://localhost:5432/app')
+    expect((await loadConfig()).dbProvider).toBe('postgresql')
+  })
+
+  it('DB_PROVIDER 和 DATABASE_URL 的协议对不上 → 直接抛错', async () => {
+    vi.stubEnv('DB_PROVIDER', 'sqlite')
+    vi.stubEnv('DATABASE_URL', 'postgresql://localhost:5432/app')
+    await expect(loadConfig()).rejects.toThrow(/不一致/)
+  })
+
+  it('DB_PROVIDER 是不认识的值 → 直接抛错', async () => {
+    vi.stubEnv('DB_PROVIDER', 'mysql')
+    await expect(loadConfig()).rejects.toThrow(/只能是/)
+  })
+
+  it('DB_PROVIDER=postgresql 却没给 DATABASE_URL → 直接抛错', async () => {
+    vi.stubEnv('DB_PROVIDER', 'postgresql')
+    await expect(loadConfig()).rejects.toThrow(/必须提供 DATABASE_URL/)
   })
 })
 

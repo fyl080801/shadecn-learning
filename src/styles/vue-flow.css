@@ -8,6 +8,28 @@
 @import "@vue-flow/controls/dist/style.css";
 @import "@vue-flow/minimap/dist/style.css";
 
+/*
+ * 框选模式下 `selectionKeyCode = true`，画布一直挂着 `.selection` 类，
+ * Vue Flow 默认给它 `cursor: pointer`（手型）—— 看着像「这里可以点」，
+ * 但实际动作是拉框。用普通指针。
+ */
+.vue-flow__pane.selection {
+  cursor: default;
+}
+
+/*
+ * 按住空格临时拖画布。此时节点已被设成不可拖，光标也得跟着改成抓手 ——
+ * 否则停在节点上看着仍像「能拖节点」。范围只到 pane / node，
+ * 免得连 MiniMap、控制按钮一起变。
+ */
+.flow-canvas-panning :is(.vue-flow__pane, .vue-flow__pane.selection, .vue-flow__node) {
+  cursor: grab;
+}
+
+.flow-canvas-panning:active :is(.vue-flow__pane, .vue-flow__pane.selection, .vue-flow__node) {
+  cursor: grabbing;
+}
+
 .vue-flow__minimap {
   transform: scale(75%);
   transform-origin: bottom right;

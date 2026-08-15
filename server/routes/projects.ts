@@ -8,6 +8,7 @@ import {
 } from '../auth/project.ts'
 import { appOrigin } from '../config.ts'
 import {
+  DEFAULT_INVITE_EXPIRY_DAYS,
   INVITE_EXPIRY_DAYS,
   PROJECT_LIMITS,
   projects as store,
@@ -31,7 +32,6 @@ interface ProjectPayload {
 
 interface InvitePayload {
   expiresInDays?: unknown
-  maxUses?: unknown
 }
 
 interface FlowPayload {
@@ -39,9 +39,18 @@ interface FlowPayload {
   description?: unknown
 }
 
-/** 把邀请拼成前端能直接复制的完整链接 */
+/** 把分享链接拼成前端能直接复制的完整 URL */
 function withUrl<T extends { token: string }>(invite: T) {
   return { ...invite, url: `${appOrigin}/invite/${invite.token}` }
+}
+
+function parseExpiry(
+  raw: unknown,
+): { ok: true; value: InviteExpiryDays } | { ok: false; error: string } {
+  if (!INVITE_EXPIRY_DAYS.includes(raw as InviteExpiryDays)) {
+    return { ok: false, error: `expiresInDays 只能是 ${INVITE_EXPIRY_DAYS.join(' / ')}` }
+  }
+  return { ok: true, value: raw as InviteExpiryDays }
 }
 
 function parseSort(raw: string | undefined): { sort: FlowSort; order: 'asc' | 'desc' } | null {
@@ -146,50 +155,54 @@ export const projects = new Hono<Env>()
     return c.body(null, 204)
   })
 
-  // —— 邀请 ——
-  .get('/:projectId/invites', requireProjectAdmin, async (c) => {
-    const invites = await store.listInvites(c.req.param('projectId'))
-    return c.json(invites.map(withUrl))
+  // —— 分享链接（一个项目一条）——
+  .get('/:projectId/invite', requireProjectAdmin, async (c) => {
+    const userId = await currentUserId(c)
+    if (!userId) return c.json({ error: 'Unauthorized', message: '需要登录' }, 401)
+
+    // 读接口也会写：没有链接就当场建一条，前端打开面板即拿到可复制的 URL
+    const invite = await store.ensureInvite({
+      projectId: c.req.param('projectId'),
+      createdById: userId,
+    })
+    return c.json(withUrl(invite))
   })
 
-  .post('/:projectId/invites', requireProjectAdmin, async (c) => {
-    const projectId = c.req.param('projectId')
+  // 改有效期：token 不变，已经发出去的链接继续可用
+  .patch('/:projectId/invite', requireProjectAdmin, async (c) => {
+    const body = await readJson<InvitePayload>(c.req)
+    if (!body) return c.json({ error: INVALID_JSON }, 400)
 
-    const body = (await readJson<InvitePayload>(c.req)) ?? {}
-
-    const rawDays = body.expiresInDays ?? 7
-    if (!INVITE_EXPIRY_DAYS.includes(rawDays as InviteExpiryDays)) {
-      return c.json({ error: `expiresInDays 只能是 ${INVITE_EXPIRY_DAYS.join(' / ')}` }, 400)
-    }
-
-    const rawUses = body.maxUses ?? null
-    if (rawUses !== null && (!Number.isInteger(rawUses) || (rawUses as number) < 1 || (rawUses as number) > 1000)) {
-      return c.json({ error: 'maxUses 必须是 1..1000 的整数，或 null 表示不限' }, 400)
-    }
-
-    if ((await store.countActiveInvites(projectId)) >= PROJECT_LIMITS.invites) {
-      return c.json(
-        { error: `有效邀请数已达上限 ${PROJECT_LIMITS.invites}，请先撤销一些` },
-        400,
-      )
-    }
+    const days = parseExpiry(body.expiresInDays)
+    if (!days.ok) return c.json({ error: days.error }, 400)
 
     const userId = await currentUserId(c)
     if (!userId) return c.json({ error: 'Unauthorized', message: '需要登录' }, 401)
 
-    const invite = await store.createInvite({
-      projectId,
+    const invite = await store.setInviteExpiry({
+      projectId: c.req.param('projectId'),
       createdById: userId,
-      expiresInDays: rawDays as InviteExpiryDays,
-      maxUses: rawUses as number | null,
+      expiresInDays: days.value,
     })
-    return c.json(withUrl(invite), 201)
+    return c.json(withUrl(invite))
   })
 
-  .delete('/:projectId/invites/:inviteId', requireProjectAdmin, async (c) => {
-    const revoked = await store.revokeInvite(c.req.param('projectId'), c.req.param('inviteId'))
-    if (!revoked) return c.json({ error: 'Not Found', message: '邀请不存在或已撤销' }, 404)
-    return c.body(null, 204)
+  // 重置：换一个 token，旧链接立刻失效
+  .post('/:projectId/invite/reset', requireProjectAdmin, async (c) => {
+    const body = (await readJson<InvitePayload>(c.req)) ?? {}
+
+    const days = parseExpiry(body.expiresInDays ?? DEFAULT_INVITE_EXPIRY_DAYS)
+    if (!days.ok) return c.json({ error: days.error }, 400)
+
+    const userId = await currentUserId(c)
+    if (!userId) return c.json({ error: 'Unauthorized', message: '需要登录' }, 401)
+
+    const invite = await store.resetInvite({
+      projectId: c.req.param('projectId'),
+      createdById: userId,
+      expiresInDays: days.value,
+    })
+    return c.json(withUrl(invite))
   })
 
   // —— 项目内的画布 ——

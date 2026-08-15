@@ -9,7 +9,7 @@ import FlowToolbar from "@/components/flow/FlowToolbar.vue"
 import { provideFlowEditor, useFlowShortcuts } from "@/composables/flow"
 
 /**
- * 画布编辑器 —— 独占整屏（路由 meta.layout = 'bare'，App.vue 不渲染侧栏）。
+ * 画布编辑器 —— 独占整屏（路由挂在 BlankLayout 模板页下，没有侧栏）。
  *
  * 这个文件只做两件事：**建上下文**、**摆组件**。
  * 具体功能在 `@/composables/flow`（状态与动作）和 `@/components/flow`（界面）里，

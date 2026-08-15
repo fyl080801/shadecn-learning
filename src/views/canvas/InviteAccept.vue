@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { inviteApi } from "@/lib/api"
 import { usePageTitle } from "@/composables/usePageTitle"
+import { useAsyncAction } from "@/composables/useAsyncAction"
 import type { InvitePreview } from "@/types/flow"
 
 /**
@@ -22,7 +23,6 @@ const router = useRouter()
 
 const preview = ref<InvitePreview | null>(null)
 const loading = ref(true)
-const joining = ref(false)
 const error = ref<string | null>(null)
 
 usePageTitle("加入项目", () => preview.value?.projectName)
@@ -37,26 +37,28 @@ onMounted(async () => {
   }
 })
 
-async function join() {
-  const data = preview.value
-  if (!data) return
+// 连点只会 accept 一次：重复的 accept 虽然幂等，但会白跑一趟、还可能抢在跳转前弹错
+const { run: join, pending: joining } = useAsyncAction(
+  async () => {
+    const data = preview.value
+    if (!data) return
 
-  // 已经是成员就没必要再调 accept，直接进项目
-  if (data.alreadyMember && data.projectId) {
-    void router.replace(`/projects/${data.projectId}`)
-    return
-  }
+    // 已经是成员就没必要再调 accept，直接进项目
+    if (data.alreadyMember && data.projectId) {
+      void router.replace(`/projects/${data.projectId}`)
+      return
+    }
 
-  joining.value = true
-  try {
     const { projectId } = await inviteApi.accept(props.token)
     void router.replace(`/projects/${projectId}`)
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : "加入失败"
-  } finally {
-    joining.value = false
+  },
+  {
+    // 这页没有 toast，错误直接写在卡片里
+    onError: (err) => {
+      error.value = err instanceof Error ? err.message : "加入失败"
+    }
   }
-}
+)
 </script>
 
 <template>
@@ -96,8 +98,7 @@ async function join() {
         <CardContent class="flex flex-col gap-2">
           <p v-if="error" class="text-center text-sm text-destructive">{{ error }}</p>
 
-          <Button :disabled="joining" @click="join">
-            <Loader2 v-if="joining" class="animate-spin" />
+          <Button :loading="joining" @click="join()">
             {{ preview.alreadyMember ? "进入项目" : "加入项目" }}
           </Button>
           <Button variant="ghost" @click="router.push('/projects')">取消</Button>

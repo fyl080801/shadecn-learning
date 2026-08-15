@@ -5,6 +5,7 @@ import type {
   FlowStatus,
   FlowSummary,
   FlowTransaction,
+  FlowUserState,
   InvitePreview,
   Paged,
   ProjectInviteView,
@@ -102,24 +103,25 @@ export const projectApi = {
     })
   },
 
-  invites(projectId: string) {
-    return request<ProjectInviteView[]>(`/api/projects/${projectId}/invites`)
+  /** 取项目的分享链接；没有（或已过期）时服务端当场建一条，所以打开面板即有链接 */
+  invite(projectId: string) {
+    return request<ProjectInviteView>(`/api/projects/${projectId}/invite`)
   },
 
-  createInvite(
-    projectId: string,
-    body: { expiresInDays?: number; maxUses?: number | null }
-  ) {
-    return request<ProjectInviteView>(`/api/projects/${projectId}/invites`, {
-      method: "POST",
-      body: json(body)
+  /** 改有效期，token 不变 */
+  setInviteExpiry(projectId: string, expiresInDays: number) {
+    return request<ProjectInviteView>(`/api/projects/${projectId}/invite`, {
+      method: "PATCH",
+      body: json({ expiresInDays })
     })
   },
 
-  revokeInvite(projectId: string, inviteId: string) {
-    return request<void>(`/api/projects/${projectId}/invites/${inviteId}`, {
-      method: "DELETE"
-    })
+  /** 重置：换一个 token，旧链接立刻失效 */
+  resetInvite(projectId: string, expiresInDays?: number) {
+    return request<ProjectInviteView>(
+      `/api/projects/${projectId}/invite/reset`,
+      { method: "POST", body: json({ expiresInDays }) }
+    )
   }
 }
 
@@ -189,6 +191,17 @@ export const flowApi = {
   duplicate(flowId: string) {
     return request<FlowDetail>(`/api/flows/${flowId}/duplicate`, {
       method: "POST"
+    })
+  },
+
+  /**
+   * 存「我自己」的画布状态（视口…）。PATCH：只带要改的分区。
+   * 跟内容提交是两条路 —— 它不涨 revision，也就没有冲突。
+   */
+  patchUserState(flowId: string, patch: FlowUserState) {
+    return request<void>(`/api/flows/${flowId}/user-state`, {
+      method: "PATCH",
+      body: json(patch)
     })
   },
 

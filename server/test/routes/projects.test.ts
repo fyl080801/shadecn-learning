@@ -104,7 +104,7 @@ describe('GET /api/projects/:id', () => {
 })
 
 describe('项目的 admin / member 权限分界', () => {
-  it('member 改项目名 / 删项目 / 管邀请 → 403', async () => {
+  it('member 改项目名 / 删项目 / 管分享链接 → 403', async () => {
     const alice = await actor('alice')
     const bob = await actor('bob')
     const projectId = await createProject(alice)
@@ -112,8 +112,8 @@ describe('项目的 admin / member 权限分界', () => {
 
     expect((await bob.json(`/api/projects/${projectId}`, 'PATCH', { name: '改名' })).status).toBe(403)
     expect((await bob.request(`/api/projects/${projectId}`, { method: 'DELETE' })).status).toBe(403)
-    expect((await bob.json(`/api/projects/${projectId}/invites`, 'POST', {})).status).toBe(403)
-    expect((await bob.request(`/api/projects/${projectId}/invites`)).status).toBe(403)
+    expect((await bob.request(`/api/projects/${projectId}/invite`)).status).toBe(403)
+    expect((await bob.json(`/api/projects/${projectId}/invite/reset`, 'POST', {})).status).toBe(403)
   })
 
   it('admin 能改名', async () => {

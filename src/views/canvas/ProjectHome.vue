@@ -65,7 +65,8 @@ import {
 import { flowApi, projectApi } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { usePageTitle } from "@/composables/usePageTitle"
-import { formatDate, formatDateTime } from "@/lib/format"
+import { useAsyncAction } from "@/composables/useAsyncAction"
+import { formatDateTime } from "@/lib/format"
 import type {
   FlowSummary,
   ProjectInviteView,
@@ -179,49 +180,41 @@ function startRename() {
   editingName.value = true
 }
 
-async function submitRename() {
+// 回车提交会顺带触发 blur，两个入口打在同一个动作上，靠它去重
+const { run: submitRename } = useAsyncAction(async () => {
   const name = nameDraft.value.trim()
   editingName.value = false
   if (!project.value || !name || name === project.value.name) return
 
-  try {
-    project.value = await projectApi.update(props.projectId, { name })
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "改名失败")
-  }
-}
+  project.value = await projectApi.update(props.projectId, { name })
+}, { errorMessage: "改名失败" })
 
 const deletingProject = ref(false)
 
-async function confirmDeleteProject() {
-  try {
+const { run: confirmDeleteProject } = useAsyncAction(
+  async () => {
     await projectApi.remove(props.projectId)
     toast.success("项目已删除")
     void router.push("/projects")
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "删除失败")
-  }
-}
+  },
+  { errorMessage: "删除失败" }
+)
 
 // —— 画布操作 ——
 
 const creatingFlow = ref(false)
 const flowDraft = ref("")
 
-async function submitCreateFlow() {
+const { run: submitCreateFlow, pending: creatingFlowPending } = useAsyncAction(async () => {
   const name = flowDraft.value.trim()
   if (!name) {
     toast.error("请填写画布名称")
     return
   }
-  try {
-    const flow = await flowApi.create(props.projectId, { name })
-    creatingFlow.value = false
-    void router.push(`/flows/${flow.id}`)
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "创建失败")
-  }
-}
+  const flow = await flowApi.create(props.projectId, { name })
+  creatingFlow.value = false
+  void router.push(`/flows/${flow.id}`)
+}, { errorMessage: "创建失败" })
 
 const renamingFlow = ref<FlowSummary | null>(null)
 const flowNameDraft = ref("")
@@ -231,29 +224,25 @@ function startRenameFlow(flow: FlowSummary) {
   flowNameDraft.value = flow.name
 }
 
-async function submitRenameFlow() {
+const { run: submitRenameFlow, pending: renamingFlowPending } = useAsyncAction(async () => {
   const target = renamingFlow.value
   const name = flowNameDraft.value.trim()
   renamingFlow.value = null
   if (!target || !name || name === target.name) return
 
-  try {
-    await flowApi.update(target.id, { name })
-    await loadFlows()
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "改名失败")
-  }
-}
+  await flowApi.update(target.id, { name })
+  await loadFlows()
+}, { errorMessage: "改名失败" })
 
-async function duplicateFlow(flow: FlowSummary) {
-  try {
+// 每行各记各的：复制 A 行不该把 B 行的菜单也锁上
+const { run: duplicateFlow } = useAsyncAction(
+  async (flow: FlowSummary) => {
     const copy = await flowApi.duplicate(flow.id)
     toast.success(`已复制为「${copy.name}」`)
     await loadFlows()
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "复制失败")
-  }
-}
+  },
+  { errorMessage: "复制失败", key: (flow) => flow.id }
+)
 
 /**
  * 二次确认对话框：开关和「操作哪一个」要分开两个 ref。
@@ -268,17 +257,13 @@ function startDeleteFlow(flow: FlowSummary) {
   deleteFlowOpen.value = true
 }
 
-async function confirmDeleteFlow() {
+const { run: confirmDeleteFlow } = useAsyncAction(async () => {
   const target = deletingFlow.value
   if (!target) return
 
-  try {
-    await flowApi.remove(target.id)
-    await Promise.all([loadFlows(), loadProject()])
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "删除失败")
-  }
-}
+  await flowApi.remove(target.id)
+  await Promise.all([loadFlows(), loadProject()])
+}, { errorMessage: "删除失败" })
 
 // —— 成员与邀请 ——
 
@@ -290,73 +275,84 @@ function startRemoveMember(member: ProjectMemberView) {
   removeMemberOpen.value = true
 }
 
-async function confirmRemoveMember() {
+const { run: confirmRemoveMember } = useAsyncAction(async () => {
   const target = removingMember.value
   if (!target) return
 
-  try {
-    await projectApi.removeMember(props.projectId, target.userId)
-    await loadProject()
-    toast.success("已移除该成员")
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "移除失败")
-  }
-}
+  await projectApi.removeMember(props.projectId, target.userId)
+  await loadProject()
+  toast.success("已移除该成员")
+}, { errorMessage: "移除失败" })
 
-const invitePanel = ref(false)
-const invites = ref<ProjectInviteView[]>([])
-const invitesLoading = ref(false)
+/**
+ * 分享链接：**一个项目一条**，面板一打开就有 —— 没有「生成」这一步。
+ * 不限使用人数，唯一的开关是有效期；链接发漏了就「重置」，换一个 token。
+ */
+const sharePanel = ref(false)
+const invite = ref<ProjectInviteView | null>(null)
 const inviteExpiry = ref("7")
-const inviteMaxUses = ref("unlimited")
-const copiedId = ref<string | null>(null)
+const copied = ref(false)
+const resetOpen = ref(false)
 
-async function openInvitePanel() {
-  invitePanel.value = true
-  invitesLoading.value = true
-  try {
-    invites.value = await projectApi.invites(props.projectId)
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "邀请列表加载失败")
-  } finally {
-    invitesLoading.value = false
-  }
+/** 用剩余时间反推当前落在哪个档，下拉才不会显示一个跟事实无关的默认值 */
+function expiryBucket(expiresAt: string) {
+  const days = (new Date(expiresAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000)
+  if (days <= 1) return "1"
+  if (days <= 7) return "7"
+  return "30"
 }
 
-async function generateInvite() {
-  try {
-    const invite = await projectApi.createInvite(props.projectId, {
-      expiresInDays: Number(inviteExpiry.value),
-      maxUses: inviteMaxUses.value === "unlimited" ? null : Number(inviteMaxUses.value)
-    })
-    invites.value = [invite, ...invites.value]
-    await copyInvite(invite)
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "生成失败")
-  }
+const { run: openSharePanel, pending: inviteLoading } = useAsyncAction(async () => {
+  sharePanel.value = true
+  copied.value = false
+  const link = await projectApi.invite(props.projectId)
+  invite.value = link
+  inviteExpiry.value = expiryBucket(link.expiresAt)
+}, { errorMessage: "分享链接加载失败" })
+
+/** 点输入框就全选：剪贴板不可用时还能手动复制 */
+function selectAllText(event: FocusEvent) {
+  ;(event.target as HTMLInputElement | null)?.select()
 }
 
-async function copyInvite(invite: ProjectInviteView) {
+async function copyShareLink() {
+  const link = invite.value
+  if (!link) return
+
   try {
-    await navigator.clipboard.writeText(invite.url)
-    copiedId.value = invite.id
-    toast.success("邀请链接已复制")
-    setTimeout(() => {
-      if (copiedId.value === invite.id) copiedId.value = null
-    }, 2000)
+    await navigator.clipboard.writeText(link.url)
+    copied.value = true
+    toast.success("分享链接已复制")
+    setTimeout(() => (copied.value = false), 2000)
   } catch {
     // 剪贴板不可用（http 或没授权）时不算失败，链接在界面上照样能手选
     toast.info("复制失败，请手动选中链接复制")
   }
 }
 
-async function revokeInvite(invite: ProjectInviteView) {
-  try {
-    await projectApi.revokeInvite(props.projectId, invite.id)
-    invites.value = invites.value.filter((item) => item.id !== invite.id)
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "撤销失败")
+/** 切档即续期，token 不变 —— 已经发出去的链接不该因为改有效期而失效 */
+const { run: changeExpiry, pending: expiryPending } = useAsyncAction(
+  async (value: string) => {
+    const days = Number(value)
+    if (!invite.value || expiryBucket(invite.value.expiresAt) === value) return
+
+    invite.value = await projectApi.setInviteExpiry(props.projectId, days)
+    toast.success(`有效期已改为 ${days} 天`)
+  },
+  {
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "修改有效期失败")
+      // 失败了把下拉拨回真实值，否则界面显示的档跟服务端不是一回事
+      if (invite.value) inviteExpiry.value = expiryBucket(invite.value.expiresAt)
+    }
   }
-}
+)
+
+const { run: confirmResetInvite } = useAsyncAction(async () => {
+  invite.value = await projectApi.resetInvite(props.projectId, Number(inviteExpiry.value))
+  copied.value = false
+  toast.success("已换成新链接，旧链接立即失效")
+}, { errorMessage: "重置失败" })
 
 function initials(member: ProjectMemberView) {
   const source = member.name ?? member.username ?? member.email ?? "?"
@@ -397,8 +393,8 @@ function displayName(member: ProjectMemberView) {
             v-model="nameDraft"
             class="h-9 max-w-sm text-xl font-semibold"
             autofocus
-            @blur="submitRename"
-            @keydown.enter="submitRename"
+            @blur="submitRename()"
+            @keydown.enter="submitRename()"
             @keydown.esc="editingName = false"
           />
           <h1
@@ -417,9 +413,9 @@ function displayName(member: ProjectMemberView) {
         </div>
 
         <div v-if="isAdmin" class="flex shrink-0 items-center gap-2">
-          <Button variant="outline" @click="openInvitePanel">
+          <Button variant="outline" :loading="inviteLoading" @click="openSharePanel()">
             <Link2 />
-            邀请成员
+            分享
           </Button>
           <Button variant="ghost" size="icon" title="删除项目" @click="deletingProject = true">
             <Trash2 class="text-destructive" />
@@ -606,7 +602,7 @@ function displayName(member: ProjectMemberView) {
           </div>
 
           <p v-if="isAdmin" class="text-sm text-muted-foreground">
-            加入项目的唯一方式是邀请链接 —— 点右上角的「邀请成员」生成一条。
+            加入项目的唯一方式是分享链接 —— 点右上角的「分享」把链接发给对方。
           </p>
         </TabsContent>
       </Tabs>
@@ -625,12 +621,14 @@ function displayName(member: ProjectMemberView) {
             v-model="flowDraft"
             placeholder="例如：下单主流程"
             maxlength="80"
-            @keydown.enter="submitCreateFlow"
+            @keydown.enter="submitCreateFlow()"
           />
         </div>
         <DialogFooter>
-          <Button variant="outline" @click="creatingFlow = false">取消</Button>
-          <Button @click="submitCreateFlow">创建并打开</Button>
+          <Button variant="outline" :disabled="creatingFlowPending" @click="creatingFlow = false">
+            取消
+          </Button>
+          <Button :loading="creatingFlowPending" @click="submitCreateFlow()">创建并打开</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -641,76 +639,69 @@ function displayName(member: ProjectMemberView) {
         <DialogHeader>
           <DialogTitle>重命名画布</DialogTitle>
         </DialogHeader>
-        <Input v-model="flowNameDraft" maxlength="80" @keydown.enter="submitRenameFlow" />
+        <Input v-model="flowNameDraft" maxlength="80" @keydown.enter="submitRenameFlow()" />
         <DialogFooter>
-          <Button variant="outline" @click="renamingFlow = null">取消</Button>
-          <Button @click="submitRenameFlow">保存</Button>
+          <Button variant="outline" :disabled="renamingFlowPending" @click="renamingFlow = null">
+            取消
+          </Button>
+          <Button :loading="renamingFlowPending" @click="submitRenameFlow()">保存</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
 
-    <!-- 邀请面板：对话框，不是新页面 -->
-    <Dialog v-model:open="invitePanel">
-      <DialogContent class="max-w-2xl">
+    <!-- 分享面板：一打开就有链接，没有「生成」这一步 -->
+    <Dialog v-model:open="sharePanel">
+      <DialogContent class="max-w-xl">
         <DialogHeader>
-          <DialogTitle>邀请成员</DialogTitle>
+          <DialogTitle>分享项目</DialogTitle>
           <DialogDescription>
-            把链接发给对方即可加入。链接是加入本项目的唯一方式。
+            把链接发给对方，打开即可加入本项目。不限人数，链接是加入本项目的唯一方式。
           </DialogDescription>
         </DialogHeader>
 
-        <div class="flex items-end gap-2">
-          <div class="space-y-2">
-            <Label>有效期</Label>
-            <Select v-model="inviteExpiry">
-              <SelectTrigger class="w-28"><SelectValue /></SelectTrigger>
+        <p v-if="inviteLoading" class="text-sm text-muted-foreground">加载中…</p>
+
+        <template v-else-if="invite">
+          <!-- 链接是主角：一行就是「链接 + 复制」，有效期在下面当脚注 -->
+          <div class="flex w-full min-w-0 items-center gap-2">
+            <Input
+              :model-value="invite.url"
+              readonly
+              class="min-w-0 flex-1 font-mono text-xs"
+              @focus="selectAllText"
+            />
+            <Button class="shrink-0" @click="copyShareLink">
+              <Check v-if="copied" />
+              <Copy v-else />
+              {{ copied ? "已复制" : "复制" }}
+            </Button>
+          </div>
+
+          <div class="flex w-full min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span class="shrink-0">有效期</span>
+            <Select
+              v-model="inviteExpiry"
+              :disabled="expiryPending"
+              @update:model-value="(v) => changeExpiry(String(v))"
+            >
+              <SelectTrigger class="h-7 w-24 shrink-0 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="1">1 天</SelectItem>
                 <SelectItem value="7">7 天</SelectItem>
                 <SelectItem value="30">30 天</SelectItem>
               </SelectContent>
             </Select>
-          </div>
-          <div class="space-y-2">
-            <Label>使用次数</Label>
-            <Select v-model="inviteMaxUses">
-              <SelectTrigger class="w-28"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="unlimited">不限</SelectItem>
-                <SelectItem value="1">1 次</SelectItem>
-                <SelectItem value="10">10 次</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <Button class="ml-auto" @click="generateInvite">
-            <Link2 />
-            生成邀请链接
-          </Button>
-        </div>
-
-        <div class="max-h-72 space-y-2 overflow-auto">
-          <p v-if="invitesLoading" class="text-sm text-muted-foreground">加载中…</p>
-          <p v-else-if="invites.length === 0" class="text-sm text-muted-foreground">
-            当前没有有效的邀请链接。
-          </p>
-
-          <div
-            v-for="invite in invites"
-            :key="invite.id"
-            class="flex items-center gap-2 rounded-md border p-2"
-          >
-            <code class="min-w-0 flex-1 truncate text-xs">{{ invite.url }}</code>
-            <span class="shrink-0 text-xs text-muted-foreground">
-              {{ formatDate(invite.expiresAt) }} 过期 ·
-              {{ invite.maxUses === null ? "不限次" : `${invite.usedCount}/${invite.maxUses}` }}
-            </span>
-            <Button variant="ghost" size="icon" title="复制" @click="copyInvite(invite)">
-              <Check v-if="copiedId === invite.id" class="text-primary" />
-              <Copy v-else />
+            <span class="truncate">{{ formatDateTime(invite.expiresAt) }} 过期</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              class="ml-auto h-7 shrink-0 text-xs"
+              @click="resetOpen = true"
+            >
+              重置链接
             </Button>
-            <Button variant="ghost" size="sm" @click="revokeInvite(invite)">撤销</Button>
           </div>
-        </div>
+        </template>
       </DialogContent>
     </Dialog>
 
@@ -725,7 +716,7 @@ function displayName(member: ProjectMemberView) {
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>取消</AlertDialogCancel>
-          <AlertDialogAction @click="confirmDeleteProject">删除</AlertDialogAction>
+          <AlertDialogAction @click="confirmDeleteProject()">删除</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
@@ -738,7 +729,22 @@ function displayName(member: ProjectMemberView) {
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>取消</AlertDialogCancel>
-          <AlertDialogAction @click="confirmDeleteFlow">删除</AlertDialogAction>
+          <AlertDialogAction @click="confirmDeleteFlow()">删除</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+
+    <AlertDialog v-model:open="resetOpen">
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>重置分享链接？</AlertDialogTitle>
+          <AlertDialogDescription>
+            会换成一条新链接，之前发出去的链接立刻失效。已经加入的成员不受影响。
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogAction @click="confirmResetInvite()">重置</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
@@ -755,7 +761,7 @@ function displayName(member: ProjectMemberView) {
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>取消</AlertDialogCancel>
-          <AlertDialogAction @click="confirmRemoveMember">移除</AlertDialogAction>
+          <AlertDialogAction @click="confirmRemoveMember()">移除</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

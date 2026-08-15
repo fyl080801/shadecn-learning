@@ -34,8 +34,15 @@
 
 - `server/test/global-setup.ts` 在**整轮开始前**清空 `data/test/`，并执行**真实的 `prisma migrate deploy`**。
   > 用真迁移而不是手写建表，是为了让测试 schema 永远不可能与迁移文件漂移。
-- 所有测试文件共用同一个 SQLite 文件，因此 `fileParallelism: false`，串行执行。
+- 所有测试文件共用同一个库，因此 `fileParallelism: false`，串行执行。
 - 提供辅助函数：`helpers/db.ts`（`resetDb` / `createUser`）、`helpers/session.ts`（`signIn` → 直接拿到可用的 `sid` Cookie）。
+- **同一套后端测试要能在两种库上跑**。默认是 `data/test/app.db`；给 `TEST_DATABASE_URL` 一个 PG 连接串就切过去：
+
+  ```bash
+  TEST_DATABASE_URL=postgresql://app:app@127.0.0.1:5432/app_test pnpm test:server
+  ```
+
+  PG 分支用 `migrate reset --force`（会 **drop 光**目标库里的表，只能指专用测试库）。生成的 Prisma client 是跟 provider 绑定的，global-setup 会先比对 `activeProvider`，对不上才重新 `generate` —— 所以来回切库不用手动记得重新生成。
 
 ### 2.4 假 Keycloak
 
@@ -55,7 +62,7 @@
 
 **后端**：`app`（路由挂载与 404/500）、`config`、`auth/oidc`、`auth/session`、`auth/middleware`、`frontend/guard`（页面闸门与服务端渲染的登录页）、`routes/auth`、`routes/health`、`routes/notes`、`store/notes`。
 
-**前端**：`lib/utils`、`lib/format`、`lib/id`、`lib/auth`（`fetchSession` / `apiFetch` 完整契约）、`prompt-input` 的 `serialize`（round-trip）与 `operations`（transform / undo / batch）、路由守卫（会话失效 → 整页跳 `/login`）、`stores/flow`（apply / undo / redo / 事务合并 / 防抖提交 / 409）与命令注册表、`views/canvas/ProjectHome`（删画布 / 移除成员的二次确认真的发出请求）。
+**前端**：`lib/utils`、`lib/format`、`lib/id`、`lib/auth`（`fetchSession` / `apiFetch` 完整契约）、`prompt-input` 的 `serialize`（round-trip）与 `operations`（transform / undo / batch）、路由守卫（会话失效 → 整页跳 `/login`）、`stores/flow`（apply / undo / redo / 事务合并 / 防抖提交 / 409）与命令注册表、`composables/useAsyncAction`（防连点守卫：同步上锁、失败解锁、按 key 分行上锁）、`ui/button` 的 `loading`（转圈 + 自动禁用，防止被 `shadcn-vue add` 覆盖回去）、`views/canvas/ProjectHome`（删画布 / 移除成员的二次确认真的发出请求；连点按钮、连按回车、连点确认框都只发一次请求）。
 
 ### 2.8 编写约定
 

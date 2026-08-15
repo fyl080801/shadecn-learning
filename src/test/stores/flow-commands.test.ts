@@ -219,7 +219,8 @@ describe("自定义命令接进 store", () => {
         nodes: [node("n1")],
         edges: [],
         meta: {}
-      }
+      },
+      userState: {}
     })
 
     store.apply(
