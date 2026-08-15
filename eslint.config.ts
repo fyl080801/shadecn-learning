@@ -10,7 +10,13 @@ import { defineConfig } from "eslint/config"
 export default defineConfig(
   // Global ignores
   {
-    ignores: ["dist", "node_modules", "src/components/ui/**"]
+    ignores: [
+      "dist",
+      "node_modules",
+      "src/components/ui/**",
+      // Prisma 生成的 client
+      "server/generated/**"
+    ]
   },
   {
     plugins: {
@@ -44,7 +50,12 @@ export default defineConfig(
 
   // Node 后端 —— Node 全局变量
   {
-    files: ["server/**/*.ts", "vite.config.ts", "eslint.config.ts"],
+    files: [
+      "server/**/*.ts",
+      "vite.config.ts",
+      "vitest.config.ts",
+      "eslint.config.ts"
+    ],
     languageOptions: {
       globals: {
         ...globals.node

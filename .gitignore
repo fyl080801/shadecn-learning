@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
+coverage
 
 # Editor directories and files
 .vscode/*
@@ -23,3 +24,13 @@ dist-ssr
 *.sln
 *.sw?
 .pnpm-store
+/server/generated/prisma
+
+# 本地环境变量与运行时数据（SQLite 库在 data/ 下）
+.env
+.env.local
+/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

@@ -1,0 +1,69 @@
+// Prisma schema —— 登录态用的本地库（SQLite）
+// 生成的 client 输出到 server/generated/prisma，跟着 server/ 一起进镜像。
+// 文档：https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../server/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+/// 从 Keycloak 的 id_token / userinfo 落下来的用户档案。
+/// 用 (issuer, subject) 做唯一键：换了 realm 就是另一个人。
+model User {
+  id          String    @id @default(cuid())
+  issuer      String
+  subject     String
+  username    String?
+  email       String?
+  name        String?
+  avatarUrl   String?
+  /// Keycloak realm/client 角色，存成 JSON 字符串（SQLite 没有数组类型）
+  roles       String    @default("[]")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastLoginAt DateTime?
+
+  sessions Session[]
+
+  @@unique([issuer, subject])
+}
+
+/// 服务端会话：浏览器只拿到一个随机 token（httpOnly cookie），
+/// 这里存的 id 是那个 token 的 sha256，token 本身不落库。
+model Session {
+  id               String    @id
+  userId           String
+  accessToken      String
+  refreshToken     String?
+  idToken          String?
+  /// access_token 过期时间，到点用 refresh_token 续
+  expiresAt        DateTime
+  refreshExpiresAt DateTime?
+  /// Keycloak 的 session_state，用于后端发起的单点登出
+  sessionState     String?
+  userAgent        String?
+  ip               String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// 一次授权请求的临时凭据（state / nonce / PKCE code_verifier）。
+/// 回调时一次性消费掉，防重放；过期的靠 sweep 清理。
+model AuthRequest {
+  id           String   @id @default(cuid())
+  state        String   @unique
+  nonce        String
+  codeVerifier String
+  /// 登录成功后要跳回的前端地址（只允许站内路径）
+  redirectTo   String   @default("/")
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+}

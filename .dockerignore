@@ -10,3 +10,17 @@ k8s
 doc
 snapshoot
 *.log
+.env
+.env.local
+data
+**/*.db
+**/*.db-journal
+**/*.db-wal
+**/*.db-shm
+server/generated
+
+# 测试相关，不进镜像
+server/test
+src/test
+vitest.config.ts
+coverage

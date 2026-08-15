@@ -1,3 +1,4 @@
+import type { IncomingMessage } from 'node:http'
 import type { ServerType } from '@hono/node-server'
 import { WebSocketServer } from 'ws'
 import { docs, setupWSConnection } from './setupWSConnection.ts'
@@ -30,6 +31,12 @@ export type CollabOptions = {
    * 由它自己的 upgrade 监听器处理，这里掐了就没有热更新了。
    */
   destroyUnmatchedUpgrades?: boolean
+  /**
+   * 校验这次 upgrade 能不能建连（用来卡登录态）。
+   * 返回 false 就回 401 并断开。WebSocket 握手是普通 HTTP 请求，
+   * 同源的话浏览器会自动带上会话 cookie。
+   */
+  authorize?: (req: IncomingMessage) => boolean | Promise<boolean>
 }
 
 /**
@@ -38,7 +45,7 @@ export type CollabOptions = {
  * 其他路径仍然交给 Hono（或 Vite 的 HMR）处理。
  */
 export function attachCollabServer(server: ServerType, options: CollabOptions = {}) {
-  const { destroyUnmatchedUpgrades = true } = options
+  const { destroyUnmatchedUpgrades = true, authorize } = options
   const wss = new WebSocketServer({ noServer: true })
 
   server.on('upgrade', (req, socket, head) => {
@@ -47,10 +54,26 @@ export function attachCollabServer(server: ServerType, options: CollabOptions = 
       if (destroyUnmatchedUpgrades) socket.destroy()
       return
     }
-    wss.handleUpgrade(req, socket, head, (conn) => {
-      setupWSConnection(conn, req, { docName: room })
-      console.log(`[collab] + ${room} (房间连接数 ${docs.get(room)?.conns.size ?? 0})`)
-    })
+
+    const accept = () =>
+      wss.handleUpgrade(req, socket, head, (conn) => {
+        setupWSConnection(conn, req, { docName: room })
+        console.log(`[collab] + ${room} (房间连接数 ${docs.get(room)?.conns.size ?? 0})`)
+      })
+
+    if (!authorize) return accept()
+
+    void Promise.resolve(authorize(req))
+      .then((ok) => {
+        if (ok) return accept()
+        console.warn(`[collab] 拒绝未登录的连接：${req.url}`)
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+      })
+      .catch((err: unknown) => {
+        console.error('[collab] upgrade 鉴权异常', err)
+        socket.destroy()
+      })
   })
 
   if (statsInterval > 0) {

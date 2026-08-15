@@ -14,8 +14,12 @@ import {
   Layers,
   Sun,
   Boxes,
-  Video
+  Video,
+  LogIn,
+  LogOut,
+  User as UserIcon
 } from "lucide-vue-next"
+import { useAuth } from "@/lib/auth"
 
 interface NavItem {
   label: string
@@ -35,6 +39,9 @@ const navItems: NavItem[] = [
   { label: "3D导演台", to: "/3d-scene", icon: Video },
   { label: "VueFlow", to: "/vue-flow", icon: Video }
 ]
+
+const { user, displayName, isAuthenticated, authEnabled, startLogin, startLogout } =
+  useAuth()
 
 const route = useRoute()
 const isNarrow = useMediaQuery("(max-width: 768px)")
@@ -113,6 +120,59 @@ const toggleSidebar = () => {
         </li>
       </ul>
     </nav>
+
+    <!-- 当前用户 / 登录入口 -->
+    <div v-if="authEnabled" class="border-t p-2">
+      <div
+        v-if="isAuthenticated"
+        :class="[
+          'flex items-center gap-2 rounded-md px-2 py-2',
+          isCollapsedDesktop ? 'justify-center' : ''
+        ]"
+      >
+        <img
+          v-if="user?.avatarUrl"
+          :src="user.avatarUrl"
+          alt=""
+          class="size-7 shrink-0 rounded-full object-cover"
+        />
+        <span
+          v-else
+          class="flex size-7 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-sidebar-accent-foreground"
+        >
+          <UserIcon class="size-4" />
+        </span>
+
+        <div v-if="!isCollapsedDesktop" class="min-w-0 flex-1">
+          <p class="truncate text-sm font-medium">{{ displayName }}</p>
+          <p v-if="user?.email" class="truncate text-xs text-muted-foreground">
+            {{ user.email }}
+          </p>
+        </div>
+
+        <Button
+          v-if="!isCollapsedDesktop"
+          variant="ghost"
+          size="icon-sm"
+          title="退出登录"
+          @click="startLogout()"
+        >
+          <LogOut class="size-4" />
+        </Button>
+      </div>
+
+      <Button
+        v-else
+        variant="ghost"
+        size="sm"
+        class="w-full"
+        :class="isCollapsedDesktop ? 'justify-center' : 'justify-start'"
+        @click="startLogin(route.fullPath)"
+      >
+        <LogIn class="size-4" />
+        <span v-if="!isCollapsedDesktop">登录</span>
+      </Button>
+    </div>
 
     <!-- Collapse toggle (desktop only) -->
     <div v-if="!isNarrow" class="border-t p-2">

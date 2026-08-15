@@ -1,3 +1,29 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shadecn-learning-data
+  namespace: dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Keycloak 的 client secret 和会话密钥。真值别提交，用：
+#   kubectl -n dev create secret generic shadecn-learning-auth \
+#     --from-literal=KEYCLOAK_CLIENT_SECRET=xxx \
+#     --from-literal=SESSION_SECRET=$(openssl rand -hex 32)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shadecn-learning-auth
+  namespace: dev
+type: Opaque
+stringData:
+  KEYCLOAK_CLIENT_SECRET: ""
+  SESSION_SECRET: "change-me"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,7 +32,10 @@ metadata:
   labels:
     app: shadecn-learning
 spec:
+  # SQLite 单文件 + 内存里的 Yjs 文档，只能单副本
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: shadecn-learning
@@ -28,6 +57,22 @@ spec:
               value: 0.0.0.0
             - name: PORT
               value: "3000"
+            # SQLite 落在挂载卷上（库文件 = $DATA_DIR/app.db）
+            - name: DATA_DIR
+              value: /app/data
+            # 对外地址，用来拼 redirect_uri；必须和 Keycloak client 里配的一致
+            - name: APP_ORIGIN
+              value: https://demo.fyl080801.uk
+            - name: KEYCLOAK_ISSUER
+              value: https://keycloak.example.com/realms/myrealm
+            - name: KEYCLOAK_CLIENT_ID
+              value: shadcn-learning
+          envFrom:
+            - secretRef:
+                name: shadecn-learning-auth
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
           resources:
             requests:
               cpu: 100m
@@ -47,5 +92,9 @@ spec:
               port: 3000
             initialDelaySeconds: 3
             periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: shadecn-learning-data
       imagePullSecrets:
         - name: harbor-pull-secret
