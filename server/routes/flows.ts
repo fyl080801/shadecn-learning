@@ -1,12 +1,8 @@
 import { Hono } from 'hono'
 import type { AuthVariables } from '../auth/middleware.ts'
 import { currentUserId, requireFlowMember, type ProjectVariables } from '../auth/project.ts'
-import {
-  GRAPH_LIMITS,
-  parseGraph,
-  parseTransactions,
-  parseUserStatePatch,
-} from '../store/flow-types.ts'
+import { flushRoomToDatabase } from '../collab/index.ts'
+import { parseUserStatePatch } from '../store/flow-types.ts'
 import { flowUserState } from '../store/flow-user-state.ts'
 import { FLOW_STATUSES, flows as store, type FlowStatus } from '../store/flows.ts'
 import { INVALID_JSON, parseDescription, parseName, parsePagination, readJson } from './params.ts'
@@ -18,12 +14,6 @@ interface FlowPatchPayload {
   description?: unknown
   status?: unknown
   tags?: unknown
-}
-
-interface CommitPayload {
-  baseRevision?: unknown
-  transactions?: unknown
-  graph?: unknown
 }
 
 const NOT_FOUND = { error: 'Not Found', message: '画布不存在' } as const
@@ -107,58 +97,22 @@ export const flows = new Hono<Env>()
     return c.body(null, 204)
   })
 
+  /**
+   * 复制画布。
+   *
+   * 复制的是库里那份 ydoc，所以要先把**还开着的房间**落库 ——
+   * 内容的事实源是内存里的 Y.Doc，不落一次的话副本会停在上一次防抖写入的样子。
+   */
   .post('/:flowId/duplicate', async (c) => {
     const userId = await currentUserId(c)
     if (!userId) return c.json(UNAUTHORIZED, 401)
 
-    const copy = await store.duplicate(c.req.param('flowId'), userId)
+    const flowId = c.req.param('flowId')
+    await flushRoomToDatabase(flowId)
+
+    const copy = await store.duplicate(flowId, userId)
     if (!copy) return c.json(NOT_FOUND, 404)
     return c.json(copy, 201)
-  })
-
-  /**
-   * 提交事务。乐观锁靠 baseRevision：对不上就 409，让前端重新加载 ——
-   * 本期不做协同，没有合并逻辑。
-   */
-  .post('/:flowId/commit', async (c) => {
-    const body = await readJson<CommitPayload>(c.req)
-    if (!body) return c.json({ error: INVALID_JSON }, 400)
-
-    if (!Number.isInteger(body.baseRevision) || (body.baseRevision as number) < 0) {
-      return c.json({ error: 'baseRevision 必须是非负整数' }, 400)
-    }
-
-    const transactions = parseTransactions(body.transactions)
-    if (!transactions.ok) return c.json({ error: transactions.error }, 400)
-
-    const graph = parseGraph(body.graph)
-    if (!graph.ok) {
-      // 体积超限是 413，其余结构问题都是 400
-      const tooLarge = graph.error.includes('超过上限')
-      return c.json({ error: graph.error }, tooLarge ? 413 : 400)
-    }
-
-    const userId = await currentUserId(c)
-    const result = await store.commit({
-      flowId: c.req.param('flowId'),
-      baseRevision: body.baseRevision as number,
-      transactions: transactions.value,
-      graph: graph.value,
-      actorId: userId,
-    })
-
-    if (!result.ok) {
-      return c.json(
-        {
-          error: '该画布已在别处修改，请重新加载',
-          reason: 'conflict',
-          revision: result.revision,
-        },
-        409,
-      )
-    }
-
-    return c.json({ revision: result.revision })
   })
 
   .get('/:flowId/operations', async (c) => {
@@ -187,6 +141,3 @@ export const flows = new Hono<Env>()
       totalPages: Math.ceil(total / paged.value.pageSize),
     })
   })
-
-/** 给前端做上限提示用 */
-export const flowLimits = GRAPH_LIMITS

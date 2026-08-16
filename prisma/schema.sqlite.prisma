@@ -150,11 +150,16 @@ model Flow {
   /// 标签，JSON 字符串数组（SQLite 没有数组类型，两边统一用 String）
   tags        String    @default("[]")
   thumbnail   String?
+  /// **画布内容的唯一事实源**：Yjs 文档状态（`Y.encodeStateAsUpdate` 的二进制）。
+  /// 为空表示还没被 Yjs 接管过，此时从下面的 graph JSON 现场构建（老数据的迁移入口）。
+  ydoc        Bytes?
+  /// ydoc 的**只读投影**，服务端在写状态时派生出来。
+  /// 列表页、缩略图、将来的只读预览走它，编辑器不再读它（内容从 WebSocket 来）。
   graph       String    @default("{}")
-  /// 冗余统计，列表直接展示，commit 时一并更新
+  /// 冗余统计，列表直接展示；和 graph 一起派生
   nodeCount   Int       @default(0)
   edgeCount   Int       @default(0)
-  /// 修订号，每提交一个事务 +1；客户端提交时带 baseRevision 做乐观锁
+  /// 服务端写入 ydoc 的次数。CRDT 不需要乐观锁，这里只是给缓存/展示用的单调计数
   revision    Int       @default(0)
   /// 创建者，仅用于展示，不参与鉴权（鉴权看项目成员身份）
   createdById String
@@ -194,32 +199,28 @@ model FlowUserState {
 }
 
 /// 操作日志，只追加、不修改、不删除（删画布时级联）。
-/// 撤销也是一条新记录（kind=undo），日志永远只往前走。
 ///
-/// 时间一律是 UTC epoch 毫秒的整数（BigInt），不是 DateTime：
-/// 协同时要把不同客户端的操作排到同一条时间轴上，数值可以直接比大小，
-/// 不受时区、字符串格式、序列化精度影响。
+/// 存的是**Yjs 的增量更新**（`update` 二进制），一条对应客户端的一次 Y 事务。
+/// 它是「谁在什么时候改了画布」的唯一来源 —— Yjs 文档内部只有 clientID，
+/// 不知道那是哪个登录用户，只有服务端在握手时认得出人。
+/// 按 seq 顺序 applyUpdate 到一个空 Y.Doc 就能回放出任意时刻的画布。
+///
+/// 时间是 UTC epoch 毫秒的整数（BigInt），不是 DateTime：协同要把不同客户端的
+/// 操作排到同一条时间轴上，数值可以直接比大小，不受时区、格式、序列化精度影响。
 model FlowOperation {
-  id        String   @id @default(cuid())
-  flowId    String
-  /// 画布内自增序号，从 1 开始，提交后与 Flow.revision 对齐
-  seq       Int
-  /// 客户端事务 id，用于重试幂等
-  txId      String
-  /// do | undo | redo
-  kind      String   @default("do")
-  label     String
-  /// FlowOp[] 的 JSON 字符串
-  ops       String
-  actorId   String?
-  /// 客户端产生这次事务的时刻（UTC epoch ms），由客户端上报
-  clientTs  BigInt
-  /// 服务端落库时刻（UTC epoch ms）—— 客户端的钟不可信，排序以它为准
-  serverTs  BigInt
+  id       String @id @default(cuid())
+  flowId   String
+  /// 画布内自增序号，从 1 开始
+  seq      Int
+  /// Yjs 增量更新的二进制（`Y.encodeStateAsUpdate` 的 diff）
+  update   Bytes
+  /// 发出这次更新的登录用户；服务端在 WebSocket 握手时认的，客户端伪造不了
+  actorId  String?
+  /// 服务端收到的时刻（UTC epoch ms）
+  serverTs BigInt
 
   flow Flow @relation(fields: [flowId], references: [id], onDelete: Cascade)
 
   @@unique([flowId, seq])
-  @@unique([flowId, txId])
   @@index([flowId, seq])
 }

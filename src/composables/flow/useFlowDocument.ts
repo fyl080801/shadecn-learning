@@ -2,18 +2,22 @@ import { computed, onBeforeUnmount, ref, watch, type Ref } from "vue"
 import { useRouter } from "vue-router"
 import { toast } from "vue-sonner"
 import { flowApi } from "@/lib/api"
-import { formatTime } from "@/lib/format"
 import { usePageTitle } from "@/composables/usePageTitle"
 import { useAsyncAction } from "@/composables/useAsyncAction"
 import type { useFlowStore } from "@/stores/flow"
+import type { FlowCollab } from "./useFlowCollab"
 
 type FlowStore = ReturnType<typeof useFlowStore>
 
 /**
- * 「这张画布」这一层：加载、改名、复制、删除、离开前落库。
- * 都是文档级动作，跟画布上画了什么无关。
+ * 「这张画布」这一层：加载元信息、改名、复制、删除。
+ * 都是文档级动作，跟画布上画了什么无关 —— 内容走协同那条路，不经过这里。
  */
-export function useFlowDocument(flowId: Ref<string>, store: FlowStore) {
+export function useFlowDocument(
+  flowId: Ref<string>,
+  store: FlowStore,
+  collab: FlowCollab
+) {
   const router = useRouter()
 
   const loading = ref(true)
@@ -23,6 +27,7 @@ export function useFlowDocument(flowId: Ref<string>, store: FlowStore) {
     loading.value = true
     loadError.value = null
     try {
+      // 只取元信息（名字、所属项目…）；内容来自 Y.Doc，不从这个响应里读
       store.load(await flowApi.get(flowId.value))
     } catch (err) {
       loadError.value = err instanceof Error ? err.message : String(err)
@@ -40,42 +45,30 @@ export function useFlowDocument(flowId: Ref<string>, store: FlowStore) {
     store.reset()
   })
 
-  // —— 保存状态 ——
+  // —— 同步状态 ——
 
-  const saveText = computed(() => {
-    switch (store.saveState) {
-      case "saving":
-        return "保存中…"
-      case "dirty":
-        return "未保存"
-      case "error":
-        return "保存失败，点击重试"
-      case "conflict":
-        return "已在别处修改"
-      default:
-        // 保存过就带上时刻（跟随浏览器时区/习惯），没有就只说「已保存」
-        return store.lastSavedAt
-          ? `已保存 ${formatTime(store.lastSavedAt)}`
-          : "已保存"
-    }
+  /**
+   * 画布上那行小字。
+   *
+   * **没有「保存」这回事了** —— 改动进 Y.Doc 的那一刻就已经同步出去、并由服务端落库。
+   * 用户需要知道的只剩一件事：这条连接还在不在。断了的话本地改动会攒在
+   * Y.Doc 里，重连后自动补发（CRDT 合并，不会冲突），所以也不必惊慌。
+   */
+  const syncText = computed(() => {
+    // 断网时改的东西存在本地 IndexedDB 里，刷新也不丢，重连后自动补发 —— 说清楚这一点，
+    // 用户才不会以为「断了就白改了」而不敢动
+    if (!collab.connected.value) return "已离线，改动存在本地，恢复连接后自动同步"
+    return collab.session.value?.synced.value ? "已同步" : "同步中…"
   })
 
-  /** 出问题的两种状态是可点的：失败重试、冲突重新加载 */
-  const saveActionable = computed(
-    () => store.saveState === "error" || store.saveState === "conflict"
-  )
-
-  function onSaveIndicatorClick() {
-    if (store.saveState === "error") void store.saveNow()
-    if (store.saveState === "conflict") void reload()
-  }
+  /** 断线时给个视觉提醒，但不做成可点的动作 —— 用户没什么能做的，重连是自动的 */
+  const syncWarning = computed(() => !collab.connected.value)
 
   // —— 文档动作 ——
 
   /**
-   * 离开这张画布之前，把没提交的先落库。
-   * 不看 `dirty` 就直接调 `saveNow`：`dirty` 只算画布内容，
-   * 而「只挪了一下视口」也得存 —— saveNow 里两条链路各自判断有没有活要干。
+   * 离开这张画布之前把「我怎么看」（视口）落库。
+   * 内容不用管：它一直是同步的。
    */
   async function flushBeforeLeave() {
     await store.saveNow()
@@ -134,9 +127,8 @@ export function useFlowDocument(flowId: Ref<string>, store: FlowStore) {
     loading,
     loadError,
     reload,
-    saveText,
-    saveActionable,
-    onSaveIndicatorClick,
+    syncText,
+    syncWarning,
     flushBeforeLeave,
     rename,
     backToProject,

@@ -83,15 +83,16 @@ const confirmingDelete = ref(false)
       {{ store.meta?.name ?? "无标题" }}
     </button>
 
-    <button
+    <!--
+      同步状态。没有「保存」按钮也没有「未保存」——改动进 Y.Doc 就已经同步出去了。
+      断线时才需要提醒一句，而且不是可点的：重连是自动的，用户没什么能做的。
+    -->
+    <span
       class="whitespace-nowrap px-1 text-xs text-muted-foreground"
-      :class="
-        doc.saveActionable.value ? 'text-destructive hover:underline' : ''
-      "
-      @click="doc.onSaveIndicatorClick"
+      :class="doc.syncWarning.value ? 'text-destructive' : ''"
     >
-      {{ doc.saveText.value }}
-    </button>
+      {{ doc.syncText.value }}
+    </span>
 
     <DropdownMenu>
       <DropdownMenuTrigger as-child>

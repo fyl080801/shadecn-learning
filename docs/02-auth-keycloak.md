@@ -31,7 +31,7 @@
   │  ◄── 302 回原页面 ─────────│
 ```
 
-之后**每个**请求（不只是 `/api/*`）：中间件取 `sid` → 查 Session → access_token 快过期就用 refresh_token 续一次 → 把用户挂到 `c.get('user')`。刷新失败（Keycloak 侧会话已结束）则删除本地会话并清 Cookie，下一跳回登录页。
+之后**每个**请求（不只是 `/api/*`）：中间件取 `sid` → 查 Session → access_token 快过期就用 refresh_token 续一次 → 把用户挂到 `c.get('user')`。**会话就是被请求本身养活的**：有请求就续期，久到没人发请求了，refresh token 过了 Keycloak 的 SSO Session Idle，才算真的过期。刷新被 Keycloak 明确回绝（4xx，比如 `invalid_grant`）时删除本地会话并清 Cookie，下一跳回登录页。
 
 `/ws/*` 的 WebSocket 握手走同一套：握手本身是普通 HTTP 请求，同源会带 Cookie；校验不过直接回 401 并断开。
 
@@ -74,8 +74,10 @@
 - Cookie `sid` 中存放 32 字节随机 token；数据库主键存的是 `HMAC-SHA256(SESSION_SECRET, token)`。**拖库拿不到可用 Cookie。**
 - Cookie 属性：`httpOnly` + `SameSite=Lax`（生产环境需 `Secure`）。
 - 读取会话时，若 access_token 距过期不足 30 秒则自动刷新；同一会话的并发刷新通过进程内 promise map 去重，只发一次刷新请求。
-- 刷新失败即销毁会话并清 Cookie。
-- 会话最长存活由 `SESSION_TTL` 控制，默认 7 天。
+- **刷新失败要分两种，混为一谈会把人无故踢下线：**
+  - Keycloak 用 4xx 明确回绝（`invalid_grant` —— 用户登出 / SSO 会话超时 / 被踢）：凭证真没了，销毁会话并清 Cookie。
+  - 连不上、超时、对方 5xx，或本地写库失败：什么都没证明，**保留会话**，交给下一个请求重试；同时该会话进入 15 秒冷却，免得 Keycloak 挂着时每个请求都去撞一次超时。出站请求一律带 8 秒超时（node 的 fetch 默认不超时）。
+- 会话什么时候算过期，由 refresh token 的有效期（Keycloak 的 SSO Session Idle）决定，本地就能判——不必问 Keycloak。`SESSION_TTL`（默认 7 天）只是不让它无限续下去的上限。
 - 服务端**每小时**清扫一次过期会话和未被消费的 AuthRequest。
 
 ### 3.4 授权请求防重放

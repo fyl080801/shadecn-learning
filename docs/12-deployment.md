@@ -186,6 +186,8 @@ kubectl -n dev create secret generic shadecn-learning-auth \
 ## 6. 待确认事项
 
 - 镜像 tag 目前是提交短 hash 手写进 yaml，是否改为 CI 自动替换。
-- 需要多副本时的演进路线：切到 PostgreSQL（存储这半已经就绪）+ 给 Yjs 加跨进程广播，还是接受单副本。
+- 需要多副本时的演进路线：切到 PostgreSQL（存储这半已经就绪）+ 解决 Yjs 的跨进程问题，还是接受单副本。
+  协同服务端换成 Hocuspocus 之后，后半有了现成的路 —— `@hocuspocus/extension-redis`
+  （或整体换 [`@y/hub`](https://github.com/yjs/yhub)，updates 经 redis 流转）。没有需求所以没接。
 - k8s 清单目前只写了 SQLite 形态（PVC + `DATA_DIR`）。要不要再出一份 PG 形态的 overlay，还是靠部署时手改。
 - 是否需要为静态资源单独配 CDN / 缓存策略。

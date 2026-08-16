@@ -124,7 +124,10 @@ Prisma 的 `datasource.provider` 只能写字面量、一份 schema 也只能有
 ## 5. 本期不做
 
 - 把 notes 从内存迁到 Prisma（等真正需要持久化的业务出现再做）。
-- 软删除、审计日志、乐观锁。
+- ~~软删除、审计日志~~ —— 都做了（`deletedAt` 过滤；`FlowOperation` 存 Yjs 更新流 + `actorId`）。
+- **乐观锁** —— 曾经有（`Flow.revision` + `baseRevision`），换 CRDT 之后**主动去掉了**：
+  Yjs 的更新可交换、可结合、幂等，冲突由算法收敛，再加乐观锁只会把并发编辑挡在门外。
+  `revision` 字段留着，语义变成「服务端写过多少次全量状态」的计数，没有人拿它做冲突判断。
 - 分页、排序、过滤参数。
 - 数据库备份 / 恢复方案。
 - MySQL 等第三种库（模型里就没有为它留的余地）。
@@ -133,5 +136,10 @@ Prisma 的 `datasource.provider` 只能写字面量、一份 schema 也只能有
 ## 6. 待确认事项
 
 - `notes` 是继续当纯样板，还是作为第一个真实持久化业务落库。
-- SQLite 单写入者模型在协同场景下是否够用（若 [REQ-COLLAB](04-realtime-collab.md) 要落盘则需重新评估）；真要多副本就是切 PG 的时候。
-- 切到 PG 后 `flows.commit` 的 `seq` 自增在并发下靠 `@@unique([flowId, seq])` 兜底（会抛 P2002），要不要改成显式的行锁 / 序列。
+- SQLite 单写入者模型在协同场景下是否够用。协同**已经在落盘**了（`Flow.ydoc` + `FlowOperation`），
+  目前靠 `server/collab/persistence.ts` 里的按房间串行队列避开并发写，单进程下够用；
+  真要多副本就是切 PG 的时候，而且那时 Yjs 也得先解决跨进程的问题（见 [REQ-COLLAB §7](04-realtime-collab.md)）。
+- `FlowOperation.seq` 是「查最大值 +1」+ 进程内缓存，并发靠 `@@unique([flowId, seq])` 兜底（会抛 P2002）。
+  单进程下写是串行的所以撞不上；**多进程时这个方案不成立**，要改成显式的行锁 / 序列。
+- **更新流只存不清，会无限增长**（`FlowOperation` 每次客户端更新一行）。文档本身有 Yjs 的 GC 兜底，
+  这张表没有。按条数 / 天数裁剪，还是定期合并成「基线 + 增量」？量级真成问题时再定。

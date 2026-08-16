@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from "vue"
 import { useRouter } from "vue-router"
 import { Button } from "@/components/ui/button"
 
@@ -23,24 +24,42 @@ const router = useRouter()
 const editor = provideFlowEditor(props)
 useFlowShortcuts(editor)
 
-const { document: doc } = editor
+const { collab, document: doc } = editor
+
+/**
+ * 内容来自 Y.Doc，所以「能不能开始画」不只看元信息拿到没有。
+ *
+ * 两条路任一成立即可：
+ * - **服务端同步完成** —— 内容保证是最新的，正常情况走这条；
+ * - **本地缓存里有东西** —— 断网时走这条，先把上次看到的画出来（离线可用）。
+ *
+ * 「本地缓存加载完了但里面是空的」不算 —— 那既可能是这张画布本来就空，
+ * 也可能是我从没打开过它而此刻又断着网。这时候继续显示加载中，
+ * 比甩一张空画布让人以为内容丢了要好。
+ */
+const ready = computed(() => {
+  if (doc.loading.value) return false
+  const session = collab.session.value
+  if (!session) return false
+  return session.synced.value || (session.cached.value && session.hasContent.value)
+})
 </script>
 
 <template>
   <div class="relative h-full w-full">
     <div
-      v-if="doc.loading.value"
-      class="flex h-full items-center justify-center text-muted-foreground"
-    >
-      正在加载画布…
-    </div>
-
-    <div
-      v-else-if="doc.loadError.value"
+      v-if="doc.loadError.value"
       class="flex h-full flex-col items-center justify-center gap-3 text-center"
     >
       <p class="text-sm text-destructive">{{ doc.loadError.value }}</p>
       <Button variant="outline" size="sm" @click="router.push('/projects')">返回项目列表</Button>
+    </div>
+
+    <div
+      v-else-if="!ready"
+      class="flex h-full items-center justify-center text-muted-foreground"
+    >
+      正在加载画布…
     </div>
 
     <template v-else>

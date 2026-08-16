@@ -172,58 +172,23 @@ export function emptyGraph(): FlowGraph {
   }
 }
 
-// —— 操作 ——
+// —— 操作日志 ——
 
-export type FlowOpType =
-  | "node.add"
-  | "node.remove"
-  | "node.move"
-  | "node.resize"
-  | "node.update"
-  | "edge.add"
-  | "edge.remove"
-  | "edge.update"
-  | "graph.meta"
-
-/** 一次可撤销的最小变更；before/after 自带逆操作所需的信息 */
-export interface FlowOp {
-  type: FlowOpType
-  targetId: string
-  before: unknown | null
-  after: unknown | null
-}
-
-export type FlowTransactionKind = "do" | "undo" | "redo"
-
-/** 一次撤销的粒度 */
-export interface FlowTransaction {
-  id: string
-  label: string
-  kind: FlowTransactionKind
-  /**
-   * 产生这次事务的时刻：UTC epoch 毫秒的整数（`Date.now()`）。
-   *
-   * 画布这条链路上的时间一律是数值时间戳 —— 协同时要把多个客户端的操作
-   * 排到同一条时间轴上，数值能直接比大小，没有时区和格式的歧义。
-   * 展示才交给 `@/lib/format`。
-   */
-  ts: number
-  ops: FlowOp[]
-}
-
-/** 操作日志的一条（`GET /api/flows/:id/operations`）；两个时间都是 UTC epoch ms */
+/**
+ * 操作日志的一条（`GET /api/flows/:id/operations`）。
+ *
+ * 一条 = 客户端的一次 Yjs 事务。`update` 二进制本身不出接口 ——
+ * 它对界面没用，真要回放就按 seq 顺序取出来 applyUpdate 到一个空文档。
+ */
 export interface FlowOperationView {
   id: string
   seq: number
-  txId: string
-  kind: FlowTransactionKind
-  label: string
-  ops: FlowOp[]
+  /** 谁改的；服务端在 WebSocket 握手时认定，客户端伪造不了 */
   actorId: string | null
-  /** 客户端上报的产生时刻，钟不准就可能不准 */
-  clientTs: number
-  /** 服务端落库时刻，排序以它为准 */
+  /** 服务端收到的时刻，UTC epoch 毫秒 */
   serverTs: number
+  /** 这次更新的字节数 */
+  size: number
 }
 
 // —— 分页 ——

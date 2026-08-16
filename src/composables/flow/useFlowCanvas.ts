@@ -14,7 +14,7 @@ import { isEditableTarget } from "./editable"
 import type { FlowPresence } from "./useFlowPresence"
 import type { FlowSelection } from "./useFlowSelection"
 import type { useFlowStore } from "@/stores/flow"
-import { defaultNodeData, type FlowEdge, type FlowNode, type FlowOp } from "@/types/flow"
+import { defaultNodeData, type FlowEdge, type FlowNode } from "@/types/flow"
 
 type FlowStore = ReturnType<typeof useFlowStore>
 
@@ -37,7 +37,8 @@ const CASCADE_COUNT = 6
  * Vue Flow、store、协同三者之间的那层胶水 —— 也是**唯一**同时认识这三者的地方。
  *
  * 职责分两半：
- * - **数据层**：把画布上的交互翻译成 `FlowOp` 交给 `store.apply`（进历史、落库、广播）；
+ * - **数据层**：把画布上的交互翻译成对 store 的调用，最终落到一个带 origin 的 Y 事务
+ *   （因此才进撤销栈、才广播、才被服务端落库）；
  * - **反馈层**：把本地的选中 / 拖动 / 连线上报给 `presence`，再把别人的占用情况
  *   翻译成 Vue Flow 认得的只读标记。
  *
@@ -61,8 +62,6 @@ export function useFlowCanvas(
     findNode,
     getSelectedNodes,
     getSelectedEdges,
-    removeSelectedNodes,
-    removeSelectedEdges,
     minZoom,
     maxZoom,
     fitView,
@@ -77,109 +76,42 @@ export function useFlowCanvas(
   } = useVueFlow()
 
   /**
-   * 交给 Vue Flow 渲染的数据，在 store 的基础上叠两层协同状态：
+   * 我自己是不是正在拖节点。
    *
-   * 1. **被别人占住的节点变只读** —— `draggable` / `selectable` 每次都**显式写**，
-   *    true 和 false 都写。Vue Flow 同步节点用的是
-   *    `Object.assign(内部那份, 传进来的这份)`，是就地合并：某一次不带这两个键，
-   *    上次写的 `false` 就永远留在它内部那份节点上，占用解除后节点从此点不动。
-   * 2. **别人正拖着的节点用他上报的实时位置** —— 拖动松手才会产生 `node.move`，
-   *    不盖这一下的话，对方看到的是松手瞬间的瞬移而不是跟手移动。
+   * 拖动期间**必须保持 `nodes` 的数组引用不变**：Vue Flow 靠引用判断要不要重新同步节点，
+   * 一旦重新同步，它会用 `Object.assign(内部那份, 传进来的这份)` 把手上正在拖的位置
+   * 覆盖成 store 里那份（拖动前的）—— 节点当场弹回原地。
+   *
+   * 而拖动期间偏偏一定会有东西在变：我自己在往 awareness 上报拖动位置，
+   * 这会触发本地的 awareness change，`presence` 的派生值跟着重算。
+   * 所以这里显式把它挡住。
    */
+  const localDragging = ref(false)
+
   /**
-   * 实际生效的占用 = 反馈层直接上报的，**加上由图结构派生的**。
+   * 交给 Vue Flow 渲染的数据。
    *
-   * 派生的那部分只有一条规则：**占住一个节点，就等于占住了连到它的所有边**。
-   * 因为「断开一条接在它上面的线」改的就是这个节点的连接关系 —— 别人正在编辑它的时候
-   * 不该被人从旁边把线拆了。反过来，往它身上**新接**一条线是允许的（那是条新的边，
-   * 节点本身没变），所以这里只锁已有的边，不挡新连线。
-   *
-   * 派生逻辑放在这一层而不是 `lib/presence.ts`：那边是纯 presence 逻辑，不认识图；
-   * 「谁连着谁」只有画布知道。
+   * 尽量**原样透传** `store.nodes`：它是 Y.Doc 的投影，只在文档真的变了时才换新数组，
+   * 引用稳定，Vue Flow 就不会做多余的同步。只有「别人正拖着某个节点」时才需要
+   * 复制一份把位置盖掉 —— 拖动松手才写进文档，不盖这一下的话，
+   * 对方看到的是松手瞬间的瞬移而不是跟手移动。
    */
-  const lockedKeys = computed(() => {
-    const direct = presence.lockedKeys.value
-    if (direct.size === 0) return direct
-
-    const keys = new Set(direct)
-    for (const edge of store.edges) {
-      if (keys.has(elementKey("edge", edge.id))) continue
-      if (
-        direct.has(elementKey("node", edge.source)) ||
-        direct.has(elementKey("node", edge.target))
-      ) {
-        keys.add(elementKey("edge", edge.id))
-      }
-    }
-    return keys
-  })
-
-  /** 这个元素被别人占着吗（含派生占用）—— 画布上所有只读判断的唯一出口 */
-  function isLocked(kind: "node" | "edge", id: string): boolean {
-    return lockedKeys.value.has(elementKey(kind, id))
-  }
-
   const nodes = computed<Node[]>(() => {
-    const locked = lockedKeys.value
-    const dragging = presence.nodePositions.value
+    const source = store.nodes as unknown as Node[]
+    if (localDragging.value) return source
 
-    return store.nodes.map((node) => {
-      const isLocked = locked.has(elementKey("node", node.id))
-      const remote = dragging.get(node.id)
-      return {
-        ...node,
-        position: remote ?? node.position,
-        draggable: !isLocked,
-        selectable: !isLocked
-      } as unknown as Node
+    const remote = presence.nodePositions.value
+    if (remote.size === 0) return source
+
+    return source.map((node) => {
+      const at = remote.get(node.id)
+      return at ? ({ ...node, position: { ...at } } as unknown as Node) : node
     })
   })
 
-  /**
-   * 边和节点走同一套占用规则，只是各自能关的开关不同：
-   * `selectable` 挡选中，`updatable` 挡拖端点，`class` 给它画上占用配色。
-   */
-  const edges = computed<Edge[]>(() => {
-    const locked = lockedKeys.value
-
-    return store.edges.map((edge) => {
-      const isLocked = locked.has(elementKey("edge", edge.id))
-      return {
-        ...edge,
-        // 老数据里可能存着 smoothstep 之类的折线类型，渲染时统一按曲线走
-        type: FLOW_EDGE_TYPE,
-        selectable: !isLocked,
-        updatable: !isLocked,
-        class: isLocked ? "flow-edge-locked" : ""
-      } as unknown as Edge
-    })
-  })
-
-  /**
-   * 占用一旦生效，把**已经**选中的也摘掉。
-   *
-   * `selectable: false` 只挡「接下来还能不能选中」，挡不住「已经选中的」——
-   * 我先点了它、随后被 clientId 更小的人抢走，那份选中态会一直亮着，
-   * 属性面板也还开着一个我已经改不动的节点。
-   */
-  watch(
-    lockedKeys,
-    (locked) => {
-      if (locked.size === 0) return
-
-      const staleNodes = getSelectedNodes.value.filter((node) =>
-        locked.has(elementKey("node", node.id))
-      )
-      if (staleNodes.length > 0) removeSelectedNodes(staleNodes)
-
-      const staleEdges = getSelectedEdges.value.filter((edge) =>
-        locked.has(elementKey("edge", edge.id))
-      )
-      if (staleEdges.length > 0) removeSelectedEdges(staleEdges)
-
-      const mine = selection.selectedNodeId.value
-      if (mine && locked.has(elementKey("node", mine))) selection.clearSelection()
-    }
+  /** 老数据里可能存着 smoothstep 之类的折线类型，渲染时统一按曲线走 */
+  const edges = computed<Edge[]>(() =>
+    store.edges.map((edge) => ({ ...edge, type: FLOW_EDGE_TYPE }) as unknown as Edge)
   )
 
   /**
@@ -284,6 +216,7 @@ export function useFlowCanvas(
   }
 
   onNodeDragStart(({ nodes: dragged }) => {
+    localDragging.value = true
     for (const node of dragged) dragOrigin.set(node.id, { ...node.position })
     // 一按下就发：别人得立刻看到它归我了，不然两个人会同时搬同一个节点
     publishDrag(dragged)
@@ -292,40 +225,38 @@ export function useFlowCanvas(
   onNodeDrag(({ nodes: dragged }) => publishDrag(dragged))
 
   onNodeDragStop(({ nodes: dragged }) => {
-    const ops: FlowOp[] = []
+    const moved = new Map<string, { x: number; y: number }>()
     for (const node of dragged) {
       const before = dragOrigin.get(node.id)
       dragOrigin.delete(node.id)
       if (!before) continue
       if (before.x === node.position.x && before.y === node.position.y) continue
-
-      ops.push({
-        type: "node.move",
-        targetId: node.id,
-        before: { position: before },
-        after: { position: { ...node.position } }
-      })
+      moved.set(node.id, { ...node.position })
     }
 
     // 顺序要紧：**先**把落定的位置作为数据发出去，**再**收掉拖动中的临时几何。
-    // 反过来的话对方会先失去临时位置、退回旧坐标，等操作到了再跳一下 —— 看着就是闪一下。
-    // 框选一起拖 = 一条撤销
-    if (ops.length > 0) {
-      store.apply(ops, ops.length > 1 ? `移动 ${ops.length} 个节点` : "移动节点")
+    // 反过来的话对方会先失去临时位置、退回旧坐标，等数据到了再跳一下 —— 看着就是闪一下。
+    // 先解冻再提交：提交会换掉 store.nodes，这时正需要 Vue Flow 同步到新位置
+    localDragging.value = false
+
+    if (moved.size > 0) {
+      // 一次拖动 = 一条撤销（框选一起拖也算一条）
+      store.separateUndo()
+      store.moveNodes(moved, moved.size > 1 ? `移动 ${moved.size} 个节点` : "移动节点")
+      store.separateUndo()
     }
     presence.clearTransform()
   })
 
   /**
-   * Vue Flow 自己会改 position（拖动过程中），这些中间态不能进历史。
-   * 这里只把它同步进 store 的状态，不产生操作。
+   * 拖动过程中 Vue Flow 会不断派发 position 变化。
+   *
+   * 这些中间态**不写进 Y.Doc**：写了就会广播 + 落库 + 进撤销栈，一次拖动能产生几十条。
+   * 拖动期间画面由 Vue Flow 自己的内部状态负责，落定的位置在 `onNodeDragStop` 一次性提交；
+   * 中间态要给别人看，走的是反馈层（awareness），不是数据层。
    */
-  function onNodesChange(changes: NodeChange[]) {
-    for (const change of changes) {
-      if (change.type !== "position" || !change.position) continue
-      const node = store.nodes.find((item) => item.id === change.id)
-      if (node) node.position = { ...change.position }
-    }
+  function onNodesChange(_changes: NodeChange[]) {
+    // 有意留空：位置的唯一写入点是 onNodeDragStop
   }
 
   // —— 连线 ——
@@ -371,14 +302,15 @@ export function useFlowCanvas(
       animated: false,
       data: { config: {} }
     }
-    store.apply([{ type: "edge.add", targetId: id, before: null, after: edge }], "连线")
+    store.addEdge(edge)
   })
 
   // —— 视口 ——
 
   /**
-   * 视口是**视图状态**：不进历史、不产生操作、不涨 revision，
-   * 由 store 走「按用户存」那条路防抖落库 —— 各人看各人的。
+   * 视口是**视图状态**：不进历史、不产生操作、不涨 revision —— 各人看各人的。
+   * 这里只是把值交给 store 攒着，**不会发请求**：它搭下一次本地编辑
+   * （或离开页面）的车落库，平移缩放本身不该产生写流量。
    */
   function syncViewport() {
     store.setViewport(getViewport())
@@ -390,6 +322,10 @@ export function useFlowCanvas(
       setViewport(store.viewport)
       return
     }
+
+    // 没存过的话，此刻（内容已同步到位）才读得到快照里的兜底视口 ——
+    // attachDoc 那会儿文档还是空壳，在那里读永远落空
+    store.applyFallbackViewport()
 
     const { x, y, zoom } = store.viewport
     // 快照里那份兜底视口非默认值就用它；否则 fitView（且不放大超过 1 倍，
@@ -436,11 +372,10 @@ export function useFlowCanvas(
    * 删除选中的元素（节点 + 边）。**画布上唯一的删除入口。**
    *
    * Vue Flow 自带的 `deleteKeyCode` 必须关掉（`FlowCanvas.vue` 传 `:delete-key-code="null"`）：
-   * 它在 `applyDefault` 下直接改自己内部那份 nodes/edges，绕过 `store.apply` ——
+   * 它在 `applyDefault` 下直接改自己内部那份 nodes/edges，绕过 store ——
    * 于是本地看着删掉了，store 不知情，既不进历史、不落库，也不会广播给别人。
    * 「删了一条线，刷新又回来了 / 对面还看得见」就是这么来的。
    *
-   * 被别人占住的元素跳过：占用的一致规则是不能选、不能拖、**也不能删**。
    */
   function deleteSelection() {
     const nodeIds = new Set<string>()
@@ -450,37 +385,12 @@ export function useFlowCanvas(
 
     const edgeIds = new Set<string>(getSelectedEdges.value.map((edge) => edge.id))
 
-    // 别人占着的一律不动（含派生占用：接在别人节点上的边也断不得）
-    for (const id of [...nodeIds]) {
-      if (isLocked("node", id)) nodeIds.delete(id)
-    }
-    for (const id of [...edgeIds]) {
-      if (isLocked("edge", id)) edgeIds.delete(id)
-    }
     if (nodeIds.size === 0 && edgeIds.size === 0) return
 
-    // 挂在待删节点上的边要一起删，否则会剩下指向空处的悬空边
-    for (const edge of store.edges) {
-      if (nodeIds.has(edge.source) || nodeIds.has(edge.target)) edgeIds.add(edge.id)
-    }
-
-    // 边在前、节点在后：invertOps 会把顺序倒过来，撤销时先加回节点再加回边
-    const ops: FlowOp[] = []
-    for (const edge of store.edges) {
-      if (edgeIds.has(edge.id)) {
-        ops.push({ type: "edge.remove", targetId: edge.id, before: { ...edge }, after: null })
-      }
-    }
-    for (const node of store.nodes) {
-      if (nodeIds.has(node.id)) {
-        ops.push({ type: "node.remove", targetId: node.id, before: { ...node }, after: null })
-      }
-    }
-    if (ops.length === 0) return
-
-    const label =
-      nodeIds.size > 0 ? (edgeIds.size > 0 ? "删除节点和连线" : "删除节点") : "删除连线"
-    store.apply(ops, nodeIds.size + edgeIds.size > 1 ? `${label}（${ops.length} 项）` : label)
+    // 连着的边由 store 一并处理（留下悬空的边等于界面上没了、数据里还在）
+    store.separateUndo()
+    store.removeElements(nodeIds, edgeIds)
+    store.separateUndo()
     selection.clearSelection()
   }
 
@@ -521,29 +431,29 @@ export function useFlowCanvas(
       position: center,
       data: defaultNodeData(`节点 ${store.nodes.length + 1}`)
     }
-    store.apply([{ type: "node.add", targetId: id, before: null, after: node }], "新增节点")
+    // 连点两次「添加节点」应该是两条撤销，不是一条
+    store.separateUndo()
+    store.addNode(node)
 
     // position 是左上角，要等渲染量出尺寸后才能真正居中
     const rendered = findNode(id)
     if (!rendered) return id
     await until(() => rendered.dimensions.width).toBeTruthy({ timeout: 1000 })
 
-    store.apply(
-      [
-        {
-          type: "node.move",
-          targetId: id,
-          before: { position: center },
-          after: {
-            position: {
-              x: center.x - rendered.dimensions.width / 2,
-              y: center.y - rendered.dimensions.height / 2
-            }
+    // 居中是「新增」的一部分，跟它并进同一条撤销 —— 中间不 separateUndo
+    store.moveNodes(
+      new Map([
+        [
+          id,
+          {
+            x: center.x - rendered.dimensions.width / 2,
+            y: center.y - rendered.dimensions.height / 2
           }
-        }
-      ],
+        ]
+      ]),
       "居中新节点"
     )
+    store.separateUndo()
 
     return id
   }
@@ -562,9 +472,7 @@ export function useFlowCanvas(
     onPointerLeave,
     syncViewport,
     addNode,
-    deleteSelection,
-    lockedKeys,
-    isLocked
+    deleteSelection
   }
 }
 

@@ -1,9 +1,13 @@
 import './env.ts'
 import { createAdaptorServer } from '@hono/node-server'
 import { app } from './app.ts'
-import { authorizeUpgrade } from './auth/ws.ts'
 import { sweepExpired } from './auth/session.ts'
-import { attachCollabServer, COLLAB_PATH } from './collab/index.ts'
+import {
+  attachCollabServer,
+  COLLAB_PATH,
+  flushAllRoomsToDatabase,
+  flushCollabWrites,
+} from './collab/index.ts'
 import { assertAuthConfig, authEnabled, host, isDev, port, staticDir } from './config.ts'
 import { disconnectDb } from './db.ts'
 import { attachFrontend } from './frontend/index.ts'
@@ -15,11 +19,8 @@ assertAuthConfig()
 // 那条快路径不认 RESPONSE_ALREADY_SENT 这个标记，前端中间件自己写完响应后会被重复 writeHead。
 const server = createAdaptorServer({ fetch: app.fetch, overrideGlobalObjects: false })
 
-// dev 下 Vite 的 HMR 也走同一个 upgrade 事件，别把不认识的 socket 掐了
-attachCollabServer(server, {
-  destroyUnmatchedUpgrades: !isDev,
-  authorize: authorizeUpgrade,
-})
+// 协同服务端。dev 下 Vite 的 HMR 也走同一个 upgrade 事件，别把不认识的 socket 掐了
+const collab = attachCollabServer(server, { destroyUnmatchedUpgrades: !isDev })
 
 const disposeFrontend = await attachFrontend(app, server)
 
@@ -40,12 +41,25 @@ sweepTimer.unref()
 server.listen(port, host, () => {
   const mode = isDev ? 'dev（Vite 中间件）' : `prod（静态资源 ${staticDir}）`
   console.log(`${mode} 服务已启动  http://${host}:${port}`)
-  console.log(`Yjs websocket        ws://${host}:${port}${COLLAB_PATH}/<room>`)
+  console.log(`Yjs websocket        ws://${host}:${port}${COLLAB_PATH}（房间名走消息）`)
   console.log(`登录                 ${authEnabled ? 'Keycloak（/login）' : '未启用'}`)
 })
 
 async function shutdown() {
   clearInterval(sweepTimer)
+
+  // 退出前把还开着的房间落库：内容的事实源是内存里的 Y.Doc，直接退等于丢掉
+  // 最后一个防抖窗口内的改动。不靠 flushPendingStores() —— 它触发的落库要过一段
+  // 微任务链才入队，同步往下走会在入队前就采样到空队列（见 flushAllRoomsToDatabase）。
+  // 断连 → 逐房间直接落库并 await → 再把审计等剩余写库排空
+  try {
+    collab.closeConnections()
+    await flushAllRoomsToDatabase()
+    await flushCollabWrites()
+  } catch (err) {
+    console.error('[collab] 退出前保存失败', err)
+  }
+
   await disposeFrontend?.()
   await disconnectDb().catch(() => undefined)
   server.close()

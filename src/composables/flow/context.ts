@@ -1,11 +1,10 @@
-import { inject, provide, toRef, type InjectionKey } from "vue"
+import { inject, provide, toRef, watch, type InjectionKey } from "vue"
 import { useFlowStore } from "@/stores/flow"
 import { useFlowCanvas } from "./useFlowCanvas"
 import { useFlowCollab } from "./useFlowCollab"
 import { useFlowDocument } from "./useFlowDocument"
 import { useFlowPresence } from "./useFlowPresence"
 import { useFlowSelection } from "./useFlowSelection"
-import { useFlowSync } from "./useFlowSync"
 
 /**
  * 画布编辑器的共享上下文。
@@ -18,15 +17,17 @@ import { useFlowSync } from "./useFlowSync"
 export interface FlowEditorContext {
   /** 当前画布 id（响应式，路由切换时会变） */
   flowId: Readonly<ReturnType<typeof toRef<string>>>
-  /** 底层状态与历史；写操作最终都落到 store.apply */
+  /** 底层状态与撤销；写操作最终都落到 store.mutate */
   store: ReturnType<typeof useFlowStore>
-  /** 文档级：加载 / 改名 / 复制 / 删除 / 保存状态 */
+  /** 协同连接：内容的 Y.Doc 和在场用的 awareness 都从这儿来 */
+  collab: ReturnType<typeof useFlowCollab>
+  /** 文档级：加载 / 改名 / 复制 / 删除 */
   document: ReturnType<typeof useFlowDocument>
   /** 画布交互：Vue Flow 绑定、视口、新增节点 */
   canvas: ReturnType<typeof useFlowCanvas>
   /** 选中态与针对选中节点的编辑 */
   selection: ReturnType<typeof useFlowSelection>
-  /** 多人在场：谁在线、光标在哪、哪些节点被别人占住 */
+  /** 多人在场：谁在线、光标在哪、哪些元素被别人占住 */
   presence: ReturnType<typeof useFlowPresence>
 }
 
@@ -43,7 +44,6 @@ export function provideFlowEditor(props: { flowId: string }): FlowEditorContext 
    *   selection ──┐
    *   collab ──┬──┴─→ canvas   （canvas 是唯一同时认识三者的接合层）
    *            └─→ presence ──┘
-   *            └─→ sync
    *
    * presence 不认识 selection 也不认识 Vue Flow，只提供「上报」和「读别人」；
    * 本地状态怎么接进去、别人的占用怎么落到画布上，都由 canvas 负责。
@@ -51,13 +51,25 @@ export function provideFlowEditor(props: { flowId: string }): FlowEditorContext 
   const selection = useFlowSelection(store)
   const collab = useFlowCollab(flowId)
   const presence = useFlowPresence(collab)
-  // 编辑操作的实时广播；没有返回值，挂上就一直在跑
-  useFlowSync(collab, store)
+
+  /**
+   * 连上之后把 Y.Doc 交给 store —— **画布内容从这一刻起就是它了**。
+   * 换画布、断线重连都会给出新的 session，跟着换一次接管对象。
+   */
+  watch(
+    () => collab.session.value,
+    (session) => {
+      if (session) store.attachDoc(session.doc)
+      else store.detach()
+    },
+    { immediate: true }
+  )
 
   const context: FlowEditorContext = {
     flowId,
     store,
-    document: useFlowDocument(flowId, store),
+    collab,
+    document: useFlowDocument(flowId, store, collab),
     canvas: useFlowCanvas(store, presence, selection),
     selection,
     presence

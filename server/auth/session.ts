@@ -121,6 +121,19 @@ export type LoadedSession = Session & { user: User }
 /** 同一个会话的并发刷新合并成一次，避免 refresh token 轮换后互相踩 */
 const refreshing = new Map<string, Promise<LoadedSession | null>>()
 
+/**
+ * 连不上 Keycloak 导致刷新失败后的冷却时刻（会话 id → 可以再试的时间）。
+ * 它挂了的时候，别让每个请求都去撞一次超时。
+ */
+const refreshCooldown = new Map<string, number>()
+const REFRESH_COOLDOWN_MS = 15_000
+
+/** 还有没有可用的 refresh token —— 这一条本地就能判，不用问 Keycloak */
+function canRefresh(session: Session) {
+  if (!session.refreshToken) return false
+  return !session.refreshExpiresAt || session.refreshExpiresAt.getTime() > Date.now()
+}
+
 /** 按 cookie 里的 token 取会话；access_token 快过期就顺手续一次 */
 export async function loadSession(token: string | undefined): Promise<LoadedSession | null> {
   if (!token) return null
@@ -138,6 +151,11 @@ export async function loadSession(token: string | undefined): Promise<LoadedSess
   // access_token 还有 30 秒以上就直接用
   if (session.expiresAt.getTime() - Date.now() > 30_000) return session
 
+  // 上一次是「连不上 Keycloak」失败的：冷却期内先用着旧会话。
+  // refresh token 还在有效期内，等对面缓过来再续就是了
+  const retryAt = refreshCooldown.get(id)
+  if (retryAt !== undefined && Date.now() < retryAt && canRefresh(session)) return session
+
   const inflight = refreshing.get(id)
   if (inflight) return inflight
 
@@ -147,11 +165,8 @@ export async function loadSession(token: string | undefined): Promise<LoadedSess
 }
 
 async function renew(session: LoadedSession): Promise<LoadedSession | null> {
-  const canRefresh =
-    session.refreshToken &&
-    (!session.refreshExpiresAt || session.refreshExpiresAt.getTime() > Date.now())
-
-  if (!canRefresh) {
+  // refresh token 自己都过期了 —— 这才是「长时间没人操作」的真正超时
+  if (!canRefresh(session)) {
     await deleteSessionById(session.id)
     return null
   }
@@ -177,17 +192,25 @@ async function renew(session: LoadedSession): Promise<LoadedSession | null> {
       prisma.user.update({ where: { id: session.userId }, data: { roles: JSON.stringify(roles) } }),
     ])
 
+    refreshCooldown.delete(session.id)
     return { ...updated, user: { ...updated.user, roles: JSON.stringify(roles) } }
   } catch (err) {
-    // Keycloak 那边会话已经没了（用户登出/超时/被踢），本地也清掉
-    if (err instanceof OidcError) console.warn(`[auth] 刷新会话失败，已注销：${err.message}`)
-    else console.error('[auth] 刷新会话异常', err)
-    await deleteSessionById(session.id)
-    return null
+    // Keycloak 明确回绝（用户登出 / SSO 会话超时 / 被踢）——本地也清掉
+    if (err instanceof OidcError && !err.retryable) {
+      console.warn(`[auth] 刷新会话被拒绝（${err.code ?? err.message}），已注销`)
+      await deleteSessionById(session.id)
+      return null
+    }
+    // 连不上、超时、对方 5xx、甚至本地写库失败：都没证明凭证失效。
+    // 这时候注销，一次网络抖动就能把人踢回登录页 —— 保留会话，等下次请求再续
+    console.warn('[auth] 刷新会话暂时失败，保留会话稍后再试', err)
+    refreshCooldown.set(session.id, Date.now() + REFRESH_COOLDOWN_MS)
+    return session
   }
 }
 
 export async function deleteSessionById(id: string) {
+  refreshCooldown.delete(id)
   await prisma.session.delete({ where: { id } }).catch(() => undefined)
 }
 

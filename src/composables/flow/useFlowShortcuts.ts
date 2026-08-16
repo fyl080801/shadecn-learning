@@ -23,9 +23,9 @@ export function useFlowShortcuts(context: FlowEditorContext) {
       return
     }
 
+    // Ctrl+S 不再有「保存」的含义（改动即刻同步），但要拦住浏览器的保存网页对话框
     if (mod && event.key.toLowerCase() === "s") {
       event.preventDefault()
-      void store.saveNow()
       return
     }
 
@@ -35,13 +35,6 @@ export function useFlowShortcuts(context: FlowEditorContext) {
       event.preventDefault()
       canvas.deleteSelection()
     }
-  })
-
-  // 还有没提交的就别让人悄悄关掉标签页
-  useEventListener(window, "beforeunload", (event: BeforeUnloadEvent) => {
-    if (!store.dirty) return
-    event.preventDefault()
-    event.returnValue = ""
   })
 
   // SPA 内部跳走同理：先把待提交的落库再放行

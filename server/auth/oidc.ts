@@ -50,12 +50,31 @@ export interface IdTokenClaims {
   [claim: string]: unknown
 }
 
+export interface OidcErrorInit {
+  /** Keycloak 回的 OAuth 错误码，refresh token 真失效时是 `invalid_grant` */
+  code?: string
+  /**
+   * 连不上、超时、对方 5xx —— 这次没问出结果，不代表凭证没了。
+   * 调用方（`auth/session.ts`）据此决定是重试还是销毁会话。
+   */
+  retryable?: boolean
+  cause?: unknown
+}
+
 export class OidcError extends Error {
-  constructor(message: string, cause?: unknown) {
-    super(message, { cause })
+  readonly code: string | undefined
+  readonly retryable: boolean
+
+  constructor(message: string, init: OidcErrorInit = {}) {
+    super(message, { cause: init.cause })
     this.name = 'OidcError'
+    this.code = init.code
+    this.retryable = init.retryable ?? false
   }
 }
+
+/** 出站请求超时：node 的 fetch 默认不超时，Keycloak 卡住会把请求一起挂死 */
+const HTTP_TIMEOUT = 8000
 
 // ---------------------------------------------------------------- discovery
 
@@ -73,11 +92,11 @@ export async function discover(force = false): Promise<Discovery> {
     const url = `${authConfig.issuer}/.well-known/openid-configuration`
     let res: Response
     try {
-      res = await fetch(url)
+      res = await fetch(url, { signal: AbortSignal.timeout(HTTP_TIMEOUT) })
     } catch (err) {
-      throw new OidcError(`连不上 Keycloak（${url}）`, err)
+      throw new OidcError(`连不上 Keycloak（${url}）`, { retryable: true, cause: err })
     }
-    if (!res.ok) throw new OidcError(`discovery 失败：${res.status} ${url}`)
+    if (!res.ok) throw new OidcError(`discovery 失败：${res.status} ${url}`, { retryable: true })
 
     const doc = (await res.json()) as Discovery
     if (doc.issuer !== authConfig.issuer) {
@@ -133,11 +152,20 @@ async function postToken(body: URLSearchParams): Promise<TokenResponse> {
   // confidential client 用 client_secret_post；public client 不带这个字段
   if (authConfig.clientSecret) body.set('client_secret', authConfig.clientSecret)
 
-  const res = await fetch(token_endpoint, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body,
-  })
+  let res: Response
+  try {
+    res = await fetch(token_endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+      signal: AbortSignal.timeout(HTTP_TIMEOUT),
+    })
+  } catch (err) {
+    throw new OidcError(`连不上 Keycloak 的 token 端点（${token_endpoint}）`, {
+      retryable: true,
+      cause: err,
+    })
+  }
 
   const payload = (await res.json().catch(() => null)) as
     | (TokenResponse & { error?: string; error_description?: string })
@@ -145,7 +173,13 @@ async function postToken(body: URLSearchParams): Promise<TokenResponse> {
 
   if (!res.ok || !payload?.access_token) {
     const detail = payload?.error_description ?? payload?.error ?? `HTTP ${res.status}`
-    throw new OidcError(`token 端点返回失败：${detail}`)
+    // 只有 Keycloak 用 4xx 明确回绝（invalid_grant 之类）才算「这份凭证真没了」；
+    // 5xx、或 2xx 但结构不对（多半半路被网关改了），都只是这一次没成功
+    const rejected = !res.ok && res.status < 500
+    throw new OidcError(`token 端点返回失败：${detail}`, {
+      code: payload?.error,
+      retryable: !rejected,
+    })
   }
   return payload
 }

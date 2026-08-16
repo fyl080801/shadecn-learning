@@ -1,26 +1,21 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createPinia, setActivePinia } from "pinia"
-import {
-  FLUSH_DEBOUNCE,
-  FLUSH_OP_THRESHOLD,
-  HISTORY_LIMIT,
-  USER_STATE_DEBOUNCE,
-  invertOps,
-  useFlowStore
-} from "@/stores/flow"
-import { defaultNodeData, type FlowDetail, type FlowNode, type FlowOp } from "@/types/flow"
+import * as Y from "yjs"
+import { LOCAL_ORIGIN, USER_STATE_FLUSH_DELAY, useFlowStore } from "@/stores/flow"
+import { metaMap, nodesMap, toYNode } from "@/lib/flow-doc"
+import { defaultNodeData, type FlowDetail, type FlowEdge, type FlowNode } from "@/types/flow"
+
+/**
+ * store 是 Y.Doc 的响应式投影 —— 这一组用例盯的就是这层契约：
+ * 改动进得去、别人的改动看得到、撤销只撤自己的、视口不进内容。
+ */
 
 function node(id: string, x = 0, y = 0): FlowNode {
-  return {
-    id,
-    type: "process",
-    position: { x, y },
-    data: defaultNodeData(`节点 ${id}`)
-  }
+  return { id, type: "process", position: { x, y }, data: defaultNodeData(`节点 ${id}`) }
 }
 
-function addNodeOp(id: string, x = 0, y = 0): FlowOp {
-  return { type: "node.add", targetId: id, before: null, after: node(id, x, y) }
+function edge(id: string, source: string, target: string): FlowEdge {
+  return { id, source, target, sourceHandle: null, targetHandle: null, data: { config: {} } }
 }
 
 function detail(overrides: Partial<FlowDetail> = {}): FlowDetail {
@@ -50,575 +45,407 @@ function detail(overrides: Partial<FlowDetail> = {}): FlowDetail {
   }
 }
 
-/**
- * 打桩 /api/flows/:id/commit，记录每次请求体。
- * 按用户存的状态（/user-state）走的是另一条链路，这里一律 204 放行、不计入 calls。
- */
-function stubCommit(
-  responder: (body: {
-    baseRevision: number
-    transactions: { id: string; kind: string; label: string; ts: number; ops: FlowOp[] }[]
-  }) => { status: number; body: unknown }
-) {
-  const calls: {
-    baseRevision: number
-    transactions: { id: string; kind: string; label: string; ts: number; ops: FlowOp[] }[]
-  }[] = []
+/** 起一个接好文档的 store，外加一个「远端」文档用来模拟别人 */
+function setup() {
+  const store = useFlowStore()
+  store.load(detail())
+  const doc = new Y.Doc()
+  store.attachDoc(doc)
+  return { store, doc }
+}
 
-  const fetchStub = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (!String(input).endsWith("/commit")) return new Response(null, { status: 204 })
-
-    const body = JSON.parse(String(init?.body)) as (typeof calls)[number]
-    calls.push(body)
-    const result = responder(body)
-    return new Response(JSON.stringify(result.body), {
-      status: result.status,
-      headers: { "content-type": "application/json" }
+/** 同 setup()，外加一个记账用的 fetch 桩：断言「发了几个请求」 */
+function setupWithFetch() {
+  const calls: { url: string; body: unknown }[] = []
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body)) })
+      return new Response(null, { status: 204 })
     })
-  })
-
-  vi.stubGlobal("fetch", fetchStub)
-  return { calls, fetchStub }
+  )
+  return { calls, ...setup() }
 }
 
-/** 一路成功的 commit：revision 按事务条数递增 */
-function stubOkCommit() {
-  let revision = 0
-  return stubCommit((body) => {
-    revision = body.baseRevision + body.transactions.length
-    return { status: 200, body: { revision } }
-  })
+/** 把 a 的状态同步给 b，模拟一次网络往返 */
+function sync(from: Y.Doc, to: Y.Doc) {
+  Y.applyUpdate(to, Y.encodeStateAsUpdate(from), "remote")
 }
 
-beforeEach(() => {
-  setActivePinia(createPinia())
-})
+describe("内容读写", () => {
+  beforeEach(() => setActivePinia(createPinia()))
 
-describe("apply —— 唯一的写入口", () => {
-  it("新增节点后进入历史栈与待提交队列", () => {
-    const store = useFlowStore()
-    store.load(detail())
+  it("加节点会进 Y.Doc，并反映到投影上", () => {
+    const { store, doc } = setup()
+    store.addNode(node("n1", 10, 20))
 
-    store.apply([addNodeOp("n1")], "新增节点")
-
-    expect(store.nodes).toHaveLength(1)
-    expect(store.canUndo).toBe(true)
-    expect(store.pending).toHaveLength(1)
-    expect(store.saveState).toBe("dirty")
+    expect(store.nodes.map((item) => item.id)).toEqual(["n1"])
+    expect(nodesMap(doc).has("n1")).toBe(true)
   })
 
-  it("空操作数组不产生历史", () => {
+  it("没接文档时写操作是空转，不抛异常", () => {
     const store = useFlowStore()
     store.load(detail())
-
-    store.apply([], "什么都没做")
-    expect(store.canUndo).toBe(false)
-    expect(store.pending).toHaveLength(0)
+    expect(() => store.addNode(node("n1"))).not.toThrow()
+    expect(store.nodes).toHaveLength(0)
   })
 
-  it("node.update 只合并 data，不整个替换节点", () => {
-    const store = useFlowStore()
-    store.load(detail({ graph: { ...detail().graph, nodes: [node("n1", 10, 20)] } }))
+  it("移动节点只改 position，不动别的字段", () => {
+    const { store } = setup()
+    store.addNode(node("n1"))
+    store.moveNodes(new Map([["n1", { x: 99, y: 88 }]]))
 
-    store.apply(
-      [
-        {
-          type: "node.update",
-          targetId: "n1",
-          before: { data: { label: "节点 n1" } },
-          after: { data: { label: "改过的" } }
-        }
-      ],
-      "改标题"
-    )
+    expect(store.nodes[0]!.position).toEqual({ x: 99, y: 88 })
+    expect(store.nodes[0]!.data.label).toBe("节点 n1")
+  })
+
+  it("改节点数据是按 key 合并，没提到的字段保持原样", () => {
+    const { store } = setup()
+    store.addNode(node("n1"))
+    store.updateNodeData("n1", { label: "改过的" })
 
     expect(store.nodes[0]!.data.label).toBe("改过的")
-    // 没被 patch 到的字段原样保留
-    expect(store.nodes[0]!.position).toEqual({ x: 10, y: 20 })
     expect(store.nodes[0]!.data.kind).toBe("process")
+    expect(store.nodes[0]!.data.config).toEqual({})
+  })
+
+  it("删节点时连着的边一起删，不留悬空的边", () => {
+    const { store, doc } = setup()
+    store.addNode(node("n1"))
+    store.addNode(node("n2"))
+    store.addEdge(edge("e1", "n1", "n2"))
+    expect(store.edges).toHaveLength(1)
+
+    store.removeElements(["n1"], [])
+
+    expect(store.nodes.map((item) => item.id)).toEqual(["n2"])
+    expect(store.edges).toHaveLength(0)
+    // 不是只在投影里过滤掉，Y.Doc 里也真的没了
+    expect(doc.getMap("edges").has("e1")).toBe(false)
+  })
+
+  it("端点还在的边不会被误删", () => {
+    const { store } = setup()
+    store.addNode(node("n1"))
+    store.addNode(node("n2"))
+    store.addEdge(edge("e1", "n1", "n2"))
+
+    store.removeElements([], [])
+    expect(store.edges).toHaveLength(1)
+  })
+
+  it("分组 / 层级字段（zIndex、parentNode、extent）写得进也读得出", () => {
+    const { store } = setup()
+    store.addNode(node("group"))
+    store.addNode({ ...node("n1"), zIndex: 3, parentNode: "group", extent: "parent" })
+
+    const projected = store.nodes.find((item) => item.id === "n1")!
+    expect(projected.zIndex).toBe(3)
+    expect(projected.parentNode).toBe("group")
+    expect(projected.extent).toBe("parent")
   })
 })
 
-describe("撤销 / 重做", () => {
-  it("5 步操作后连撤 5 次回到初始，再重做 5 次完全恢复", () => {
-    const store = useFlowStore()
-    store.load(detail())
+describe("协同合并", () => {
+  beforeEach(() => setActivePinia(createPinia()))
 
-    for (let i = 1; i <= 5; i += 1) store.apply([addNodeOp(`n${i}`)], `新增 n${i}`)
-    expect(store.nodes).toHaveLength(5)
+  it("别人加的节点会出现在我的投影里", () => {
+    const { store, doc } = setup()
+    const remote = new Y.Doc()
+    sync(doc, remote)
 
-    for (let i = 0; i < 5; i += 1) store.undo()
-    expect(store.nodes).toHaveLength(0)
-    expect(store.canUndo).toBe(false)
+    remote.getMap<Y.Map<unknown>>("nodes").set("n-remote", toYNode(node("n-remote")))
+    sync(remote, doc)
 
-    for (let i = 0; i < 5; i += 1) store.redo()
-    expect(store.nodes.map((item) => item.id)).toEqual(["n1", "n2", "n3", "n4", "n5"])
-    expect(store.canRedo).toBe(false)
+    expect(store.nodes.map((item) => item.id)).toEqual(["n-remote"])
   })
 
-  it("撤销之后再做新操作，重做栈被清空", () => {
-    const store = useFlowStore()
-    store.load(detail())
+  it("两人同时改同一个节点的不同字段，两边的改动都留下", () => {
+    const { store, doc } = setup()
+    store.addNode(node("n1"))
 
-    store.apply([addNodeOp("n1")], "新增 n1")
+    const remote = new Y.Doc()
+    sync(doc, remote)
+
+    // 各自从同一份状态出发离线改
+    store.updateNodeData("n1", { label: "我改的标题" })
+    const remoteData = remote.getMap<Y.Map<unknown>>("nodes").get("n1")!.get("data") as Y.Map<unknown>
+    remoteData.set("description", "他写的说明")
+
+    sync(remote, doc)
+
+    expect(store.nodes[0]!.data.label).toBe("我改的标题")
+    expect(store.nodes[0]!.data.description).toBe("他写的说明")
+  })
+
+  it("同一条改动应用两次不会变成两个节点（更新是幂等的）", () => {
+    const { store, doc } = setup()
+    const remote = new Y.Doc()
+    remote.getMap<Y.Map<unknown>>("nodes").set("n1", toYNode(node("n1")))
+
+    const update = Y.encodeStateAsUpdate(remote)
+    Y.applyUpdate(doc, update, "remote")
+    Y.applyUpdate(doc, update, "remote")
+
+    expect(store.nodes).toHaveLength(1)
+  })
+})
+
+describe("撤销", () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it("撤销 / 重做自己的改动", () => {
+    const { store } = setup()
+    expect(store.canUndo).toBe(false)
+
+    store.addNode(node("n1"))
+    expect(store.canUndo).toBe(true)
+
     store.undo()
+    expect(store.nodes).toHaveLength(0)
     expect(store.canRedo).toBe(true)
 
-    store.apply([addNodeOp("n2")], "新增 n2")
-    expect(store.canRedo).toBe(false)
-  })
-
-  it("撤销 / 重做各自产生一条要落库的事务，kind 分别是 undo / redo", () => {
-    const store = useFlowStore()
-    store.load(detail())
-
-    store.apply([addNodeOp("n1")], "新增 n1")
-    store.undo()
     store.redo()
-
-    expect(store.pending.map((tx) => tx.kind)).toEqual(["do", "undo", "redo"])
+    expect(store.nodes.map((item) => item.id)).toEqual(["n1"])
   })
 
-  it("空栈时撤销 / 重做是安全的空操作", () => {
-    const store = useFlowStore()
-    store.load(detail())
+  it("**只撤自己的**：别人的改动不进我的撤销栈", () => {
+    const { store, doc } = setup()
+    const remote = new Y.Doc()
+    sync(doc, remote)
 
-    store.undo()
-    store.redo()
-    expect(store.pending).toHaveLength(0)
-    expect(store.nodes).toHaveLength(0)
-  })
+    remote.getMap<Y.Map<unknown>>("nodes").set("n-remote", toYNode(node("n-remote")))
+    sync(remote, doc)
 
-  it("invertOps 反转顺序并交换 before/after", () => {
-    const ops: FlowOp[] = [
-      { type: "node.add", targetId: "a", before: null, after: { id: "a" } },
-      { type: "node.move", targetId: "b", before: { x: 0 }, after: { x: 1 } }
-    ]
-
-    expect(invertOps(ops)).toEqual([
-      { type: "node.move", targetId: "b", before: { x: 1 }, after: { x: 0 } },
-      { type: "node.remove", targetId: "a", before: { id: "a" }, after: null }
-    ])
-  })
-})
-
-describe("事务合并", () => {
-  it("框选拖动多个节点只需一次撤销", () => {
-    const store = useFlowStore()
-    store.load(detail({ graph: { ...detail().graph, nodes: [node("n1"), node("n2"), node("n3")] } }))
-
-    store.beginTransaction("移动 3 个节点")
-    for (const id of ["n1", "n2", "n3"]) {
-      store.apply(
-        [
-          {
-            type: "node.move",
-            targetId: id,
-            before: { position: { x: 0, y: 0 } },
-            after: { position: { x: 100, y: 100 } }
-          }
-        ],
-        "移动"
-      )
-    }
-    store.commitTransaction()
-
-    expect(store.undoStack).toHaveLength(1)
-    expect(store.undoStack[0]!.ops).toHaveLength(3)
-    expect(store.nodes.every((item) => item.position.x === 100)).toBe(true)
-
-    store.undo()
-    expect(store.nodes.every((item) => item.position.x === 0)).toBe(true)
+    // 只有别人动过，我没什么可撤的
     expect(store.canUndo).toBe(false)
-  })
 
-  it("事务里一条操作都没有时不留下空历史", () => {
-    const store = useFlowStore()
-    store.load(detail())
-
-    store.beginTransaction("什么也没干")
-    store.commitTransaction()
-
-    expect(store.undoStack).toHaveLength(0)
-    expect(store.pending).toHaveLength(0)
-  })
-})
-
-describe("历史深度上限", () => {
-  it(`超过 ${HISTORY_LIMIT} 条时丢弃最旧的`, () => {
-    const store = useFlowStore()
-    store.load(detail())
-
-    for (let i = 0; i < HISTORY_LIMIT + 10; i += 1) {
-      store.apply([addNodeOp(`n${i}`)], `新增 n${i}`)
-    }
-
-    expect(store.undoStack).toHaveLength(HISTORY_LIMIT)
-    // 最旧的 10 条被丢掉了，栈底是第 10 条
-    expect(store.undoStack[0]!.label).toBe("新增 n10")
-  })
-})
-
-describe("提交", () => {
-  it("防抖窗口内的多次修改合并成一次请求", async () => {
-    vi.useFakeTimers()
-    const { calls, fetchStub } = stubOkCommit()
-
-    const store = useFlowStore()
-    store.load(detail())
-
-    store.apply([addNodeOp("n1")], "新增 n1")
-    store.apply([addNodeOp("n2")], "新增 n2")
-    expect(fetchStub).not.toHaveBeenCalled()
-
-    await vi.advanceTimersByTimeAsync(FLUSH_DEBOUNCE)
-
-    expect(fetchStub).toHaveBeenCalledTimes(1)
-    expect(calls[0]!.transactions).toHaveLength(2)
-    expect(store.saveState).toBe("saved")
-    expect(store.pending).toHaveLength(0)
-  })
-
-  it("攒够阈值条操作立刻提交，不等防抖", async () => {
-    vi.useFakeTimers()
-    const { fetchStub } = stubOkCommit()
-
-    const store = useFlowStore()
-    store.load(detail())
-
-    for (let i = 0; i < FLUSH_OP_THRESHOLD; i += 1) {
-      store.apply([addNodeOp(`n${i}`)], `新增 n${i}`)
-    }
-    await vi.advanceTimersByTimeAsync(0)
-
-    expect(fetchStub).toHaveBeenCalledTimes(1)
-  })
-
-  it("提交成功后 baseRevision 跟上服务端", async () => {
-    vi.useFakeTimers()
-    stubOkCommit()
-
-    const store = useFlowStore()
-    store.load(detail())
-
-    store.apply([addNodeOp("n1")], "新增 n1")
-    store.apply([addNodeOp("n2")], "新增 n2")
-    await vi.advanceTimersByTimeAsync(FLUSH_DEBOUNCE)
-
-    expect(store.baseRevision).toBe(2)
-    expect(store.meta?.revision).toBe(2)
-  })
-
-  it("每条事务都带 UTC 毫秒时间戳，id 各不相同", async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date("2026-01-02T03:04:05.000Z"))
-    const { calls } = stubOkCommit()
-
-    const store = useFlowStore()
-    store.load(detail())
-
-    store.apply([addNodeOp("n1")], "新增 n1")
-    store.apply([addNodeOp("n2")], "新增 n2")
+    store.addNode(node("n-mine"))
     store.undo()
-    await vi.advanceTimersByTimeAsync(FLUSH_DEBOUNCE)
 
-    const sent = calls[0]!.transactions
-    expect(sent).toHaveLength(3)
-    for (const tx of sent) {
-      expect(tx.ts).toBe(Date.parse("2026-01-02T03:04:05.000Z"))
-      expect(Number.isSafeInteger(tx.ts)).toBe(true)
-    }
-    // 同一毫秒内产生的三条，id 不能撞（协同时两个客户端也一样）
-    expect(new Set(sent.map((tx) => tx.id)).size).toBe(3)
+    // 撤掉的是我加的那个，别人的还在
+    expect(store.nodes.map((item) => item.id)).toEqual(["n-remote"])
   })
 
-  it("lastSavedAt 先取服务端 updatedAt，提交成功后换成刚才那一刻", async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date("2026-01-02T03:04:05.000Z"))
-    stubOkCommit()
+  it("separateUndo 之间的改动各成一条记录", () => {
+    const { store } = setup()
+    store.addNode(node("n1"))
+    store.separateUndo()
+    store.addNode(node("n2"))
 
-    const store = useFlowStore()
-    store.load(detail({ updatedAt: "2026-01-01T00:00:00.000Z" }))
-    expect(store.lastSavedAt).toBe(Date.parse("2026-01-01T00:00:00.000Z"))
-
-    store.apply([addNodeOp("n1")], "新增 n1")
-    await vi.advanceTimersByTimeAsync(FLUSH_DEBOUNCE)
-
-    expect(store.lastSavedAt).toBe(Date.parse("2026-01-02T03:04:05.000Z") + FLUSH_DEBOUNCE)
-
-    store.reset()
-    expect(store.lastSavedAt).toBeNull()
+    store.undo()
+    expect(store.nodes.map((item) => item.id)).toEqual(["n1"])
   })
 
-  it("提交的 graph 是当前全量快照", async () => {
-    vi.useFakeTimers()
-    const sent: { url: string; body: string }[] = []
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        sent.push({ url: String(input), body: String(init?.body) })
-        return new Response(JSON.stringify({ revision: 1 }), {
-          status: 200,
-          headers: { "content-type": "application/json" }
-        })
-      })
-    )
+  it("本地改动带的是 LOCAL_ORIGIN —— UndoManager 靠它区分谁干的", () => {
+    const { store, doc } = setup()
+    const origins: unknown[] = []
+    doc.on("afterTransaction", (transaction: Y.Transaction) => origins.push(transaction.origin))
 
-    const store = useFlowStore()
-    store.load(detail())
-    store.setViewport({ x: 5, y: 6, zoom: 2 })
-    store.apply([addNodeOp("n1", 10, 20)], "新增 n1")
-    await vi.advanceTimersByTimeAsync(FLUSH_DEBOUNCE)
-
-    // 视口自己有一条更早的请求，这里要挑出 commit 那条
-    const commit = sent.find((item) => item.url.endsWith("/commit"))
-    const body = JSON.parse(commit!.body) as {
-      graph: { nodes: { id: string }[]; viewport: { zoom: number } }
-    }
-    expect(body.graph.nodes.map((item) => item.id)).toEqual(["n1"])
-    // 我平移/缩放不改共享快照里那份兜底视口 —— 视图操作和数据变化是两条路
-    expect(body.graph.viewport).toEqual({ x: 0, y: 0, zoom: 1 })
-  })
-
-  it("409 → 进入 conflict 并停止自动提交", async () => {
-    vi.useFakeTimers()
-    const { fetchStub } = stubCommit(() => ({
-      status: 409,
-      body: { error: "该画布已在别处修改，请重新加载", reason: "conflict", revision: 7 }
-    }))
-
-    const store = useFlowStore()
-    store.load(detail())
-
-    store.apply([addNodeOp("n1")], "新增 n1")
-    await vi.advanceTimersByTimeAsync(FLUSH_DEBOUNCE)
-
-    expect(store.saveState).toBe("conflict")
-    expect(store.saveError).toContain("已在别处修改")
-
-    // 继续编辑不会再往上推陈旧快照
-    store.apply([addNodeOp("n2")], "新增 n2")
-    await vi.advanceTimersByTimeAsync(FLUSH_DEBOUNCE * 5)
-    expect(fetchStub).toHaveBeenCalledTimes(1)
-  })
-
-  it("网络失败时保留 pending，下次触发补提交成功", async () => {
-    vi.useFakeTimers()
-    let fail = true
-    const fetchStub = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      if (fail) throw new Error("网络不可用")
-      const body = JSON.parse(String(init?.body)) as { transactions: unknown[] }
-      return new Response(JSON.stringify({ revision: body.transactions.length }), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      })
-    })
-    vi.stubGlobal("fetch", fetchStub)
-
-    const store = useFlowStore()
-    store.load(detail())
-
-    store.apply([addNodeOp("n1")], "新增 n1")
-    await vi.advanceTimersByTimeAsync(FLUSH_DEBOUNCE)
-
-    expect(store.saveState).toBe("error")
-    expect(store.pending).toHaveLength(1)
-
-    // 断网期间继续编辑，操作不丢
-    store.apply([addNodeOp("n2")], "新增 n2")
-    expect(store.pending).toHaveLength(2)
-
-    fail = false
-    await store.saveNow()
-
-    expect(store.saveState).toBe("saved")
-    expect(store.pending).toHaveLength(0)
-    expect(store.nodes).toHaveLength(2)
-  })
-
-  it("提交期间产生的新操作不会被误标为已提交", async () => {
-    vi.useFakeTimers()
-    const gate: { release: (() => void) | null } = { release: null }
-    let blocked = true
-    const fetchStub = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as {
-        baseRevision: number
-        transactions: unknown[]
-      }
-      // 只把第一次请求挂起，用来制造「提交还没回来又改了一笔」的窗口
-      if (blocked) {
-        blocked = false
-        await new Promise<void>((resolve) => {
-          gate.release = resolve
-        })
-      }
-      return new Response(
-        JSON.stringify({ revision: body.baseRevision + body.transactions.length }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      )
-    })
-    vi.stubGlobal("fetch", fetchStub)
-
-    const store = useFlowStore()
-    store.load(detail())
-
-    store.apply([addNodeOp("n1")], "新增 n1")
-    const flushed = store.flush()
-    await vi.advanceTimersByTimeAsync(0)
-
-    // 请求还没回来，这时又改了一笔
-    store.apply([addNodeOp("n2")], "新增 n2")
-
-    gate.release?.()
-    await flushed
-    await vi.advanceTimersByTimeAsync(FLUSH_DEBOUNCE)
-
-    expect(fetchStub).toHaveBeenCalledTimes(2)
-    expect(store.pending).toHaveLength(0)
-    expect(store.saveState).toBe("saved")
+    store.addNode(node("n1"))
+    expect(origins).toContain(LOCAL_ORIGIN)
   })
 })
 
-describe("视口 —— 按用户存，不进历史", () => {
-  /** 记录所有请求，方便按 URL 分辨走的是哪条链路 */
-  function stubAll() {
-    const sent: { url: string; method: string; body: string }[] = []
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        sent.push({
-          url: String(input),
-          method: init?.method ?? "GET",
-          body: String(init?.body)
-        })
-        return new Response(null, { status: 204 })
-      })
-    )
-    return sent
-  }
+describe("视口：按用户存，不是画布内容", () => {
+  beforeEach(() => setActivePinia(createPinia()))
 
-  it("平移 / 缩放不进撤销栈、不算未保存", () => {
-    stubAll()
-    const store = useFlowStore()
-    store.load(detail())
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
 
-    store.setViewport({ x: 12, y: 34, zoom: 1.5 })
+  it("移动视口不进 Y.Doc、不进撤销栈", () => {
+    const { store, doc } = setup()
+    const before = Y.encodeStateAsUpdate(doc).length
 
+    store.setViewport({ x: 100, y: 200, zoom: 2 })
+
+    expect(store.viewport).toEqual({ x: 100, y: 200, zoom: 2 })
     expect(store.canUndo).toBe(false)
-    expect(store.pending).toHaveLength(0)
-    expect(store.dirty).toBe(false)
-    expect(store.saveState).toBe("saved")
+    expect(Y.encodeStateAsUpdate(doc).length).toBe(before)
   })
 
-  it("防抖后 PATCH /user-state，只带改过的分区", async () => {
+  it("光是移动视口不发请求 —— 看一眼画布不该产生写流量", async () => {
     vi.useFakeTimers()
-    const sent = stubAll()
-    const store = useFlowStore()
-    store.load(detail())
+    const { calls, store } = setupWithFetch()
 
-    store.setViewport({ x: 12, y: 34, zoom: 1.5 })
-    expect(sent).toHaveLength(0)
+    store.setViewport({ x: 1, y: 2, zoom: 1 })
+    store.setViewport({ x: 3, y: 4, zoom: 1 })
 
-    await vi.advanceTimersByTimeAsync(USER_STATE_DEBOUNCE)
+    await vi.advanceTimersByTimeAsync(USER_STATE_FLUSH_DELAY * 3)
 
-    expect(sent).toHaveLength(1)
-    expect(sent[0]!.url).toBe("/api/flows/flow-1/user-state")
-    expect(sent[0]!.method).toBe("PATCH")
-    expect(JSON.parse(sent[0]!.body)).toEqual({ viewport: { x: 12, y: 34, zoom: 1.5 } })
+    expect(calls).toHaveLength(0)
   })
 
-  it("连续移动只发最后一次", async () => {
+  it("本地编辑之后才搭车 PATCH，发的是最后那个视口值", async () => {
     vi.useFakeTimers()
-    const sent = stubAll()
-    const store = useFlowStore()
-    store.load(detail())
+    const { calls, store } = setupWithFetch()
 
-    store.setViewport({ x: 1, y: 1, zoom: 1 })
-    await vi.advanceTimersByTimeAsync(USER_STATE_DEBOUNCE / 2)
-    store.setViewport({ x: 2, y: 2, zoom: 1 })
-    await vi.advanceTimersByTimeAsync(USER_STATE_DEBOUNCE)
+    store.setViewport({ x: 1, y: 2, zoom: 1 })
+    store.setViewport({ x: 3, y: 4, zoom: 1 })
+    store.addNode(node("n1"))
 
-    expect(sent).toHaveLength(1)
-    expect(JSON.parse(sent[0]!.body)).toEqual({ viewport: { x: 2, y: 2, zoom: 1 } })
+    await vi.advanceTimersByTimeAsync(USER_STATE_FLUSH_DELAY + 10)
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toContain("/user-state")
+    expect(calls[0]!.body).toEqual({ viewport: { x: 3, y: 4, zoom: 1 } })
   })
 
-  it("load 优先用我自己的视口，没有才回落到快照里那份", () => {
-    stubAll()
-    const store = useFlowStore()
-
-    store.load(detail({ userState: { viewport: { x: 7, y: 8, zoom: 3 } } }))
-    expect(store.viewport).toEqual({ x: 7, y: 8, zoom: 3 })
-
-    store.load(
-      detail({ graph: { ...detail().graph, viewport: { x: 1, y: 2, zoom: 0.5 } } })
-    )
-    expect(store.viewport).toEqual({ x: 1, y: 2, zoom: 0.5 })
-  })
-
-  it("存不上不报错，值留着下次再试", async () => {
+  it("连续编辑不会把窗口一直往后推，也不会一次编辑一个请求", async () => {
     vi.useFakeTimers()
-    let calls = 0
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        calls += 1
-        if (calls === 1) throw new TypeError("网络断了")
-        return new Response(null, { status: 204 })
-      })
-    )
+    const { calls, store } = setupWithFetch()
 
-    const store = useFlowStore()
-    store.load(detail())
+    store.setViewport({ x: 1, y: 2, zoom: 1 })
+    for (let i = 0; i < 5; i++) {
+      store.addNode(node(`n${i}`))
+      await vi.advanceTimersByTimeAsync(USER_STATE_FLUSH_DELAY / 2)
+    }
+
+    // 5 次编辑跨了 2.5 个窗口，但只有第一个窗口里有攒着的视口
+    expect(calls).toHaveLength(1)
+  })
+
+  it("没有可存的东西时，编辑不会凭空发请求", async () => {
+    vi.useFakeTimers()
+    const { calls, store } = setupWithFetch()
+
+    store.addNode(node("n1"))
+    await vi.advanceTimersByTimeAsync(USER_STATE_FLUSH_DELAY + 10)
+
+    expect(calls).toHaveLength(0)
+  })
+
+  it("只平移没编辑，离开时兜底存一次", async () => {
+    const { calls, store } = setupWithFetch()
+
     store.setViewport({ x: 9, y: 9, zoom: 2 })
-    await vi.advanceTimersByTimeAsync(USER_STATE_DEBOUNCE)
-    expect(calls).toBe(1)
-    expect(store.saveState).toBe("saved")
-
-    // 下一次触发（这里用离开前的强制落库）把上次没存成的补上
     await store.saveNow()
-    expect(calls).toBe(2)
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.body).toEqual({ viewport: { x: 9, y: 9, zoom: 2 } })
+  })
+
+  it("首开（自己没存过视口）时，能在同步完成后应用快照里的兜底视口", () => {
+    const { store, doc } = setup()
+
+    // 模拟同步：meta.viewport 在接管**之后**才随内容到达 —— 首开时序就是这样
+    metaMap(doc).set("viewport", { x: 42, y: 7, zoom: 0.5 })
+
+    expect(store.applyFallbackViewport()).toBe(true)
+    expect(store.viewport).toEqual({ x: 42, y: 7, zoom: 0.5 })
+  })
+
+  it("自己存过视口的话，兜底不生效 —— 各人看各人的", () => {
+    const store = useFlowStore()
+    store.load(detail({ userState: { viewport: { x: 1, y: 1, zoom: 1 } } }))
+    const doc = new Y.Doc()
+    store.attachDoc(doc)
+    metaMap(doc).set("viewport", { x: 42, y: 7, zoom: 0.5 })
+
+    expect(store.applyFallbackViewport()).toBe(false)
+    expect(store.viewport).toEqual({ x: 1, y: 1, zoom: 1 })
+  })
+
+  it("快照里没有（或不合法的）兜底视口时按兵不动", () => {
+    const { store, doc } = setup()
+    metaMap(doc).set("viewport", { x: 1, y: 2, zoom: -3 })
+
+    expect(store.applyFallbackViewport()).toBe(false)
+    expect(store.viewport).toEqual({ x: 0, y: 0, zoom: 1 })
   })
 })
 
-describe("load / reset", () => {
-  it("load 会清空历史栈 —— 撤销不跨会话，但内容还在", () => {
-    const store = useFlowStore()
-    store.load(detail())
-    store.apply([addNodeOp("n1")], "新增 n1")
+describe("增量投影", () => {
+  beforeEach(() => setActivePinia(createPinia()))
 
-    store.load(detail({ revision: 3, graph: { ...detail().graph, nodes: [node("a"), node("b")] } }))
+  it("改一个节点，其余节点的对象引用保持不变", () => {
+    const { store } = setup()
+    store.addNode(node("n1"))
+    store.addNode(node("n2"))
+    store.addNode(node("n3"))
 
-    expect(store.canUndo).toBe(false)
-    expect(store.canRedo).toBe(false)
-    expect(store.pending).toHaveLength(0)
-    expect(store.saveState).toBe("saved")
-    expect(store.baseRevision).toBe(3)
-    expect(store.nodes).toHaveLength(2)
+    const before = new Map(store.nodes.map((n) => [n.id, n]))
+    store.updateNodeData("n2", { label: "只改了我" })
+
+    const after = new Map(store.nodes.map((n) => [n.id, n]))
+    // 变的那个是新对象
+    expect(after.get("n2")).not.toBe(before.get("n2"))
+    expect(after.get("n2")!.data.label).toBe("只改了我")
+    // 没变的还是原来那个对象 —— Vue Flow 靠引用判断要不要重新同步
+    expect(after.get("n1")).toBe(before.get("n1"))
+    expect(after.get("n3")).toBe(before.get("n3"))
   })
 
-  it("load 出来的节点与传入对象不共享引用", () => {
-    const source = detail({ graph: { ...detail().graph, nodes: [node("n1")] } })
-    const store = useFlowStore()
-    store.load(source)
+  it("拖动一个节点，别的节点不重新解析", () => {
+    const { store } = setup()
+    store.addNode(node("n1"))
+    store.addNode(node("n2"))
 
-    store.apply(
-      [{ type: "node.update", targetId: "n1", before: null, after: { data: { label: "改了" } } }],
-      "改名"
-    )
+    const before = new Map(store.nodes.map((n) => [n.id, n]))
+    store.moveNodes(new Map([["n1", { x: 500, y: 500 }]]))
 
-    expect(source.graph.nodes[0]!.data.label).toBe("节点 n1")
+    const after = new Map(store.nodes.map((n) => [n.id, n]))
+    expect(after.get("n1")!.position).toEqual({ x: 500, y: 500 })
+    expect(after.get("n2")).toBe(before.get("n2"))
   })
 
-  it("reset 清干净所有状态", () => {
-    const store = useFlowStore()
-    store.load(detail())
-    store.apply([addNodeOp("n1")], "新增 n1")
+  it("远端改动同样走增量，且投影正确", () => {
+    const { store, doc } = setup()
+    store.addNode(node("n1"))
+    store.addNode(node("n2"))
 
-    store.reset()
+    const remote = new Y.Doc()
+    sync(doc, remote)
+    const before = new Map(store.nodes.map((n) => [n.id, n]))
 
-    expect(store.meta).toBeNull()
+    const data = remote.getMap<Y.Map<unknown>>("nodes").get("n1")!.get("data") as Y.Map<unknown>
+    data.set("label", "远端改的")
+    sync(remote, doc)
+
+    const after = new Map(store.nodes.map((n) => [n.id, n]))
+    expect(after.get("n1")!.data.label).toBe("远端改的")
+    expect(after.get("n2")).toBe(before.get("n2"))
+  })
+
+  it("节点顺序跟着 Y.Map 的键顺序走，不会因为增量而乱序", () => {
+    const { store } = setup()
+    for (const id of ["a", "b", "c", "d"]) store.addNode(node(id))
+    expect(store.nodes.map((n) => n.id)).toEqual(["a", "b", "c", "d"])
+
+    store.updateNodeData("b", { label: "改了 b" })
+    expect(store.nodes.map((n) => n.id)).toEqual(["a", "b", "c", "d"])
+
+    store.removeElements(["b"], [])
+    expect(store.nodes.map((n) => n.id)).toEqual(["a", "c", "d"])
+  })
+
+  it("删掉节点后，缓存里也不留残影（再加回同 id 是全新对象）", () => {
+    const { store } = setup()
+    store.addNode(node("n1", 10, 10))
+    const first = store.nodes[0]!
+
+    store.removeElements(["n1"], [])
     expect(store.nodes).toHaveLength(0)
-    expect(store.pending).toHaveLength(0)
-    expect(store.canUndo).toBe(false)
+
+    store.addNode(node("n1", 99, 99))
+    expect(store.nodes[0]).not.toBe(first)
+    expect(store.nodes[0]!.position).toEqual({ x: 99, y: 99 })
+  })
+
+  it("删掉端点后那条边从投影里消失，加回端点又出现", () => {
+    const { store } = setup()
+    store.addNode(node("n1"))
+    store.addNode(node("n2"))
+    store.addEdge(edge("e1", "n1", "n2"))
+    expect(store.edges).toHaveLength(1)
+
+    // 只删节点、不删边（模拟并发：别人删了节点，我这边边还在）
+    store.mutate(({ nodes: map }) => map.delete("n2"))
+    expect(store.edges).toHaveLength(0)
+
+    store.mutate(({ nodes: map }) => map.set("n2", toYNode(node("n2"))))
+    expect(store.edges.map((e) => e.id)).toEqual(["e1"])
   })
 })

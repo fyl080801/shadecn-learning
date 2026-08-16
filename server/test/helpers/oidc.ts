@@ -121,6 +121,8 @@ export function tokenResponse(options: TokenResponseOptions = {}) {
 interface StubbedResponse {
   status: number
   body: unknown
+  /** 设了就让 fetch 直接抛，模拟连不上 / 超时 */
+  throws?: unknown
 }
 
 export interface OidcStub {
@@ -174,6 +176,7 @@ export function stubOidcFetch(): OidcStub {
               : null
 
       if (!picked) throw new Error(`[test] 未打桩的出站请求：${url}`)
+      if (picked.throws !== undefined) throw picked.throws
 
       return new Response(picked.body === null ? null : JSON.stringify(picked.body), {
         status: picked.status,

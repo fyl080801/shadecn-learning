@@ -1,12 +1,26 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import * as Y from 'yjs'
 import { app } from '../../app.ts'
+import { nodesMap } from '../../collab/flow-doc.ts'
 import { emptyGraph, type FlowGraph } from '../../store/flow-types.ts'
+import { closeRoom, editLabel, openRoom, resetRooms, writeGraph } from '../helpers/collab.ts'
 import { prisma, resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject, joinViaInvite, type Actor } from '../helpers/project.ts'
 
 beforeEach(async () => {
   await resetDb()
+  // 房间是进程级的内存状态，不清会把上一个用例的内容带进来
+  resetRooms()
 })
+
+afterEach(() => {
+  resetRooms()
+})
+
+/** 取某个节点的 data 那层 Y.Map —— 并发合并的粒度就在这一层 */
+function dataOf(doc: Y.Doc, nodeId: string): Y.Map<unknown> {
+  return nodesMap(doc).get(nodeId)!.get('data') as Y.Map<unknown>
+}
 
 /** 造一张有 n 个节点、n-1 条边的图 */
 function graphWith(nodeCount: number): FlowGraph {
@@ -28,24 +42,6 @@ function graphWith(nodeCount: number): FlowGraph {
     }
   }
   return graph
-}
-
-function transaction(id: string, label = '新增节点', ts = Date.now()) {
-  return {
-    id,
-    label,
-    kind: 'do' as const,
-    ts,
-    ops: [{ type: 'node.add', targetId: 'n0', before: null, after: { id: 'n0' } }],
-  }
-}
-
-async function commit(
-  who: Actor,
-  flowId: string,
-  body: { baseRevision: number; transactions: unknown[]; graph: FlowGraph },
-) {
-  return who.json(`/api/flows/${flowId}/commit`, 'POST', body)
 }
 
 describe('GET /api/projects/:id/flows', () => {
@@ -138,20 +134,13 @@ describe('画布的访问权来自项目成员身份', () => {
   })
 })
 
-describe('POST /api/flows/:id/commit', () => {
-  it('提交后 revision 递增、快照与统计一起更新', async () => {
+describe('画布内容的写入路径（Yjs）', () => {
+  it('房间散场后内容落库，派生的快照与统计一起更新', async () => {
     const alice = await actor()
     const projectId = await createProject(alice)
     const flowId = await createFlow(alice, projectId)
 
-    const res = await commit(alice, flowId, {
-      baseRevision: 0,
-      transactions: [transaction('tx-1')],
-      graph: graphWith(3),
-    })
-
-    expect(res.status).toBe(200)
-    await expect(res.json()).resolves.toEqual({ revision: 1 })
+    await writeGraph(flowId, graphWith(3))
 
     const detail = (await (await alice.request(`/api/flows/${flowId}`)).json()) as {
       revision: number
@@ -159,163 +148,46 @@ describe('POST /api/flows/:id/commit', () => {
       edgeCount: number
       graph: FlowGraph
     }
-    expect(detail).toMatchObject({ revision: 1, nodeCount: 3, edgeCount: 2 })
-    expect(detail.graph.nodes).toHaveLength(3)
+    expect(detail.nodeCount).toBe(3)
+    expect(detail.edgeCount).toBe(2)
+    expect(detail.graph.nodes.map((node) => node.id)).toEqual(['n0', 'n1', 'n2'])
+    // revision 不再是乐观锁，只是服务端写入次数的单调计数
+    expect(detail.revision).toBe(1)
+
+    const row = await prisma.flow.findUniqueOrThrow({ where: { id: flowId } })
+    expect(row.ydoc).not.toBeNull()
+    expect(row.ydoc!.length).toBeGreaterThan(0)
   })
 
-  it('一次提交多个事务，revision 按事务条数递增，日志 seq 连续', async () => {
+  it('重新打开时从 ydoc 恢复，内容不丢', async () => {
     const alice = await actor()
     const projectId = await createProject(alice)
     const flowId = await createFlow(alice, projectId)
 
-    await commit(alice, flowId, {
-      baseRevision: 0,
-      transactions: [transaction('tx-1'), transaction('tx-2'), transaction('tx-3')],
-      graph: graphWith(1),
-    })
-
-    const rows = await prisma.flowOperation.findMany({
-      where: { flowId },
-      orderBy: { seq: 'asc' },
-    })
-    expect(rows.map((row) => row.seq)).toEqual([1, 2, 3])
-    expect(rows.map((row) => row.txId)).toEqual(['tx-1', 'tx-2', 'tx-3'])
+    await writeGraph(flowId, graphWith(2))
+    // 房间已经拆了；再开一次相当于服务端重启后有人重新访问
+    const doc = await openRoom(flowId)
+    expect([...doc.getMap('nodes').keys()].sort()).toEqual(['n0', 'n1'])
+    await closeRoom(flowId)
   })
 
-  it('baseRevision 对不上 → 409，并带回服务端当前 revision', async () => {
+  it('老画布的 graph JSON 在第一次打开时自动迁进 ydoc', async () => {
     const alice = await actor()
     const projectId = await createProject(alice)
     const flowId = await createFlow(alice, projectId)
 
-    await commit(alice, flowId, {
-      baseRevision: 0,
-      transactions: [transaction('tx-1')],
-      graph: graphWith(1),
+    // 直接写库，模拟 Yjs 之前留下的数据：有 graph、没有 ydoc
+    await prisma.flow.update({
+      where: { id: flowId },
+      data: { graph: JSON.stringify(graphWith(2)), ydoc: null, nodeCount: 2, edgeCount: 1 },
     })
 
-    const stale = await commit(alice, flowId, {
-      baseRevision: 0,
-      transactions: [transaction('tx-2')],
-      graph: graphWith(2),
-    })
+    const doc = await openRoom(flowId)
+    expect([...doc.getMap('nodes').keys()].sort()).toEqual(['n0', 'n1'])
+    expect([...doc.getMap('edges').keys()]).toEqual(['e1'])
+    await closeRoom(flowId)
 
-    expect(stale.status).toBe(409)
-    await expect(stale.json()).resolves.toMatchObject({ reason: 'conflict', revision: 1 })
-
-    // 冲突的那次不能落库
-    expect(await prisma.flowOperation.count({ where: { flowId } })).toBe(1)
-  })
-
-  it('同一个 txId 重复提交是幂等的（网络重试）', async () => {
-    const alice = await actor()
-    const projectId = await createProject(alice)
-    const flowId = await createFlow(alice, projectId)
-
-    const body = {
-      baseRevision: 0,
-      transactions: [transaction('tx-retry')],
-      graph: graphWith(2),
-    }
-    const first = await commit(alice, flowId, body)
-    const retry = await commit(alice, flowId, body)
-
-    expect(first.status).toBe(200)
-    expect(retry.status).toBe(200)
-    await expect(retry.json()).resolves.toEqual({ revision: 1 })
-    expect(await prisma.flowOperation.count({ where: { flowId, txId: 'tx-retry' } })).toBe(1)
-  })
-
-  it('校验：baseRevision / transactions / 未知操作类型', async () => {
-    const alice = await actor()
-    const projectId = await createProject(alice)
-    const flowId = await createFlow(alice, projectId)
-    const graph = graphWith(1)
-
-    const bad = async (body: unknown) =>
-      (await alice.json(`/api/flows/${flowId}/commit`, 'POST', body)).status
-
-    expect(await bad({ baseRevision: -1, transactions: [transaction('t')], graph })).toBe(400)
-    expect(await bad({ baseRevision: 0, transactions: [], graph })).toBe(400)
-    expect(
-      await bad({
-        baseRevision: 0,
-        graph,
-        transactions: [
-          { id: 't', label: 'x', ops: [{ type: 'node.explode', targetId: 'n0' }] },
-        ],
-      }),
-    ).toBe(400)
-  })
-
-  it('时间戳落库：clientTs 用客户端上报的，serverTs 由服务端盖章', async () => {
-    const alice = await actor()
-    const projectId = await createProject(alice)
-    const flowId = await createFlow(alice, projectId)
-
-    const clientTs = Date.parse('2026-01-01T00:00:00.000Z')
-    const before = Date.now()
-    await commit(alice, flowId, {
-      baseRevision: 0,
-      transactions: [transaction('tx-1', '新增节点', clientTs)],
-      graph: graphWith(1),
-    })
-
-    const row = await prisma.flowOperation.findFirstOrThrow({ where: { flowId, txId: 'tx-1' } })
-    expect(Number(row.clientTs)).toBe(clientTs)
-    // 服务端时间不听客户端的：即便客户端的钟停在去年，落库时刻还是现在
-    expect(Number(row.serverTs)).toBeGreaterThanOrEqual(before)
-    expect(Number(row.serverTs)).toBeLessThanOrEqual(Date.now())
-  })
-
-  it('ts 不是时间戳 → 400；不带 ts 的老客户端按收到的时刻补', async () => {
-    const alice = await actor()
-    const projectId = await createProject(alice)
-    const flowId = await createFlow(alice, projectId)
-    const graph = graphWith(1)
-
-    const bad = await alice.json(`/api/flows/${flowId}/commit`, 'POST', {
-      baseRevision: 0,
-      graph,
-      transactions: [{ ...transaction('tx-bad'), ts: '2026-01-01T00:00:00.000Z' }],
-    })
-    expect(bad.status).toBe(400)
-
-    const legacy = transaction('tx-legacy') as Record<string, unknown>
-    delete legacy.ts
-    const res = await commit(alice, flowId, {
-      baseRevision: 0,
-      transactions: [legacy],
-      graph,
-    })
-    expect(res.status).toBe(200)
-
-    const row = await prisma.flowOperation.findFirstOrThrow({ where: { flowId, txId: 'tx-legacy' } })
-    expect(Number(row.clientTs)).toBeGreaterThan(0)
-  })
-
-  it('graph 结构非法 → 400：未知版本、id 重复、边指向不存在的节点', async () => {
-    const alice = await actor()
-    const projectId = await createProject(alice)
-    const flowId = await createFlow(alice, projectId)
-
-    const bad = async (graph: unknown) =>
-      (
-        await alice.json(`/api/flows/${flowId}/commit`, 'POST', {
-          baseRevision: 0,
-          transactions: [transaction('t')],
-          graph,
-        })
-      ).status
-
-    expect(await bad({ ...graphWith(1), schemaVersion: 99 })).toBe(400)
-
-    const duplicated = graphWith(1)
-    duplicated.nodes.push({ ...duplicated.nodes[0]! })
-    expect(await bad(duplicated)).toBe(400)
-
-    const dangling = graphWith(1)
-    dangling.edges.push({ id: 'e-x', source: 'n0', target: '不存在', data: { config: {} } })
-    expect(await bad(dangling)).toBe(400)
+    expect((await prisma.flow.findUniqueOrThrow({ where: { id: flowId } })).ydoc).not.toBeNull()
   })
 
   it('节点 data.config 里的任意结构原样存取', async () => {
@@ -323,24 +195,40 @@ describe('POST /api/flows/:id/commit', () => {
     const projectId = await createProject(alice)
     const flowId = await createFlow(alice, projectId)
 
+    const config = { 嵌套: { 数组: [1, '二', null], 布尔: true }, 空对象: {} }
     const graph = graphWith(1)
-    const config = {
-      method: 'POST',
-      retry: { times: 3, backoff: [1, 2, 4] },
-      nested: { deep: { flag: true, nothing: null } },
-    }
     graph.nodes[0]!.data.config = config
 
-    await commit(alice, flowId, {
-      baseRevision: 0,
-      transactions: [transaction('tx-1')],
-      graph,
-    })
+    await writeGraph(flowId, graph)
 
     const detail = (await (await alice.request(`/api/flows/${flowId}`)).json()) as {
       graph: FlowGraph
     }
     expect(detail.graph.nodes[0]!.data.config).toEqual(config)
+  })
+
+  it('两个客户端并发改同一个节点的不同字段，两边的改动都留下', async () => {
+    const alice = await actor()
+    const projectId = await createProject(alice)
+    const flowId = await createFlow(alice, projectId)
+    await writeGraph(flowId, graphWith(1))
+
+    // 各自从同一份状态出发，离线改不同字段，再互相合并 —— CRDT 的核心保证
+    const left = await openRoom(flowId)
+    const right = new Y.Doc()
+    Y.applyUpdate(right, Y.encodeStateAsUpdate(left))
+
+    dataOf(left, 'n0').set('label', '甲改的标题')
+    dataOf(right, 'n0').set('description', '乙写的说明')
+
+    Y.applyUpdate(left, Y.encodeStateAsUpdate(right))
+    await closeRoom(flowId)
+
+    const detail = (await (await alice.request(`/api/flows/${flowId}`)).json()) as {
+      graph: FlowGraph
+    }
+    expect(detail.graph.nodes[0]!.data.label).toBe('甲改的标题')
+    expect(detail.graph.nodes[0]!.data.description).toBe('乙写的说明')
   })
 })
 
@@ -350,11 +238,7 @@ describe('POST /api/flows/:id/duplicate', () => {
     const projectId = await createProject(alice)
     const flowId = await createFlow(alice, projectId, '原始画布')
 
-    await commit(alice, flowId, {
-      baseRevision: 0,
-      transactions: [transaction('tx-1')],
-      graph: graphWith(2),
-    })
+    await writeGraph(flowId, graphWith(2))
 
     const res = await alice.json(`/api/flows/${flowId}/duplicate`, 'POST')
     expect(res.status).toBe(201)
@@ -476,25 +360,28 @@ describe('PATCH /api/flows/:id/user-state', () => {
 })
 
 describe('GET /api/flows/:id/operations', () => {
-  it('按 seq 升序分页，支持 sinceSeq', async () => {
+  it('按 seq 升序分页，支持 sinceSeq，并记下是谁改的', async () => {
     const alice = await actor()
     const projectId = await createProject(alice)
     const flowId = await createFlow(alice, projectId)
+    await writeGraph(flowId, graphWith(1))
 
-    await commit(alice, flowId, {
-      baseRevision: 0,
-      transactions: [transaction('tx-1'), transaction('tx-2'), transaction('tx-3')],
-      graph: graphWith(1),
-    })
+    // 每条日志 = 客户端的一次 Y 事务，带上服务端认出来的 actorId
+    for (const label of ['一', '二', '三']) {
+      await editLabel(flowId, 'n0', label, alice.userId)
+    }
+    await closeRoom(flowId)
 
     const all = await alice.request(`/api/flows/${flowId}/operations`)
     const body = (await all.json()) as {
-      items: { seq: number; ops: unknown[]; clientTs: number; serverTs: number }[]
+      items: { seq: number; actorId: string | null; serverTs: number; size: number }[]
       total: number
     }
     expect(body.total).toBe(3)
     expect(body.items.map((item) => item.seq)).toEqual([1, 2, 3])
-    expect(body.items[0]!.ops).toHaveLength(1)
+    // 谁改的由服务端在握手时认定，客户端伪造不了
+    expect(body.items.every((item) => item.actorId === alice.userId)).toBe(true)
+    expect(body.items.every((item) => item.size > 0)).toBe(true)
 
     const since = await alice.request(`/api/flows/${flowId}/operations?sinceSeq=2`)
     await expect(since.json()).resolves.toMatchObject({ total: 1 })

@@ -1,14 +1,5 @@
 import { Hono } from 'hono'
-import { countConnections, docs } from '../collab/index.ts'
+import { collabStats } from '../collab/index.ts'
 
-export const collab = new Hono().get('/rooms', (c) =>
-  c.json({
-    rooms: [...docs.values()].map((doc) => ({
-      name: doc.name,
-      connections: doc.conns.size,
-      awarenessClients: doc.awareness.getStates().size,
-    })),
-    totalRooms: docs.size,
-    totalConnections: countConnections(),
-  }),
-)
+/** 协同的监控端点：现在有哪些房间、各自几条连接 */
+export const collab = new Hono().get('/rooms', (c) => c.json(collabStats()))

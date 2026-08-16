@@ -3,14 +3,21 @@
 > 状态：**已实现** —— 后端（6 张表 + 三组路由 + 权限中间件）、Pinia store、四个页面均已落地，测试覆盖见第 5 节。
 >
 > 前置：[REQ-FLOW](09-flow-chart.md) 已经验证了 Vue Flow 的交互定制（滚轮手感、自定义节点、连线）。本需求接着往上叠**项目 + 多画布 + 持久化 + 操作历史**，`/vue-flow` 那个单页 demo 变成「打开某一张画布」的编辑器形态。
+>
+> ⚠️ **本文经过一次大改：画布内容改由 Yjs 承载**（[REQ-COLLAB](04-realtime-collab.md)）。
+> 最初这里设计的是「前端攒操作 → 防抖 `POST /commit` → 服务端按 `baseRevision` 乐观锁 → 覆盖 graph 快照」，
+> 单编辑者假设下够用；上了实时协同之后那套整个作废 —— **画布内容就是一个 Y.Doc**，
+> 没有提交、没有 revision 冲突、没有 409、没有「未保存」。下面凡是讲内容读写的地方
+> 都已按现状重写，被替掉的旧设计在对应小节里留了一句「原本是什么、为什么不成立了」。
+> 项目 / 成员 / 分享链接 / 画布增删改查这几块**不受影响**，从头到尾没变过。
 
 ## 1. 目标
 
 1. 引入**项目**作为画布的上一层容器：项目管成员，成员身份决定画布的访问权。
 2. 加入项目的**唯一方式是分享链接**：一个项目一条、不限使用人数，管理员打开分享面板即拿到；创建者即管理员。
 3. 一个项目里能存在**多张画布**，由数据库维护；列表分页展示，可新建 / 重命名 / 复制 / 删除 / 打开。
-4. 画布内容在前端由 **Pinia** 持有，所有变更走**操作（operation）**通道，从而天然支持**撤销 / 重做**。
-5. 产生的操作**同时写库**：既留下审计/回放的可能，也让「刷新页面内容不丢」成立。
+4. 画布内容住在一个 **Y.Doc** 里，Pinia store 只是它的响应式投影；撤销 / 重做由 `Y.UndoManager` 提供，且**只撤自己的**。
+5. 每一次更新**同时写库**：服务端订阅同一个文档，既让「刷新页面内容不丢」成立，也留下审计 / 回放的可能。
 6. 数据结构从第一天起就为扩展留口子：节点除了 Vue Flow 的布局字段外，还有一块**自定义业务数据**；数据库统一按 **JSON 字符串**存，加字段不用迁移。
 
 ## 2. 名词
@@ -21,10 +28,11 @@
 | 成员 / Member | 项目内的一个用户，角色为管理员或普通成员 |
 | 分享链接 / Invite | 一个带随机 token 的链接，是加入项目的唯一入口；一个项目只有一条 |
 | 画布 / Flow | 一张图，列表里的一行，编辑器里的一个文档 |
-| 图内容 / Graph | 画布的全量内容：`nodes` + `edges` + `viewport` |
-| 操作 / Operation | 一次可撤销的最小语义变更，例如「新增节点」「移动节点」 |
-| 事务 / Transaction | 一组被合并成「一次撤销」的操作，例如框选后一起拖动 N 个节点 |
-| 修订号 / revision | 画布的单调递增版本号，每提交一个事务 +1，用于乐观锁 |
+| 图内容 / Graph | 画布的全量内容：`nodes` + `edges` + `viewport`。现在它是 **Y.Doc 的只读投影**，不再是事实源 |
+| 文档 / Y.Doc | 画布内容的唯一事实源，形状见 `src/lib/flow-doc.ts`（服务端镜像在 `server/collab/flow-doc.ts`） |
+| 更新 / Update | Yjs 的一段增量二进制。它是可交换、可结合、幂等的 —— 这正是不需要乐观锁的原因 |
+| 事务 / Transaction | 一次 `Y.Doc.transact()`。带 `LOCAL_ORIGIN` 的才进撤销栈，别人同步过来的不进 |
+| 修订号 / revision | 服务端写过多少次全量状态的计数。**不是乐观锁**，没有人拿它做冲突判断 |
 
 ## 3. 数据结构设计
 
@@ -99,9 +107,9 @@ interface FlowSummary {
   status: 'draft' | 'published' | 'archived'
   tags: string[]                // 标签，DB 里存 JSON 字符串
   thumbnail: string | null      // 预览图，本期恒为 null
-  nodeCount: number             // 冗余统计，列表直接展示，提交时一并更新
+  nodeCount: number             // 冗余统计，列表直接展示；服务端写状态时一并派生
   edgeCount: number
-  revision: number              // 当前修订号
+  revision: number              // 服务端写过多少次全量状态；只是个计数，不做乐观锁
   createdById: string           // 创建者，仅用于展示，不用于鉴权
   createdAt: string
   updatedAt: string
@@ -114,11 +122,15 @@ interface FlowSummary {
 
 ```ts
 interface FlowDetail extends FlowSummary {
+  /** Y.Doc 的只读投影，**编辑器不读它**；见 3.6 */
   graph: FlowGraph
   /** 请求者自己的视图状态，见 3.5.1；没存过的分区不出现 */
   userState: FlowUserState
 }
 ```
+
+> 编辑器进页面时仍然调 `GET /api/flows/:id`，但要的只是 `meta`（名字、状态、我的角色…）和 `userState`。
+> **内容不从这里来** —— 它来自 `flow:<id>` 房间的 WebSocket 首次同步。
 
 #### 3.5.1 按用户存的视图状态（`FlowUserState`）
 
@@ -128,10 +140,12 @@ interface FlowDetail extends FlowSummary {
 |---|---|---|
 | 例子 | 增删节点、连线、改配置、移动节点 | 平移画布、缩放 |
 | 谁的 | 全项目共享，一份 | **每人一份** |
-| 存哪 | `Flow.graph` 快照 + `FlowOperation` 日志 | `FlowUserState` |
-| 进操作历史 | 是（可撤销/重做） | **否** —— 撤销不该把视野拽回去 |
-| 涨 `revision` | 是（有乐观锁，会 409） | 否（没有冲突一说） |
-| 怎么触发 | `store.apply(ops, label)` → 防抖 `POST /commit` | `store.setViewport()` → 防抖 `PATCH /user-state` |
+| 走什么通道 | WebSocket（Yjs） | HTTP |
+| 存哪 | `Flow.ydoc`（事实源）+ `FlowOperation` 更新流 | `FlowUserState`，每人一行 |
+| 广播给别人 | 是 | **否** —— 别人拖一下画布不该把我的视野也挪走 |
+| 进撤销历史 | 是（`Y.UndoManager`，只撤自己的） | **否** —— 撤销不该把视野拽回去 |
+| 冲突 | 不存在，CRDT 合并 | 不存在，各存各的 |
+| 怎么触发 | `store.mutate(change, label)`，改动即刻广播 | `store.setViewport()` **只攒不发**，搭下一次本地编辑（或离开）的车 `PATCH /user-state` |
 
 ```ts
 /** 扩展点：加一种按用户存的东西 = 加一个可选字段，表结构不动 */
@@ -141,9 +155,11 @@ interface FlowUserState {
 }
 ```
 
-加一个分区要动三处、都不改表：`src/types/flow.ts` 的 `FlowUserState` 加字段、服务端 `server/store/flow-types.ts` 的 `FLOW_USER_STATE_PARSERS` 加一条校验（**不认识的 key 一律 400** —— 这张表不是任意 KV）、前端 `store.setUserState('新字段', 值)`（防抖、失败重试、离开前落库都是现成的）。
+加一个分区要动三处、都不改表：`src/types/flow.ts` 的 `FlowUserState` 加字段、服务端 `server/store/flow-types.ts` 的 `FLOW_USER_STATE_PARSERS` 加一条校验（**不认识的 key 一律 400** —— 这张表不是任意 KV）、前端 `store.setUserState('新字段', 值)`（攒批、失败重试、离开前落库都是现成的）。
 
-### 3.6 图内容（`FlowGraph`）—— 落库时序列化成一个 JSON 字符串
+**视图状态自己不发请求。** `setUserState` 只把值记在本地队列里，真正落库由 `noteLocalEdit()` 触发 —— 每次本地编辑（`mutate` / `undo` / `redo`）都会叫它一声，一次编辑起一个节流窗口（`USER_STATE_FLUSH_DELAY`），窗口内的后续编辑不重开它。于是：只看不改的一次访问**零写流量**；一直画的话每两秒顺路发一个很小的 PATCH；只平移没编辑的情况由离开前的 flush 兜住。用节流不用防抖，是因为防抖会被连续编辑一直往后推、永远不触发。这条设计的由来：画布内容改走 Yjs 之后，视口若还自己起定时器，它就成了整个编辑器**唯一**的周期性 HTTP 请求 —— 看一眼画布就一路 PATCH 上去。
+
+### 3.6 图内容（`FlowGraph`）—— Y.Doc 的只读投影
 
 ```ts
 interface FlowGraph {
@@ -156,7 +172,14 @@ interface FlowGraph {
 }
 ```
 
-> `graph.viewport` 只是**兜底**：某人第一次打开、还没有自己的 `userState.viewport` 时用它，之后一律用个人视口。它**不跟着谁的平移缩放走** —— 提交快照时原样写回，否则我拖一下画布就改了别人的共享数据。
+**这个形状还在，但它的地位变了。** 原本 `graph` 是画布内容的事实源，客户端算好整份快照 `POST` 上来覆盖。
+现在事实源是 `Flow.ydoc`，`graph` 由服务端在写状态时**从文档里派生**出来（`server/collab/flow-doc.ts` 的 `readGraphFromDoc`），
+只服务于三件事：列表页的节点/连线计数、缩略图、将来的只读预览。**编辑器一行都不读它**，
+任何写接口也都不接受它 —— 客户端手里那份始终只是某一时刻的快照，拿它覆盖就会抹掉并发的编辑。
+
+> `graph.viewport` 只是**兜底**：某人第一次打开、还没有自己的 `userState.viewport` 时用它，之后一律用个人视口。它**不跟着谁的平移缩放走**，否则我拖一下画布就改了别人的共享数据。
+
+**老数据的迁移就是第一次打开**：`ydoc` 为空的画布在有人进房间时，由 `bindState` 把旧的 `graph` JSON 现场灌进文档（`applyGraphToDoc`）。没有迁移脚本、没有停机窗口，没被打开过的画布原样躺着。
 
 ### 3.7 节点（`FlowNode`）—— 布局层与业务层分离
 
@@ -221,39 +244,33 @@ interface FlowEdge {
 }
 ```
 
-### 3.9 操作（`FlowOperation`）
+### 3.9 操作日志（`FlowOperation`）—— 只追加的 Yjs 更新流
 
-一条操作必须**自带逆操作所需的信息**（`before` / `after`），否则撤销要重放全量历史。
+> **原本这里是一套自定义操作模型**：`FlowOp { type, targetId, before, after }` + `FlowTransaction`，
+> 每条操作自带逆操作，撤销靠 `before`/`after` 互换后重放，前端有一张 `commands/` 注册表按 `type` 查表执行。
+> Yjs 接管之后这一整套都没有了 —— 撤销是 `Y.UndoManager` 的事，它自己知道怎么逆；
+> 语义化的 `type` 也不再需要，因为服务端不重放操作、只存字节。`src/stores/flow/commands/` 与 `registry.ts` 已删除。
+
+现在一条记录 = 客户端的一次 Yjs 事务，存的是**那一次更新的二进制**：
 
 ```ts
-type FlowOpType =
-  | 'node.add' | 'node.remove' | 'node.move' | 'node.resize' | 'node.update'
-  | 'edge.add' | 'edge.remove' | 'edge.update'
-  | 'graph.meta'
-
-interface FlowOp<T extends FlowOpType = FlowOpType> {
-  type: T
-  targetId: string                      // 节点或边的 id
-  before: unknown | null                // 变更前的片段；add 为 null
-  after: unknown | null                 // 变更后的片段；remove 为 null
-}
-
-/** 一次撤销的粒度 */
-interface FlowTransaction {
-  id: string                            // 客户端生成，用于幂等提交
-  label: string                         // 展示给用户的描述，如「移动 3 个节点」
-  kind: 'do' | 'undo' | 'redo'
-  ts: number                            // 客户端产生这次事务的时刻，UTC epoch 毫秒
-  ops: FlowOp[]
+/** GET /api/flows/:id/operations 返回的一条；update 二进制本身不出接口 */
+interface FlowOperationView {
+  id: string
+  seq: number                 // 画布内自增，从 1 开始
+  actorId: string | null      // 谁改的
+  serverTs: number            // 服务端收到的时刻，UTC epoch 毫秒
+  size: number                // 这次更新的字节数
 }
 ```
 
-- **时间一律是 UTC epoch 毫秒的整数**，不用 ISO 字符串、更不用本地时间。协同要把多个客户端的操作排到同一条时间轴上，数值可以直接比大小，不受时区、格式、序列化精度影响。展示层才本地化（前端统一走 `src/lib/format.ts`，跟随浏览器）。
-- 客户端的钟不可信，所以服务端另盖一个 `serverTs`：**排序以 `serverTs` 为准**，`clientTs` 只作为客户端自述的产生时刻保留。
-- 客户端生成的 id（事务 / 节点 / 连线）统一走 `src/lib/id.ts` 的 `createId(prefix)`，形如 `<前缀>_<时间戳 base36>_<随机段>`。随机段不能省：两个客户端可能在同一毫秒各加一个节点，只靠时间戳会撞出同一个 id。
-
-- `viewport` 的变化**不是操作**：它不进历史栈、不产生操作记录、不涨 `revision`，走的是 3.5.1 那条「按用户存」的独立链路（`PATCH /user-state`），撤销也带不回去。
-- `node.move` 支持**合并**：同一节点连续拖动在拖拽结束前合并成一条（`before` 取拖拽开始时的位置）。
+- **`actorId` 是这张表存在的第二个理由**。Yjs 自己只认 `clientID`（一个随机数），不知道那是谁；`actorId` 由服务端在 **WebSocket 握手**时从会话里认出来（`server/auth/ws.ts` 把它交给 `setupWSConnection`），客户端伪造不了。想知道「这个节点是谁加的」只能问这张表。
+- **按 seq 顺序把 `update` 依次 `Y.applyUpdate` 到一个空文档，就能重建任意时刻的画布** —— 回放 / 历史版本预览的地基已经在了，界面还没做。
+- `update` 字节不出接口：它对界面毫无用处，真要回放是服务端的事。
+- 时间是 **UTC epoch 毫秒的整数**（`serverTs`，Prisma 里是 `BigInt`），不是 ISO 字符串。数值直接比大小，不受时区和格式影响；展示层才本地化（前端统一走 `src/lib/format.ts`）。**客户端的钟根本不参与** —— 时间戳在更新到达服务端时才盖，排序也用它。
+- 客户端生成的 id（节点 / 连线）统一走 `src/lib/id.ts` 的 `createId(prefix)`，形如 `<前缀>_<时间戳 base36>_<随机段>`。随机段不能省：两个客户端可能在同一毫秒各加一个节点，只靠时间戳会撞出同一个 id，在 CRDT 里就会被合并成同一个对象。
+- **拖动的中间态不进日志**：一次拖拽只在 `onNodeDragStop` 提交落点，途中的位置走反馈层（awareness）。否则拖一下就是几十条更新和几十行审计。
+- `viewport` 的变化**不是操作**：不进文档、不进撤销、不产生日志、不涨 `revision`，走的是 3.5.1 那条「按用户存」的路。
 
 ### 3.10 数据库模型（Prisma，新增六张表）
 
@@ -309,7 +326,7 @@ model ProjectInvite {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
 
-/// 一张画布。graph 是全量快照，操作日志在 FlowOperation 里。
+/// 一张画布。内容的事实源是 ydoc，graph 是它的只读投影，更新流在 FlowOperation 里。
 model Flow {
   id          String    @id @default(cuid())
   projectId   String
@@ -319,11 +336,15 @@ model Flow {
   /// 标签，JSON 字符串数组（SQLite 无数组类型）
   tags        String    @default("[]")
   thumbnail   String?
-  /// FlowGraph 的 JSON 字符串
+  /// **画布内容的唯一事实源**：Yjs 文档状态（Y.encodeStateAsUpdate 的二进制）。
+  /// 为空表示还没被 Yjs 接管过，此时从下面的 graph JSON 现场构建（老数据的迁移入口）。
+  ydoc        Bytes?
+  /// ydoc 的**只读投影**，服务端写状态时派生。列表计数、缩略图、将来的只读预览读它，编辑器不读。
   graph       String    @default("{}")
+  /// 冗余统计，列表直接展示；和 graph 一起派生
   nodeCount   Int       @default(0)
   edgeCount   Int       @default(0)
-  /// 修订号，每提交一个事务 +1；客户端提交时带 baseRevision 做乐观锁
+  /// 服务端写入 ydoc 的次数。CRDT 不需要乐观锁，这里只是个给缓存/展示用的单调计数
   revision    Int       @default(0)
   createdById String
   createdAt   DateTime  @default(now())
@@ -358,36 +379,33 @@ model FlowUserState {
   @@index([userId])
 }
 
-/// 操作日志，只追加、不修改、不删除（删画布时级联）。
+/// 更新流，只追加、不修改、不删除（删画布时级联）。
 model FlowOperation {
-  id        String   @id @default(cuid())
-  flowId    String
-  /// 画布内自增序号，从 1 开始，提交后与 Flow.revision 对齐
-  seq       Int
-  /// 客户端事务 id，用于重试幂等
-  txId      String
-  /// do | undo | redo —— 撤销也是一条新记录，日志永远只往前走
-  kind      String   @default("do")
-  label     String
-  /// FlowOp[] 的 JSON 字符串
-  ops       String
-  actorId   String?
-  /// 客户端产生这次事务的时刻（UTC epoch ms）
-  clientTs  BigInt
-  /// 服务端落库时刻（UTC epoch ms）—— 客户端的钟不可信，排序以它为准
-  serverTs  BigInt
+  id       String @id @default(cuid())
+  flowId   String
+  /// 画布内自增序号，从 1 开始
+  seq      Int
+  /// Yjs 增量更新的二进制
+  update   Bytes
+  /// 发出这次更新的登录用户；服务端在 WebSocket 握手时认的，客户端伪造不了
+  actorId  String?
+  /// 服务端收到的时刻（UTC epoch ms）
+  serverTs BigInt
 
   flow Flow @relation(fields: [flowId], references: [id], onDelete: Cascade)
 
   @@unique([flowId, seq])
-  @@unique([flowId, txId])
   @@index([flowId, seq])
 }
 ```
 
+> 这张表原本有 `txId`（提交重试的幂等键）、`kind`（do/undo/redo）、`label`、`ops`（FlowOp[] 的 JSON）、`clientTs`。
+> 五个字段全部删除：幂等由 Yjs 更新本身的幂等性提供（同一条 update 应用两次不会有第二个节点），
+> 撤销不再是「一条新记录」而是 `UndoManager` 生成的又一次普通更新，语义化的 label 服务端用不上。
+
 `User` 上要补两条反向关系：`memberships ProjectMember[]` 与 `createdProjects Project[] @relation("ProjectCreator")`。
 
-**为什么快照 + 日志双写**：只有日志则打开画布要重放全部历史；只有快照则撤销无从谈起、也没有审计。二者都写，读走快照（O(1)），日志作为可回放的旁路。
+**为什么状态 + 更新流双写**：只有更新流则打开画布要重放全部历史；只有全量状态则没有审计、也不知道每段改动是谁做的。二者都写 —— 进房间读全量状态（O(1)），更新流作为可回放、可追责的旁路。写入时机在 [REQ-COLLAB §3.7](04-realtime-collab.md)：每条更新即时进 `FlowOperation`，全量状态则是散场 + 10 秒防抖 + SIGTERM 三个点。
 
 ## 4. 功能需求
 
@@ -438,7 +456,7 @@ model FlowOperation {
 
 > `AppSidebar.vue` 的布局与行为都不动 —— 只是把导航项里的「VueFlow」换成指向 `/projects` 的「画布项目」（`/vue-flow` 那个 demo 路由本身保留，只是不再挂在菜单上）。
 
-- 进入时 `GET /api/flows/:id` 取全量，灌进 Pinia store，按 `graph.viewport` 恢复视口。
+- 进入时 `GET /api/flows/:id` 取的是**文档元信息 + 我自己的 `userState`**；画布内容随即由 `flow:<id>` 房间的首次同步送达（见 [REQ-COLLAB §4](04-realtime-collab.md)）。视口优先用 `userState.viewport`，没有才退到 `graph.viewport` 兜底，再没有就 `fitView`。
 - 沿用 [REQ-FLOW](09-flow-chart.md) 的全部交互（滚轮平移、Ctrl+滚轮以光标为锚点缩放、自定义节点、连线）。
 - 空白处左键的行为由底部工具栏的**指针模式**决定（框选 / 拖动画布），中键任何时候都能拖画布。此外**按住空格键**是临时的拖动手势：按住期间左键在哪按下（含节点上）都是平移画布、光标变抓手、节点暂时不可拖，松开立刻回到原来的模式 —— 模式按钮的高亮不跟着变，因为它是手势不是模式。
 #### 4.4.1 悬浮胶囊工具条（左上角）
@@ -446,12 +464,12 @@ model FlowOperation {
 页面没有应用菜单，编辑器自己的入口收在**左上角一枚悬浮胶囊**里，浮在画布之上（圆角、半透明背景 + 模糊、与画布内容有明显层次）。从左到右三段：
 
 1. **Logo（home）** —— 点击**返回该画布所属的项目主页**（`/projects/:projectId`）。它是这个页面唯一的「回去」入口，所以必须一眼可辨。
-2. **画布名** —— 就地编辑；新建未命名时显示占位「无标题」。名字右侧跟一个克制的保存状态指示（`已保存` / `保存中…` / `未保存` / `保存失败，点击重试`），不抢视线。
+2. **画布名** —— 就地编辑；新建未命名时显示占位「无标题」。名字右侧跟一个克制的状态指示，不抢视线。**它指示的是「同步」不是「保存」**：`已同步` / `同步中…` / `连接断开，改动将在重连后同步`。没有「未保存」和「保存失败，点击重试」这两种状态了 —— 改动即刻广播，用户无事可做，所以断线只提示、不给按钮。
 3. **菜单按钮** —— 点开下拉：
 
    | 菜单项 | 行为 |
    |---|---|
-   | 新建画布 | 在**同一项目**下新建并直接跳过去；当前画布有未提交事务时先 flush |
+   | 新建画布 | 在**同一项目**下新建并直接跳过去；跳之前先 flush 攒着的视图状态（内容不用管，它一直是同步的） |
    | 复制 | 调 `duplicate`，成功后跳到副本 |
    | 删除 | 二次确认后软删，然后回到项目主页 |
    | 返回画布首页 | 回到 `/projects/:projectId`，与点 logo 等价（给一个带文字的显式出口） |
@@ -466,72 +484,66 @@ model FlowOperation {
 - **hooks 层（`src/composables/flow/`）** —— `provideFlowEditor(props)` 建一份共享 payload 并 `provide` 出去，子组件 `useFlowEditor()` 取用，**不逐层传 props**。里面是三个各管一摊的 composable：
   | composable | 管什么 |
   |---|---|
-  | `useFlowDocument` | 加载、改名、新建/复制/删除、保存状态文案、离开前落库 |
-  | `useFlowCanvas` | Vue Flow 绑定：拖动 → `node.move`、连线 → `edge.add`、视口同步、Ctrl+滚轮缩放、新增节点 |
+  | `useFlowDocument` | 加载元信息、改名、新建/复制/删除、同步状态文案、离开前 flush 视图状态 |
+  | `useFlowCollab` | **这一条 WebSocket 连接**：房间 `flow:<flowId>`，交出 `doc`（给 store）和 `awareness`（给 presence） |
+  | `useFlowCanvas` | Vue Flow 绑定：拖动 → `store.moveNodes`、连线 → `store.addEdge`、视口同步、Ctrl+滚轮缩放、新增节点 |
   | `useFlowSelection` | 选中态、`updateNodeData`、删除选中（连带边，合成一条撤销） |
-  另有 `useFlowShortcuts(ctx)` 管快捷键和两道「别把改动弄丢」的保险。
-- **组件层（`src/components/flow/`）** —— 一块界面一个组件，各自直接读上下文：`FlowCanvas`（画布本体，留了 `<slot/>` 给画布内浮层）、`FlowViewControls`（右上角控件 + 撤销/重做）、`FlowTitleCapsule`（左上角胶囊，自带删除确认）、`FlowToolbar`（底部工具栏）、`FlowNodeInspector`（右侧属性面板）。
+  | `useFlowPresence` | 反馈层：上报光标/选中/拖动几何，读别人的 |
+  依赖是一条直线：`selection`/`collab` → `presence` → `canvas`，只有 `useFlowCanvas` 同时认识这三者。另有 `useFlowShortcuts(ctx)` 管快捷键和离开前的 flush。
+- **组件层（`src/components/flow/`）** —— 一块界面一个组件，各自直接读上下文：`FlowCanvas`（画布本体，留了 `<slot/>` 给画布内浮层）、`FlowViewControls`（右上角控件 + 撤销/重做）、`FlowTitleCapsule`（左上角胶囊，自带删除确认）、`FlowToolbar`（底部工具栏）、`FlowNodeInspector`（右侧属性面板）、`ProcessNode`（节点本体），以及协同带来的三个：`FlowPresenceBar`（头像栏）、`FlowPresenceAvatar`、`FlowPresenceCursors`（别人的光标与正在拉的线）。
 
 判据：**加一块新面板 / 新工具按钮，不应该需要改 `FlowEditor.vue` 或任何中间层** —— 新建组件、`useFlowEditor()` 取上下文、挂到模板上即可。
-- 快捷键：`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Delete` 删除选中、`Ctrl/Cmd+S` 立即保存。
-- 离开页面时若仍有未提交的事务，用 `beforeunload` 拦一下。
+- 快捷键：`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Delete` / `Backspace` 删除选中。**`Ctrl/Cmd+S` 只是拦住浏览器的「保存网页」对话框**，本身不再有任何含义 —— 没有要保存的东西。
+- 删除键必须自己接：Vue Flow 的 `deleteKeyCode` 在 `applyDefault: true` 下直接改它内部的 nodes/edges，绕开 store，删掉的东西既不进撤销也不同步更不落库。所以 `FlowCanvas` 传 `:delete-key-code="null"`，`canvas.deleteSelection()` 是唯一的删除路径。
+- 离开页面时**没有未保存的内容可丢**，所以不再有 `beforeunload` 拦截。`onBeforeRouteLeave` 里只做一件事：把攒着的视图状态 flush 掉。
 
 ### 4.5 Pinia store（`src/stores/flow/`）
 
 pinia 已装在 `devDependencies`（前端整体被打包进 `output/public`，服务端 runtime 不 import 它，符合仓库的依赖切分约定）。需要在 `src/main.ts` 里 `app.use(createPinia())`。
 
+> **store 是 Y.Doc 的投影，不是内容的持有者。** 原本它是事实源：自己维护 `nodes`/`edges`、
+> 两个历史栈、一个 `pending` 提交队列和 `baseRevision`。现在内容住在 Y.Doc 里，
+> store 负责的是「把文档映成 Vue 能渲染的数组」和「所有写都包成一个带 origin 的 Y 事务」。
+> `undoStack` / `redoStack` / `pending` / `baseRevision` / `saveState` 全部不存在了。
+
 store 的职责边界：
 
-- **状态**：`meta`（FlowSummary 部分）、`nodes`、`edges`、`viewport`、`baseRevision`、`undoStack`、`redoStack`、`pending`（待提交事务队列）、`saveState`。
-- **唯一写入口**：所有变更都通过 `apply(ops: FlowOp[], label: string)`。组件不允许直接 `nodes.push()`。
-  - `apply` 做三件事：改状态 → 压入 `undoStack` → 清空 `redoStack` → 事务入 `pending`。
-- **事务合并**：`beginTransaction(label)` / `commitTransaction()`，中间的 `apply` 合成一条历史；拖拽、框选批量删除走这条路。
-- **撤销 / 重做**：`undo()` 取 `undoStack` 顶，用 `before`/`after` 互换后应用，压入 `redoStack`；`redo()` 反之。两者产生的事务同样入 `pending`，`kind` 分别为 `undo` / `redo`。
-- **历史深度上限 100**，超出丢弃最旧的（并在 UI 上不提示）。
-- **历史栈只在内存里**：刷新页面即清空，撤销不能跨会话；但画布内容本身不丢（已提交的都在库里）。这是有意为之 —— 跨会话撤销需要把栈也持久化，属于过度设计。
-- **持久化**：`pending` 非空时，防抖 800ms（或累计 20 条操作、或 `Ctrl+S`）触发一次 `POST /api/flows/:id/commit`；提交期间新产生的操作进入下一批，不阻塞编辑。
-- **视图状态是另一条路**：`setViewport()` / `setUserState(key, 值)` 只改本地 + 防抖 600ms 发一次 `PATCH /user-state`，既不进 `undoStack` 也不进 `pending`，因此不会让保存指示器变成「未保存」。存失败不弹提示（丢了最多是下次打开回到上一个存住的视图），值留在队列里下次再发；`saveNow()`（`Ctrl+S` / 离开前）会把两条路一起 flush。
-- Vue Flow 的双向绑定不能绕开 store：节点拖动结束（`nodeDragStop`）、连线建立（`connect`）等事件转成 `FlowOp` 后走 `apply`。
-
-#### 4.5.1 命令注册表（`src/stores/flow/commands/`）
-
-**「怎么改」不写在 store 里**，否则每加一种操作都要回去改一处 `switch`。每种操作类型是一条命令，一个文件，通过 `flow/registry.ts` 按 `op.type` 查表执行：
-
-```ts
-export interface FlowCommand {
-  readonly type: FlowOpType      // 注册表的键
-  readonly inverse: FlowOpType   // 逆操作类型；自逆的填自己
-  readonly name: string
-  apply(ctx: FlowCommandContext, op: FlowOp): void
-}
-```
-
-- `ctx` 只有 `{ nodes, edges, graphMeta }` 三个 ref —— 命令碰不到历史栈、提交队列这些。
-- **加一种操作**：新建 `XxxCommand.ts`，往 `commands/index.ts` 的 `FLOW_COMMANDS` 加一行，其余代码一行不动。`invertOps` 也是读这张表拿的逆类型。
-- 注册在 barrel 里**显式**做，不用「每个文件自带副作用」那套 —— 副作用式注册一旦被 tree-shaking 掉或 import 顺序变了，症状是「某种操作静默不生效」，极难查。同 `type` 重复注册直接抛错。
-- 未注册的类型只 `console.warn` 并跳过，不抛异常：服务端将来下发更新的操作类型时，老前端不至于整张画布卡死。
-- 和 `three-editor/commands` 的区别：那边是**持有对象引用的类实例**，只活在内存；这边的操作要序列化进 `FlowOperation` 落库、还要发给服务端，所以命令是**无状态处理器**，数据全在 `FlowOp` 的 `before` / `after` 里。
+- **状态**：`meta`（FlowSummary 部分）、`nodes` / `edges` / `graphMeta`（**Y.Doc 的只读投影**，`observeDeep` 一变就重算）、`viewport`、`userState`、`canUndo` / `canRedo`、`lastLabel`。
+- **唯一写入口**：所有内容变更都通过 `mutate(change, label?)`，它把改动包进一个带 `LOCAL_ORIGIN` 的 `doc.transact()`。组件**不许直接碰 Y.Map** —— 绕过去的改动既不进撤销、也不同步、更不落库。`label` 只给界面反馈用，CRDT 不需要它。
+- **文档形状**（`src/lib/flow-doc.ts`，服务端镜像 `server/collab/flow-doc.ts`，改一边要改另一边）：`nodes` / `edges` 是 `Y.Map<id, Y.Map>`，每个节点的 `data` 又是一层嵌套的 `Y.Map`。**这样分层是为了让 Y.Map 按 key 合并** —— 一个人改标题、另一个人同时拖位置能干净地合并；整个节点存成一个 JSON blob 的话，后写的那次会把先写的整体盖掉。
+- **撤销 / 重做**：`Y.UndoManager`，`trackedOrigins: [LOCAL_ORIGIN]`。就是这一个选项让 `Ctrl+Z` **只撤自己的**，不碰协作者的改动。`separateUndo()`（`stopCapturing`）把本会并进 400ms 捕获窗口的两次操作拆成两条记录。
+- **历史仍然只在内存里**：刷新即清空，撤销不跨会话；内容本身当然不丢。
+- **没有保存、没有 revision、没有 409、没有 dirty state**：改动即刻广播，服务端订阅同一个文档并落库（[REQ-COLLAB §3.7](04-realtime-collab.md)）。
+- **拖动的中间态故意不进文档**：只有 `onNodeDragStop` 的落点进 `mutate`，途中的位置走反馈层。否则一次拖拽就是几十条更新和几十行审计。
+- **视图状态是另一条路**：`setViewport()` / `setUserState(key, 值)` 只改本地、**不发请求**，落库搭下一次本地编辑的车（见 3.5.1）。存失败不弹提示（丢了最多是下次打开回到上一个存住的视图），值留在队列里下次再发；`saveNow()`（离开前）会把它 flush 掉。
+- Vue Flow 的双向绑定不能绕开 store：拖动结束（`nodeDragStop`）、连线建立（`connect`）、删除，都转成对 `mutate` 的调用。
+- **拖动期间不许重建 `:nodes` 数组** —— Vue Flow 按数组引用决定要不要重新同步，而重新同步走的是 `Object.assign(existing, incoming)`；拖动中间态既然不进文档，`incoming.position` 就是拖动前的位置，节点会在手底下弹回去。`useFlowCanvas` 为此留了一个 `localDragging` 标志，详见 [REQ-COLLAB §4.0.2](04-realtime-collab.md)。
 
 另有 `src/stores/project.ts` 持有当前项目与成员列表（供项目主页三个区域共享），职责简单，不涉及历史。
 
-### 4.6 提交
+### 4.6 内容是怎么落库的
 
-> **本期不做协同**：假定一张画布在同一时刻只有一个编辑者。下面的 `baseRevision` 只是一道**兜底闸门**（防止用户自己开了两个标签页、或同项目的两个成员同时打开同一张画布时静默覆盖），不是协同方案 —— 冲突的处理就是让后来者重新加载，没有合并逻辑。
+> **原本这里是 `POST /api/flows/:id/commit`**：body 带 `baseRevision` + 事务数组 + 客户端算好的全量 graph 快照，
+> 服务端校验 `baseRevision === flow.revision`，不匹配就 409、让后来者重新加载。
+> 它建立在「同一时刻只有一个编辑者」这个假设上，协同一上就整个失效了 —— 而且**必须**失效：
+> 客户端手里的 graph 只是某一时刻的快照，拿它覆盖服务端就会抹掉同一秒里别人的编辑，
+> 这正是 CRDT 要消灭的那个「后写覆盖先写」。**这个端点已经删除，前端没有任何提交动作。**
 
-`POST /api/flows/:id/commit`：
+现在的路径是：
 
-```jsonc
-{
-  "baseRevision": 12,
-  "transactions": [ { "id": "tx_...", "label": "移动 3 个节点", "kind": "do", "ops": [ /* FlowOp[] */ ] } ],
-  "graph": { /* 客户端算好的全量 FlowGraph 快照 */ }
-}
+```
+浏览器 ──Yjs update──▶ /ws ──▶ Hocuspocus 房间 flow:<id> 的 Y.Doc
+                                 ├─ onChange：每条更新即时写 FlowOperation（带握手认定的 actorId）
+                                 └─ onStoreDocument：全量状态写 Flow.ydoc + 派生 graph/计数
+                                    （框架自带防抖：2s，持续编辑最长 10s；散场时再存一次）
 ```
 
-- 服务端在**一个数据库事务**里：校验 `baseRevision === flow.revision` → 按 `txId` 去重后追加 `FlowOperation`（`seq` 连续递增）→ 覆盖 `graph` 快照与 `nodeCount` / `edgeCount` → `revision += transactions.length`。
-- `baseRevision` 不匹配 → **409**，body 带上服务端当前的 `revision`。前端的处理只有一条：提示「该画布已在别处修改，请重新加载」，然后停止自动提交（避免继续把陈旧快照往上推）。**不提供「用我的覆盖」**，也不做自动合并 —— 单编辑者假设下这是异常路径，不值得为它设计取舍界面。
-- 同一 `txId` 重复提交 → 幂等，返回当前 `revision`，不重复写日志。
-- 客户端为快照的权威来源（服务端不重放操作去算 graph）；日志此刻只用于审计与将来的回放。
+- 服务端**订阅**文档，不接受任何「这是全量内容，请覆盖」的请求。
+- 幂等来自 Yjs 本身：同一条更新应用两次不会产生第二个节点，所以不需要 `txId` 那样的去重键。
+- 落库时机由 Hocuspocus 管，不是我们自己写的定时器。最多丢一个防抖窗口（进程被 `kill -9` 时），
+  正常退出会 `closeConnections()` 后逐房间直接落库（`flushAllRoomsToDatabase`）再等写队列排空。更新流是即时写的，不受影响。
+- 细节全在 [REQ-COLLAB](04-realtime-collab.md)：§3.7 讲写入时机与「不用 y-leveldb / 不用 extension-database」的理由，
+  §4 讲数据层 / 反馈层的分工，§4.2 讲三道防线。
 
 ### 4.7 API
 
@@ -563,13 +575,15 @@ export interface FlowCommand {
 |---|---|---|---|
 | GET | `/api/projects/:id/flows` | member | 项目内画布分页。query：`page`（默认 1）、`pageSize`（默认 20，上限 100）、`keyword`、`status`、`sort`（`updatedAt:desc` 等）。**响应不含 graph** |
 | POST | `/api/projects/:id/flows` | member | 新建。body `{ name, description? }`；**201** + `FlowDetail`（空 graph） |
-| GET | `/api/flows/:id` | member | 详情，含 graph 与**请求者自己**的 `userState`（见 3.5.1） |
-| PATCH | `/api/flows/:id` | member | 改名 / 描述 / 状态 / 标签；**不能**改 graph、不能改 projectId |
+| GET | `/api/flows/:id` | member | 文档元信息 + **请求者自己**的 `userState`（见 3.5.1）。`graph` 是只读投影，编辑器不读它（内容从 WebSocket 来） |
+| PATCH | `/api/flows/:id` | member | 改名 / 描述 / 状态 / 标签；**不能**改内容、不能改 projectId |
 | DELETE | `/api/flows/:id` | member | 软删除，204 空 body |
-| POST | `/api/flows/:id/duplicate` | member | 在同项目内复制一份（名称加「副本」后缀），201；操作日志不复制，新画布 `revision` 从 0 起 |
-| PATCH | `/api/flows/:id/user-state` | member | 存**我自己**的视图状态（视口…），body 只带要改的分区，204。不涨 `revision`、不写操作日志、没有乐观锁 |
-| POST | `/api/flows/:id/commit` | member | 提交事务，见 4.6。成功返回 `{ revision }` |
-| GET | `/api/flows/:id/operations` | member | 操作日志分页（`page` / `pageSize` / `sinceSeq`），供调试与将来的回放 |
+| POST | `/api/flows/:id/duplicate` | member | 在同项目内复制一份（名称加「副本」后缀），201；更新流不复制，新画布 `revision` 从 0 起 |
+| PATCH | `/api/flows/:id/user-state` | member | 存**我自己**的视图状态（视口…），body 只带要改的分区，204。不涨 `revision`、不写更新流、没有乐观锁 |
+| GET | `/api/flows/:id/operations` | member | 更新流分页（`page` / `pageSize` / `sinceSeq`），供调试与将来的回放。只出元信息，不出 `update` 字节 |
+| — | ~~`POST /api/flows/:id/commit`~~ | — | **已删除**，见 4.6。内容不再经过 HTTP |
+
+**画布内容走的不是 HTTP**：`ws://<host>/ws/flow:<flowId>`，握手时按项目成员身份鉴权（`server/auth/ws.ts`），此后服务端每分钟对在线连接**复验**一遍会话 + 成员身份，被移出项目的人连着的 WebSocket 也会被踢掉。协议与运行参数见 [REQ-COLLAB](04-realtime-collab.md)。
 
 约定沿用 [REQ-DATA](05-data-persistence.md)：错误响应统一 `{ error: string }`；请求体非法 JSON → 400；参数校验在路由层，数据访问全在 `server/store/projects.ts` 与 `server/store/flows.ts`，路由文件里不出现 `prisma`。
 
@@ -589,10 +603,15 @@ export interface FlowCommand {
 - `pageSize`：1..100 的整数，越界 → 400。
 - 分享链接 `expiresInDays` 只接受 1 / 7 / 30。
 - 单项目成员上限 200、画布上限 500，超出 → 400 并给出明确文案。
-- `graph`：必须能被解析为 `FlowGraph`；`schemaVersion` 未知 → 400；节点 id 重复 → 400；边引用了不存在的节点 id → 400。
+- `graph`：**没有任何接口接受它了**，所以不存在请求体校验。`parseGraph` 仍在 `server/store/flow-types.ts` 里，用途变成两处**读**：把库里的老 `graph` JSON 灌进 Y.Doc 时（`bindState` 的迁移），以及列表页读投影时。读到坏数据的策略是**跳过而不是报错** —— 那是历史数据，拒绝它只会让画布打不开。
 - `user-state`：body 必须是非空对象；**未登记的分区 key → 400**；每个分区按 `FLOW_USER_STATE_PARSERS` 里自己的规则校验（视口要求 `x`/`y`/`zoom` 都是有限数字且 `zoom > 0`）；单个分区序列化后 16KB 封顶。任一分区不合法就整体拒绝，不「对一半存一半」。
-- 单个画布上限：节点 2000、边 4000、序列化后的 graph 2MB，超出 → 413。
-- 单次 commit 的 `transactions` 上限 200 条。
+- 单个画布上限：**节点 2000、边 4000、文档 2MB、单条消息 1MB**（数字从 `GRAPH_LIMITS` 派生），
+  拦在 WebSocket 那一层（见 [REQ-COLLAB §4.2](04-realtime-collab.md)）。配额分两级：超**软限**只标记，
+  写入照常（删回去自动解除 —— 否则谁也删不了东西，房间就死了）；顶到**硬限**（软限 × 1.25）才锁写，
+  锁到散场重开。拒绝走连接 `readOnly`（NACK 不断连），绝不 `throw` —— throw 会让 Hocuspocus 关连接，
+  超限房间对所有人不可达。
+- **身份不接受客户端自报**：awareness 里的 `user` 在服务端转发前被覆盖成握手认定的那一份
+  （见 [REQ-COLLAB §4.2](04-realtime-collab.md) 的第一道防线）。光标、选中这些不管 —— 它们不是身份。
 
 ## 5. 验收标准
 
@@ -613,37 +632,51 @@ export interface FlowCommand {
 
 **画布与历史**
 
-- [ ] 画布列表能翻页，页码与关键字反映在 URL 上，刷新后状态不变。
-- [ ] 列表接口的响应体里没有 `graph` 字段。
+- [x] 画布列表能翻页，页码与关键字反映在 URL 上，刷新后状态不变。
+- [x] 列表接口的响应体里没有 `graph` 字段。（server/test/routes/flows.test.ts）
 - [ ] 从画布列表点开一张画布，落到 `/flows/:id` 独立整页：**没有侧边栏**、没有项目主页的分区，画布占满视口；退回项目主页后侧边栏恢复。
 - [ ] 左上角悬浮胶囊显示 logo + 画布名 + 菜单按钮；点 logo 回到所属项目主页。
 - [ ] 胶囊菜单四项都可用：新建画布落到同一项目下的新画布、复制落到副本、删除后回项目主页、「返回画布首页」与点 logo 去到同一处。
-- [ ] 有未保存改动时点「新建画布」，先完成提交再跳转，不丢操作。
-- [ ] 新建 → 编辑 → 刷新页面，节点、连线、视口全部还原。
+- [ ] 点「新建画布」跳走之前，攒着的视图状态先落库；内容不需要等待（它一直是同步的）。
+- [x] 新建 → 编辑 → 刷新页面，节点、连线、视口全部还原。（浏览器回归）
 - [ ] 连续做 5 步操作后按 5 次 `Ctrl+Z` 回到初始状态，再按 5 次 `Ctrl+Shift+Z` 完全恢复。
 - [ ] 框选多个节点一起拖动，只需一次撤销即可整体回退。
 - [ ] 撤销之后再做新操作，重做栈被清空（重做按钮变灰）。
 - [ ] 刷新页面后撤销栈为空、撤销按钮变灰，但画布内容完好。
-- [ ] 断网时继续编辑不报错、不丢操作；恢复后自动补提交成功。
-- [ ] 同项目两个成员同时打开同一张画布，后提交的一方拿到 409、给出「请重新加载」提示并停止自动提交，不会静默覆盖。
-- [ ] 同一个事务重复提交（模拟网络重试）不会在 `FlowOperation` 里留下两条记录。
-- [ ] 节点 `data.config` 里塞任意结构的 JSON，存取一字不差。
+- [ ] 断网时继续编辑不报错；恢复连接后改动自动补同步，不需要用户做任何事。
+- [x] 同项目两个成员同时打开同一张画布，**两边的改动都留下**（不同字段真合并），没有 409、没有「请重新加载」。（浏览器回归 + src/test/stores/flow.test.ts）
+- [x] 一方拖动节点时另一方在场：拖动过程中本地节点不会弹回原位（`localDragging`）。（浏览器回归）
+- [x] 同一条 Yjs 更新被应用两次，画布上不会出现第二个节点。（src/test/stores/flow.test.ts）
+- [x] 删除键删掉的节点会同步给对方、也会落库（即没有绕开 store）。（浏览器回归）
+- [x] 节点 `data.config` 里塞任意结构的 JSON，存取一字不差。（server/test/routes/flows.test.ts）
 - [ ] 平移/缩放后刷新，视口回到离开时的位置；撤销按钮不会因为只挪了画布而变亮，撤销也拽不回视野。
-- [ ] 同一张画布两个人各自平移到不同位置，互不影响；第三个人第一次打开时按快照里的兜底视口（或 fitView）。
-- [ ] A 项目的成员访问 B 项目的画布 id 返回 404；未登录访问任一 `/api/projects*` / `/api/flows*` 返回 401。
+- [x] **只平移不编辑时一个写请求都不发**；发生一次编辑后，攒着的视口在一个节流窗口内被顺路 PATCH 上去。（src/test/stores/flow.test.ts）
+- [ ] 同一张画布两个人各自平移到不同位置，互不影响；第三个人第一次打开时按投影里的兜底视口（或 fitView）。
+- [x] 一张 `ydoc` 为空的老画布被打开后，旧 `graph` JSON 的内容原样出现在画布上，且此后以 Y.Doc 为准。（server/test/routes/flows.test.ts）
+- [x] `FlowOperation` 里每条记录的 `actorId` 是服务端认定的登录用户，客户端改不了。（server/test/routes/flows.test.ts）
+- [x] A 项目的成员访问 B 项目的画布 id 返回 404；未登录访问任一 `/api/projects*` / `/api/flows*` 返回 401；非项目成员连 `flow:<id>` 房间的 WebSocket 被拒。（server/test/auth/ws.test.ts + routes 测试）
+- [x] 一方伪造 awareness 里的身份，另一方看到的仍是服务端认定的真身；光标位置不受影响。（浏览器实测 + server/test/collab/hardening.test.ts）
+- [x] 节点 / 连线数超过上限后，房间被标记为拒绝写入；散场后重新判定。（server/test/collab/hardening.test.ts）
+- [x] 并发「删节点 + 连线」留下的悬空边在落库前被清掉，且不进任何人的撤销栈。（server/test/collab/hardening.test.ts）
 
 **测试覆盖**
 
-- [ ] `server/test/routes/projects.test.ts` —— 创建即 admin、成员隔离 404、admin/member 权限分界 403。
-- [ ] `server/test/routes/invites.test.ts` —— 幂等取链接、过期自动换新、改有效期不换 token、重置、预览、接受、多人复用、失效文案。
-- [ ] `server/test/routes/flows.test.ts` —— 分页、校验、跨项目 404、乐观锁 409、commit 幂等、`user-state` 各存各的 / 覆盖 / 不涨 revision / 校验 / 非成员 404 / 随画布级联删除。
-- [ ] `src/test/stores/flow.test.ts` —— apply / undo / redo / 事务合并 / 历史上限 100 / 防抖提交 / 409 / 断网补提交 / 视口不进历史且走独立防抖链路。
-- [ ] `src/test/stores/flow-commands.test.ts` —— 注册表：九种内置命令齐全、每条的 `inverse` 能双向对上、重复注册报错、未知类型告警跳过、运行时新注册的命令能直接被 `apply` / `undo` 用起来。
+- [x] `server/test/routes/projects.test.ts` —— 创建即 admin、成员隔离 404、admin/member 权限分界 403。
+- [x] `server/test/routes/invites.test.ts` —— 幂等取链接、过期自动换新、改有效期不换 token、重置、预览、接受、多人复用、失效文案。
+- [x] `server/test/routes/flows.test.ts` —— 分页、校验、跨项目 404、**画布内容的写入路径（Yjs）**、duplicate、`user-state` 各存各的 / 覆盖 / 不涨 revision / 校验 / 非成员 404 / 随画布级联删除、`operations` 分页。
+- [x] `server/test/auth/ws.test.ts` —— WebSocket 握手鉴权：匿名拒、登录但非项目成员拒、成员放行并带出 `actorId`。
+- [x] `src/test/stores/flow.test.ts` —— Y.Doc 投影（写进得去、读得出来）、用第二个 `Y.Doc` 扮演协作者验证**同一节点不同字段的并发编辑真合并**、撤销只撤自己的、视口不进文档、视口只在本地编辑后才落库（五种请求形态）。
+- [x] `src/test/lib/presence.test.ts` —— 反馈层的纯逻辑：颜色哈希、防御式解析对端状态、占用仲裁（不带 socket）。
+- ~~`src/test/stores/flow-commands.test.ts` / `flow-sync.test.ts`~~ —— 随命令注册表与提交队列一起删除。
 
 ## 6. 本期不做
 
-- **多人实时协同编辑**（那是 [REQ-COLLAB](04-realtime-collab.md) 的事）。本期按单编辑者设计：没有在线状态、没有光标共享、没有合并策略，冲突只是「后写的人被拦下并重新加载」。
-- 编辑锁 / 抢占提示（「张三正在编辑这张画布」）。
+- ~~**多人实时协同编辑**~~ —— **已经做了**，见 [REQ-COLLAB](04-realtime-collab.md)。本文原本按单编辑者设计（没有在线状态、没有光标共享、没有合并策略，冲突只是「后写的人被拦下并重新加载」），那一套已被 Yjs 全面替掉。
+- 编辑锁 / 抢占提示（「张三正在编辑这张画布」）。仲裁逻辑写好了也有测试，但**当前没接进画布**：谁都可以同时改同一样东西，由 CRDT 合并，节点标签上只是*显示*还有谁在碰它。要恢复限制见 [REQ-COLLAB §4.0.1](04-realtime-collab.md)。
+- ~~**画布规模上限的强制**~~ —— **已经做了**，拦在 WebSocket 那一层（见 4.9 与 [REQ-COLLAB §4.2](04-realtime-collab.md)）。
+- **多进程部署**：房间的 Y.Doc 只活在单个进程的内存里，所以仍必须 `replicas: 1`。
+  换了 Hocuspocus 之后这条有了现成的路（`@hocuspocus/extension-redis`），但没有需求就没接。
+- 操作日志的回放界面与「历史版本预览 / 回滚到某个时刻」—— 数据（按 seq 排列的更新流）已经够重建任意时刻了，只是没做界面。
 - 邮箱邀请、按用户名直接添加成员、加入申请与审批 —— **分享链接是唯一入口**。
 - 一个项目多条分享链接、按人/按用途分发、使用次数上限、链接维度的加入记录。
 - 转让管理员、多管理员之外的自定义角色、画布级别的细粒度权限（项目内成员平权）。
@@ -651,8 +684,6 @@ export interface FlowCommand {
 - 项目层面的操作审计（谁改了项目名、谁移除了谁）。
 - 操作日志的清理 —— **先只存不清**，无限增长；等量级真成问题再补清理任务。
 - 软删数据的清理任务与「回收站 / 恢复」入口 —— 删了就是删了，`deletedAt` 只过滤不回收。
-- 操作日志的回放与「历史版本预览 / 回滚到某个 revision」。
-- 服务端重放操作重算 graph（当前信任客户端快照）。
 - 撤销栈跨会话保留。
 - 画布缩略图生成。
 - 节点 `config` 的按 `kind` 定制表单与合法性校验（本期 JSON 编辑器兜底，服务端只透传）。
@@ -666,3 +697,18 @@ export interface FlowCommand {
 暂无 —— 前几轮提出的问题已全部拍板并写进上文：撤销栈不跨会话、操作日志只存不清、项目主页用同页 Tab、软删不清理不恢复、侧栏用「画布项目」替掉原来的「VueFlow」入口。
 
 实现过程中新冒出来的取舍，追加到这里。
+
+**Yjs 改造带来的取舍（按发生顺序）**
+
+1. **内容不再有「保存」**。用 CRDT 就不能再让客户端上传全量快照覆盖服务端 —— 那会抹掉并发的编辑。于是提交、`baseRevision` 乐观锁、409、「未保存」指示、`beforeunload` 拦截全部随之消失。想要一个用户可见的「保存」动作只剩一条正当路径：**显式快照 / 发版**（`Y.snapshot()`，需要 `YWS_GC=false`），那是给当前状态打标记，不是上传当前状态。还没做。
+2. **`graph` 从事实源降级为投影**，`FlowOperation` 从语义化操作降级为字节流。换来的是 `actorId` —— Yjs 只认 `clientID`，「谁改的」这个信息只能由服务端在握手时认定并单独存下来。
+3. **老数据的迁移放在 `bindState` 里**，不写迁移脚本：每张画布在第一次被打开时自己完成，没打开过的原样躺着，也就没有停机窗口。
+4. **协同服务端换成了 Hocuspocus**（[REQ-COLLAB §2](04-realtime-collab.md)）。原来是一份 y-websocket
+   `bin/utils.js` 的移植（282 行），协议、心跳、房间生命周期全得自己维护。换掉的代价是**线协议不兼容**
+   （Hocuspocus 每条消息以文档名开头，房间名走消息不走 URL），前端必须改用 `@hocuspocus/provider`；
+   换来的是落库时机、房间生命周期归上游管，外加几个我们自己写要花功夫的挂点（下一条）。
+5. **服务端从「只转发」变成「有话语权」**。CRDT 之后内容不经过任何带校验的 HTTP 端点，
+   校验只能挪到协同链路上，于是有了三道防线（[REQ-COLLAB §4.2](04-realtime-collab.md)）：
+   身份改写、内容配额、悬空边清理。其中**身份改写**是唯一能杜绝同房间冒名的地方 ——
+   awareness 本来完全由客户端说了算。
+6. **视图状态搭本地编辑的车落库**（3.5.1）。内容走 Yjs 之后，视口若还自己起定时器防抖 PATCH，它就成了整个编辑器**唯一**的周期性 HTTP 请求 —— 只看不改也一路往上 PATCH，很没道理。绑到编辑事件上之后，纯浏览零写流量。附带的好处：编辑时天然会刷新登录会话，专心画图不会因为 Keycloak 的 SSO idle 掉线（[REQ-AUTH §3.3](02-auth-keycloak.md)）。

@@ -1,340 +1,319 @@
-import { computed, ref, shallowRef } from "vue"
+import { ref, shallowRef } from "vue"
 import { defineStore } from "pinia"
-import { ApiError, flowApi } from "@/lib/api"
-import { createId } from "@/lib/id"
+import * as Y from "yjs"
+import { flowApi } from "@/lib/api"
 import {
-  emptyGraph,
-  type FlowDetail,
-  type FlowEdge,
-  type FlowGraph,
-  type FlowNode,
-  type FlowOp,
-  type FlowSummary,
-  type FlowTransaction,
-  type FlowTransactionKind,
-  type FlowUserState,
-  type FlowViewport
+  changedTopLevelKeys,
+  edgesMap,
+  fromYEdge,
+  fromYNode,
+  metaMap,
+  nodeData,
+  nodesMap,
+  projectMap,
+  readFallbackViewport,
+  toYEdge,
+  toYNode,
+  VIEWPORT_KEY
+} from "@/lib/flow-doc"
+import type {
+  FlowDetail,
+  FlowEdge,
+  FlowNode,
+  FlowNodeData,
+  FlowSummary,
+  FlowUserState,
+  FlowViewport
 } from "@/types/flow"
-import { clone } from "./commands/helpers"
-import {
-  applyOps as runOps,
-  invertOps,
-  type FlowCommandContext
-} from "./registry"
-
-// 副作用：把内置命令注册进注册表。store 静态依赖它，所以一定先跑。
-import "./commands"
 
 /**
  * 画布编辑器的状态中枢。
  *
- * 一条铁律：**所有变更都走 `apply()`**。组件不许直接改 nodes / edges ——
- * 只有经过 apply 的变更才进历史栈、才会被提交到服务端。
+ * **内容的唯一事实源是 Y.Doc**（`src/lib/flow-doc.ts` 描述了它的形状），
+ * 这里的 `nodes` / `edges` 只是它的响应式投影：Y.Map 一变就重算，组件照常用。
  *
- * 「怎么改」不写在这里：每种操作是 `commands/` 下的一条命令，
- * 通过 `registry` 按 `op.type` 查表执行，加新操作不用回来改这个文件。
+ * 一条铁律：**所有内容变更都走 `mutate()`**。它把改动包进一个带 origin 的 Y 事务 ——
+ * 只有这样改动才会被 `Y.UndoManager` 认领（撤销只撤自己的）、才会同步给别人、
+ * 才会被服务端落库。组件不许直接碰 Y.Map。
  *
- * 历史栈只在内存里：刷新即清空（撤销不跨会话），但内容本身不丢，
- * 已提交的都在库里。
+ * 这里**没有**保存、提交、revision、冲突这些概念了：
+ * 改动即刻广播，服务端订阅并落库（`server/collab/persistence.ts`）。
+ * CRDT 天然收敛，不需要乐观锁，也就没有 409 可言。
+ *
+ * 视口是唯一的例外，它不是画布内容而是「我怎么看」，按用户存 ——
+ * 而且**搭本地编辑的车**落库，自己不发请求，见 `noteLocalEdit()`。
  */
-
-/** 撤销栈深度上限，超出丢最旧的 */
-export const HISTORY_LIMIT = 100
-/** 攒够这么多条操作就立刻提交，不等防抖 */
-export const FLUSH_OP_THRESHOLD = 20
-/** 提交防抖窗口（毫秒） */
-export const FLUSH_DEBOUNCE = 800
-/** 按用户存的状态（视口…）的防抖窗口；它不进历史，存得勤一点也不贵 */
-export const USER_STATE_DEBOUNCE = 600
-
-export type SaveState = "saved" | "dirty" | "saving" | "error" | "conflict"
 
 /**
- * 事务的唯一构造口：id 和 ts 只在这里生成。
+ * 本地编辑之后多久把按用户存的状态（视口…）落一次库。
  *
- * ts 是 UTC epoch 毫秒（`Date.now()`）—— 画布这条链路上的时间一律用数值
- * 时间戳，协同时多个客户端的操作才能排到同一条时间轴上。
+ * 是节流不是防抖：一次编辑起一个窗口，窗口里的后续编辑不重开它，
+ * 否则一直画下去就一直不存。没人编辑时不存在这个定时器，也就没有请求。
  */
-function newTransaction(
-  label: string,
-  kind: FlowTransactionKind,
-  ops: FlowOp[]
-): FlowTransaction {
-  return { id: createId("tx"), label, kind, ts: Date.now(), ops }
-}
+export const USER_STATE_FLUSH_DELAY = 2000
+
+/**
+ * 本地改动的事务 origin。
+ *
+ * `Y.UndoManager` 靠它区分「我干的」和「别人同步过来的」：只有带这个 origin 的
+ * 事务进撤销栈，所以按 Ctrl+Z 永远只撤自己的操作，不会把同伴的改动一起撤了。
+ */
+export const LOCAL_ORIGIN = Symbol("flow-local")
+
+/** 连续多久内的改动并成一次撤销（Y.UndoManager 的 captureTimeout） */
+export const UNDO_CAPTURE_TIMEOUT = 400
 
 export const useFlowStore = defineStore("flow", () => {
   // —— 状态 ——
+
   const meta = ref<FlowSummary | null>(null)
-  const nodes = ref<FlowNode[]>([])
-  const edges = ref<FlowEdge[]>([])
   /** 我当前看哪儿。**视图状态，不是画布数据** —— 只走按用户存那条路 */
   const viewport = ref<FlowViewport>({ x: 0, y: 0, zoom: 1 })
-  /**
-   * 快照里那份视口，加载进来是什么就一直是什么。
-   *
-   * 它只是「谁都还没在这张画布上留下过视口时」的兜底。提交时原样写回，
-   * **不跟着我平移/缩放走** —— 否则我拖一下画布就改了别人的共享数据，
-   * 视图操作和数据变化又混到一起了。
-   */
-  const graphViewport = ref<FlowViewport>({ x: 0, y: 0, zoom: 1 })
-  const graphMeta = ref<Record<string, unknown>>({})
   /** 按用户存的状态（视口…）；每人一份，跟画布内容分开走 */
   const userState = ref<FlowUserState>({})
 
-  const baseRevision = ref(0)
-  const undoStack = shallowRef<FlowTransaction[]>([])
-  const redoStack = shallowRef<FlowTransaction[]>([])
-  const pending = shallowRef<FlowTransaction[]>([])
-  const saveState = ref<SaveState>("saved")
-  const saveError = ref<string | null>(null)
-  /** 最后一次落库的时刻（UTC 毫秒），加载时先按服务端的 updatedAt 算 */
-  const lastSavedAt = ref<number | null>(null)
+  /** Y.Doc 的响应式投影。**只读** —— 要改内容走 mutate() */
+  const nodes = shallowRef<FlowNode[]>([])
+  const edges = shallowRef<FlowEdge[]>([])
+  const graphMeta = shallowRef<Record<string, unknown>>({})
 
-  const canUndo = computed(() => undoStack.value.length > 0)
-  const canRedo = computed(() => redoStack.value.length > 0)
-  const dirty = computed(() => pending.value.length > 0)
+  const canUndo = ref(false)
+  const canRedo = ref(false)
 
-  /** 命令能改的就这三样，别的状态它们碰不到 */
-  const commandContext: FlowCommandContext = { nodes, edges, graphMeta }
+  /** 当前接管内容的文档；没连上协同时为 null，此时画布是只读的空图 */
+  let doc: Y.Doc | null = null
+  let undoManager: Y.UndoManager | null = null
+  let detachDoc: (() => void) | null = null
 
-  function applyOps(ops: FlowOp[]) {
-    runOps(commandContext, ops)
-  }
-
-  /** 打开中的事务：期间的 apply 合并成一条历史 */
-  let openTx: { label: string; ops: FlowOp[] } | null = null
-  let flushTimer: ReturnType<typeof setTimeout> | null = null
-  let inflight: Promise<void> | null = null
-
-  // —— 协同 ——
+  // —— 投影 ——
 
   /**
-   * 协同层挂进来的两个出口（`composables/flow/useFlowSync`）。
+   * 上一轮解析出来的节点 / 边，按 id 存着。
    *
-   * store 不认识 yjs，也不该认识：它只负责在「产生了一条事务」和「提交成功了」
-   * 这两个时刻喊一声，广播怎么发是上层的事。没接协同时两个都是 null，行为不变。
+   * 有它才谈得上「增量」：一次拖动只动一个节点，没道理把整张图重新解析一遍。
+   * 复用对象引用还有第二重好处 —— Vue Flow 靠引用判断节点要不要重新同步，
+   * 没变的节点它连碰都不碰。
    */
-  let syncHooks: {
-    /** 本地产生了一条事务，发给同一张画布上的其他人 */
-    onTransaction?: (transaction: FlowTransaction) => void
-    /** 本地提交成功，把新的 revision 告诉其他人，让他们对齐乐观锁基线 */
-    onRevision?: (revision: number) => void
-  } = {}
-
-  function setSyncHooks(hooks: typeof syncHooks) {
-    syncHooks = hooks
-  }
-
-  // —— 历史 ——
-
-  function pushHistory(transaction: FlowTransaction) {
-    const next = [...undoStack.value, transaction]
-    // 超出上限丢最旧的，用户无感
-    undoStack.value = next.length > HISTORY_LIMIT ? next.slice(-HISTORY_LIMIT) : next
-    redoStack.value = []
-  }
-
-  function enqueue(transaction: FlowTransaction) {
-    // 先广播再排队：别人看到变化不用等我这边防抖 800ms 落库
-    syncHooks.onTransaction?.(transaction)
-
-    pending.value = [...pending.value, transaction]
-    // 冲突态是粘的：继续编辑不该把它擦掉，否则自动提交又活过来，
-    // 把陈旧快照一遍遍推给服务端。只有重新加载（load）能解除。
-    if (saveState.value !== "conflict") saveState.value = "dirty"
-    scheduleFlush()
-  }
+  const nodeCache = new Map<string, FlowNode>()
+  const edgeCache = new Map<string, FlowEdge>()
 
   /**
-   * 唯一的写入口。
-   * - 事务打开时只累积，等 commitTransaction 才进历史；
-   * - 否则立刻成为一条独立的历史记录。
+   * @param changed 这一轮变了哪些顶层键；`null` = 说不清，全量重算
    */
-  function apply(ops: FlowOp[], label: string) {
-    if (ops.length === 0) return
-    applyOps(ops)
-
-    if (openTx) {
-      openTx.ops.push(...ops)
+  function syncNodes(changed: Set<string> | null = null) {
+    if (!doc) {
+      nodeCache.clear()
+      nodes.value = []
+      syncEdges(null)
       return
     }
-
-    const transaction = newTransaction(label, "do", ops)
-    pushHistory(transaction)
-    enqueue(transaction)
+    nodes.value = projectMap(nodesMap(doc), nodeCache, changed, fromYNode)
+    // 节点增删会让边变成悬空 / 不再悬空，所以边跟着重算一遍可见性
+    syncEdges(changed === null ? null : new Set())
   }
 
-  /** 开一个事务：中间的 apply 合成一条撤销 */
-  function beginTransaction(label: string) {
-    if (openTx) return
-    openTx = { label, ops: [] }
+  function syncEdges(changed: Set<string> | null = null) {
+    if (!doc) {
+      edgeCache.clear()
+      edges.value = []
+      return
+    }
+    const alive = new Set(nodes.value.map((node) => node.id))
+    const projected = projectMap(edgesMap(doc), edgeCache, changed, fromYEdge)
+    // 端点没了的边不进画面（文档里那条由服务端的 gc 清）
+    edges.value = projected.filter((edge) => alive.has(edge.source) && alive.has(edge.target))
   }
 
-  function commitTransaction() {
-    const tx = openTx
-    openTx = null
-    if (!tx || tx.ops.length === 0) return
+  function syncMeta() {
+    if (!doc) {
+      graphMeta.value = {}
+      return
+    }
+    const all = metaMap(doc).toJSON() as Record<string, unknown>
+    delete all[VIEWPORT_KEY]
+    graphMeta.value = all
+  }
 
-    const transaction = newTransaction(tx.label, "do", tx.ops)
-    pushHistory(transaction)
-    enqueue(transaction)
+  function syncHistory() {
+    canUndo.value = (undoManager?.undoStack.length ?? 0) > 0
+    canRedo.value = (undoManager?.redoStack.length ?? 0) > 0
+  }
+
+  /**
+   * 接管一个 Y.Doc —— 协同层连上之后调一次。
+   *
+   */
+  function attachDoc(next: Y.Doc) {
+    detachDoc?.()
+    doc = next
+
+    const yNodes = nodesMap(next)
+    const yEdges = edgesMap(next)
+    const yMeta = metaMap(next)
+
+    // observeDeep：节点位置、data 里的字段都藏在嵌套的 Y.Map 里，
+    // 只观察顶层的话拖动和改标题都收不到通知
+    /* eslint-disable @typescript-eslint/no-explicit-any -- Yjs 的 observeDeep 回调签名 */
+    const onNodesChanged = (events: Y.YEvent<any>[]) => syncNodes(changedTopLevelKeys(events))
+    const onEdgesChanged = (events: Y.YEvent<any>[]) => syncEdges(changedTopLevelKeys(events))
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+
+    yNodes.observeDeep(onNodesChanged)
+    yEdges.observeDeep(onEdgesChanged)
+    yMeta.observe(syncMeta)
+
+    // 只跟踪本地 origin：撤销栈里永远只有我自己干的事
+    undoManager = new Y.UndoManager([yNodes, yEdges, yMeta], {
+      trackedOrigins: new Set([LOCAL_ORIGIN]),
+      captureTimeout: UNDO_CAPTURE_TIMEOUT
+    })
+    undoManager.on("stack-item-added", syncHistory)
+    undoManager.on("stack-item-popped", syncHistory)
+
+    detachDoc = () => {
+      yNodes.unobserveDeep(onNodesChanged)
+      yEdges.unobserveDeep(onEdgesChanged)
+      yMeta.unobserve(syncMeta)
+      undoManager?.destroy()
+      undoManager = null
+      doc = null
+      detachDoc = null
+    }
+
+    syncNodes(null)
+    syncMeta()
+    syncHistory()
+  }
+
+  /**
+   * 首次打开（自己还没存过视口）时，把快照里那份兜底视口应用上。
+   *
+   * **不能在 `attachDoc` 里做**：接管发生在连接建立的那一刻，文档还是刚 new 出来的
+   * 空壳，同步的内容（包括 meta.viewport）尚未到达，读出来永远是空。
+   * 调用时机是画布挂载（pane-ready）—— 编辑器的加载门槛保证那时内容已经就位。
+   */
+  function applyFallbackViewport(): boolean {
+    if (userState.value.viewport || !doc) return false
+    const fallback = readFallbackViewport(doc)
+    if (!fallback) return false
+    viewport.value = fallback
+    return true
+  }
+
+  function detach() {
+    detachDoc?.()
+    nodeCache.clear()
+    edgeCache.clear()
+    nodes.value = []
+    edges.value = []
+    graphMeta.value = {}
+    syncHistory()
+  }
+
+  // —— 唯一的写入口 ——
+
+  /**
+   * 改内容。**所有变更都必须从这里走。**
+   *
+   * 包成一个带 `LOCAL_ORIGIN` 的 Y 事务：这样它才进撤销栈、才广播、才落库。
+   * `label` 只是给调试和日志用的，CRDT 不需要它 —— 撤销的粒度由
+   * `Y.UndoManager` 按时间窗口（`UNDO_CAPTURE_TIMEOUT`）自己合并。
+   */
+  function mutate(change: (context: FlowMutationContext) => void, label?: string) {
+    if (!doc) return
+    const target = doc
+    target.transact(() => {
+      change({
+        doc: target,
+        nodes: nodesMap(target),
+        edges: edgesMap(target),
+        meta: metaMap(target)
+      })
+    }, LOCAL_ORIGIN)
+    if (label) lastLabel.value = label
+    noteLocalEdit()
+  }
+
+  /** 最近一次改动的名字，只用来在界面上给个反馈 */
+  const lastLabel = ref<string | null>(null)
+
+  /**
+   * 让下一次改动**另起一条撤销记录**，不要和刚才那次并进同一条。
+   *
+   * `Y.UndoManager` 默认把 400ms 内的改动并成一次撤销 —— 连点两次「添加节点」
+   * 会变成一次撤销撤掉两个。语义上独立的操作之间调一下这个。
+   */
+  function separateUndo() {
+    undoManager?.stopCapturing()
   }
 
   function undo() {
-    const transaction = undoStack.value[undoStack.value.length - 1]
-    if (!transaction) return
-
-    const ops = invertOps(transaction.ops)
-    applyOps(ops)
-
-    undoStack.value = undoStack.value.slice(0, -1)
-    redoStack.value = [...redoStack.value, transaction]
-
-    // 撤销本身也是一条要落库的事务，日志永远只往前走
-    enqueue(newTransaction(`撤销：${transaction.label}`, "undo", ops))
+    undoManager?.undo()
+    noteLocalEdit()
   }
 
   function redo() {
-    const transaction = redoStack.value[redoStack.value.length - 1]
-    if (!transaction) return
-
-    applyOps(transaction.ops)
-
-    redoStack.value = redoStack.value.slice(0, -1)
-    undoStack.value = [...undoStack.value, transaction]
-
-    enqueue(newTransaction(`重做：${transaction.label}`, "redo", transaction.ops))
+    undoManager?.redo()
+    noteLocalEdit()
   }
 
-  // —— 持久化 ——
+  // —— 内容操作（都建立在 mutate 之上）——
 
-  function currentGraph(): FlowGraph {
-    return {
-      schemaVersion: 1,
-      // 注意是 graphViewport 不是 viewport：见上面的注释，个人视口不写进共享快照
-      viewport: { ...graphViewport.value },
-      nodes: clone(nodes.value),
-      edges: clone(edges.value),
-      meta: { ...graphMeta.value }
-    }
+  function addNode(node: FlowNode) {
+    mutate(({ nodes: map }) => map.set(node.id, toYNode(node)), "新增节点")
   }
 
-  function clearTimer() {
-    if (flushTimer !== null) {
-      clearTimeout(flushTimer)
-      flushTimer = null
-    }
+  function addEdge(edge: FlowEdge) {
+    mutate(({ edges: map }) => map.set(edge.id, toYEdge(edge)), "连线")
   }
 
-  function scheduleFlush() {
-    // 冲突之后不再自动提交：继续推陈旧快照只会把事情弄得更糟
-    if (saveState.value === "conflict") return
-
-    const opCount = pending.value.reduce((sum, tx) => sum + tx.ops.length, 0)
-    if (opCount >= FLUSH_OP_THRESHOLD) {
-      void flush()
-      return
-    }
-
-    clearTimer()
-    flushTimer = setTimeout(() => {
-      flushTimer = null
-      void flush()
-    }, FLUSH_DEBOUNCE)
-  }
-
-  /**
-   * 提交待办事务。
-   * 提交期间新产生的操作进入下一批，不阻塞编辑。
-   */
-  async function flush(): Promise<void> {
-    clearTimer()
-    if (inflight) return inflight
-    if (!meta.value || pending.value.length === 0) return
-
-    const flowId = meta.value.id
-    const batch = pending.value
-    const graph = currentGraph()
-    saveState.value = "saving"
-    saveError.value = null
-
-    inflight = (async () => {
-      try {
-        const { revision } = await flowApi.commit(flowId, {
-          baseRevision: baseRevision.value,
-          transactions: batch,
-          graph
-        })
-        baseRevision.value = revision
-        if (meta.value) meta.value = { ...meta.value, revision }
-        // 同房间的人内容早就跟上了（事务先广播过），这里让他们的乐观锁基线也跟上
-        syncHooks.onRevision?.(revision)
-
-        // 提交期间可能又攒了新的，只摘掉这一批
-        const committed = new Set(batch.map((tx) => tx.id))
-        pending.value = pending.value.filter((tx) => !committed.has(tx.id))
-        saveState.value = pending.value.length > 0 ? "dirty" : "saved"
-        lastSavedAt.value = Date.now()
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 409) {
-          saveState.value = "conflict"
-          saveError.value = err.message
-          return
-        }
-        // 网络问题等：保留 pending，等下次触发再补提交
-        saveState.value = "error"
-        saveError.value = err instanceof Error ? err.message : String(err)
-      } finally {
-        inflight = null
+  function moveNodes(positions: Map<string, { x: number; y: number }>, label = "移动节点") {
+    mutate(({ nodes: map }) => {
+      for (const [id, position] of positions) {
+        map.get(id)?.set("position", { ...position })
       }
-    })()
-
-    await inflight
-
-    // 这一批走完后如果还有积压（提交期间新增的），继续排下一次。
-    // 类型断言是因为 TS 只看到进入 await 前赋的 'saving'，看不到异步回调里的改动。
-    if (pending.value.length > 0 && (saveState.value as SaveState) === "dirty") scheduleFlush()
+    }, label)
   }
 
-  // —— 协同收到的东西 ——
-
-  /**
-   * 应用别人广播过来的事务。
-   *
-   * **只改内容**：不进历史（撤销只该撤自己干的事）、不进 pending（落库是发起方的责任，
-   * 两边都提交只会互相撞 409）。命令本身是幂等的（`node.add` 见到同 id 直接跳过），
-   * 所以万一重放一次也不会加出第二个节点。
-   */
-  function applyRemote(transaction: FlowTransaction) {
-    applyOps(transaction.ops)
+  function updateNodeData(nodeId: string, patch: Partial<FlowNodeData>, label = "修改节点") {
+    mutate(({ doc: target }) => {
+      const data = nodeData(target, nodeId)
+      if (!data) return
+      // 逐个 key 写：Y.Map 的合并粒度就是 key，整块替换会把别人同时改的字段盖掉
+      for (const [key, value] of Object.entries(patch)) {
+        if (value !== undefined) data.set(key, value)
+      }
+    }, label)
   }
 
   /**
-   * 别人提交成功了，把我的乐观锁基线对齐过去。
-   *
-   * 内容我已经通过 `applyRemote` 跟上了，缺的只是 revision —— 不对齐的话
-   * 我下一次提交会带着一个陈旧的 baseRevision，必定撞 409。
+   * 删元素。连着的边一起删 —— 留下悬空的边会让投影层直接把它过滤掉，
+   * 那样界面上没了、数据里还在。
    */
-  function adoptRevision(revision: number) {
-    if (revision <= baseRevision.value) return
-    baseRevision.value = revision
-    if (meta.value) meta.value = { ...meta.value, revision }
-    lastSavedAt.value = Date.now()
+  function removeElements(nodeIds: Iterable<string>, edgeIds: Iterable<string>) {
+    const doomedNodes = new Set(nodeIds)
+    const doomedEdges = new Set(edgeIds)
+    for (const edge of edges.value) {
+      if (doomedNodes.has(edge.source) || doomedNodes.has(edge.target)) doomedEdges.add(edge.id)
+    }
+    if (doomedNodes.size === 0 && doomedEdges.size === 0) return
+
+    mutate(({ nodes: nodeMap, edges: edgeMap }) => {
+      for (const id of doomedEdges) edgeMap.delete(id)
+      for (const id of doomedNodes) nodeMap.delete(id)
+    }, "删除")
   }
 
   // —— 按用户存的状态 ——
 
   /**
-   * 视口这类状态**不是画布内容**：不进历史、不进操作日志、不涨 revision，
-   * 因此也没有乐观锁和冲突 —— 只平移一下画布同样要能存下来，
-   * 走的是独立的一条防抖链路（`PATCH /user-state`）。
+   * 视口这类状态**不是画布内容**：不进 Y.Doc、不进撤销、不广播给别人 ——
+   * 谁看哪儿是谁自己的事，不该因为别人拖了一下画布就把我的视野也挪走。
    *
    * 加一种新的按用户存的东西：在 `FlowUserState` 加个字段、服务端加条校验，
-   * 然后调 `setUserState('新字段', 值)` —— 防抖、重试、离开前落库都是现成的。
+   * 然后调 `setUserState('新字段', 值)` —— 攒批、重试、离开前落库都是现成的。
    */
   let userStateTimer: ReturnType<typeof setTimeout> | null = null
-  /** 待落库的分区：只发改过的那些，没动过的不覆盖 */
   let userStatePatch: FlowUserState = {}
   let userStateInflight: Promise<void> | null = null
 
@@ -345,15 +324,29 @@ export const useFlowStore = defineStore("flow", () => {
     }
   }
 
+  /** 记下来就完了，**不发请求** —— 等下一次本地编辑或离开页面时顺路带走 */
   function setUserState<K extends keyof FlowUserState>(key: K, value: FlowUserState[K]) {
     userState.value = { ...userState.value, [key]: value }
     userStatePatch[key] = value
+  }
 
-    clearUserStateTimer()
+  /**
+   * 本地编辑发生了 —— 攒着的视图状态搭这趟车走。
+   *
+   * 平移、缩放自己**不发请求**：那是「我怎么看」，不值得为它单独发一次 HTTP。
+   * 画布内容改走 Yjs 之后这一点尤其要紧，否则它就成了整个编辑器唯一还在
+   * 周期性发请求的东西 —— 看了一眼画布就一路 PATCH 上去，很没道理。
+   * 绑在编辑上之后：真的动了画布才存，没人编辑就一个请求都没有。
+   * 「只平移没编辑」那种情况由离开前的 `flushUserState()` 兜住。
+   */
+  function noteLocalEdit() {
+    if (userStateTimer !== null) return
+    if (Object.keys(userStatePatch).length === 0) return
+
     userStateTimer = setTimeout(() => {
       userStateTimer = null
       void flushUserState()
-    }, USER_STATE_DEBOUNCE)
+    }, USER_STATE_FLUSH_DELAY)
   }
 
   async function flushUserState(): Promise<void> {
@@ -381,75 +374,38 @@ export const useFlowStore = defineStore("flow", () => {
     await userStateInflight
   }
 
-  /** Ctrl+S / 离开页面前：立刻提交并等它结束 */
-  async function saveNow() {
-    if (saveState.value === "error") saveState.value = "dirty"
-    await Promise.all([flush(), flushUserState()])
-  }
-
-  // —— 生命周期 ——
-
-  function load(detail: FlowDetail) {
-    const graph = detail.graph ?? emptyGraph()
-    meta.value = { ...detail }
-    nodes.value = clone(graph.nodes ?? [])
-    edges.value = clone(graph.edges ?? [])
-    graphMeta.value = { ...(graph.meta ?? {}) }
-    baseRevision.value = detail.revision
-
-    // 视口先看「我自己上次看哪儿」，没有才回落到快照里那份兜底的
-    userState.value = { ...(detail.userState ?? {}) }
-    userStatePatch = {}
-    clearUserStateTimer()
-    graphViewport.value = { ...(graph.viewport ?? { x: 0, y: 0, zoom: 1 }) }
-    viewport.value = { ...(userState.value.viewport ?? graphViewport.value) }
-
-    undoStack.value = []
-    redoStack.value = []
-    pending.value = []
-    openTx = null
-    clearTimer()
-    saveState.value = "saved"
-    saveError.value = null
-
-    // 刚打开时还没提交过，就拿服务端的 updatedAt 当「上次保存」
-    const updatedAt = Date.parse(detail.updatedAt)
-    lastSavedAt.value = Number.isNaN(updatedAt) ? null : updatedAt
-  }
-
-  function reset() {
-    clearTimer()
-    // 卸载时（关标签页、跳走）把还没落库的视口补一发，不等结果 ——
-    // 路由跳走那条路已经 await 过一次，这里是兜底
-    void flushUserState()
-    clearUserStateTimer()
-    userStatePatch = {}
-    userState.value = {}
-    openTx = null
-    meta.value = null
-    nodes.value = []
-    edges.value = []
-    viewport.value = { x: 0, y: 0, zoom: 1 }
-    graphViewport.value = { x: 0, y: 0, zoom: 1 }
-    graphMeta.value = {}
-    baseRevision.value = 0
-    undoStack.value = []
-    redoStack.value = []
-    pending.value = []
-    saveState.value = "saved"
-    saveError.value = null
-    lastSavedAt.value = null
-  }
-
-  /**
-   * 视口不进历史、不产生操作。它按用户存：谁看哪儿是谁自己的事，
-   * 不会因为别人拖了一下画布就把我的视野也挪走。
-   * 快照里那份 `graph.viewport` 只留作「第一次打开」的兜底。
-   */
   function setViewport(next: FlowViewport) {
     const value = { ...next }
     viewport.value = value
     setUserState("viewport", value)
+  }
+
+  /** 离开页面前：把按用户存的那点东西落库。内容不用管，它一直是同步的 */
+  async function saveNow() {
+    await flushUserState()
+  }
+
+  // —— 生命周期 ——
+
+  /** 只灌文档元信息；内容不从这里来，它来自 Y.Doc */
+  function load(detail: FlowDetail) {
+    meta.value = { ...detail }
+    userState.value = { ...(detail.userState ?? {}) }
+    userStatePatch = {}
+    clearUserStateTimer()
+    viewport.value = userState.value.viewport ?? { x: 0, y: 0, zoom: 1 }
+  }
+
+  function reset() {
+    // 卸载时（关标签页、跳走）把还没落库的视口补一发，不等结果
+    void flushUserState()
+    clearUserStateTimer()
+    detach()
+    userStatePatch = {}
+    userState.value = {}
+    meta.value = null
+    viewport.value = { x: 0, y: 0, zoom: 1 }
+    lastLabel.value = null
   }
 
   function renameLocally(name: string) {
@@ -461,50 +417,41 @@ export const useFlowStore = defineStore("flow", () => {
     meta,
     nodes,
     edges,
-    viewport,
     graphMeta,
+    viewport,
     userState,
-    baseRevision,
-    undoStack,
-    redoStack,
-    pending,
-    saveState,
-    saveError,
-    lastSavedAt,
-    // 派生
     canUndo,
     canRedo,
-    dirty,
-    // 行为
-    apply,
-    applyRemote,
-    adoptRevision,
-    setSyncHooks,
-    beginTransaction,
-    commitTransaction,
+    lastLabel,
+    // 内容
+    attachDoc,
+    applyFallbackViewport,
+    detach,
+    mutate,
+    separateUndo,
     undo,
     redo,
-    flush,
-    flushUserState,
-    saveNow,
-    load,
-    reset,
+    addNode,
+    addEdge,
+    moveNodes,
+    updateNodeData,
+    removeElements,
+    // 视图状态
     setViewport,
     setUserState,
-    renameLocally,
-    currentGraph
+    flushUserState,
+    saveNow,
+    // 文档
+    load,
+    reset,
+    renameLocally
   }
 })
 
-export {
-  applyOp,
-  applyOps,
-  getFlowCommand,
-  invertOps,
-  registerFlowCommand,
-  registerFlowCommands,
-  registeredFlowCommandTypes,
-  type FlowCommand,
-  type FlowCommandContext
-} from "./registry"
-export { FLOW_COMMANDS } from "./commands"
+/** `mutate()` 回调拿到的东西 —— 想干什么都得通过它们 */
+export interface FlowMutationContext {
+  doc: Y.Doc
+  nodes: Y.Map<Y.Map<unknown>>
+  edges: Y.Map<Y.Map<unknown>>
+  meta: Y.Map<unknown>
+}

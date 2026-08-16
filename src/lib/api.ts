@@ -1,10 +1,8 @@
 import { apiFetch } from "@/lib/auth"
 import type {
   FlowDetail,
-  FlowGraph,
   FlowStatus,
   FlowSummary,
-  FlowTransaction,
   FlowUserState,
   InvitePreview,
   Paged,
@@ -202,21 +200,6 @@ export const flowApi = {
     return request<void>(`/api/flows/${flowId}/user-state`, {
       method: "PATCH",
       body: json(patch)
-    })
-  },
-
-  /** 提交事务；baseRevision 对不上会抛 409 的 ApiError */
-  commit(
-    flowId: string,
-    body: {
-      baseRevision: number
-      transactions: FlowTransaction[]
-      graph: FlowGraph
-    }
-  ) {
-    return request<{ revision: number }>(`/api/flows/${flowId}/commit`, {
-      method: "POST",
-      body: json(body)
     })
   }
 }

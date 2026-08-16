@@ -1,11 +1,5 @@
 import { prisma } from '../db.ts'
-import {
-  type FlowGraph,
-  type FlowTransaction,
-  type FlowUserState,
-  emptyGraph,
-  readGraph,
-} from './flow-types.ts'
+import { type FlowGraph, type FlowUserState, emptyGraph, readGraph } from './flow-types.ts'
 import { flowUserState } from './flow-user-state.ts'
 import { nameContains } from './text.ts'
 
@@ -46,18 +40,15 @@ export interface FlowDetail extends FlowSummary {
   userState: FlowUserState
 }
 
+/** 操作日志的一行。`update` 二进制本身不出接口，只给量感和「谁在何时」 */
 export interface FlowOperationView {
   id: string
   seq: number
-  txId: string
-  kind: string
-  label: string
-  ops: unknown
   actorId: string | null
-  /** 客户端产生这次事务的时刻（UTC epoch ms） */
-  clientTs: number
-  /** 服务端落库时刻（UTC epoch ms）；排序以它为准 */
+  /** 服务端收到这次更新的时刻（UTC epoch ms）；排序以它为准 */
   serverTs: number
+  /** 这次 Yjs 更新的字节数 */
+  size: number
 }
 
 export interface ListFlowsOptions {
@@ -232,11 +223,16 @@ export const flows = {
     await prisma.flow.update({ where: { id: flowId }, data: { deletedAt: new Date() } })
   },
 
-  /** 复制到同一项目下；操作日志不复制，新画布 revision 从 0 起 */
+  /**
+   * 复制到同一项目下；操作日志不复制，新画布 revision 从 0 起。
+   *
+   * **ydoc 要一起复制**：它才是内容，graph 只是投影。
+   * 直接拷二进制就行 —— Yjs 的状态是自包含的，换个文档 id 照样能加载。
+   */
   async duplicate(flowId: string, createdById: string): Promise<FlowDetail | null> {
     const source = await prisma.flow.findFirst({
       where: { id: flowId, deletedAt: null },
-      select: { ...SUMMARY_SELECT, graph: true },
+      select: { ...SUMMARY_SELECT, graph: true, ydoc: true },
     })
     if (!source) return null
 
@@ -248,6 +244,7 @@ export const flows = {
         status: source.status,
         tags: source.tags,
         graph: source.graph,
+        ydoc: source.ydoc,
         nodeCount: source.nodeCount,
         edgeCount: source.edgeCount,
         createdById,
@@ -259,77 +256,16 @@ export const flows = {
   },
 
   /**
-   * 提交事务：乐观锁 + 追加日志 + 覆盖快照，全在一个数据库事务里。
+   * 操作日志。
    *
-   * - baseRevision 对不上 → conflict，调用方回 409
-   * - txId 已经存在 → 幂等跳过（网络重试会走到这里），不重复写日志、不涨 revision
+   * 每条是一次 Yjs 增量更新（`update` 二进制），由 WebSocket 那边的 persistence 写入 ——
+   * **没有 REST 提交入口了**，内容的写入路径只有一条：客户端改 Y.Doc → 同步到服务端 →
+   * 落库（见 `server/collab/persistence.ts`）。
+   *
+   * 这里不返回 `update` 本身：它是二进制，塞进 JSON 只会把响应撑大，
+   * 而列表页要的只是「谁在什么时候动过」。真要回放就按 seq 顺序取出来
+   * `Y.applyUpdate` 到一个空文档。
    */
-  async commit(input: {
-    flowId: string
-    baseRevision: number
-    transactions: FlowTransaction[]
-    graph: FlowGraph
-    actorId: string | null
-  }): Promise<
-    { ok: true; revision: number } | { ok: false; reason: 'conflict'; revision: number }
-  > {
-    return prisma.$transaction(async (tx) => {
-      const current = await tx.flow.findFirst({
-        where: { id: input.flowId, deletedAt: null },
-        select: { revision: true },
-      })
-      if (!current) return { ok: false as const, reason: 'conflict' as const, revision: 0 }
-
-      // 已经落库的事务先剔掉：重试上来的那批里可能只有一部分是新的
-      const known = await tx.flowOperation.findMany({
-        where: { flowId: input.flowId, txId: { in: input.transactions.map((item) => item.id) } },
-        select: { txId: true },
-      })
-      const knownIds = new Set(known.map((row) => row.txId))
-      const fresh = input.transactions.filter((item) => !knownIds.has(item.id))
-
-      // 整批都是重试 —— 快照也就没什么可写的，直接把当前 revision 还回去
-      if (fresh.length === 0) return { ok: true as const, revision: current.revision }
-
-      if (current.revision !== input.baseRevision) {
-        return { ok: false as const, reason: 'conflict' as const, revision: current.revision }
-      }
-
-      // 同一批用同一个 serverTs：它们是一次提交落库的，时间上不该分先后
-      const serverTs = BigInt(Date.now())
-
-      let seq = current.revision
-      for (const transaction of fresh) {
-        seq += 1
-        await tx.flowOperation.create({
-          data: {
-            flowId: input.flowId,
-            seq,
-            txId: transaction.id,
-            kind: transaction.kind,
-            label: transaction.label,
-            ops: JSON.stringify(transaction.ops),
-            actorId: input.actorId,
-            clientTs: BigInt(transaction.ts),
-            serverTs,
-          },
-        })
-      }
-
-      await tx.flow.update({
-        where: { id: input.flowId },
-        data: {
-          graph: JSON.stringify(input.graph),
-          nodeCount: input.graph.nodes.length,
-          edgeCount: input.graph.edges.length,
-          revision: seq,
-        },
-      })
-
-      return { ok: true as const, revision: seq }
-    })
-  },
-
   async listOperations(
     flowId: string,
     options: { page: number; pageSize: number; sinceSeq?: number },
@@ -346,20 +282,18 @@ export const flows = {
         orderBy: { seq: 'asc' },
         skip: (options.page - 1) * options.pageSize,
         take: options.pageSize,
+        select: { id: true, seq: true, actorId: true, serverTs: true, update: true },
       }),
     ])
 
     const items: FlowOperationView[] = rows.map((row) => ({
       id: row.id,
       seq: row.seq,
-      txId: row.txId,
-      kind: row.kind,
-      label: row.label,
-      ops: JSON.parse(row.ops) as unknown,
       actorId: row.actorId,
       // 库里是 BigInt，出口转成 number：epoch ms 远在 2^53 以内，JSON 也认
-      clientTs: Number(row.clientTs),
       serverTs: Number(row.serverTs),
+      /** 这次更新有多大（字节），给「改了多少」一个粗略的量感 */
+      size: row.update.length,
     }))
 
     return { items, total }

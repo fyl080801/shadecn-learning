@@ -11,8 +11,8 @@ import { Background } from "@vue-flow/background"
 import { MiniMap } from "@vue-flow/minimap"
 
 import FlowPresenceCursors from "@/components/flow/FlowPresenceCursors.vue"
+import FlowViewControls from "@/components/flow/FlowViewControls.vue"
 import ProcessNode from "@/components/flow/ProcessNode.vue"
-// import FlowViewControls from "@/components/flow/FlowViewControls.vue"
 import { FLOW_EDGE_TYPE, useFlowEditor } from "@/composables/flow"
 
 /**
@@ -23,18 +23,6 @@ import { FLOW_EDGE_TYPE, useFlowEditor } from "@/composables/flow"
  */
 const { canvas, selection } = useFlowEditor()
 
-/**
- * 被别人占住的节点点了也不选中。
- *
- * 节点数据上已经带了 `selectable: false`（Vue Flow 自己的选中态因此不会亮），
- * 但 `nodeClick` 照样会派发，我们自己的选中态得在这儿挡一道 ——
- * 否则属性面板会打开一个改不动的节点。
- */
-function onNodeClick(nodeId: string) {
-  // 只读判断一律走 canvas.isLocked：它是含派生占用的那一份
-  if (canvas.isLocked("node", nodeId)) return
-  selection.select(nodeId)
-}
 </script>
 
 <template>
@@ -70,7 +58,7 @@ function onNodeClick(nodeId: string) {
       :delete-key-code="null"
       class="h-full w-full"
       @nodes-change="canvas.onNodesChange"
-      @node-click="onNodeClick($event.node.id)"
+      @node-click="selection.select($event.node.id)"
       @pane-click="selection.clearSelection()"
       @move-end="canvas.syncViewport"
     >
@@ -83,7 +71,7 @@ function onNodeClick(nodeId: string) {
       </template>
 
       <Background :gap="16" />
-      <!-- <FlowViewControls /> -->
+      <FlowViewControls />
       <MiniMap pannable zoomable />
 
       <!-- 给上层留的扩展位：想往画布里再塞浮层（对齐线、批注…）从这儿进 -->

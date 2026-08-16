@@ -30,20 +30,6 @@
   cursor: grabbing;
 }
 
-/*
- * 被别人占住的连线（协同）。和节点的黄框是同一个信号：黄色 = 归别人了，我这边只能看。
- * 边是 SVG，画不了 ring/box-shadow 那套，只能改描边本身；`!important` 是因为
- * Vue Flow 把边的默认描边写在了 inline style 上。
- */
-.vue-flow__edge.flow-edge-locked .vue-flow__edge-path {
-  stroke: #facc15 !important;
-  stroke-width: 3;
-}
-
-.vue-flow__edge.flow-edge-locked {
-  cursor: not-allowed;
-}
-
 .vue-flow__minimap {
   transform: scale(75%);
   transform-origin: bottom right;

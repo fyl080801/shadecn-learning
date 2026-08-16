@@ -257,6 +257,50 @@ describe('loadSession() 自动续期', () => {
     expect(await prisma.session.count()).toBe(0)
   })
 
+  it('连不上 Keycloak → 保留会话，不能因为一次网络抖动就把人踢下线', async () => {
+    const { token } = await sessionAboutToExpire()
+    stub.token = { status: 0, body: null, throws: new TypeError('fetch failed') }
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const session = await loadSession(token)
+
+    expect(session).not.toBeNull()
+    expect(await prisma.session.count()).toBe(1)
+  })
+
+  it('Keycloak 自己 5xx → 同样保留会话', async () => {
+    const { token } = await sessionAboutToExpire()
+    stub.token = { status: 502, body: { error: 'proxy_error' } }
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await expect(loadSession(token)).resolves.not.toBeNull()
+    expect(await prisma.session.count()).toBe(1)
+  })
+
+  it('连不上之后进入冷却期，不会每个请求都去撞一次超时', async () => {
+    const { token } = await sessionAboutToExpire()
+    stub.token = { status: 0, body: null, throws: new TypeError('fetch failed') }
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await loadSession(token)
+    await loadSession(token)
+    await loadSession(token)
+
+    expect(stub.tokenCalls()).toBe(1)
+  })
+
+  it('冷却期内 refresh_token 也到期了 → 该作废还是作废', async () => {
+    const { token } = await sessionAboutToExpire()
+    stub.token = { status: 0, body: null, throws: new TypeError('fetch failed') }
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await expect(loadSession(token)).resolves.not.toBeNull()
+    await prisma.session.updateMany({ data: { refreshExpiresAt: new Date(Date.now() - 1000) } })
+
+    await expect(loadSession(token)).resolves.toBeNull()
+    expect(await prisma.session.count()).toBe(0)
+  })
+
   it('压根没有 refresh_token → 直接作废，不去打 token 端点', async () => {
     const user = await createUser()
     const token = await createSession({

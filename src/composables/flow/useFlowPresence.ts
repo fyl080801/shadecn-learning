@@ -24,7 +24,7 @@ import type { FlowCollab } from "./useFlowCollab"
  *
  * 这一层只管「谁在、在哪、在动谁」：光标、选中、拖动中的几何、正在拉的线。
  * 它们全都易失、断线即消失、丢一帧无所谓（下一帧覆盖），因此**绝不落库**。
- * 画布内容是另一层，走 `useFlowSync`（见 `src/lib/presence.ts` 顶部的两层对照表）。
+ * 画布内容是另一层，直接住在 Y.Doc 里（见 `src/lib/presence.ts` 顶部的两层对照表）。
  *
  * 这个 composable **不认识 selection、也不认识 Vue Flow**：它只提供
  * 「上报」和「读别人」两组能力，本地状态怎么接进来由 `useFlowCanvas` 负责。
@@ -107,7 +107,7 @@ export function useFlowPresence(collab: FlowCollab) {
 
   function clearTransform() {
     transformState = {}
-    // 立刻发一次，不等节流：松手了对方得马上解锁，不能压在节流窗口里
+    // 立刻发一次，不等节流：松手了对方就该看到节点落定，不能压在节流窗口里
     awareness()?.setLocalStateField("transform", {})
     void flushTransform()
   }
@@ -115,7 +115,6 @@ export function useFlowPresence(collab: FlowCollab) {
   /**
    * 上报「我正从哪个节点拉线、连接口在哪」。null = 收线。
    *
-   * 起点节点在拉线期间算被我编辑（`occupies` 会认），所以别人不能同时删它、搬它。
    * 线的另一头跟着 `cursor` 走，所以只发起点。
    */
   function setConnecting(connecting: { from: PresencePoint; nodeId: string } | null) {
@@ -180,7 +179,13 @@ export function useFlowPresence(collab: FlowCollab) {
     )
   )
 
-  /** 被别人占住、我这边要变只读的元素 key */
+  /**
+   * 被别人占住的元素 key。
+   *
+   * ⚠️ **画布当前没有接这条线** —— 占用（一个人在编辑时别人不能碰）已经从交互上摘掉，
+   * 谁都可以同时改同一样东西，由 CRDT 负责合并。仲裁逻辑保留在这里和
+   * `src/lib/presence.ts`（有测试），要恢复限制只需在 `useFlowCanvas` 重新接上。
+   */
   const lockedKeys = computed(() => computeLockedKeys(peers.value, localClientId.value))
 
   /** 别人正操作着的元素此刻的几何；画布用它盖掉 store 里那份还没更新的值 */

@@ -10,6 +10,20 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
+    /**
+     * Yjs 全进程只能有一份。
+     *
+     * 我们的代码和 `@hocuspocus/provider` 各自 `import * as Y from 'yjs'`，
+     * 而 Vite 的依赖预打包会把 yjs 一起打进 provider 的产物里 —— 于是浏览器里
+     * 出现两个副本，控制台会喊 "Yjs was already imported"
+     * （https://github.com/yjs/yjs/issues/438）。
+     *
+     * 这不只是告警：两份副本意味着两套类之间的 `instanceof` **永远为 false**，
+     * 而 `src/lib/flow-doc.ts` 通篇靠 `value instanceof Y.Map` 判断节点结构 ——
+     * 静默失效的话，画布会变成一张空图。
+     * y-protocols 同理（awareness 也做 instanceof 检查）。
+     */
+    dedupe: ['yjs', 'y-protocols'],
   },
   build: {
     // 前端产物直接落进后端的静态资源目录：output/ 里就是一份完整可跑的东西
