@@ -21,6 +21,14 @@ type FlowStore = ReturnType<typeof useFlowStore>
 /** 画布空白处的指针行为 */
 export type FlowInteractionMode = "select" | "pan"
 
+/**
+ * 连线一律用贝塞尔曲线（Vue Flow 的 `default` 边）。
+ *
+ * `smoothstep` / `step` 那种折线会带直角，这里不用；新连的线存这个值，
+ * 老数据里存着折线类型的边在渲染时也按这个覆盖（见 `edges`）。
+ */
+export const FLOW_EDGE_TYPE = "default"
+
 /** 连续新增时的层叠偏移，避免节点完全重叠（第一个仍然正好在中心） */
 const CASCADE_STEP = 24
 const CASCADE_COUNT = 6
@@ -138,6 +146,8 @@ export function useFlowCanvas(
       const isLocked = locked.has(elementKey("edge", edge.id))
       return {
         ...edge,
+        // 老数据里可能存着 smoothstep 之类的折线类型，渲染时统一按曲线走
+        type: FLOW_EDGE_TYPE,
         selectable: !isLocked,
         updatable: !isLocked,
         class: isLocked ? "flow-edge-locked" : ""
@@ -357,7 +367,7 @@ export function useFlowCanvas(
       target: connection.target,
       sourceHandle: connection.sourceHandle ?? null,
       targetHandle: connection.targetHandle ?? null,
-      type: "smoothstep",
+      type: FLOW_EDGE_TYPE,
       animated: false,
       data: { config: {} }
     }

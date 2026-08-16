@@ -210,7 +210,7 @@ interface FlowEdge {
   target: string
   sourceHandle?: string | null
   targetHandle?: string | null
-  type?: string                 // 默认 'smoothstep'
+  type?: string                 // 'default'（贝塞尔曲线），渲染时统一按曲线走
   animated?: boolean
   label?: string
   data: {

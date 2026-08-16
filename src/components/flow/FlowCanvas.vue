@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  ConnectionLineType,
   ConnectionMode,
   MarkerType,
   PanOnScrollMode,
@@ -12,7 +13,7 @@ import { MiniMap } from "@vue-flow/minimap"
 import FlowPresenceCursors from "@/components/flow/FlowPresenceCursors.vue"
 import ProcessNode from "@/components/flow/ProcessNode.vue"
 // import FlowViewControls from "@/components/flow/FlowViewControls.vue"
-import { useFlowEditor } from "@/composables/flow"
+import { FLOW_EDGE_TYPE, useFlowEditor } from "@/composables/flow"
 
 /**
  * 画布本体：只负责渲染 Vue Flow 和转发交互，不含任何业务动作。
@@ -56,7 +57,8 @@ function onNodeClick(nodeId: string) {
       :edges="canvas.edges.value"
       :node-types="{ process: ProcessNode }"
       :connection-mode="ConnectionMode.Strict"
-      :default-edge-options="{ type: 'smoothstep', markerEnd: MarkerType.ArrowClosed }"
+      :default-edge-options="{ type: FLOW_EDGE_TYPE, markerEnd: MarkerType.ArrowClosed }"
+      :connection-line-type="ConnectionLineType.Bezier"
       :source-position="Position.Right"
       :target-position="Position.Left"
       :pan-on-scroll="true"
