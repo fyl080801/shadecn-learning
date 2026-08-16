@@ -6,9 +6,14 @@ FROM --platform=$BUILDPLATFORM harbor-core.harbor.svc/library/node:22-alpine AS 
 RUN apk add --no-cache python3 make g++
 RUN npm install -g pnpm@9.15.9
 WORKDIR /app
-# prisma/ 一起先拷进来，install 的 postinstall 钩子要用 schema 生成 client
+# prisma/ 和 scripts/ 一起先拷进来：install 的 postinstall 钩子是
+# `pnpm db:schema && prisma generate || true`，db:schema 要跑 scripts/prisma-schema.mjs
+# （它又读 prisma/models.prisma 和 prisma/db-provider.mjs）。少拷 scripts/ 不会让构建失败
+# —— 末尾的 || true 兜住了 —— 但日志里会多出一段 MODULE_NOT_FOUND 堆栈，看着像构建挂了，
+# 而且 && 短路会让 postinstall 里的 prisma generate 根本不执行。
 COPY package.json pnpm-lock.yaml prisma.config.ts ./
 COPY prisma ./prisma
+COPY scripts ./scripts
 RUN pnpm install --frozen-lockfile
 COPY . .
 # COPY 之后再生成一次，确保 server/generated/prisma 是最新 schema 的产物

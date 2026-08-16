@@ -109,6 +109,11 @@ docker build -t shadecn-learning ./output
 CI 里想一条命令从源码出镜像就用它，三个阶段：
 
 1. **build** —— 全量 `pnpm install --frozen-lockfile` → `prisma generate` → `pnpm build`，产出 `/app/output`；
+   install 之前必须先把 **`prisma/` 和 `scripts/`** 拷进去 —— `postinstall` 是
+   `pnpm db:schema && prisma generate || true`，而 `db:schema` 跑的是 `scripts/prisma-schema.mjs`。
+   少拷 `scripts/` 不会让构建失败（`|| true` 兜住），但日志里会多出一段 `MODULE_NOT_FOUND`
+   堆栈，看着像构建挂了，而且 `&&` 短路会让 `postinstall` 里的 `prisma generate` 不执行
+   （第 15 行那句显式的 `npx prisma generate` 正是为此留的保险）；
 2. **deps** —— 和 `output/Dockerfile` 的 deps 阶段一样，只从 `/app/output/package.json` 装生产依赖；
 3. **运行时** —— `COPY --from=build /app/output ./`，其余同上。
 
