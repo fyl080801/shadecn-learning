@@ -1,0 +1,257 @@
+# Argo Workflows 流水线定义：clone → 多架构构建推 Harbor → 把新镜像 tag 写回 git。
+#
+# 这个文件不在 k8s/ 下面，是故意的：ArgoCD 的 Application 只同步 k8s/ 目录，而且开了
+# prune + selfHeal —— 流水线定义放进去会被它纳管，以后误删文件就会连集群里的模板一起
+# prune 掉。它由人手动 apply，不进 GitOps 环：
+#
+#   kubectl apply -f ci/workflow-template.yaml
+#
+# 改完记得 apply，否则仓库和集群会不一致（集群里的那份才是实际生效的）。
+#
+# 跑一次（默认构建 master，见下面的 gitRevision）：
+#
+#   kubectl -n dev create -f ci/run.yaml
+#
+# 依赖这些带外资源（都不在仓库里，缺一个流水线就跑不起来）：
+#   - Secret dev/gitea-deploy-key   —— key: id_ed25519，gitea 上要配成有写权限的 deploy key
+#                                      （最后一步要 push 回同一个分支）
+#   - Secret dev/harbor-auth        —— key: username / password
+#   - Secret dev/harbor-ca-cert     —— key: ca.crt，Harbor 的自签 CA
+#   - ConfigMap dev/workflow-proxy-config —— HTTP_PROXY / HTTPS_PROXY / NO_PROXY，optional
+#                                      （构建要拉墙外的 npm 包，没有它多半会超时）
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: shadecn-learning-cicd
+  namespace: dev
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+      # CI 认的是 gitea，不是 github 上那个 origin
+      - name: gitRepo
+        value: ssh://git@git.fyl080801.uk:30222/admin/shadecn-learning.git
+      # 提交 Workflow 时覆盖它就能构建任意分支
+      - name: gitRevision
+        value: master
+      # Harbor 的对外地址；构建时会被换成集群内的 harbor-core.harbor.svc
+      - name: imageName
+        value: 192.168.68.95:31443/apps/shadecn-learning
+      - name: harborAuthSecret
+        value: harbor-auth
+      - name: harborCaSecret
+        value: harbor-ca-cert
+      # 下面两个目前没有模板在用，留着是给「构建完直接 kubectl set image」那条路的；
+      # 现在走 GitOps（改 tag 推回 git，ArgoCD 负责部署），所以用不上
+      - name: k8sNamespace
+        value: dev
+      - name: deploymentName
+        value: shadecn-learning
+  templates:
+    # 三步串行。镜像 tag 一律取 clone 出来的提交短 hash，构建和写回用的是同一个值
+    - name: main
+      steps:
+        - - name: clone
+            template: git-clone
+        - - name: build-and-push
+            template: buildah-build-push
+            arguments:
+              artifacts:
+                - name: source
+                  from: '{{steps.clone.outputs.artifacts.source}}'
+              parameters:
+                - name: imageTag
+                  value: '{{steps.clone.outputs.parameters.commit-short}}'
+        - - name: update-image-tag
+            template: git-update-image-tag
+            arguments:
+              artifacts:
+                - name: source
+                  from: '{{steps.clone.outputs.artifacts.source}}'
+              parameters:
+                - name: imageTag
+                  value: '{{steps.clone.outputs.parameters.commit-short}}'
+
+    - name: git-clone
+      container:
+        image: 192.168.68.95:31443/docker.io/alpine/git:latest
+        command:
+          - sh
+          - -c
+        args:
+          - |
+            set -e
+            mkdir -p /root/.ssh
+            cp /ssh-key/id_ed25519 /root/.ssh/id_ed25519
+            chmod 600 /root/.ssh/id_ed25519
+            ssh-keyscan -p 30222 git.fyl080801.uk >> /root/.ssh/known_hosts 2>/dev/null
+            REVISION="{{workflow.parameters.gitRevision}}"
+            echo "Cloning {{workflow.parameters.gitRepo}} ..."
+            GIT_SSH_COMMAND="ssh -i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts" git clone {{workflow.parameters.gitRepo}} /workspace
+            cd /workspace
+            git checkout $REVISION
+            git log -1 --oneline
+            COMMIT_SHORT=$(git rev-parse --short HEAD)
+            echo -n "$COMMIT_SHORT" > /tmp/git-commit-short
+            echo -n "$(git rev-parse HEAD)" > /tmp/git-commit-full
+        volumeMounts:
+          - name: ssh-key
+            mountPath: /ssh-key
+            readOnly: true
+      envFrom:
+        - configMapRef:
+            name: workflow-proxy-config
+            optional: true
+      outputs:
+        # 整个工作区作为 artifact 传给后面两步（走 dev/artifact-repositories 里配的 minio）
+        artifacts:
+          - name: source
+            path: /workspace
+        parameters:
+          - name: commit-full
+            valueFrom:
+              path: /tmp/git-commit-full
+          - name: commit-short
+            valueFrom:
+              path: /tmp/git-commit-short
+      volumes:
+        - name: ssh-key
+          secret:
+            secretName: gitea-deploy-key
+
+    # 用仓库根 Dockerfile 构建 amd64 + arm64 manifest 推 Harbor。整个流水线的时间几乎都在这里
+    # （约 45 分钟：两个架构各跑一遍完整的 pnpm install + build，其中一个还得靠 QEMU 模拟）。
+    # 提交 Workflow 时建议带 nodeSelector kubernetes.io/arch=amd64，历史上成功的运行都是这么跑的。
+    - name: buildah-build-push
+      inputs:
+        artifacts:
+          - name: source
+            path: /workspace
+        parameters:
+          - name: imageTag
+      workingDir: /workspace
+      container:
+        image: quay.io/buildah/stable:latest
+        command:
+          - bash
+          - -c
+        args:
+          - |
+            set -euo pipefail
+            COMMIT_ID="{{inputs.parameters.imageTag}}"
+            INTERNAL_IMAGE=$(echo {{workflow.parameters.imageName}}:${COMMIT_ID} | sed "s|192.168.68.95:31443|harbor-core.harbor.svc|")
+            INTERNAL_REGISTRY=$(echo ${INTERNAL_IMAGE} | cut -d/ -f1)
+            EXTERNAL_IMAGE={{workflow.parameters.imageName}}:${COMMIT_ID}
+
+            # Read proxy settings from env
+            PROXY_ARGS=""
+            if [ -n "$HTTP_PROXY" ]; then
+              PROXY_ARGS="$PROXY_ARGS --build-arg HTTP_PROXY=$HTTP_PROXY"
+            fi
+            if [ -n "$HTTPS_PROXY" ]; then
+              PROXY_ARGS="$PROXY_ARGS --build-arg HTTPS_PROXY=$HTTPS_PROXY"
+            fi
+            if [ -n "$NO_PROXY" ]; then
+              PROXY_ARGS="$PROXY_ARGS --build-arg NO_PROXY=$NO_PROXY"
+            fi
+
+            echo "=== Creating manifest ==="
+            buildah manifest create ${INTERNAL_IMAGE}
+            echo "=== Building amd64 ==="
+            buildah bud --platform linux/amd64 --format docker \
+              --file /workspace/Dockerfile \
+              --manifest ${INTERNAL_IMAGE} \
+              $PROXY_ARGS \
+              /workspace
+            echo "=== Building arm64 ==="
+            buildah bud --platform linux/arm64 --format docker \
+              --file /workspace/Dockerfile \
+              --manifest ${INTERNAL_IMAGE} \
+              $PROXY_ARGS \
+              /workspace
+            echo "=== Logging in to Harbor ==="
+            echo "${PASS}" | buildah login --username="${USER}" --password-stdin ${INTERNAL_REGISTRY} || true
+            echo "=== Pushing manifest to Harbor ==="
+            buildah manifest push --all ${INTERNAL_IMAGE} docker://${INTERNAL_IMAGE}
+            buildah logout ${INTERNAL_REGISTRY} || true
+            echo "=== Done: ${EXTERNAL_IMAGE} ==="
+        env:
+          # 容器里套容器，overlayfs 用不了，只能退到 vfs
+          - name: STORAGE_DRIVER
+            value: vfs
+          - name: USER
+            valueFrom:
+              secretKeyRef:
+                name: '{{workflow.parameters.harborAuthSecret}}'
+                key: username
+          - name: PASS
+            valueFrom:
+              secretKeyRef:
+                name: '{{workflow.parameters.harborAuthSecret}}'
+                key: password
+        envFrom:
+          - configMapRef:
+              name: workflow-proxy-config
+              optional: true
+        securityContext:
+          privileged: true
+          runAsUser: 0
+        volumeMounts:
+          # Harbor 是自签证书，两个路径都挂上：一个给 buildah 直接读，一个给系统 CA 信任链
+          - name: harbor-ca
+            mountPath: /etc/pki/tls/certs/harbor.crt
+            subPath: ca.crt
+            readOnly: true
+          - name: harbor-ca
+            mountPath: /etc/pki/ca-trust/source/anchors/harbor.crt
+            subPath: ca.crt
+            readOnly: true
+      volumes:
+        - name: harbor-ca
+          secret:
+            secretName: '{{workflow.parameters.harborCaSecret}}'
+
+    # GitOps 的交接点：把 k8s/deployment.yaml 里的 tag 改成刚构建出来的那个，提交并 push 回
+    # 同一个分支。之后就不管了 —— ArgoCD 轮询到这个提交，由它把新镜像部署上去。
+    - name: git-update-image-tag
+      inputs:
+        artifacts:
+          - name: source
+            path: /workspace
+        parameters:
+          - name: imageTag
+      container:
+        image: 192.168.68.95:31443/docker.io/alpine/git:latest
+        command:
+          - sh
+          - -c
+        args:
+          - |
+            set -e
+            IMAGE_TAG="{{inputs.parameters.imageTag}}"
+            IMAGE_NAME="{{workflow.parameters.imageName}}"
+            echo "=== Updating image tag to ${IMAGE_TAG} ==="
+            cd /workspace
+            sed -i "s|image: ${IMAGE_NAME}:.*|image: ${IMAGE_NAME}:${IMAGE_TAG}|" k8s/deployment.yaml
+            git config user.email "cicd@shadecn-learning.local"
+            git config user.name "CI/CD Pipeline"
+            git add k8s/deployment.yaml
+            git commit -m "ci: update image tag to ${IMAGE_TAG}" || echo "No changes to commit"
+            mkdir -p /root/.ssh
+            cp /ssh-key/id_ed25519 /root/.ssh/id_ed25519
+            chmod 600 /root/.ssh/id_ed25519
+            ssh-keyscan -p 30222 git.fyl080801.uk >> /root/.ssh/known_hosts 2>/dev/null
+            GIT_SSH_COMMAND="ssh -i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts" git push origin HEAD:{{workflow.parameters.gitRevision}}
+            echo "=== Image tag updated to ${IMAGE_TAG} ==="
+        volumeMounts:
+          - name: ssh-key
+            mountPath: /ssh-key
+            readOnly: true
+      envFrom:
+        - configMapRef:
+            name: workflow-proxy-config
+            optional: true
+      volumes:
+        - name: ssh-key
+          secret:
+            secretName: gitea-deploy-key

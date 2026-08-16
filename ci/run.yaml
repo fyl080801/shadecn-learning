@@ -1,0 +1,24 @@
+# 跑一次流水线。用 create（不是 apply）—— 名字是 generateName 生成的，每次都是新的一条：
+#
+#   kubectl -n dev create -f ci/run.yaml
+#
+# 构建别的分支就改下面的 gitRevision（不改则用模板里的默认值 master）。
+# 集群里还有 Argo Workflows 的 UI，Submit new workflow 选 shadecn-learning-cicd 是等价的。
+#
+# 注意：没有任何自动触发（集群里没装 argo-events，也没有 CronWorkflow）。push 到 gitea
+# 之后必须手动跑这一条，之后的部署才由 ArgoCD 自动接手。整条链路见 docs/12-deployment.md §4。
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: shadecn-learning-cicd-
+  namespace: dev
+spec:
+  workflowTemplateRef:
+    name: shadecn-learning-cicd
+  # buildah 那步必须落在 amd64 节点上（arm64 那半靠 QEMU 模拟，反过来跑不动）
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  arguments:
+    parameters:
+      - name: gitRevision
+        value: master

@@ -160,7 +160,89 @@ kubectl -n dev create secret generic shadecn-learning-auth \
 - 需要支持 **WebSocket** 透传（`/ws/*`）。
 - 建议启用 TLS；生产环境的会话 Cookie 依赖 HTTPS。
 
-## 4. 验收标准
+## 4. CI/CD 需求：Argo Workflows 构建 + ArgoCD 部署
+
+集群里跑的是两段式 GitOps，**分界线是「谁改 `k8s/deployment.yaml` 里的 image tag」**：Argo
+Workflows 负责构建镜像并把新 tag 写回 git，ArgoCD 负责把 git 里的清单变成集群里的状态。
+两边不直接通信，git 就是它们之间唯一的接口。
+
+```
+本地 commit → push gitea → 手动提交 Argo Workflow
+  → clone → buildah 构建 amd64+arm64 推 Harbor → sed 改 tag、提交、push 回同一分支
+  → ArgoCD 轮询发现 diff（≤3min）→ Deployment 更新（Recreate，单副本，有短暂中断）
+```
+
+### 4.1 CI 只认 gitea
+
+仓库有两个 remote，参与 CI/CD 的只有 gitea 那个：
+
+| remote | 地址 | 谁在用 |
+|---|---|---|
+| `origin` | `github.com:fyl080801/shadecn-learning.git` | 只是备份，集群完全不看 |
+| `gitea` | `ssh://git@git.fyl080801.uk:30222/admin/shadecn-learning.git` | Workflow clone 它并 push 回它；ArgoCD 从集群内 `gitea.dev.svc:3000` 同步它 |
+
+**只 push origin 等于什么都没做。**
+
+### 4.2 流水线定义在仓库里，但不由 ArgoCD 纳管
+
+`ci/workflow-template.yaml` 是 `WorkflowTemplate dev/shadecn-learning-cicd` 的清单，
+`ci/run.yaml` 是提交一次运行用的 `Workflow`。
+
+它们**故意不放在 `k8s/` 下**：ArgoCD 的 Application 只同步 `k8s/` 且开了 `prune`，流水线定义
+进去就会被纳管，以后误删文件会连集群里的模板一起删掉。代价是这份清单**要手动 apply**，
+改完不 apply 就会和集群不一致（集群里那份才生效）：
+
+```bash
+kubectl apply -f ci/workflow-template.yaml
+```
+
+三步串行，镜像 tag 一律取 clone 出来的提交短 hash：
+
+1. `git-clone` —— 用 `gitea-deploy-key` clone，checkout `gitRevision`（默认 `master`），输出短/全 hash；整个工作区作为 artifact（走 minio）传给后两步
+2. `buildah-build-push` —— 用仓库根 `Dockerfile` 构建 **amd64 + arm64 manifest**，推到 Harbor 的 `apps/shadecn-learning:<short-sha>`（走集群内地址 `harbor-core.harbor.svc`）。**整条流水线的时间几乎全在这里，约 45 分钟** —— 两个架构各跑一遍完整构建，其中一个还靠 QEMU 模拟
+3. `git-update-image-tag` —— `sed` 改 `k8s/deployment.yaml` 的 tag，提交 `ci: update image tag to <sha>`，push 回同一分支。到这里 CI 就结束了，部署是 ArgoCD 的事
+
+流水线依赖的资源都在集群里带外维护，**缺一个就跑不起来**：Secret `gitea-deploy-key`
+（必须是**有写权限**的 deploy key，最后一步要 push）、`harbor-auth`、`harbor-ca-cert`，
+以及 optional 的 ConfigMap `workflow-proxy-config`（构建要拉墙外的包，没有它多半超时）。
+
+### 4.3 没有自动触发
+
+集群里没装 argo-events（没有 Sensor CRD），也没有 CronWorkflow 或 WorkflowEventBinding。
+**push 之后必须手动起一次 Workflow**，之后的部署才是自动的：
+
+```bash
+git push gitea master
+kubectl -n dev create -f ci/run.yaml   # 改 gitRevision 可构建任意分支
+kubectl -n dev get wf -l workflows.argoproj.io/workflow-template=shadecn-learning-cicd \
+  --sort-by=.metadata.creationTimestamp
+```
+
+提交时要带 `nodeSelector: kubernetes.io/arch=amd64`（`ci/run.yaml` 里已经写好）——
+arm64 那半是 QEMU 模拟出来的，反过来跑不动。
+
+### 4.4 ArgoCD Application
+
+`argo/shadecn-learning`，project `dev`，source 是 gitea 仓库 `master` 分支的 `k8s/` 目录，
+destination 是本集群 `dev` 命名空间，`syncPolicy.automated` 开了 **`prune` 和 `selfHeal`**，
+轮询周期是 ArgoCD 的默认值（3 分钟）。不想等就手动催一下：
+
+```bash
+argocd app sync shadecn-learning
+argocd app get shadecn-learning
+```
+
+`selfHeal` 带来两条硬约束：
+
+- **`kubectl edit` / `kubectl set image` 改不动线上**，几十秒内会被刷回仓库里的值。要改集群只能改 `k8s/*.yaml` 再 push 到 gitea。临时脱管：`argocd app set shadecn-learning --sync-policy none`。
+- **`shadecn-learning-auth` 这个 Secret 绝不能提交进 `k8s/`**（§3.3）。它是带外 `kubectl create` 的，不带 ArgoCD 的 tracking label 所以不会被 prune；但仓库里一旦出现同名清单，占位值就会被同步上去把真值刷掉。
+
+Application 的 `source.directory.exclude` 还留着一条 `argo-workflow.yaml` —— 那是流水线定义
+早先放在 `k8s/` 里时的遗留，该文件如今已不存在（现在在 `ci/`，天然在 ArgoCD 的视野之外）。
+留着无害，但**别拿这条 exclude 当护栏**：想在 `k8s/` 下放不该被同步的东西，靠的是它精确匹配
+文件名，一改名就失效。
+
+## 5. 验收标准
 
 - [ ] `pnpm build` 后 `output/` 里同时有 `server/index.js` 和 `public/index.html`，`pnpm start` 能直接起服务。
 - [ ] 把 `output/` 单独拷到别处（拿不到仓库的 `node_modules`），`npm install --omit=dev && npm run migrate && npm start` 能跑起来，页面、`/api/*`、登录跳转都正常。
@@ -174,18 +256,24 @@ kubectl -n dev create secret generic shadecn-learning-auth \
 - [ ] `/api/health` 返回 200，探针不误杀。
 - [ ] `DB_PROVIDER=postgresql` 构建出的产物里没有 `@prisma/adapter-better-sqlite3`，`prisma/migrations/` 是 PG 那套。
 - [ ] client 和构建目标 provider 不一致时，`pnpm build:server` 失败并指出该跑哪条命令。
+- [ ] `kubectl create -f ci/run.yaml` 跑完之后：Harbor 里有 `apps/shadecn-learning:<short-sha>` 的**双架构** manifest，gitea 上多出一条 `ci: update image tag to <short-sha>`，且 ArgoCD 在 3 分钟内把 Application 同步回 `Synced` / `Healthy`。
+- [ ] `ci/workflow-template.yaml` 与集群里那份一致：`kubectl diff -f ci/workflow-template.yaml` 无输出。
+- [ ] 手动 `kubectl -n dev set image deploy/shadecn-learning …` 后，ArgoCD 的 `selfHeal` 把它刷回仓库里的 tag。
+- [ ] `ci/` 下的文件改动不会让 ArgoCD 变成 `OutOfSync`（它只看 `k8s/`）。
 
-## 5. 本期不做
+## 6. 本期不做
 
 - 水平扩展 / 高可用（换成 PG 只解掉存储那一半，Yjs 文档仍在进程内存里）。
-- CI/CD 流水线（镜像目前是手工构建推送）。
-- 蓝绿 / 金丝雀发布。
+- **自动触发流水线**（argo-events / webhook）—— 构建要手动起，见 §4.3。
+- 蓝绿 / 金丝雀发布（单副本 + `Recreate`，每次发布都有几十秒中断）。
+- 流水线里的自动化测试门禁（`pnpm test` 目前不在 CI 里跑）。
 - 数据库备份与灾备。
 - HPA、PDB、NetworkPolicy。
 
-## 6. 待确认事项
+## 7. 待确认事项
 
-- 镜像 tag 目前是提交短 hash 手写进 yaml，是否改为 CI 自动替换。
+- 要不要给 gitea 配 webhook + argo-events，让 push 直接触发构建。
+- 构建 45 分钟太久：是给 buildah 加缓存（`--layers` + Harbor 上的 cache 镜像），还是干脆只构 amd64。
 - 需要多副本时的演进路线：切到 PostgreSQL（存储这半已经就绪）+ 解决 Yjs 的跨进程问题，还是接受单副本。
   协同服务端换成 Hocuspocus 之后，后半有了现成的路 —— `@hocuspocus/extension-redis`
   （或整体换 [`@y/hub`](https://github.com/yjs/yhub)，updates 经 redis 流转）。没有需求所以没接。

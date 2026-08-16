@@ -8,6 +8,7 @@ output
 .agents
 .vscode
 k8s
+ci
 doc
 snapshoot
 *.log
