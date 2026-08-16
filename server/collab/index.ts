@@ -32,11 +32,13 @@ export type CollabOptions = {
    */
   destroyUnmatchedUpgrades?: boolean
   /**
-   * 校验这次 upgrade 能不能建连（用来卡登录态）。
+   * 校验这次 upgrade 能不能建连（用来卡登录态和房间权限）。
    * 返回 false 就回 401 并断开。WebSocket 握手是普通 HTTP 请求，
    * 同源的话浏览器会自动带上会话 cookie。
+   *
+   * 第二个参数是解析出来的房间名 —— 房间即资源，画布房间要按项目成员判。
    */
-  authorize?: (req: IncomingMessage) => boolean | Promise<boolean>
+  authorize?: (req: IncomingMessage, room: string) => boolean | Promise<boolean>
 }
 
 /**
@@ -63,10 +65,10 @@ export function attachCollabServer(server: ServerType, options: CollabOptions = 
 
     if (!authorize) return accept()
 
-    void Promise.resolve(authorize(req))
+    void Promise.resolve(authorize(req, room))
       .then((ok) => {
         if (ok) return accept()
-        console.warn(`[collab] 拒绝未登录的连接：${req.url}`)
+        console.warn(`[collab] 拒绝无权限的连接：${req.url}`)
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
         socket.destroy()
       })

@@ -107,6 +107,25 @@ export const useFlowStore = defineStore("flow", () => {
   let flushTimer: ReturnType<typeof setTimeout> | null = null
   let inflight: Promise<void> | null = null
 
+  // —— 协同 ——
+
+  /**
+   * 协同层挂进来的两个出口（`composables/flow/useFlowSync`）。
+   *
+   * store 不认识 yjs，也不该认识：它只负责在「产生了一条事务」和「提交成功了」
+   * 这两个时刻喊一声，广播怎么发是上层的事。没接协同时两个都是 null，行为不变。
+   */
+  let syncHooks: {
+    /** 本地产生了一条事务，发给同一张画布上的其他人 */
+    onTransaction?: (transaction: FlowTransaction) => void
+    /** 本地提交成功，把新的 revision 告诉其他人，让他们对齐乐观锁基线 */
+    onRevision?: (revision: number) => void
+  } = {}
+
+  function setSyncHooks(hooks: typeof syncHooks) {
+    syncHooks = hooks
+  }
+
   // —— 历史 ——
 
   function pushHistory(transaction: FlowTransaction) {
@@ -117,6 +136,9 @@ export const useFlowStore = defineStore("flow", () => {
   }
 
   function enqueue(transaction: FlowTransaction) {
+    // 先广播再排队：别人看到变化不用等我这边防抖 800ms 落库
+    syncHooks.onTransaction?.(transaction)
+
     pending.value = [...pending.value, transaction]
     // 冲突态是粘的：继续编辑不该把它擦掉，否则自动提交又活过来，
     // 把陈旧快照一遍遍推给服务端。只有重新加载（load）能解除。
@@ -246,6 +268,8 @@ export const useFlowStore = defineStore("flow", () => {
         })
         baseRevision.value = revision
         if (meta.value) meta.value = { ...meta.value, revision }
+        // 同房间的人内容早就跟上了（事务先广播过），这里让他们的乐观锁基线也跟上
+        syncHooks.onRevision?.(revision)
 
         // 提交期间可能又攒了新的，只摘掉这一批
         const committed = new Set(batch.map((tx) => tx.id))
@@ -271,6 +295,32 @@ export const useFlowStore = defineStore("flow", () => {
     // 这一批走完后如果还有积压（提交期间新增的），继续排下一次。
     // 类型断言是因为 TS 只看到进入 await 前赋的 'saving'，看不到异步回调里的改动。
     if (pending.value.length > 0 && (saveState.value as SaveState) === "dirty") scheduleFlush()
+  }
+
+  // —— 协同收到的东西 ——
+
+  /**
+   * 应用别人广播过来的事务。
+   *
+   * **只改内容**：不进历史（撤销只该撤自己干的事）、不进 pending（落库是发起方的责任，
+   * 两边都提交只会互相撞 409）。命令本身是幂等的（`node.add` 见到同 id 直接跳过），
+   * 所以万一重放一次也不会加出第二个节点。
+   */
+  function applyRemote(transaction: FlowTransaction) {
+    applyOps(transaction.ops)
+  }
+
+  /**
+   * 别人提交成功了，把我的乐观锁基线对齐过去。
+   *
+   * 内容我已经通过 `applyRemote` 跟上了，缺的只是 revision —— 不对齐的话
+   * 我下一次提交会带着一个陈旧的 baseRevision，必定撞 409。
+   */
+  function adoptRevision(revision: number) {
+    if (revision <= baseRevision.value) return
+    baseRevision.value = revision
+    if (meta.value) meta.value = { ...meta.value, revision }
+    lastSavedAt.value = Date.now()
   }
 
   // —— 按用户存的状态 ——
@@ -427,6 +477,9 @@ export const useFlowStore = defineStore("flow", () => {
     dirty,
     // 行为
     apply,
+    applyRemote,
+    adoptRevision,
+    setSyncHooks,
     beginTransaction,
     commitTransaction,
     undo,

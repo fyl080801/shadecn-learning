@@ -1,13 +1,17 @@
 import { computed, ref } from "vue"
 import type { useFlowStore } from "@/stores/flow"
-import type { FlowNodeData, FlowOp } from "@/types/flow"
+import type { FlowNodeData } from "@/types/flow"
 
 type FlowStore = ReturnType<typeof useFlowStore>
 
 /**
- * 选中态，以及「针对选中节点」的编辑动作。
+ * **节点**的选中态，以及「针对选中节点」的编辑动作。
  *
  * 所有写操作都转成 FlowOp 交给 store.apply —— 这里不直接碰 store.nodes。
+ *
+ * 只管节点：边的选中态在 Vue Flow 内部（属性面板只认节点，没必要再维护一份）。
+ * 需要「选中的元素」这个统一概念时去 `useFlowCanvas` —— 它把两边合成一份元素
+ * key 列表上报给反馈层，删除也在那里统一处理。
  */
 export function useFlowSelection(store: FlowStore) {
   const selectedNodeId = ref<string | null>(null)
@@ -47,41 +51,12 @@ export function useFlowSelection(store: FlowStore) {
     )
   }
 
-  /**
-   * 删除选中的节点。
-   *
-   * 连着的边必须放进**同一个事务**：这样撤销时边和节点一起回来，
-   * 而且 invertOps 会把顺序倒过来 —— 先加回节点，再加回边。
-   */
-  function deleteSelection() {
-    const node = selectedNode.value
-    if (!node) return
-
-    const attached = store.edges.filter(
-      (edge) => edge.source === node.id || edge.target === node.id
-    )
-
-    const ops: FlowOp[] = [
-      ...attached.map<FlowOp>((edge) => ({
-        type: "edge.remove",
-        targetId: edge.id,
-        before: { ...edge },
-        after: null
-      })),
-      { type: "node.remove", targetId: node.id, before: { ...node }, after: null }
-    ]
-
-    store.apply(ops, "删除节点")
-    clearSelection()
-  }
-
   return {
     selectedNodeId,
     selectedNode,
     select,
     clearSelection,
-    updateNodeData,
-    deleteSelection
+    updateNodeData
   }
 }
 

@@ -28,6 +28,9 @@ import { useFlowEditor } from "@/composables/flow"
  *
  * 页面是 bare 布局没有应用侧栏，所以这枚胶囊是「出去」的唯一入口，
  * 也是画布级动作（新建 / 复制 / 删除）的收口处。
+ *
+ * 定位不在这里：编辑器把它和右边的在场头像栏放进同一个左上角容器（FlowEditor.vue），
+ * 这样画布名长短变化时头像栏会跟着挪，不会压在一起。
  */
 const { store, document: doc } = useFlowEditor()
 
@@ -48,8 +51,9 @@ const confirmingDelete = ref(false)
 </script>
 
 <template>
+  <!-- h-10 是左上角这一排胶囊的统一高度，在场头像栏也用它对齐 -->
   <div
-    class="absolute left-4 top-4 z-10 flex items-center gap-1 rounded-full border bg-card/95 py-1 pl-1 pr-1.5 shadow-lg backdrop-blur"
+    class="flex h-10 items-center gap-1 rounded-full border bg-card/95 pl-1 pr-1.5 shadow-lg backdrop-blur"
   >
     <Button
       variant="ghost"

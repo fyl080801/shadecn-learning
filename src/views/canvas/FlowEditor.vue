@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 
 import FlowCanvas from "@/components/flow/FlowCanvas.vue"
 import FlowNodeInspector from "@/components/flow/FlowNodeInspector.vue"
+import FlowPresenceBar from "@/components/flow/FlowPresenceBar.vue"
 import FlowTitleCapsule from "@/components/flow/FlowTitleCapsule.vue"
 import FlowToolbar from "@/components/flow/FlowToolbar.vue"
 import { provideFlowEditor, useFlowShortcuts } from "@/composables/flow"
@@ -44,7 +45,13 @@ const { document: doc } = editor
 
     <template v-else>
       <FlowCanvas />
-      <FlowTitleCapsule />
+
+      <!-- 左上角一排：标题胶囊 + 在场头像栏。定位只写在这一层，两枚胶囊各自不管位置 -->
+      <div class="absolute left-4 top-4 z-10 flex items-center gap-2">
+        <FlowTitleCapsule />
+        <FlowPresenceBar />
+      </div>
+
       <FlowToolbar />
       <FlowNodeInspector />
     </template>

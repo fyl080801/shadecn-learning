@@ -9,7 +9,7 @@ import { isEditableTarget } from "./editable"
  * 只在编辑器根组件调用一次。
  */
 export function useFlowShortcuts(context: FlowEditorContext) {
-  const { store, selection, document: doc } = context
+  const { store, canvas, document: doc } = context
 
   useEventListener(window, "keydown", (event: KeyboardEvent) => {
     if (isEditableTarget(event.target)) return
@@ -29,9 +29,11 @@ export function useFlowShortcuts(context: FlowEditorContext) {
       return
     }
 
-    if ((event.key === "Delete" || event.key === "Backspace") && selection.selectedNodeId.value) {
+    // 删除键由我们自己接（Vue Flow 那个已经关掉了）：它会绕过 store.apply，
+    // 删掉的东西既不进历史也不落库、更不会同步给别人。节点和边都归这一条管。
+    if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault()
-      selection.deleteSelection()
+      canvas.deleteSelection()
     }
   })
 

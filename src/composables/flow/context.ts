@@ -1,8 +1,11 @@
 import { inject, provide, toRef, type InjectionKey } from "vue"
 import { useFlowStore } from "@/stores/flow"
 import { useFlowCanvas } from "./useFlowCanvas"
+import { useFlowCollab } from "./useFlowCollab"
 import { useFlowDocument } from "./useFlowDocument"
+import { useFlowPresence } from "./useFlowPresence"
 import { useFlowSelection } from "./useFlowSelection"
+import { useFlowSync } from "./useFlowSync"
 
 /**
  * 画布编辑器的共享上下文。
@@ -23,6 +26,8 @@ export interface FlowEditorContext {
   canvas: ReturnType<typeof useFlowCanvas>
   /** 选中态与针对选中节点的编辑 */
   selection: ReturnType<typeof useFlowSelection>
+  /** 多人在场：谁在线、光标在哪、哪些节点被别人占住 */
+  presence: ReturnType<typeof useFlowPresence>
 }
 
 const FLOW_EDITOR_KEY: InjectionKey<FlowEditorContext> = Symbol("flow-editor")
@@ -32,12 +37,30 @@ export function provideFlowEditor(props: { flowId: string }): FlowEditorContext 
   const store = useFlowStore()
   const flowId = toRef(props, "flowId")
 
+  /*
+   * 构造顺序 = 依赖方向，是条直线，不成环：
+   *
+   *   selection ──┐
+   *   collab ──┬──┴─→ canvas   （canvas 是唯一同时认识三者的接合层）
+   *            └─→ presence ──┘
+   *            └─→ sync
+   *
+   * presence 不认识 selection 也不认识 Vue Flow，只提供「上报」和「读别人」；
+   * 本地状态怎么接进去、别人的占用怎么落到画布上，都由 canvas 负责。
+   */
+  const selection = useFlowSelection(store)
+  const collab = useFlowCollab(flowId)
+  const presence = useFlowPresence(collab)
+  // 编辑操作的实时广播；没有返回值，挂上就一直在跑
+  useFlowSync(collab, store)
+
   const context: FlowEditorContext = {
     flowId,
     store,
     document: useFlowDocument(flowId, store),
-    canvas: useFlowCanvas(store),
-    selection: useFlowSelection(store)
+    canvas: useFlowCanvas(store, presence, selection),
+    selection,
+    presence
   }
 
   provide(FLOW_EDITOR_KEY, context)
