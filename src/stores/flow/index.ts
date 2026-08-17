@@ -1,5 +1,6 @@
 import { ref, shallowRef } from "vue"
 import { defineStore } from "pinia"
+import { useDebounceFn } from "@vueuse/core"
 import * as Y from "yjs"
 import { flowApi } from "@/lib/api"
 import {
@@ -45,12 +46,20 @@ import type {
  */
 
 /**
- * 本地编辑之后多久把按用户存的状态（视口…）落一次库。
+ * 一串编辑停下来多久，把按用户存的状态（视口…）补落一次库。防抖窗口。
  *
- * 是节流不是防抖：一次编辑起一个窗口，窗口里的后续编辑不重开它，
- * 否则一直画下去就一直不存。没人编辑时不存在这个定时器，也就没有请求。
+ * 注意这只管**收尾**那一发：一串编辑的第一次是立刻发的（leading），不等这个窗口。
+ * 没人编辑时既没有定时器也没有请求。
  */
 export const USER_STATE_FLUSH_DELAY = 2000
+
+/**
+ * 收尾那一发最多能被往后推多久（`maxWait`）。
+ *
+ * 一直画下去，防抖窗口就会一直被重开、永远不触发；而这趟 PATCH 兼着会话心跳
+ * （见 `noteLocalEdit()`），不能一直不发。所以给它一个天花板：连续编辑至少每 10s 落一次地。
+ */
+export const USER_STATE_FLUSH_MAX_WAIT = 10000
 
 /**
  * 本地改动的事务 origin。
@@ -313,16 +322,36 @@ export const useFlowStore = defineStore("flow", () => {
    * 加一种新的按用户存的东西：在 `FlowUserState` 加个字段、服务端加条校验，
    * 然后调 `setUserState('新字段', 值)` —— 攒批、重试、离开前落库都是现成的。
    */
-  let userStateTimer: ReturnType<typeof setTimeout> | null = null
   let userStatePatch: FlowUserState = {}
   let userStateInflight: Promise<void> | null = null
 
-  function clearUserStateTimer() {
-    if (userStateTimer !== null) {
-      clearTimeout(userStateTimer)
-      userStateTimer = null
-    }
+  /** 距上次落库之后又发生了几次本地编辑 —— 0 就说明收尾那一发没什么可送的 */
+  let editsSinceFlush = 0
+  /** 是不是正处在一串连续编辑当中（leading 那一发已经出去了） */
+  let burstOpen = false
+
+  function flushUserStateNow() {
+    // 没有攒下的字段就把当前视口当成要存的东西发出去 —— 这一趟是心跳
+    if (Object.keys(userStatePatch).length === 0) setUserState("viewport", { ...viewport.value })
+    void flushUserState()
   }
+
+  /**
+   * 一串编辑的**收尾**：手停下来一个窗口之后再补一发。
+   *
+   * leading 只保证「开头那下立刻上去」，之后的改动不能就这么丢了 —— 它们同样是
+   * 要落库的值（视口、以后别的按用户存的字段），所以后面这段仍然走防抖：
+   * 连续操作合成一次请求，手一停就补齐。一直不停手则由 `maxWait` 顶着。
+   */
+  const scheduleTailFlush = useDebounceFn(
+    () => {
+      burstOpen = false
+      // leading 之后没再发生什么，就不用白跑一趟
+      if (editsSinceFlush > 0 || Object.keys(userStatePatch).length > 0) flushUserStateNow()
+    },
+    USER_STATE_FLUSH_DELAY,
+    { maxWait: USER_STATE_FLUSH_MAX_WAIT }
+  )
 
   /** 记下来就完了，**不发请求** —— 等下一次本地编辑或离开页面时顺路带走 */
   function setUserState<K extends keyof FlowUserState>(key: K, value: FlowUserState[K]) {
@@ -338,19 +367,32 @@ export const useFlowStore = defineStore("flow", () => {
    * 周期性发请求的东西 —— 看了一眼画布就一路 PATCH 上去，很没道理。
    * 绑在编辑上之后：真的动了画布才存，没人编辑就一个请求都没有。
    * 「只平移没编辑」那种情况由离开前的 `flushUserState()` 兜住。
+   *
+   * **一次编辑至少产生一次 PATCH，哪怕视图没动过** —— 这一趟同时是会话的心跳。
+   * 内容走 WebSocket 之后，编辑本身不再产生任何 HTTP 请求，而会话的空闲计时
+   * （Keycloak 的 SSO Session Idle）只认真实请求；服务端的协同复验是只读的、
+   * 特意不续期（`server/auth/session.ts` 的 `LoadSessionOptions.refresh`），
+   * 否则挂着标签页就永远不会超时。所以：在编辑 = 隔一阵一次 PATCH = 会话续着，
+   * 只看不改 = 一个请求都没有 = 该超时就超时。
+   *
+   * 落库时机是**先立刻发一次，再防抖收尾**：空闲之后的第一次编辑不等窗口，当场就走
+   * （纯防抖的滞后感就在这儿 —— 手一直不停它就一直不发，而这趟还兼着心跳）；
+   * 这之后的改动照旧防抖，一串连续操作合成一次请求，手一停补齐，
+   * 一直不停手则由 `USER_STATE_FLUSH_MAX_WAIT` 顶着。**没有哪次改动会被丢掉。**
    */
   function noteLocalEdit() {
-    if (userStateTimer !== null) return
-    if (Object.keys(userStatePatch).length === 0) return
-
-    userStateTimer = setTimeout(() => {
-      userStateTimer = null
-      void flushUserState()
-    }, USER_STATE_FLUSH_DELAY)
+    editsSinceFlush++
+    // 空闲之后的第一次编辑：当场发，不等窗口
+    if (!burstOpen) {
+      burstOpen = true
+      flushUserStateNow()
+    }
+    void scheduleTailFlush()
   }
 
   async function flushUserState(): Promise<void> {
-    clearUserStateTimer()
+    // 这一趟会把攒着的都送走，收尾那发就不必再送一遍
+    editsSinceFlush = 0
     if (userStateInflight) return userStateInflight
     if (!meta.value) return
 
@@ -392,16 +434,19 @@ export const useFlowStore = defineStore("flow", () => {
     meta.value = { ...detail }
     userState.value = { ...(detail.userState ?? {}) }
     userStatePatch = {}
-    clearUserStateTimer()
+    // 换了张画布：下一次编辑重新算作一串的开头，立刻发
+    burstOpen = false
+    editsSinceFlush = 0
     viewport.value = userState.value.viewport ?? { x: 0, y: 0, zoom: 1 }
   }
 
   function reset() {
     // 卸载时（关标签页、跳走）把还没落库的视口补一发，不等结果
     void flushUserState()
-    clearUserStateTimer()
     detach()
     userStatePatch = {}
+    burstOpen = false
+    editsSinceFlush = 0
     userState.value = {}
     meta.value = null
     viewport.value = { x: 0, y: 0, zoom: 1 }

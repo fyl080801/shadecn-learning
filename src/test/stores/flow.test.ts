@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createPinia, setActivePinia } from "pinia"
 import * as Y from "yjs"
-import { LOCAL_ORIGIN, USER_STATE_FLUSH_DELAY, useFlowStore } from "@/stores/flow"
+import {
+  LOCAL_ORIGIN,
+  USER_STATE_FLUSH_DELAY,
+  USER_STATE_FLUSH_MAX_WAIT,
+  useFlowStore
+} from "@/stores/flow"
 import { metaMap, nodesMap, toYNode } from "@/lib/flow-doc"
 import { defaultNodeData, type FlowDetail, type FlowEdge, type FlowNode } from "@/types/flow"
 
@@ -293,29 +298,76 @@ describe("视口：按用户存，不是画布内容", () => {
     expect(calls[0]!.body).toEqual({ viewport: { x: 3, y: 4, zoom: 1 } })
   })
 
-  it("连续编辑不会把窗口一直往后推，也不会一次编辑一个请求", async () => {
+  it("第一次编辑当场就发 —— leading，没有防抖那种滞后", async () => {
     vi.useFakeTimers()
     const { calls, store } = setupWithFetch()
 
     store.setViewport({ x: 1, y: 2, zoom: 1 })
+    store.addNode(node("n1"))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.body).toEqual({ viewport: { x: 1, y: 2, zoom: 1 } })
+  })
+
+  it("连续编辑合成一次请求，手停下来再补一发 —— 后续改动不会被丢掉", async () => {
+    vi.useFakeTimers()
+    const { calls, store } = setupWithFetch()
+
     for (let i = 0; i < 5; i++) {
       store.addNode(node(`n${i}`))
       await vi.advanceTimersByTimeAsync(USER_STATE_FLUSH_DELAY / 2)
     }
-
-    // 5 次编辑跨了 2.5 个窗口，但只有第一个窗口里有攒着的视口
+    // 手还在动：开头那一发之后，中间这些合着等收尾
     expect(calls).toHaveLength(1)
+
+    // 收尾这发带的是最后的状态
+    store.setViewport({ x: 7, y: 8, zoom: 3 })
+    await vi.advanceTimersByTimeAsync(USER_STATE_FLUSH_DELAY + 10)
+
+    expect(calls).toHaveLength(2)
+    expect(calls[1]!.body).toEqual({ viewport: { x: 7, y: 8, zoom: 3 } })
   })
 
-  it("没有可存的东西时，编辑不会凭空发请求", async () => {
+  it("一直不停手也会被 maxWait 顶上去 —— 心跳不能被防抖推到永远", async () => {
+    vi.useFakeTimers()
+    const { calls, store } = setupWithFetch()
+
+    // 每半个窗口编辑一次，光靠防抖永远等不到手停的那一刻
+    const edits = (USER_STATE_FLUSH_MAX_WAIT / USER_STATE_FLUSH_DELAY) * 2 + 4
+    for (let i = 0; i < edits; i++) {
+      store.addNode(node(`n${i}`))
+      await vi.advanceTimersByTimeAsync(USER_STATE_FLUSH_DELAY / 2)
+    }
+
+    // 开头那一发之外，maxWait 到点还得再落一次地
+    expect(calls.length).toBeGreaterThan(1)
+  })
+
+  it("只有一次编辑时不会多发一遍 —— 收尾那发没东西可送就不跑", async () => {
     vi.useFakeTimers()
     const { calls, store } = setupWithFetch()
 
     store.addNode(node("n1"))
+    await vi.advanceTimersByTimeAsync(USER_STATE_FLUSH_DELAY * 3)
+
+    expect(calls).toHaveLength(1)
+  })
+
+  it("视图没动过也照发一次 —— 这趟 PATCH 同时是会话心跳", async () => {
+    vi.useFakeTimers()
+    const { calls, store } = setupWithFetch()
+
+    // 内容走 WebSocket，不产生 HTTP；会话的空闲计时只认真实请求，
+    // 所以「编辑了但没平移过」也必须落一次地，否则边编辑边被登出
+    store.addNode(node("n1"))
     await vi.advanceTimersByTimeAsync(USER_STATE_FLUSH_DELAY + 10)
 
-    expect(calls).toHaveLength(0)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toContain("/user-state")
+    expect(calls[0]!.body).toEqual({ viewport: { x: 0, y: 0, zoom: 1 } })
   })
+
 
   it("只平移没编辑，离开时兜底存一次", async () => {
     const { calls, store } = setupWithFetch()

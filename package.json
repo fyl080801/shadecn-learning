@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@9.15.9",
   "scripts": {
-    "dev": "tsx watch server/index.ts",
+    "dev": "pnpm db:deploy && tsx watch server/index.ts",
     "postinstall": "pnpm db:schema && prisma generate || true",
     "db:schema": "node scripts/prisma-schema.mjs",
     "db:schema:check": "node scripts/prisma-schema.mjs --check",

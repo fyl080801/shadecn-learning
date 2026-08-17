@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createSession } from '../../auth/session.ts'
 import { authorizeCollab } from '../../auth/ws.ts'
-import { resetDb } from '../helpers/db.ts'
+import { createUser, resetDb } from '../helpers/db.ts'
+import { idTokenClaims, stubOidcFetch, tokenResponse } from '../helpers/oidc.ts'
 import { actor, createFlow, createProject, joinViaInvite } from '../helpers/project.ts'
 
 /**
@@ -11,8 +13,12 @@ import { actor, createFlow, createProject, joinViaInvite } from '../helpers/proj
  */
 
 /** 放行了没有 —— 放行时还会带回是谁，见下面单独的用例 */
-async function allows(cookie: string | undefined, room: string) {
-  return (await authorizeCollab(cookie, room)).ok
+async function allows(
+  cookie: string | undefined,
+  room: string,
+  options?: { refresh?: boolean },
+) {
+  return (await authorizeCollab(cookie, room, options)).ok
 }
 
 describe('authorizeCollab', () => {
@@ -65,5 +71,50 @@ describe('authorizeCollab', () => {
   it('画布不存在 → 拒绝（不给探测画布是否存在的机会）', async () => {
     const alice = await actor('alice')
     expect(await allows(alice.cookie, 'flow:不存在的画布')).toBe(false)
+  })
+})
+
+/**
+ * 定期复验（`collab/hocuspocus.ts` 的 `revalidateConnections`）走的是同一个函数，
+ * 但**不许续期**：那趟检查背后没有用户动作，续了就等于「标签页开着就永不登出」。
+ * 会话该由真实的 HTTP 请求养着 —— 编辑触发的那次视图状态 PATCH 就是干这个的。
+ */
+describe('复验模式（refresh: false）', () => {
+  beforeEach(resetDb)
+  afterEach(() => vi.unstubAllGlobals())
+
+  /** 造一个 access_token 马上过期、但 refresh_token 还在的会话 */
+  async function staleSession(options: { refreshToken?: string | null } = {}) {
+    const user = await createUser({ subject: `stale-${Math.random()}` })
+    const token = await createSession({
+      user,
+      // refreshToken: null 就是「连 refresh token 都没有」，别在这里被 ?? 兜回默认值
+      tokens: tokenResponse({ expiresIn: 5, refreshToken: options.refreshToken }),
+      claims: idTokenClaims(),
+    })
+    return { user, cookie: `sid=${token}` }
+  }
+
+  it('access_token 快过期时，复验不去换新的 —— 长连接不给会话续命', async () => {
+    const stub = stubOidcFetch()
+    const { cookie } = await staleSession()
+
+    expect(await allows(cookie, 'demo', { refresh: false })).toBe(true)
+    expect(stub.tokenCalls()).toBe(0)
+  })
+
+  it('同一个会话走握手时照常续期 —— 握手本身就是一次真实请求', async () => {
+    const stub = stubOidcFetch()
+    const { cookie } = await staleSession()
+
+    expect(await allows(cookie, 'demo')).toBe(true)
+    expect(stub.tokenCalls()).toBe(1)
+  })
+
+  it('refresh token 也没了 → 复验判定失效，连接会被踢下线', async () => {
+    stubOidcFetch()
+    const { cookie } = await staleSession({ refreshToken: null })
+
+    expect(await allows(cookie, 'demo', { refresh: false })).toBe(false)
   })
 })

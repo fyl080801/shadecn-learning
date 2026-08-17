@@ -157,7 +157,9 @@ interface FlowUserState {
 
 加一个分区要动三处、都不改表：`src/types/flow.ts` 的 `FlowUserState` 加字段、服务端 `server/store/flow-types.ts` 的 `FLOW_USER_STATE_PARSERS` 加一条校验（**不认识的 key 一律 400** —— 这张表不是任意 KV）、前端 `store.setUserState('新字段', 值)`（攒批、失败重试、离开前落库都是现成的）。
 
-**视图状态自己不发请求。** `setUserState` 只把值记在本地队列里，真正落库由 `noteLocalEdit()` 触发 —— 每次本地编辑（`mutate` / `undo` / `redo`）都会叫它一声，一次编辑起一个节流窗口（`USER_STATE_FLUSH_DELAY`），窗口内的后续编辑不重开它。于是：只看不改的一次访问**零写流量**；一直画的话每两秒顺路发一个很小的 PATCH；只平移没编辑的情况由离开前的 flush 兜住。用节流不用防抖，是因为防抖会被连续编辑一直往后推、永远不触发。这条设计的由来：画布内容改走 Yjs 之后，视口若还自己起定时器，它就成了整个编辑器**唯一**的周期性 HTTP 请求 —— 看一眼画布就一路 PATCH 上去。
+**视图状态自己不发请求。** `setUserState` 只把值记在本地队列里，真正落库由 `noteLocalEdit()` 触发 —— 每次本地编辑（`mutate` / `undo` / `redo`）都会叫它一声，节奏是**先立刻发一次，再防抖收尾**：空闲之后的第一次编辑当场就走（leading，不等窗口），这之后的改动交给 `useDebounceFn`，手停下来 `USER_STATE_FLUSH_DELAY`（2s）补齐最后的状态，一直不停手则由 `maxWait`（`USER_STATE_FLUSH_MAX_WAIT`，10s）顶上去。于是：只看不改的一次访问**零写流量**；一串连续操作合成开头一发加收尾一发；**没有哪次改动被丢掉**。纯防抖不行是因为它有滞后（手不停就一直不发，而这趟还兼着会话心跳，见下），纯节流又会把窗口内最后那截改动整个丢掉。只有一次编辑时收尾那发发现没东西可送，不会白跑一趟。这条设计的由来：画布内容改走 Yjs 之后，视口若还自己起定时器，它就成了整个编辑器**唯一**的周期性 HTTP 请求 —— 看一眼画布就一路 PATCH 上去。
+
+**这一趟 PATCH 同时是会话的心跳，所以窗口到点时一定发**：视图一次都没动过的话，就把当前视口当作要存的东西发出去。内容走 WebSocket 之后编辑本身不再产生任何 HTTP，而会话的空闲计时只认真实请求，服务端的协同复验又是只读的、特意不续期（[REQ-COLLAB](04-realtime-collab.md) 4.2）—— 少了这一发，一个人可以边正常编辑边被判空闲登出。合起来是一条完整的规则：**在编辑 = 每个窗口一次 PATCH = 会话续着；只看不改 = 零请求 = 该超时就超时。**
 
 ### 3.6 图内容（`FlowGraph`）—— Y.Doc 的只读投影
 
@@ -650,7 +652,7 @@ store 的职责边界：
 - [x] 删除键删掉的节点会同步给对方、也会落库（即没有绕开 store）。（浏览器回归）
 - [x] 节点 `data.config` 里塞任意结构的 JSON，存取一字不差。（server/test/routes/flows.test.ts）
 - [ ] 平移/缩放后刷新，视口回到离开时的位置；撤销按钮不会因为只挪了画布而变亮，撤销也拽不回视野。
-- [x] **只平移不编辑时一个写请求都不发**；发生一次编辑后，攒着的视口在一个节流窗口内被顺路 PATCH 上去。（src/test/stores/flow.test.ts）
+- [x] **只平移不编辑时一个写请求都不发**；发生一次编辑后，攒着的视口立刻被顺路 PATCH 上去，之后的连续编辑合成一发在手停时补齐（一直不停手由 `maxWait` 顶上）。（src/test/stores/flow.test.ts）
 - [ ] 同一张画布两个人各自平移到不同位置，互不影响；第三个人第一次打开时按投影里的兜底视口（或 fitView）。
 - [x] 一张 `ydoc` 为空的老画布被打开后，旧 `graph` JSON 的内容原样出现在画布上，且此后以 Y.Doc 为准。（server/test/routes/flows.test.ts）
 - [x] `FlowOperation` 里每条记录的 `actorId` 是服务端认定的登录用户，客户端改不了。（server/test/routes/flows.test.ts）

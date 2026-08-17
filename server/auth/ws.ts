@@ -40,6 +40,17 @@ export type CollabAuthorization =
 
 const DENIED: CollabAuthorization = { ok: false }
 
+export interface CollabAuthorizeOptions {
+  /**
+   * 允不允许顺手续期会话。默认 true —— 握手本身就是一次真实的 HTTP 请求，
+   * 和调接口一样该给会话续命。
+   *
+   * 定期复验传 `false`：那趟检查背后没有任何用户动作，让它续期等于
+   * 「标签页开着就永不登出」。细节见 `session.ts` 的 `LoadSessionOptions`。
+   */
+  refresh?: boolean
+}
+
 /** 显示名的取值顺序要和前端 `useAuth().displayName` 一致，否则改写前后名字会跳 */
 function displayNameOf(user: {
   name: string | null
@@ -57,7 +68,8 @@ function displayNameOf(user: {
  * 原始 http server 还是测试里手拼的，都能直接调。
  *
  * 握手就是一次普通 HTTP GET，同源下浏览器会自动带上 sid cookie，
- * 所以这里跟接口用的是同一套会话（顺带也会触发 token 刷新）。
+ * 所以这里跟接口用的是同一套会话（握手会顺带续期，定期复验则不会 ——
+ * 见 `CollabAuthorizeOptions.refresh`）。
  *
  * 房间即资源：`flow:<flowId>` 这类画布房间还要再判一次**项目成员身份**，
  * 规则和 `auth/project.ts` 的 `requireFlowMember` 一致 —— 否则任何登录用户
@@ -67,12 +79,13 @@ function displayNameOf(user: {
 export async function authorizeCollab(
   cookieHeader: string | null | undefined,
   room: string,
+  options: CollabAuthorizeOptions = {},
 ): Promise<CollabAuthorization> {
   // 没配 Keycloak 时整站放行，本地裸跑也要能开协同（此时没有可认的用户）
   if (!authEnabled) return { ok: true, identity: null }
 
   const token = cookieValue(cookieHeader, authConfig.cookieName)
-  const session = await loadSession(token)
+  const session = await loadSession(token, { refresh: options.refresh })
   if (!session) return DENIED
 
   const identity: CollabIdentity = {

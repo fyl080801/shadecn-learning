@@ -78,6 +78,12 @@ function lockConnections(document: Document): void {
  * 说明基础设施出了问题（数据库、Keycloak 连不上），证明不了任何事，连接留着，
  * 下一轮再查。和 `auth/session.ts` 对刷新失败的态度是同一条：没有证据不杀会话。
  *
+ * **`refresh: false` 是这里的关键**：复验只「看」，不给会话续命。它背后没有任何
+ * 用户动作，每分钟续一次的话，开着画布不动的人就永远不会空闲超时 —— 长连接
+ * 自己把自己续活了。续期归真实的 HTTP 请求管：有人真的动了画布，
+ * `stores/flow` 的 `noteLocalEdit()` 会 PATCH 一次视图状态，那一趟才重置空闲计时。
+ * 于是「在编辑 = 会话续着」「只挂着不动 = 该超时就超时」。
+ *
  * 被踢的 provider 会自动重连，但重连的握手会在 `onConnect` 被同一套检查拒掉。
  */
 async function revalidateConnections(hocuspocus: Hocuspocus): Promise<void> {
@@ -91,7 +97,7 @@ async function revalidateConnections(hocuspocus: Hocuspocus): Promise<void> {
       const cookie = connection.request?.headers?.get?.('cookie') ?? ''
       let verdict = verdicts.get(cookie)
       if (!verdict) {
-        verdict = authorizeCollab(cookie, document.name).then(
+        verdict = authorizeCollab(cookie, document.name, { refresh: false }).then(
           (result) => result.ok,
           () => true,
         )

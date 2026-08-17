@@ -134,8 +134,27 @@ function canRefresh(session: Session) {
   return !session.refreshExpiresAt || session.refreshExpiresAt.getTime() > Date.now()
 }
 
+export interface LoadSessionOptions {
+  /**
+   * access_token 快过期时要不要顺手续一次。默认 true。
+   *
+   * 传 `false` 的只有一种调用方：**背后没有真实用户动作**的定期复验
+   * （协同长连接的成员资格复查，见 `collab/hocuspocus.ts`）。
+   * 会话的空闲超时实际掌握在 Keycloak 的 refresh token 手里，而每续一次
+   * 就等于把它往后推一次 —— 复验每分钟跑一趟的话，开着标签页不动的人
+   * 也永远不会空闲超时，"长连接自己给自己续命"。
+   *
+   * 只读复验只回答「此刻还有效吗」，续期交给真实的 HTTP 请求 ——
+   * 编辑触发的那次视图状态 PATCH 就是干这个的（`src/stores/flow` 的 `noteLocalEdit`）。
+   */
+  refresh?: boolean
+}
+
 /** 按 cookie 里的 token 取会话；access_token 快过期就顺手续一次 */
-export async function loadSession(token: string | undefined): Promise<LoadedSession | null> {
+export async function loadSession(
+  token: string | undefined,
+  options: LoadSessionOptions = {},
+): Promise<LoadedSession | null> {
   if (!token) return null
 
   const id = tokenId(token)
@@ -150,6 +169,11 @@ export async function loadSession(token: string | undefined): Promise<LoadedSess
 
   // access_token 还有 30 秒以上就直接用
   if (session.expiresAt.getTime() - Date.now() > 30_000) return session
+
+  // 只读复验：不续期，也就没法靠它把会话续下去。
+  // refresh token 还在 = 现在仍然有效（下一次真实请求会去续），没了才是真过期。
+  // 这里不删会话：判过期是只读的事，清理留给下一次真实请求的 renew 和 sweepExpired
+  if (options.refresh === false) return canRefresh(session) ? session : null
 
   // 上一次是「连不上 Keycloak」失败的：冷却期内先用着旧会话。
   // refresh token 还在有效期内，等对面缓过来再续就是了
