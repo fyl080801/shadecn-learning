@@ -58,6 +58,16 @@ export default defineConfig({
             KEYCLOAK_CLIENT_ID: 'test-client',
             KEYCLOAK_CLIENT_SECRET: '',
             KEYCLOAK_SCOPE: 'openid profile email',
+            /**
+             * 测试默认按单副本跑（共享状态走进程内存），和不配 REDIS_URL 的默认形态一致。
+             * REDIS_URL 显式清空，免得开发者自己 .env 里那行漏进来把整轮测试指向真 Redis。
+             *
+             * 抽象层的契约测试要在真 Redis 上再跑一遍时，设 TEST_REDIS_URL
+             * （和 TEST_DATABASE_URL 是同一个路数）—— 没设就只跑内存实现。
+             */
+            CLUSTER_MODE: 'single',
+            REDIS_URL: '',
+            TEST_REDIS_URL: process.env.TEST_REDIS_URL ?? '',
           },
         },
       },

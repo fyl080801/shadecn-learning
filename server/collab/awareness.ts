@@ -1,7 +1,8 @@
+import { sharedMap, stringCodec } from '../cluster/index.ts'
 import type { CollabIdentity } from '../auth/ws.ts'
 
 /**
- * clientID 的归属登记：房间 → (clientID → 首次发布它的 socketId)。
+ * clientID 的归属登记：`<房间>:<clientID>` → 首次发布它的 socketId。
  *
  * awareness 更新按条目自带的 clientID + clock 应用 —— 不登记的话，任何成员都能
  * 构造带队友 clientID、clock 抬高的条目，把对方的光标钉在任意位置、逐帧覆写
@@ -12,38 +13,73 @@ import type { CollabIdentity } from '../auth/ws.ts'
  * clientID 是客户端随机挑的 32 位数，抢注别人「将来的」号码无从谈起；
  * 断线重连换了 socket 的话，旧 socket 的登记在 `releaseSocket` 里清掉，
  * 新 socket 重新认领同一个 clientID（provider 重连不换 Y.Doc，号码不变）。
+ *
+ * **多副本下这张表必须共享**：两个人连在不同实例上时，各自实例只看得见自己那半，
+ * 冒名者只要连到另一个实例就绕过了登记。所以认领走 `claim()`（Redis 的 `SET NX`，
+ * 判断加写入是一个原子动作），登记里的 socketId 也带上实例前缀 ——
+ * socketId 只在单个进程里唯一，不加前缀两个实例会撞号，正主反而被当成冒用。
  */
-const claims = new Map<string, Map<number, string>>()
+const claims = sharedMap<string>('awareness-claims', stringCodec)
+
+/**
+ * 登记的存活时间。
+ *
+ * 正常释放走 `releaseSocket`（断连时）。TTL 是给「实例崩了没来得及释放」兜底的：
+ * 没有它，那个 clientID 会永远归一个已经不存在的 socket，本人重连也发不出 awareness。
+ * 取值远大于一次重连所需的时间，不然会把还活着的登记冲掉。
+ */
+const CLAIM_TTL = 10 * 60_000
+
+/**
+ * 认领结果的本地缓存。
+ *
+ * `beforeHandleAwareness` 是**每帧**都跑的热路径，不能每帧一次 Redis 往返。
+ * 一个 clientID 只有**第一次**出现时走网络，之后全在本地判断 ——
+ * 归属一旦定下就不会变（要变只能先断连释放，那时缓存也一并清掉）。
+ */
+const localOwners = new Map<string, string>()
+
+function claimKey(room: string, clientId: number) {
+  return `${room}:${clientId}`
+}
 
 /**
  * 把 `states` 里**不属于这条连接**的条目就地删掉，返回删了几条。
  *
  * `states` 是 Hocuspocus 从这一条消息里解出来的条目集合（可变 Map），
  * 删掉的条目不会进文档的 awareness，也不会被广播。
+ *
+ * Redis 不可用时**放行**：这是一道防冒名的护栏，不是访问控制那道门
+ * （那道在 `onConnect` 已经把过了），为它把所有人的在场状态卡死不划算。
  */
-export function dropForeignClients(
+export async function dropForeignClients(
   room: string,
   socketId: string,
   states: Map<number, Record<string, unknown>>,
-): number {
-  let owners = claims.get(room)
-  if (!owners) {
-    owners = new Map()
-    claims.set(room, owners)
-  }
-
+): Promise<number> {
   let dropped = 0
+
   for (const clientId of [...states.keys()]) {
-    const owner = owners.get(clientId)
-    if (owner === undefined) {
-      owners.set(clientId, socketId)
+    const key = claimKey(room, clientId)
+    const cached = localOwners.get(key)
+
+    if (cached === undefined) {
+      // 第一次见这个号：试着认领。抢到就是我们的，没抢到要问清楚是谁的
+      const won = await claims.claim(key, socketId, CLAIM_TTL).catch(() => true)
+      const owner = won ? socketId : ((await claims.get(key).catch(() => socketId)) ?? socketId)
+      localOwners.set(key, owner)
+      if (owner === socketId) continue
+      states.delete(clientId)
+      dropped += 1
       continue
     }
-    if (owner !== socketId) {
+
+    if (cached !== socketId) {
       states.delete(clientId)
       dropped += 1
     }
   }
+
   if (dropped > 0) {
     console.warn(`[collab] ${room} 丢弃了 ${dropped} 条冒用他人 clientID 的 awareness 更新`)
   }
@@ -51,18 +87,28 @@ export function dropForeignClients(
 }
 
 /** 一条连接断开：它认领过的 clientID 全部释放，重连的新 socket 才能接着用 */
-export function releaseSocket(room: string, socketId: string): void {
-  const owners = claims.get(room)
-  if (!owners) return
-  for (const [clientId, owner] of owners) {
-    if (owner === socketId) owners.delete(clientId)
+export async function releaseSocket(room: string, socketId: string): Promise<void> {
+  const prefix = `${room}:`
+
+  for (const [key, owner] of [...localOwners]) {
+    if (key.startsWith(prefix) && owner === socketId) localOwners.delete(key)
   }
-  if (owners.size === 0) claims.delete(room)
+
+  // 冷路径（断连时），扫一遍这个房间的登记，只删自己认领的那些。
+  // 房间里的登记条数 = 在线人数，量级很小
+  const entries = await claims.entries(prefix).catch(() => [])
+  await Promise.all(
+    entries.filter(([, owner]) => owner === socketId).map(([key]) => claims.delete(key)),
+  ).catch(() => undefined)
 }
 
 /** 房间散场：整张登记表作废 */
-export function forgetClaims(room: string): void {
-  claims.delete(room)
+export async function forgetClaims(room: string): Promise<void> {
+  const prefix = `${room}:`
+  for (const key of [...localOwners.keys()]) {
+    if (key.startsWith(prefix)) localOwners.delete(key)
+  }
+  await claims.deleteByPrefix(prefix).catch(() => undefined)
 }
 
 /**

@@ -1,4 +1,5 @@
 import * as Y from 'yjs'
+import { sharedMap, stringCodec } from '../cluster/index.ts'
 import { GRAPH_LIMITS } from '../store/flow-types.ts'
 import { edgesMap, nodesMap } from './flow-doc.ts'
 
@@ -44,6 +45,28 @@ const oversized = new Map<string, string>()
 
 /** 顶到硬限（锁写，直到散场重开）的房间：房间名 → 原因 */
 const locked = new Map<string, string>()
+
+/**
+ * 上面两张表在多副本下的共享副本。
+ *
+ * **本地那两个 Map 不能撤**：`quotaLocked()` 在 `beforeHandleMessage` 里被**同步**调用，
+ * 每条消息一次 —— 那条路上加一次 Redis 往返是不能接受的。所以是「本地判定 + 共享传播」：
+ * 判定结果顺手写进共享层（不等结果），复量那一拍顺手把别的实例的判定拉回来。
+ *
+ * 代价是标记有几秒的传播延迟，超限房间可能在别的实例上多接受一小段写入。
+ * 这和配额本身的语义是一致的 —— 它本来就是「事后记账、下一条消息才生效」，
+ * 而不是一道同步闸门（见文件头）。
+ */
+const sharedOversized = sharedMap<string>('quota-oversized', stringCodec)
+const sharedLocked = sharedMap<string>('quota-locked', stringCodec)
+
+/**
+ * 共享标记的存活时间，每次复量续一次。
+ *
+ * 纯兜底：正常散场由 `forgetQuota` 清掉，这个 TTL 是为了防止某个实例崩在
+ * 「已锁写」状态上，把一个早就恢复正常的房间永远钉死。
+ */
+const SHARED_MARK_TTL = 5 * 60_000
 
 /**
  * 字节数要序列化整个文档才量得出来，不能每条消息都来一遍。
@@ -116,11 +139,37 @@ export function checkQuota(documentName: string, doc: Y.Doc, updateBytes = 0): s
       oversized.set(documentName, reason)
       console.warn(`[collab] ${documentName} 超出配额（仍可写入，删回去即恢复）：${reason}`)
     }
+    void sharedOversized.set(documentName, reason, SHARED_MARK_TTL).catch(() => undefined)
   } else if (oversized.delete(documentName)) {
     console.log(`[collab] ${documentName} 规模回到配额以内，标记解除`)
+    void sharedOversized.delete(documentName).catch(() => undefined)
   }
 
   return null
+}
+
+/**
+ * 把别的实例的判定拉回本地。
+ *
+ * 挂在复量那一拍上，不另起定时器 —— 复量的节奏（1～5 秒）正好也是标记该有的粒度。
+ * **只补不删**：远端说「有」就补上，远端说「没有」不代表本地那条判错了
+ * （可能是本地刚判出来还没写上去）。解除靠各实例自己每次 `checkQuota` 重算，
+ * 节点/连线数是 O(1) 的 `Y.Map.size`，删回去当场就能解。
+ *
+ * Redis 抖动一律吞掉：配额是防滥用的护栏，不该因为缓存不可用就拦住正常编辑。
+ */
+function pullSharedMarks(documentName: string): void {
+  void Promise.all([sharedOversized.get(documentName), sharedLocked.get(documentName)])
+    .then(([remoteOversized, remoteLocked]) => {
+      if (remoteLocked && !locked.has(documentName)) {
+        locked.set(documentName, remoteLocked)
+        console.warn(`[collab] ${documentName} 已被其它实例锁写：${remoteLocked}`)
+      }
+      if (remoteOversized && !oversized.has(documentName)) {
+        oversized.set(documentName, remoteOversized)
+      }
+    })
+    .catch(() => undefined)
 }
 
 /** 到时机就量一次文档字节数；没到返回 null（表示「这轮没量」） */
@@ -139,16 +188,26 @@ function measureBytesThrottled(documentName: string, doc: Y.Doc, updateBytes: nu
 
   lastBytesCheck.set(documentName, now)
   bytesSinceCheck.set(documentName, 0)
+  // 借这一拍把别的实例的判定同步过来，省一个定时器
+  pullSharedMarks(documentName)
   return Y.encodeStateAsUpdate(doc).byteLength
 }
 
 function lock(documentName: string, reason: string): string {
   locked.set(documentName, reason)
+  void sharedLocked.set(documentName, reason, SHARED_MARK_TTL).catch(() => undefined)
   console.warn(`[collab] ${documentName} 顶到硬限，房间锁写（散场重开后重新判）：${reason}`)
   return reason
 }
 
-/** 房间散场时清掉记录，下次打开重新判 */
+/**
+ * 房间散场时清掉记录，下次打开重新判。
+ *
+ * **只清本地，不碰共享层**：别的实例可能还开着这个房间，删掉共享标记等于替它撤销判定。
+ * 共享标记自带 TTL，而且这类判定是**可重算的** —— 文档要真超限，下一次
+ * `checkQuota`（节点/连线数是 O(1) 的 `Y.Map.size`）会当场重新判出来并重新写上去。
+ * 所以标记过期没有后果，最坏是多接受一小段写入，这与配额「事后记账」的语义一致。
+ */
 export function forgetQuota(documentName: string): void {
   oversized.delete(documentName)
   locked.delete(documentName)

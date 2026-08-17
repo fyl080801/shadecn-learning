@@ -1,0 +1,113 @@
+# 多副本部署 —— 和 deployment.yaml **二选一**，别同时 apply（同名 Deployment/Service）。
+#
+# 和单副本那份的区别只有配置，镜像是同一个：副本模式由 CLUSTER_MODE 决定，
+# 不是构建时绑死的。唯一绑构建的是数据库 provider（Prisma 生成的 client 里
+# 编译进去的查询引擎只有一套），所以这份要求镜像是用 DB_PROVIDER=postgresql 构建的。
+#
+# 前置：集群里得有 Redis 和 PostgreSQL。这里假设它们已经存在，
+# 连接串放进 Secret（见下）——本仓库不管它们怎么部署。
+#
+#   kubectl -n dev create secret generic shadecn-learning-auth \
+#     --from-literal=KEYCLOAK_CLIENT_SECRET="$KEYCLOAK_CLIENT_SECRET" \
+#     --from-literal=SESSION_SECRET="$SESSION_SECRET" \
+#     --from-literal=DATABASE_URL="postgresql://user:pass@postgres:5432/app?schema=public" \
+#     --from-literal=REDIS_URL="redis://redis:6379" \
+#     --dry-run=client -o yaml | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shadecn-learning
+  namespace: dev
+  labels:
+    app: shadecn-learning
+spec:
+  # 房间的内容和 awareness 经 Redis 在实例之间同步，落库由分布式锁去重，
+  # 所以这里可以真的 >1。没有 PVC，也就没有「同一个卷只能挂一次」那条限制
+  replicas: 3
+  strategy:
+    # 单副本那份必须是 Recreate（两个 Pod 并存会各写各的 ydoc，后写覆盖先写）。
+    # 多副本下这个前提不存在了，滚动更新才有意义 —— 发布不再有整段中断
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: shadecn-learning
+  template:
+    metadata:
+      labels:
+        app: shadecn-learning
+    spec:
+      containers:
+        - name: shadecn-learning
+          # 必须是 DB_PROVIDER=postgresql 构建出来的镜像，见 docs/12
+          image: 192.168.68.95:31443/apps/shadecn-learning:b5752c6
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: "3000"
+            # ---- 多副本 ----
+            - name: CLUSTER_MODE
+              value: redis
+            # awareness 的归属登记要区分「哪个实例的哪条连接」，
+            # 用 Pod 名当实例 id 最省事，重建也自然换新
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # 多个环境共用一台 Redis 时改这个，别让 dev 和 prod 撞键
+            - name: REDIS_KEY_PREFIX
+              value: shadecn-dev
+            # ---- 数据库 ----
+            # DATA_DIR 和 PVC 都没了：PostgreSQL 不需要本地卷
+            - name: DB_PROVIDER
+              value: postgresql
+            # DATABASE_URL / REDIS_URL 都在 Secret 里（连接串带密码）
+            - name: APP_ORIGIN
+              value: https://demo.fyl080801.uk
+            - name: KEYCLOAK_ISSUER
+              value: https://keycloak.fyl080801.uk/realms/master
+            - name: KEYCLOAK_CLIENT_ID
+              value: sample
+            - name: KEYCLOAK_SCOPE
+              value: openid profile email
+          envFrom:
+            - secretRef:
+                name: shadecn-learning-auth
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          # 每个 Pod 启动都会跑 prisma db push。**它没有迁移那套 advisory lock**：
+          # 表已经在了的话第二个 Pod 只是「发现已一致」直接过，但**首次部署**时
+          # 3 个 Pod 同时建表是有可能撞的（DDL 并发）。撞了的 Pod 会退出重启，
+          # 下一次就发现表已经建好了 —— 能自愈，只是首次会多几秒。
+          # 想干净点：首次部署先 replicas: 1，起来之后再 scale 上去。
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            periodSeconds: 10
+      imagePullSecrets:
+        - name: harbor-pull-secret

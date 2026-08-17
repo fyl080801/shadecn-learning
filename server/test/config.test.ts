@@ -219,3 +219,75 @@ describe('authEnabled / assertAuthConfig()', () => {
     expect(warn).not.toHaveBeenCalled()
   })
 })
+
+describe('副本模式解析', () => {
+  beforeEach(() => {
+    vi.stubEnv('CLUSTER_MODE', undefined)
+    vi.stubEnv('REDIS_URL', undefined)
+  })
+
+  it('什么都不配 → 单副本（共享状态在进程内存里）', async () => {
+    const config = await loadConfig()
+    expect(config.clusterMode).toBe('single')
+    expect(config.isClustered).toBe(false)
+  })
+
+  it('给了 REDIS_URL 就按多副本走，不用再写一遍 CLUSTER_MODE', async () => {
+    vi.stubEnv('REDIS_URL', 'redis://127.0.0.1:6379')
+    const config = await loadConfig()
+    expect(config.clusterMode).toBe('redis')
+  })
+
+  it('显式的 CLUSTER_MODE 压过推断 —— 配着 Redis 也能按单副本跑', async () => {
+    vi.stubEnv('REDIS_URL', 'redis://127.0.0.1:6379')
+    vi.stubEnv('CLUSTER_MODE', 'single')
+    const config = await loadConfig()
+    expect(config.clusterMode).toBe('single')
+  })
+
+  it('CLUSTER_MODE 只认 single / redis', async () => {
+    vi.stubEnv('CLUSTER_MODE', 'cluster')
+    await expect(loadConfig()).rejects.toThrowError(/CLUSTER_MODE/)
+  })
+
+  it('说要多副本却没给 REDIS_URL → 配置自相矛盾，任何环境都拒绝启动', async () => {
+    vi.stubEnv('CLUSTER_MODE', 'redis')
+    const config = await loadConfig()
+    expect(() => config.assertClusterConfig()).toThrowError(/REDIS_URL/)
+  })
+
+  it('多副本配 SQLite：开发环境只警告（单进程调试是合理姿势）', async () => {
+    vi.stubEnv('REDIS_URL', 'redis://127.0.0.1:6379')
+    vi.stubEnv('DB_PROVIDER', 'sqlite')
+    vi.stubEnv('DATABASE_URL', undefined)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const config = await loadConfig()
+    expect(() => config.assertClusterConfig()).not.toThrow()
+    expect(warn.mock.calls.flat().join(' ')).toContain('PostgreSQL')
+  })
+
+  it('多副本配 SQLite：生产直接拒绝启动 —— 单文件库多个 Pod 共享不了', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('REDIS_URL', 'redis://127.0.0.1:6379')
+    vi.stubEnv('DB_PROVIDER', 'sqlite')
+    vi.stubEnv('DATABASE_URL', undefined)
+    const config = await loadConfig()
+    expect(() => config.assertClusterConfig()).toThrowError(/PostgreSQL/)
+  })
+
+  it('单副本模式下不管数据库是什么，都不该有意见', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const config = await loadConfig()
+    expect(() => config.assertClusterConfig()).not.toThrow()
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('实例 id：没配就自己生成一个，配了就用配的', async () => {
+    vi.stubEnv('INSTANCE_ID', undefined)
+    expect((await loadConfig()).instanceId).toMatch(/.+-[0-9a-f]{8}$/)
+
+    vi.stubEnv('INSTANCE_ID', 'pod-7')
+    expect((await loadConfig()).instanceId).toBe('pod-7')
+  })
+})

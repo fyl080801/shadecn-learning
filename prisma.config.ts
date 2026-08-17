@@ -1,10 +1,9 @@
 import { defineConfig } from 'prisma/config'
 import {
   ensureDatabaseDir,
-  migrationsPathOf,
   resolveDatabaseUrl,
   resolveProvider,
-  schemaPathOf,
+  schemaDirOf,
 } from './prisma/db-provider.mjs'
 
 // 用 node 自带的 .env 读取，省掉 dotenv 依赖（node >= 20.12 就有 loadEnvFile）
@@ -20,12 +19,12 @@ const provider = resolveProvider()
 const url = resolveDatabaseUrl(process.env, provider)
 ensureDatabaseDir(url)
 
+// 没有 migrations 配置：结构同步走 `prisma db push`，这个项目不留迁移历史。
+// 为什么这么选，见 docs/05-data-persistence.md
 export default defineConfig({
-  // 两份 schema 由 `pnpm db:schema` 从 prisma/models.prisma 生成
-  schema: schemaPathOf(provider),
-  migrations: {
-    // 迁移历史按 provider 分开：DDL 方言不同，不能混用同一套文件
-    path: migrationsPathOf(provider),
-  },
+  // 指向**目录**：prisma/<provider>/ 下是 schema.prisma（generator + datasource）
+  // 加一个指向 prisma/models/ 的符号链接，Prisma 的多文件 schema 会把它们合起来。
+  // 模型只有一份物理文件，两个 provider 共用
+  schema: schemaDirOf(provider),
   datasource: { url },
 })

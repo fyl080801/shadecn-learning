@@ -1,0 +1,69 @@
+// 登录与会话相关的模型（REQ-AUTH）。
+//
+// 这个目录是**唯一的手写来源**，SQLite 和 PostgreSQL 共用同一批物理文件 ——
+// prisma/sqlite/ 和 prisma/postgresql/ 各有一个 `models` 符号链接指到这里，
+// 两边的差别只有各自 schema.prisma 里 datasource 的那一行 provider。
+// 详见 docs/05-data-persistence.md §3.3。
+//
+// 模型里不要出现任何 provider 专属的东西（`@db.*` 原生类型、数组、Json、
+// enum、citext…），两边生成出来的 client 类型必须一模一样，业务代码才不用分叉。
+
+/// 从 Keycloak 的 id_token / userinfo 落下来的用户档案。
+/// 用 (issuer, subject) 做唯一键：换了 realm 就是另一个人。
+model User {
+  id          String    @id @default(cuid())
+  issuer      String
+  subject     String
+  username    String?
+  email       String?
+  name        String?
+  avatarUrl   String?
+  /// Keycloak realm/client 角色，存成 JSON 字符串（SQLite 没有数组类型，两边统一用 String）
+  roles       String    @default("[]")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastLoginAt DateTime?
+
+  sessions        Session[]
+  memberships     ProjectMember[]
+  createdProjects Project[]       @relation("ProjectCreator")
+  flowStates      FlowUserState[]
+
+  @@unique([issuer, subject])
+}
+
+/// 服务端会话：浏览器只拿到一个随机 token（httpOnly cookie），
+/// 这里存的 id 是那个 token 的 sha256，token 本身不落库。
+model Session {
+  id               String    @id
+  userId           String
+  accessToken      String
+  refreshToken     String?
+  idToken          String?
+  /// access_token 过期时间，到点用 refresh_token 续
+  expiresAt        DateTime
+  refreshExpiresAt DateTime?
+  /// Keycloak 的 session_state，用于后端发起的单点登出
+  sessionState     String?
+  userAgent        String?
+  ip               String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// 一次授权请求的临时凭据（state / nonce / PKCE code_verifier）。
+/// 回调时一次性消费掉，防重放；过期的靠 sweep 清理。
+model AuthRequest {
+  id           String   @id @default(cuid())
+  state        String   @unique
+  nonce        String
+  codeVerifier String
+  /// 登录成功后要跳回的前端地址（只允许站内路径）
+  redirectTo   String   @default("/")
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+}

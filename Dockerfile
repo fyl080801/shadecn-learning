@@ -6,14 +6,16 @@ FROM --platform=$BUILDPLATFORM harbor-core.harbor.svc/library/node:22-alpine AS 
 RUN apk add --no-cache python3 make g++
 RUN npm install -g pnpm@9.15.9
 WORKDIR /app
-# prisma/ 和 scripts/ 一起先拷进来：install 的 postinstall 钩子是
-# `pnpm db:schema && prisma generate || true`，db:schema 要跑 scripts/prisma-schema.mjs
-# （它又读 prisma/models.prisma 和 prisma/db-provider.mjs）。少拷 scripts/ 不会让构建失败
-# —— 末尾的 || true 兜住了 —— 但日志里会多出一段 MODULE_NOT_FOUND 堆栈，看着像构建挂了，
-# 而且 && 短路会让 postinstall 里的 prisma generate 根本不执行。
+# prisma/ 先拷进来：install 的 postinstall 是 `prisma generate || true`，
+# 而 generate 要读 prisma.config.ts → prisma/db-provider.mjs → prisma/<provider>/（schema 目录）。
+# 少拷不会让构建失败（|| true 兜住），但日志里会多出一段报错、而且这一步的 generate 白跑
+# —— 第 15 行那句显式的 npx prisma generate 是为此留的保险。
+#
+# ⚠️ `prisma/<provider>/models` 是指向 `prisma/models/` 的**符号链接**。
+# docker 的 COPY 会原样保留它（相对链接，拷过去仍然指得对），所以这里不用特殊处理；
+# 换成把 prisma/ 打成 tar 再解、或者用 rsync 时要留意别把链接拍平成文件。
 COPY package.json pnpm-lock.yaml prisma.config.ts ./
 COPY prisma ./prisma
-COPY scripts ./scripts
 RUN pnpm install --frozen-lockfile
 COPY . .
 # COPY 之后再生成一次，确保 server/generated/prisma 是最新 schema 的产物
@@ -41,5 +43,6 @@ COPY --from=build /app/output ./
 RUN mkdir -p /app/data
 VOLUME ["/app/data"]
 EXPOSE 3000
-# 起服务前先把迁移跑上，库文件不存在会自动建
-CMD ["sh", "-c", "npx prisma migrate deploy && node server/index.js"]
+# 起服务前先把表结构对齐到 schema（db push，没有迁移历史），库文件不存在会自动建。
+# 和 scripts/output-image/Dockerfile 保持一致
+CMD ["sh", "-c", "npx prisma db push && node server/index.js"]

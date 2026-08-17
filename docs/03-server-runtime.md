@@ -110,7 +110,8 @@
 
 ## 4. 本期不做
 
-- 多实例 / 水平扩展（协同文档在内存、SQLite 单文件，只能 `replicas: 1`）。
+- ~~多实例 / 水平扩展~~ —— 已另立一篇：[REQ-CLUSTER](14-clustering.md)。默认形态仍是单进程单副本，
+  多副本由 `CLUSTER_MODE=redis` + PostgreSQL 打开。
 - 服务端渲染（SSR）/ 预渲染。
 - 请求限流、熔断。
 - 结构化日志与链路追踪。

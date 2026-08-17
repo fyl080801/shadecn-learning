@@ -15,6 +15,7 @@ import {
   forgetClaims,
   releaseSocket,
 } from '../../collab/awareness.ts'
+import { shouldRecordUpdate } from '../../collab/hocuspocus.ts'
 
 /**
  * 二期补上的三道防线。前两道靠的是 Hocuspocus 的 hook，这里测的是它们背后的纯逻辑；
@@ -187,48 +188,48 @@ describe('awareness clientID 归属', () => {
     )
   }
 
-  it('谁先发布一个 clientID，这个 clientID 就归谁的 socket', () => {
+  it('谁先发布一个 clientID，这个 clientID 就归谁的 socket', async () => {
     const mine = states({ 7: { cursor: { x: 1, y: 2 } } })
-    expect(dropForeignClients(room, 'socket-a', mine)).toBe(0)
+    expect(await dropForeignClients(room, 'socket-a', mine)).toBe(0)
     expect(mine.has(7)).toBe(true)
   })
 
-  it('冒用别人 clientID 的条目整条丢弃，自己的照常', () => {
-    dropForeignClients(room, 'socket-victim', states({ 7: { cursor: { x: 0, y: 0 } } }))
+  it('冒用别人 clientID 的条目整条丢弃，自己的照常', async () => {
+    await dropForeignClients(room, 'socket-victim', states({ 7: { cursor: { x: 0, y: 0 } } }))
 
     const forged = states({
       7: { cursor: { x: 999, y: 999 } }, // 冒用 victim 的 7 号
       8: { cursor: { x: 1, y: 1 } }, // 自己的 8 号
     })
-    expect(dropForeignClients(room, 'socket-attacker', forged)).toBe(1)
+    expect(await dropForeignClients(room, 'socket-attacker', forged)).toBe(1)
     expect(forged.has(7)).toBe(false)
     expect(forged.has(8)).toBe(true)
   })
 
-  it('断线释放归属：重连的新 socket 能接着用同一个 clientID', () => {
-    dropForeignClients(room, 'socket-old', states({ 7: { cursor: { x: 0, y: 0 } } }))
-    releaseSocket(room, 'socket-old')
+  it('断线释放归属：重连的新 socket 能接着用同一个 clientID', async () => {
+    await dropForeignClients(room, 'socket-old', states({ 7: { cursor: { x: 0, y: 0 } } }))
+    await releaseSocket(room, 'socket-old')
 
     const reconnected = states({ 7: { cursor: { x: 3, y: 4 } } })
-    expect(dropForeignClients(room, 'socket-new', reconnected)).toBe(0)
+    expect(await dropForeignClients(room, 'socket-new', reconnected)).toBe(0)
     expect(reconnected.has(7)).toBe(true)
   })
 
-  it('释放只影响那条连接自己认领的号码', () => {
-    dropForeignClients(room, 'socket-a', states({ 1: {} }))
-    dropForeignClients(room, 'socket-b', states({ 2: {} }))
-    releaseSocket(room, 'socket-a')
+  it('释放只影响那条连接自己认领的号码', async () => {
+    await dropForeignClients(room, 'socket-a', states({ 1: {} }))
+    await dropForeignClients(room, 'socket-b', states({ 2: {} }))
+    await releaseSocket(room, 'socket-a')
 
     // b 的 2 号还归 b，别人依然冒用不了
     const forged = states({ 2: { cursor: { x: 9, y: 9 } } })
-    expect(dropForeignClients(room, 'socket-c', forged)).toBe(1)
+    expect(await dropForeignClients(room, 'socket-c', forged)).toBe(1)
   })
 
-  it('房间散场后整张登记表作废', () => {
-    dropForeignClients(room, 'socket-a', states({ 1: {} }))
-    forgetClaims(room)
+  it('房间散场后整张登记表作废', async () => {
+    await dropForeignClients(room, 'socket-a', states({ 1: {} }))
+    await forgetClaims(room)
 
-    expect(dropForeignClients(room, 'socket-b', states({ 1: {} }))).toBe(0)
+    expect(await dropForeignClients(room, 'socket-b', states({ 1: {} }))).toBe(0)
   })
 })
 
@@ -298,5 +299,29 @@ describe('awareness 身份防伪', () => {
 
     expect(enforceIdentity(incoming, null)).toBe(0)
     expect(incoming.get(1)!.user).toEqual({ id: 'dev', name: '本地' })
+  })
+})
+
+/**
+ * 多副本下，同一条更新会经 Redis 转发到每个持有该房间的实例，
+ * 每个实例都会触发 onChange —— 审计只该由「收到客户端消息」的那个实例记。
+ */
+describe('审计去重（多副本）', () => {
+  it('本实例客户端发来的：记', () => {
+    expect(shouldRecordUpdate({ source: 'connection', connection: {} })).toBe(true)
+  })
+
+  it('服务端自己改的（DirectConnection 之类）：记', () => {
+    expect(shouldRecordUpdate({ source: 'local' })).toBe(true)
+  })
+
+  it('别的实例经 Redis 转发过来的：**不记**，否则审计表变成实例数的倍数', () => {
+    expect(shouldRecordUpdate({ source: 'redis' })).toBe(false)
+  })
+
+  it('形状认不出来时按「记」处理 —— 宁可多一条，不能把作者的那条丢了', () => {
+    expect(shouldRecordUpdate(undefined)).toBe(true)
+    expect(shouldRecordUpdate(null)).toBe(true)
+    expect(shouldRecordUpdate('whatever')).toBe(true)
   })
 })

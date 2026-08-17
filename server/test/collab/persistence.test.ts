@@ -57,7 +57,7 @@ describe('落库的写放大', () => {
     // 内容进了 ydoc，但列表页看到的还是初始值 —— 投影要等散场
     expect(after.nodeCount).toBe(0)
     expect(JSON.parse(after.graph).nodes).toHaveLength(0)
-    forgetFlow(roomOf(flowId))
+    await forgetFlow(roomOf(flowId))
   })
 
   it('散场时才把投影补上', async () => {
@@ -71,7 +71,7 @@ describe('落库的写放大', () => {
     const after = await row(flowId)
     expect(after.nodeCount).toBe(2)
     expect(JSON.parse(after.graph).nodes).toHaveLength(2)
-    forgetFlow(roomOf(flowId))
+    await forgetFlow(roomOf(flowId))
   })
 
   it('文档没变就整个跳过，不产生第二次写', async () => {
@@ -88,7 +88,7 @@ describe('落库的写放大', () => {
     const second = await row(flowId)
 
     expect(second.revision).toBe(first.revision)
-    forgetFlow(roomOf(flowId))
+    await forgetFlow(roomOf(flowId))
   })
 
   it('内容真的变了就照写不误', async () => {
@@ -108,7 +108,7 @@ describe('落库的写放大', () => {
     const second = await row(flowId)
 
     expect(second.revision).toBeGreaterThan(first.revision)
-    forgetFlow(roomOf(flowId))
+    await forgetFlow(roomOf(flowId))
   })
 
   it('要投影时不走「没变就跳过」那条捷径 —— 否则复制画布会拿到旧投影', async () => {
@@ -124,7 +124,7 @@ describe('落库的写放大', () => {
     await storeFlowState(roomOf(flowId), doc, { projection: true })
     await flushCollabWrites()
     expect((await row(flowId)).nodeCount).toBe(1)
-    forgetFlow(roomOf(flowId))
+    await forgetFlow(roomOf(flowId))
   })
 
   it('「改完等过防抖窗口再关页面」这条路径，投影也必须补上', async () => {
@@ -146,7 +146,7 @@ describe('落库的写放大', () => {
     const after = await row(flowId)
     expect(after.nodeCount).toBe(3)
     expect(JSON.parse(after.graph).nodes).toHaveLength(3)
-    forgetFlow(roomOf(flowId))
+    await forgetFlow(roomOf(flowId))
   })
 
   it('散场清掉状态向量后，下一轮会重新写一次', async () => {
@@ -157,11 +157,11 @@ describe('落库的写放大', () => {
     await flushCollabWrites()
     const first = await row(flowId)
 
-    forgetFlow(roomOf(flowId))
+    await forgetFlow(roomOf(flowId))
 
     await storeFlowState(roomOf(flowId), doc)
     await flushCollabWrites()
     expect((await row(flowId)).revision).toBeGreaterThan(first.revision)
-    forgetFlow(roomOf(flowId))
+    await forgetFlow(roomOf(flowId))
   })
 })

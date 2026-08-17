@@ -83,7 +83,7 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
-          # 启动要先跑 prisma migrate deploy，给足冷启动时间
+          # 启动要先跑 prisma db push（结构对齐，无迁移历史），给足冷启动时间
           startupProbe:
             httpGet:
               path: /api/health

@@ -23,7 +23,7 @@
 
 | 组 | 含义 | 内容 |
 |---|---|---|
-| `dependencies` | **生产运行时**真正要装的 | `hono` / `@hono/node-server`、`yjs` / `y-protocols` / `lib0` / `ws`、`@prisma/client` + 两个 driver adapter（`@prisma/adapter-better-sqlite3` / `@prisma/adapter-pg`）、`prisma`（启动时跑迁移） |
+| `dependencies` | **生产运行时**真正要装的 | `hono` / `@hono/node-server`、`yjs` / `y-protocols` / `lib0` / `ws`、`@prisma/client` + 两个 driver adapter（`@prisma/adapter-better-sqlite3` / `@prisma/adapter-pg`）、`prisma`（启动时跑 db push） |
 | `devDependencies` | 开发和构建期才要的 | 前端全家桶（vue、vue-router、three、tailwind、reka-ui、codemirror、vue-flow、y-websocket…）+ 工具链（vite、esbuild、tsx、vue-tsc、eslint、vitest…） |
 
 **前端库为什么算 dev**：它们全都被 `vite build` 打进了 `output/public`，运行时一个都不用装。
@@ -41,14 +41,14 @@
 
 ```
 output/
-  package.json        # 运行时依赖（版本锁死）+ start / migrate 脚本
+  package.json        # 运行时依赖（版本锁死）+ start / db:push 脚本
   server/
     index.js          # 打包后的后端入口（ESM，node 22），带 .map
     dev-*.js          # 动态 import 切出来的开发分支 chunk，生产不会加载
   public/             # 前端静态资源 = 后端的静态资源目录
     index.html
     assets/...
-  prisma/             # schema + migrations，给启动时的 migrate deploy 用
+  prisma/             # schema.prisma + models/（没有 migrations），给启动时的 db push 用
   prisma.config.js    # 产物自带的 prisma CLI 配置
   Dockerfile          # 构建上下文就是 output/ 自己
   .dockerignore
@@ -57,7 +57,7 @@ output/
 
 `package.json` 的 `dependencies` 不是照抄仓库那份，而是**从 esbuild 的 external 列表反推**
 出来的实际运行时依赖（`@hono/node-server`、`hono`、`@prisma/client`、当次 provider 对应的那个
-driver adapter、`yjs`、`y-protocols`、`lib0`、`ws`，外加跑迁移用的
+driver adapter、`yjs`、`y-protocols`、`lib0`、`ws`，外加跑 db push 用的
 `prisma`），版本锁到构建当次实际装的那一个。`vite` 只出现在永不加载的 dev chunk 里，
 不进这份清单。前端那一堆（vue / three / tailwind…）已经打进 `public/`，运行时一个都不需要。
 
@@ -74,15 +74,15 @@ DB_PROVIDER=postgresql DATABASE_URL=postgresql://… \
 ```
 
 `build:server` 会核对生成的 client 和构建目标是不是同一种库，对不上直接失败。产物里
-`prisma/` 只放当次 provider 的 schema 和迁移历史（铺平成 `prisma/schema.prisma` +
-`prisma/migrations/`，目录形状不随 provider 变），用不上的那个 driver adapter 也不会进
+`prisma/` 只放当次 provider 的 schema（铺平成 `prisma/schema.prisma` + `prisma/models/`，
+目录形状不随 provider 变；没有迁移文件，见 [REQ-DATA §3.3.1](05-data-persistence.md)），用不上的那个 driver adapter 也不会进
 `dependencies` —— PG 部署因此不必为 better-sqlite3 装一套编译工具链。
 
 - **前端静态资源直接构建进后端的静态资源目录**：`vite.config.ts` 里 `build.outDir = output/public`，后端生产模式就吐这个目录（可用 `STATIC_DIR` 覆盖）。
 - 后端由 `scripts/build-server.mjs`（esbuild）打包：仓库内的相对导入全部内联（含 `server/generated/prisma` 那份生成的 client），`node_modules` 里的包保持 external，运行时从应用根目录的 `node_modules` 解析。
 - `splitting: true` 是硬要求：`frontend/index.ts` 里的 `await import('./dev.ts')` 必须留成真正的动态 import，否则 `vite` 会被提升成顶层静态依赖 —— 而 `vite` 是 devDependency，生产环境根本不会装，一启动就崩。
 - 打包时 define 了 `__APP_BUNDLE__`，`server/runtime.ts` 靠它区分「源码运行」和「产物运行」：产物运行时应用根目录取进程 cwd（容器里就是 `/app`），静态资源取产物自己旁边的 `public/`。
-- 运行产物**不再需要 `tsx`**；`prisma` 进产物的 `dependencies`，因为容器启动时要跑 `prisma migrate deploy`。
+- 运行产物**不再需要 `tsx`**；`prisma` 进产物的 `dependencies`，因为容器启动时要跑 `prisma db push`。
 - 产物里的 `prisma.config.js` / `Dockerfile` / `.dockerignore` / `README.md` 是从 `scripts/output-image/` 原样拷进去的 —— 要改这几个文件改模板，别改产物。
 
 ### 2.4 直接基于产物打镜像（推荐）
@@ -99,7 +99,7 @@ docker build -t shadecn-learning ./output
    （PG 产物里没有 better-sqlite3，这套工具链是白装的；Dockerfile 是两种产物共用的模板，不为此分叉）；
 2. **运行时** —— 拷 deps 阶段的 `node_modules` + 产物本身，`ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data`，
    建好 `/app/data` 并声明为 `VOLUME`，`EXPOSE 3000`，启动命令是
-   **先 `npx prisma migrate deploy`，再 `node server/index.js`**。
+   **先 `npx prisma db push`，再 `node server/index.js`**（不带 `--accept-data-loss`：破坏性变更宁可启动失败，也不静默丢数据）。
 
 镜像里没有源码、没有 pnpm、没有构建期依赖，`WORKDIR /app` 就是产物根目录 ——
 服务端的「应用根目录」取进程 cwd，正好也是 `/app`，和 `prisma.config.js` 看到的是同一个库。
@@ -109,11 +109,11 @@ docker build -t shadecn-learning ./output
 CI 里想一条命令从源码出镜像就用它，三个阶段：
 
 1. **build** —— 全量 `pnpm install --frozen-lockfile` → `prisma generate` → `pnpm build`，产出 `/app/output`；
-   install 之前必须先把 **`prisma/` 和 `scripts/`** 拷进去 —— `postinstall` 是
-   `pnpm db:schema && prisma generate || true`，而 `db:schema` 跑的是 `scripts/prisma-schema.mjs`。
-   少拷 `scripts/` 不会让构建失败（`|| true` 兜住），但日志里会多出一段 `MODULE_NOT_FOUND`
-   堆栈，看着像构建挂了，而且 `&&` 短路会让 `postinstall` 里的 `prisma generate` 不执行
-   （第 15 行那句显式的 `npx prisma generate` 正是为此留的保险）；
+   install 之前必须先把 **`prisma/`**（连同 `prisma.config.ts`）拷进去 —— `postinstall` 是
+   `prisma generate || true`，而 generate 要顺着 `prisma.config.ts` → `prisma/db-provider.mjs`
+   → `prisma/<provider>/` 这条链去找 schema 目录。少拷不会让构建失败（`|| true` 兜住），
+   但这一步的 generate 会白跑（`COPY . .` 之后那句显式的 `npx prisma generate` 是为此留的保险）。
+   `prisma/<provider>/models` 是符号链接，docker 的 `COPY` 会原样保留，不用特殊处理；
 2. **deps** —— 和 `output/Dockerfile` 的 deps 阶段一样，只从 `/app/output/package.json` 装生产依赖；
 3. **运行时** —— `COPY --from=build /app/output ./`，其余同上。
 
@@ -127,10 +127,15 @@ CI 里想一条命令从源码出镜像就用它，三个阶段：
 
 ### 3.1 硬约束
 
-- **`replicas: 1`**、**`strategy: Recreate`**。
-  原因有两条，任一条都足够：SQLite 是单文件（ReadWriteOnce 的卷不允许两个 Pod 同时挂载）；Yjs 文档全在进程内存里（多副本之间无法同步）。
+- **默认形态（`k8s/deployment.yaml`）是 `replicas: 1` + `strategy: Recreate`**。
+  原因有两条，任一条都足够：SQLite 是单文件（ReadWriteOnce 的卷不允许两个 Pod 同时挂载）；
+  Yjs 文档全在进程内存里（多副本之间无法同步，两个 Pod 会各写各的 `ydoc`，后写覆盖先写）。
   滚动更新会短暂存在两个 Pod，因此必须用 `Recreate`。
-  换成 PostgreSQL 只解掉第一条 —— **第二条还在，副本数依然只能是 1**，直到协同文档不再只存在于进程内存里。
+- **要多副本用 `k8s/deployment.cluster.yaml`**（与上面那份二选一）：`CLUSTER_MODE=redis` +
+  PostgreSQL，两条原因都解掉了，于是 `replicas: 3` + `RollingUpdate`，不再有发布中断。
+  镜像是同一个 —— 副本模式只由环境变量决定，**唯一绑构建的仍是数据库 provider**。
+  Service 不需要 `sessionAffinity`，Ingress 也不需要 sticky session：任意实例都能服务任意房间。
+  详见 [REQ-CLUSTER](14-clustering.md)。
 
 ### 3.2 存储
 
@@ -250,7 +255,7 @@ Application 的 `source.directory.exclude` 还留着一条 `argo-workflow.yaml` 
 ## 5. 验收标准
 
 - [ ] `pnpm build` 后 `output/` 里同时有 `server/index.js` 和 `public/index.html`，`pnpm start` 能直接起服务。
-- [ ] 把 `output/` 单独拷到别处（拿不到仓库的 `node_modules`），`npm install --omit=dev && npm run migrate && npm start` 能跑起来，页面、`/api/*`、登录跳转都正常。
+- [ ] 把 `output/` 单独拷到别处（拿不到仓库的 `node_modules`），`npm install --omit=dev && npm run db:push && npm start` 能跑起来，页面、`/api/*`、登录跳转都正常。
 - [ ] `docker build ./output` 与仓库根 `docker build .` 都能出可运行镜像，better-sqlite3 编译通过。
 - [ ] 把任意一个运行时依赖挪进 `devDependencies`，`pnpm build:server` 必须失败并指名道姓。
 - [ ] 容器首次启动时自动建库、跑完迁移再对外服务。
@@ -259,7 +264,7 @@ Application 的 `source.directory.exclude` 还留着一条 `argo-workflow.yaml` 
 - [ ] 通过 Ingress 能建立 `/ws/<room>` WebSocket 连接。
 - [ ] 缺少 `KEYCLOAK_ISSUER` 时容器启动失败并给出明确报错（不能静默放行）。
 - [ ] `/api/health` 返回 200，探针不误杀。
-- [ ] `DB_PROVIDER=postgresql` 构建出的产物里没有 `@prisma/adapter-better-sqlite3`，`prisma/migrations/` 是 PG 那套。
+- [ ] `DB_PROVIDER=postgresql` 构建出的产物里没有 `@prisma/adapter-better-sqlite3`，`prisma/schema.prisma` 是 PG 那份。
 - [ ] client 和构建目标 provider 不一致时，`pnpm build:server` 失败并指出该跑哪条命令。
 - [ ] `kubectl create -f ci/run.yaml` 跑完之后：Harbor 里有 `apps/shadecn-learning:<short-sha>` 的**双架构** manifest，gitea 上多出一条 `ci: update image tag to <short-sha>`，且 ArgoCD 在 3 分钟内把 Application 同步回 `Synced` / `Healthy`。
 - [ ] `ci/workflow-template.yaml` 与集群里那份一致：`kubectl diff -f ci/workflow-template.yaml` 无输出。
@@ -268,9 +273,9 @@ Application 的 `source.directory.exclude` 还留着一条 `argo-workflow.yaml` 
 
 ## 6. 本期不做
 
-- 水平扩展 / 高可用（换成 PG 只解掉存储那一半，Yjs 文档仍在进程内存里）。
 - **自动触发流水线**（argo-events / webhook）—— 构建要手动起，见 §4.3。
-- 蓝绿 / 金丝雀发布（单副本 + `Recreate`，每次发布都有几十秒中断）。
+- 蓝绿 / 金丝雀发布（单副本形态是 `Recreate`，每次发布都有几十秒中断；多副本形态是
+  `RollingUpdate`，没有中断，但也没做金丝雀）。
 - 流水线里的自动化测试门禁（`pnpm test` 目前不在 CI 里跑）。
 - 数据库备份与灾备。
 - HPA、PDB、NetworkPolicy。
@@ -279,8 +284,9 @@ Application 的 `source.directory.exclude` 还留着一条 `argo-workflow.yaml` 
 
 - 要不要给 gitea 配 webhook + argo-events，让 push 直接触发构建。
 - 构建 45 分钟太久：是给 buildah 加缓存（`--layers` + Harbor 上的 cache 镜像），还是干脆只构 amd64。
-- 需要多副本时的演进路线：切到 PostgreSQL（存储这半已经就绪）+ 解决 Yjs 的跨进程问题，还是接受单副本。
-  协同服务端换成 Hocuspocus 之后，后半有了现成的路 —— `@hocuspocus/extension-redis`
-  （或整体换 [`@y/hub`](https://github.com/yjs/yhub)，updates 经 redis 流转）。没有需求所以没接。
-- k8s 清单目前只写了 SQLite 形态（PVC + `DATA_DIR`）。要不要再出一份 PG 形态的 overlay，还是靠部署时手改。
+- ~~需要多副本时的演进路线~~ —— 已落地，见 [REQ-CLUSTER](14-clustering.md)：
+  `@hocuspocus/extension-redis` + 一层共享状态抽象，由 `CLUSTER_MODE` 切换。
+  Redis 本身怎么部署（集群里现成的还是自己起一套）还没定。
+- k8s 清单现在是两份（SQLite 单副本 / PG 多副本），靠 apply 哪一份来选。要不要收成 kustomize
+  的 base + overlay，等第三种形态出现时再说。
 - 是否需要为静态资源单独配 CDN / 缓存策略。

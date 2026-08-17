@@ -1,0 +1,11 @@
+// PostgreSQL 版 schema —— 和 sqlite/schema.prisma **只差 datasource 的一行 provider**。
+// 目录约定、为什么必须是两份，见 sqlite/schema.prisma 的头注释。
+
+generator client {
+  provider = "prisma-client"
+  output   = "../../server/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}

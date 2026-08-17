@@ -1,5 +1,7 @@
 import './env.ts'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
+import { hostname } from 'node:os'
 import path from 'node:path'
 import { appRoot, isBundle, moduleDir } from './runtime.ts'
 
@@ -105,6 +107,74 @@ function resolveDatabaseUrl() {
 export function ensureDatabaseDir() {
   if (!databaseUrl.startsWith('file:')) return
   mkdirSync(path.dirname(databaseUrl.slice('file:'.length)), { recursive: true })
+}
+
+/** 单副本（进程内存）还是多副本（Redis 共享） */
+export type ClusterMode = 'single' | 'redis'
+
+/**
+ * 跑成一个进程还是一群进程。
+ *
+ * 解析规则和上面的 `dbProvider` 逐条对齐 —— 显式变量最优先，其次看连接串在不在，
+ * 都没有就是最省事的那个默认值：
+ *
+ *   1. 显式的 CLUSTER_MODE 最优先；
+ *   2. 否则看 REDIS_URL 有没有；
+ *   3. 都没有 → single（零外部依赖的默认形态，一行 Redis 代码都不加载）。
+ *
+ * **数据库和 Redis 是两件独立的事**：这里不去看 DB_PROVIDER，那边也不看 REDIS_URL。
+ * 两者的搭配是否合理由 `assertClusterConfig()` 判，而且只在生产才是硬错误。
+ */
+export const clusterMode: ClusterMode = resolveClusterMode()
+export const isClustered = clusterMode === 'redis'
+
+/** Redis 连接串，形如 redis://[:password@]host:port[/db]。密码走连接串，不另设变量 */
+export const redisUrl = process.env.REDIS_URL?.trim() ?? ''
+
+/** 键空间前缀：多个环境共用一台 Redis 时靠它隔离 */
+export const redisKeyPrefix = process.env.REDIS_KEY_PREFIX?.trim() || 'shadecn'
+
+/**
+ * 这个进程的身份。
+ *
+ * awareness 的 clientID 归属登记要区分「哪个实例的哪条连接」—— socketId 只在
+ * 单个进程里唯一，多副本下必须带上实例前缀，否则两个实例的 socket 撞号，
+ * 冒名防线会把正主的更新当成冒用丢掉。日志前缀也用它。
+ */
+export const instanceId =
+  process.env.INSTANCE_ID?.trim() || `${hostname()}-${randomUUID().slice(0, 8)}`
+
+function resolveClusterMode(): ClusterMode {
+  const explicit = process.env.CLUSTER_MODE?.trim()
+  if (explicit) {
+    if (explicit !== 'single' && explicit !== 'redis') {
+      throw new Error(`CLUSTER_MODE 只能是 single / redis，收到的是 "${explicit}"`)
+    }
+    return explicit
+  }
+  return process.env.REDIS_URL?.trim() ? 'redis' : 'single'
+}
+
+/**
+ * 启动时校验一次。
+ *
+ * 两条的性质不一样：
+ * - 说要多副本却没给 REDIS_URL —— 这是**配置自相矛盾**，任何环境都直接拒绝启动；
+ * - 多副本配着 SQLite —— 真跑多副本时不成立（单文件库没法被多个进程共享），
+ *   但本地拿 SQLite + Redis 单进程验证 Redis 那条链路是完全合理的调试姿势，
+ *   所以开发环境只警告，生产才拒绝。
+ */
+export function assertClusterConfig() {
+  if (!isClustered) return
+
+  if (!redisUrl) throw new Error('[cluster] CLUSTER_MODE=redis 时必须提供 REDIS_URL')
+
+  if (dbProvider !== 'postgresql') {
+    const hint =
+      'CLUSTER_MODE=redis 配的却是 SQLite —— 单文件库没法被多个进程/Pod 共享，真要多副本请切 PostgreSQL'
+    if (!isDev) throw new Error(`[cluster] ${hint}`)
+    console.warn(`[cluster] ${hint}（本地单进程调试可忽略）`)
+  }
 }
 
 /** 应用对外地址：拼 redirect_uri / post_logout_redirect_uri 用 */

@@ -269,7 +269,8 @@ interface FlowOperationView {
 - **`actorId` 是这张表存在的第二个理由**。Yjs 自己只认 `clientID`（一个随机数），不知道那是谁；`actorId` 由服务端在 **WebSocket 握手**时从会话里认出来（`server/auth/ws.ts` 把它交给 `setupWSConnection`），客户端伪造不了。想知道「这个节点是谁加的」只能问这张表。
 - **按 seq 顺序把 `update` 依次 `Y.applyUpdate` 到一个空文档，就能重建任意时刻的画布** —— 回放 / 历史版本预览的地基已经在了，界面还没做。
 - `update` 字节不出接口：它对界面毫无用处，真要回放是服务端的事。
-- 时间是 **UTC epoch 毫秒的整数**（`serverTs`，Prisma 里是 `BigInt`），不是 ISO 字符串。数值直接比大小，不受时区和格式影响；展示层才本地化（前端统一走 `src/lib/format.ts`）。**客户端的钟根本不参与** —— 时间戳在更新到达服务端时才盖，排序也用它。
+- 时间是 **UTC epoch 毫秒的整数**（`serverTs`，Prisma 里是 `BigInt`），不是 ISO 字符串。数值直接比大小，不受时区和格式影响；展示层才本地化（前端统一走 `src/lib/format.ts`）。**客户端的钟根本不参与** —— 时间戳在更新到达服务端的那一刻就盖（特意在进写队列**之前**，否则记下的是「什么时候轮到它写」）。**但排序用 `seq`，不是 `serverTs`**：多副本下两个实例各有一个钟，见 [REQ-CLUSTER](14-clustering.md) §3.3。
+- **多副本下审计只由收到客户端消息的那个实例记**：同一条更新会经 Redis 转发到每个持有该房间的实例，都记就成了实例数的倍数。判据见 `shouldRecordUpdate`。
 - 客户端生成的 id（节点 / 连线）统一走 `src/lib/id.ts` 的 `createId(prefix)`，形如 `<前缀>_<时间戳 base36>_<随机段>`。随机段不能省：两个客户端可能在同一毫秒各加一个节点，只靠时间戳会撞出同一个 id，在 CRDT 里就会被合并成同一个对象。
 - **拖动的中间态不进日志**：一次拖拽只在 `onNodeDragStop` 提交落点，途中的位置走反馈层（awareness）。否则拖一下就是几十条更新和几十行审计。
 - `viewport` 的变化**不是操作**：不进文档、不进撤销、不产生日志、不涨 `revision`，走的是 3.5.1 那条「按用户存」的路。

@@ -3,9 +3,9 @@
  * 拷完就能 `npm install --omit=dev && npm start`，也能直接 `docker build ./output`。
  *
  * 产出（前端由 `vite build` 落到 output/public）：
- *   output/package.json      运行时依赖（版本锁死）+ start / migrate 脚本
+ *   output/package.json      运行时依赖（版本锁死）+ start / db:push 脚本
  *   output/server/index.js   打包后的后端入口（ESM，node 22）
- *   output/prisma/           schema + migrations（只含本次构建那种 provider 的）
+ *   output/prisma/           schema.prisma + models/（只含本次构建那种 provider 的；没有迁移文件）
  *   output/prisma.config.js  prisma CLI 配置
  *   output/Dockerfile        构建上下文就是 output/ 本身
  *   output/.dockerignore、output/README.md
@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs'
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { build } from 'esbuild'
-import { migrationsPathOf, resolveProvider, schemaPathOf } from '../prisma/db-provider.mjs'
+import { resolveProvider, schemaDirOf } from '../prisma/db-provider.mjs'
 
 const rootDir = path.resolve(import.meta.dirname, '..')
 const outDir = path.join(rootDir, 'output')
@@ -36,7 +36,7 @@ const templateDir = path.join(rootDir, 'scripts/output-image')
 const DEV_ONLY = new Set(['vite'])
 
 /** 打包产物本身不 import、但运行时确实要有的包 */
-const EXTRA_DEPS = ['prisma'] // 容器启动时跑 `prisma migrate deploy`
+const EXTRA_DEPS = ['prisma'] // 容器启动时跑 `prisma db push`
 
 /**
  * 产物是**绑定 provider** 的：prisma 生成的 client 里编译进去的是 sqlite 或 postgres
@@ -82,19 +82,22 @@ const result = await build({
 await writeOutputPackageJson(collectRuntimeDeps(result.metafile))
 
 /**
- * 迁移要跟着产物走，容器启动时 `prisma migrate deploy` 用的就是这份。
+ * schema 要跟着产物走，容器启动时 `prisma db push` 用的就是这份。
  *
- * 产物里只有**这一种** provider 的 schema 和迁移历史，并且铺平成 prisma/schema.prisma
- * + prisma/migrations/ —— 产物目录的形状不随 provider 变，output/prisma.config.js
- * 不用关心自己面对的是哪种库。
+ * 没有迁移文件（项目不用迁移历史，见 docs/05）。产物里只有**这一种** provider 的
+ * schema，目录形状不随 provider 变（永远是 `prisma/schema.prisma` + `prisma/models/`），
+ * output/prisma.config.js 不用关心自己面对的是哪种库。
+ *
+ * **`dereference: true` 是必须的**：仓库里 `prisma/<provider>/models` 是指向
+ * `prisma/models/` 的符号链接（两个 provider 共用一份模型文件）。照原样拷过去，
+ * 产物里那条链接会指向 `output/prisma/../models`，那儿什么都没有 —— 容器一启动
+ * db push 就会说找不到模型。解引用之后产物里是真实文件，自带自足。
  */
 await rm(path.join(outDir, 'prisma'), { recursive: true, force: true })
-await cp(path.join(rootDir, schemaPathOf(buildProvider)), path.join(outDir, 'prisma/schema.prisma'))
-await cp(
-  path.join(rootDir, migrationsPathOf(buildProvider)),
-  path.join(outDir, 'prisma/migrations'),
-  { recursive: true },
-)
+await cp(path.join(rootDir, schemaDirOf(buildProvider)), path.join(outDir, 'prisma'), {
+  recursive: true,
+  dereference: true,
+})
 
 for (const file of ['prisma.config.js', 'Dockerfile', '.dockerignore', 'README.md']) {
   await cp(path.join(templateDir, file), path.join(outDir, file))
@@ -154,7 +157,16 @@ async function writeOutputPackageJson(deps) {
     engines: { node: '>=22' },
     scripts: {
       start: 'NODE_ENV=production node server/index.js',
-      migrate: 'prisma migrate deploy',
+      /**
+       * 结构同步：schema 直接推到库，没有迁移历史（见 docs/05）。
+       * Prisma 7 的 db push 不会顺手 generate，所以产物里没有 generator 也没关系 ——
+       * client 早就内联进 bundle 了。
+       *
+       * **故意不带 `--accept-data-loss`**：真遇到要删列删表的变更时，宁可启动失败、
+       * 让人来看一眼，也不要在生产库上静默丢数据。那种情况下人工执行一次
+       * `npx prisma db push --accept-data-loss` 即可。
+       */
+      'db:push': 'prisma db push',
     },
     dependencies,
   }

@@ -1,9 +1,10 @@
 import type { ServerType } from '@hono/node-server'
-import { Hocuspocus, type Connection, type Document } from '@hocuspocus/server'
+import { Hocuspocus, type Connection, type Document, type Extension } from '@hocuspocus/server'
 import crossws from 'crossws/adapters/node'
 import * as Y from 'yjs'
 
 import { authorizeCollab, type CollabIdentity } from '../auth/ws.ts'
+import { instanceId, isClustered, redisKeyPrefix, redisUrl } from '../config.ts'
 import { dropForeignClients, enforceIdentity, forgetClaims, releaseSocket } from './awareness.ts'
 import { pruneDanglingEdges } from './flow-doc.ts'
 import { flowIdOf, forgetFlow, loadFlowState, recordUpdate, roomOf, storeFlowState } from './persistence.ts'
@@ -40,6 +41,35 @@ export interface CollabOptions {
    * dev 下必须是 false —— Vite 的 HMR 走同一个事件，掐了就没有热更新了。
    */
   destroyUnmatchedUpgrades?: boolean
+}
+
+/**
+ * 这条更新该不该记一行审计。
+ *
+ * Hocuspocus 的 `transactionOrigin` 说明这条更新是打哪儿来的：
+ * `connection`（这个实例上的客户端发来的）、`redis`（别的实例经 pub/sub 转发过来的）、
+ * `local`（服务端自己改的，比如 DirectConnection）。
+ *
+ * **`redis` 的不记**：多副本下同一条更新会转发到每个持有这个房间的实例，
+ * 每个都触发一次 `onChange`。照单全收的话审计表就成了实例数的倍数
+ * （两个实例、11 次改动，实测写出 22 行），而且转发来的那条手里没有作者的
+ * `context`，`actorId` 只能是 null —— 记下来也没有信息量。
+ * 谁收到客户端的消息，谁负责记这一笔。
+ */
+export function shouldRecordUpdate(transactionOrigin: unknown): boolean {
+  const source = (transactionOrigin as { source?: string } | undefined)?.source
+  return source !== 'redis'
+}
+
+/**
+ * 给 socketId 加上实例前缀。
+ *
+ * Hocuspocus 的 socketId 只在**单个进程**里唯一，多副本下两个实例迟早撞号 ——
+ * 而 awareness 的归属登记（`awareness.ts`）正是靠它判断「这个 clientID 是不是你的」，
+ * 撞号会让正主的更新被当成冒用丢掉。
+ */
+function scopedSocketId(socketId: string): string {
+  return `${instanceId}:${socketId}`
 }
 
 /** 这个 upgrade 请求是冲协同来的吗 */
@@ -118,11 +148,47 @@ async function revalidateConnections(hocuspocus: Hocuspocus): Promise<void> {
   }
 }
 
-export function attachCollabServer(server: ServerType, options: CollabOptions = {}) {
+/**
+ * 多副本模式下的房间同步。
+ *
+ * 单副本时房间的 `Y.Doc` 只活在这个进程的内存里 —— 两个 Pod 各持一份互不通信的副本，
+ * 各自把**自己**那份全量写进同一行 `ydoc`，后写的把先写的整段盖掉（覆盖写，不是合并），
+ * 那是真丢数据。官方的 redis extension 把三件事一起解决了：
+ *
+ * - 文档更新和 awareness 经 pub/sub 在实例间转发；
+ * - `onStoreDocument` 用 redlock 去重，同一房间同一时刻只有一个实例真的落库；
+ * - `afterLoadDocument` 会等别的实例把内存里的当前状态推过来（`awaitInitialSyncTimeout`），
+ *   否则刚接手的实例会拿库里那份旧的去服务客户端。
+ *
+ * **动态 import**：单副本进程里这个包连加载都不会发生，构建产物也不带它。
+ */
+async function collabExtensions(): Promise<Extension[]> {
+  if (!isClustered) return []
+
+  const { Redis } = await import('@hocuspocus/extension-redis')
+  const url = new URL(redisUrl)
+
+  return [
+    new Redis({
+      host: url.hostname,
+      port: Number(url.port || 6379),
+      options: {
+        password: url.password || undefined,
+        db: Number(url.pathname.slice(1)) || 0,
+      },
+      // 实例名要真的唯一 —— 它是「这条消息是不是我自己发的」的判据
+      identifier: instanceId,
+      prefix: `${redisKeyPrefix}:hp`,
+    }),
+  ]
+}
+
+export async function attachCollabServer(server: ServerType, options: CollabOptions = {}) {
   const { destroyUnmatchedUpgrades = true } = options
 
   const hocuspocus = new Hocuspocus({
     name: 'flow-collab',
+    extensions: await collabExtensions(),
 
     /**
      * 握手鉴权。对**每条**连接都跑（`onAuthenticate` 是 token 模型，只在客户端
@@ -182,7 +248,7 @@ export function attachCollabServer(server: ServerType, options: CollabOptions = 
         return
       }
       if (data.connection) {
-        dropForeignClients(data.documentName, data.socketId, data.states)
+        await dropForeignClients(data.documentName, scopedSocketId(data.socketId), data.states)
       }
       enforceIdentity(data.states, (data.context as CollabContext | undefined)?.identity ?? null)
     },
@@ -229,10 +295,13 @@ export function attachCollabServer(server: ServerType, options: CollabOptions = 
     /**
      * 审计：每次客户端改动记一条（Yjs 增量 + 是谁改的）。
      * `context` 就是 `onConnect` 返回的那份，所以 actorId 是服务端认定的，伪造不了。
+     * 别的实例转发过来的更新不重复记，判据见 {@link shouldRecordUpdate}。
      */
     async onChange(data) {
-      const context = data.context as CollabContext | undefined
-      recordUpdate(data.documentName, data.update, context?.identity?.id ?? null)
+      if (shouldRecordUpdate(data.transactionOrigin)) {
+        const context = data.context as CollabContext | undefined
+        recordUpdate(data.documentName, data.update, context?.identity?.id ?? null)
+      }
       // 量一下规模。超软限只是标记（写入照常，删回去自动解除）；
       // 顶到硬限就把整个房间的连接锁成只读，新加入的由 beforeHandleMessage 锁
       if (checkQuota(data.documentName, data.document, data.update.byteLength)) {
@@ -242,7 +311,7 @@ export function attachCollabServer(server: ServerType, options: CollabOptions = 
 
     /** 有人离开：释放这条连接认领过的 awareness clientID，重连的新连接才接得上 */
     async onDisconnect(data) {
-      releaseSocket(data.documentName, data.socketId)
+      await releaseSocket(data.documentName, scopedSocketId(data.socketId))
     },
 
     /**
@@ -254,8 +323,8 @@ export function attachCollabServer(server: ServerType, options: CollabOptions = 
      */
     async afterUnloadDocument(data) {
       forgetQuota(data.documentName)
-      forgetClaims(data.documentName)
-      forgetFlow(data.documentName)
+      await forgetClaims(data.documentName)
+      await forgetFlow(data.documentName)
     },
 
     /** 攒够一小段时间再广播，重编辑时能把每连接每次变更的消息数压下来 */

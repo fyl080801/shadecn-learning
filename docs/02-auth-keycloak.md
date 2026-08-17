@@ -156,7 +156,7 @@
 ```bash
 cp .env.example .env      # 改成自己的 Keycloak
 pnpm install              # postinstall 会跑 prisma generate
-pnpm db:migrate           # 建 data/app.db
+pnpm db:push              # 建 data/app.db（db push，无迁移文件）
 pnpm dev                  # http://127.0.0.1:3000
 ```
 

@@ -8,11 +8,28 @@ import {
   flushAllRoomsToDatabase,
   flushCollabWrites,
 } from './collab/index.ts'
-import { assertAuthConfig, authEnabled, host, isDev, port, staticDir } from './config.ts'
+import { closeCluster, initCluster } from './cluster/index.ts'
+import {
+  assertAuthConfig,
+  assertClusterConfig,
+  authEnabled,
+  clusterMode,
+  host,
+  instanceId,
+  isDev,
+  port,
+  staticDir,
+} from './config.ts'
 import { disconnectDb } from './db.ts'
 import { attachFrontend } from './frontend/index.ts'
 
 assertAuthConfig()
+assertClusterConfig()
+
+// 挑共享状态的实现（单副本= 进程内存，多副本= Redis）。
+// 必须在建协同服务端之前：那边要用同一个 Redis 连接参数，
+// 而各模块顶层声明的共享表也是在这之后才第一次被真正取用
+await initCluster()
 
 // 先建 server 但先不 listen：Vite 中间件要拿这个 server 挂 HMR 的 upgrade。
 // overrideGlobalObjects: false —— 默认会把 global.Response 换成带缓存的实现，
@@ -20,7 +37,7 @@ assertAuthConfig()
 const server = createAdaptorServer({ fetch: app.fetch, overrideGlobalObjects: false })
 
 // 协同服务端。dev 下 Vite 的 HMR 也走同一个 upgrade 事件，别把不认识的 socket 掐了
-const collab = attachCollabServer(server, { destroyUnmatchedUpgrades: !isDev })
+const collab = await attachCollabServer(server, { destroyUnmatchedUpgrades: !isDev })
 
 const disposeFrontend = await attachFrontend(app, server)
 
@@ -43,6 +60,9 @@ server.listen(port, host, () => {
   console.log(`${mode} 服务已启动  http://${host}:${port}`)
   console.log(`Yjs websocket        ws://${host}:${port}${COLLAB_PATH}（房间名走消息）`)
   console.log(`登录                 ${authEnabled ? 'Keycloak（/login）' : '未启用'}`)
+  console.log(
+    `副本模式             ${clusterMode === 'redis' ? `多副本（Redis 共享，实例 ${instanceId}）` : '单副本（状态在进程内存）'}`,
+  )
 })
 
 async function shutdown() {
@@ -61,6 +81,7 @@ async function shutdown() {
   }
 
   await disposeFrontend?.()
+  await closeCluster().catch(() => undefined)
   await disconnectDb().catch(() => undefined)
   server.close()
   process.exit(0)

@@ -19,11 +19,12 @@ FROM 192.168.68.95:31443/docker.io/library/node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data
 COPY --from=deps /app/node_modules ./node_modules
-# 打包产物本身：server/（后端）、public/（前端静态资源）、prisma/（迁移）
+# 打包产物本身：server/（后端）、public/（前端静态资源）、prisma/（schema）
 COPY . .
 # SQLite 落在 /app/data，挂卷进来才不会随容器一起没
 RUN mkdir -p /app/data
 VOLUME ["/app/data"]
 EXPOSE 3000
-# 起服务前先把迁移跑上，库文件不存在会自动建
-CMD ["sh", "-c", "npx prisma migrate deploy && node server/index.js"]
+# 起服务前先把表结构对齐到 schema（db push，没有迁移历史），库文件不存在会自动建。
+# 不带 --accept-data-loss：真要删列删表时宁可启动失败，也不在生产库上静默丢数据
+CMD ["sh", "-c", "npx prisma db push && node server/index.js"]

@@ -1,4 +1,5 @@
 import * as Y from 'yjs'
+import { bytesCodec, sharedCounter, sharedMap } from '../cluster/index.ts'
 import { prisma } from '../db.ts'
 import { GRAPH_LIMITS, readGraph } from '../store/flow-types.ts'
 import { applyGraphToDoc, readGraphFromDoc } from './flow-doc.ts'
@@ -49,24 +50,24 @@ function enqueue(key: string, task: () => Promise<void>): Promise<void> {
   return next
 }
 
-/** flowId -> 下一个 seq。进程内缓存，避免每条审计都查一次最大值 */
-const nextSeq = new Map<string, number>()
+/**
+ * flowId → 审计日志的号码机，避免每条审计都查一次最大值。
+ *
+ * 单副本下它就是个进程内计数器（和以前的 `Map` 一模一样）；多副本下走 Redis `INCR` ——
+ * 两个实例各自 +1 会撞 `@@unique([flowId, seq])`，这是必须共享的一份状态。
+ * 播种（第一次用到时查库里的 `max(seq)`）写在 `next()` 里，Redis 被清空也能重新对齐。
+ */
+const seqCounter = sharedCounter('flow-seq')
 
-async function takeSeq(flowId: string): Promise<number> {
-  const cached = nextSeq.get(flowId)
-  if (cached !== undefined) {
-    nextSeq.set(flowId, cached + 1)
-    return cached
-  }
-
-  const last = await prisma.flowOperation.findFirst({
-    where: { flowId },
-    orderBy: { seq: 'desc' },
-    select: { seq: true },
+function takeSeq(flowId: string): Promise<number> {
+  return seqCounter.next(flowId, async () => {
+    const last = await prisma.flowOperation.findFirst({
+      where: { flowId },
+      orderBy: { seq: 'desc' },
+      select: { seq: true },
+    })
+    return last?.seq ?? 0
   })
-  const seq = (last?.seq ?? 0) + 1
-  nextSeq.set(flowId, seq + 1)
-  return seq
 }
 
 /**
@@ -105,11 +106,14 @@ export async function loadFlowState(documentName: string): Promise<Uint8Array | 
  *
  * 用来回答「自上次落库以来，文档到底变没变」—— 状态向量只有几十字节，
  * 比把整个文档序列化一遍再比对便宜得多。
+ *
+ * 多副本下必须共享：别的实例写过之后，本进程手里那份就过期了，
+ * 拿它判「和上次一样」会把该写的一次跳掉。
  */
-const storedVersions = new Map<string, Uint8Array>()
+const storedVersions = sharedMap<Uint8Array>('flow-state-vector', bytesCodec)
 
-function sameAsStored(documentName: string, doc: Y.Doc): boolean {
-  const previous = storedVersions.get(documentName)
+async function sameAsStored(documentName: string, doc: Y.Doc): Promise<boolean> {
+  const previous = await storedVersions.get(documentName)
   if (!previous) return false
   const current = Y.encodeStateVector(doc)
   if (current.length !== previous.length) return false
@@ -145,7 +149,7 @@ export async function storeFlowState(
 ): Promise<void> {
   const flowId = flowIdOf(documentName)
   if (!flowId) return
-  if (!options.projection && sameAsStored(documentName, doc)) return
+  if (!options.projection && (await sameAsStored(documentName, doc))) return
 
   await enqueue(documentName, async () => {
     const update = Y.encodeStateAsUpdate(doc)
@@ -176,7 +180,7 @@ export async function storeFlowState(
       where: { id: flowId, deletedAt: null },
       data,
     })
-    storedVersions.set(documentName, Y.encodeStateVector(doc))
+    await storedVersions.set(documentName, Y.encodeStateVector(doc))
   })
 }
 
@@ -191,15 +195,21 @@ export function recordUpdate(
 
   // 存 update 的副本：Yjs 给的这块 buffer 之后可能被复用
   const bytes = Buffer.from(update)
+
+  /**
+   * 时间戳在**收到更新的这一刻**就打，不是等排到队列里、取完号再打。
+   *
+   * 队列前面可能压着几次写，多副本下取号还夹着一次 Redis 往返 —— 那之后
+   * 再读时钟，记下来的就不是「这条改动什么时候到的」，而是「什么时候轮到它写」了。
+   * 实测过：两个实例并发时会出现 seq 更大、serverTs 反而更小的行。
+   *
+   * （跨实例的时钟偏差没法在这里解决，排序请始终用 seq —— 那个是全局单调的。）
+   */
+  const serverTs = BigInt(Date.now())
+
   void enqueue(documentName, async () => {
     await prisma.flowOperation.create({
-      data: {
-        flowId,
-        seq: await takeSeq(flowId),
-        update: bytes,
-        actorId,
-        serverTs: BigInt(Date.now()),
-      },
+      data: { flowId, seq: await takeSeq(flowId), update: bytes, actorId, serverTs },
     })
   })
 }
@@ -223,13 +233,17 @@ export async function flushCollabWrites(): Promise<void> {
 }
 
 /**
- * 房间彻底散场后清掉进程内的缓存，下次开重新对齐。
+ * 房间彻底散场后清掉缓存，下次开重新对齐。
  *
  * 两样都要清：审计的 seq，以及上次落库的状态向量 —— 后者不清的话，
  * 下一轮开房间时会误判「和上次一样」而跳过第一次落库。
+ *
+ * 多副本下这会清掉**共享**的那两个键，而别的实例可能还开着同一个房间。
+ * 那样也没问题，两者都是纯缓存：seq 下次会从库里的 `max(seq)` 重新播种，
+ * 状态向量没了最多多写一次库 —— 代价是一次多余的查询，不会错号也不会丢内容。
  */
-export function forgetFlow(documentName: string): void {
+export async function forgetFlow(documentName: string): Promise<void> {
   const flowId = flowIdOf(documentName)
-  if (flowId) nextSeq.delete(flowId)
-  storedVersions.delete(documentName)
+  if (flowId) await seqCounter.forget(flowId)
+  await storedVersions.delete(documentName)
 }

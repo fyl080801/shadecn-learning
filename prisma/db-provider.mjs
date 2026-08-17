@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 
 /**
- * 数据库 provider 的解析规则 —— CLI 侧（prisma.config.ts、scripts/prisma-schema.mjs）的唯一实现。
+ * 数据库 provider 的解析规则 —— CLI 侧（prisma.config.ts、scripts/build-server.mjs）的唯一实现。
  *
  * 服务端 server/config.ts 里有一份等价的 TypeScript 实现：server/ 是独立的 TS 项目
  * （没开 allowJs，也不引仓库根的文件），没法直接 import 这里。两边必须保持一致，
@@ -15,15 +15,26 @@ export const DB_PROVIDERS = /** @type {const} */ (['sqlite', 'postgresql'])
 /** 仓库根目录 —— DATA_DIR / DATABASE_URL 里的相对路径都按它解析，不是 cwd */
 export const rootDir = path.resolve(import.meta.dirname, '..')
 
-/** 每个 provider 一份完整 schema（由 scripts/prisma-schema.mjs 生成），路径相对仓库根 */
-export function schemaPathOf(provider) {
-  return `prisma/schema.${provider}.prisma`
+/**
+ * 每个 provider 一个 schema **目录**，路径相对仓库根。
+ *
+ * 目录而不是文件：Prisma 的多文件 schema 会把目录下所有 `.prisma` 合并成一份，
+ * 于是 `prisma/<provider>/models` 那个指向 `prisma/models/` 的符号链接
+ * 就让两个 provider 共用了同一批物理模型文件 —— 两边只有 schema.prisma 里
+ * datasource 的一行 provider 不同，没有任何生成物、也就没有漂移可言。
+ */
+export function schemaDirOf(provider) {
+  return `prisma/${provider}`
 }
 
-/** 迁移按 provider 分目录：两种库的 DDL 方言不同，历史也各走各的 */
-export function migrationsPathOf(provider) {
-  return `prisma/migrations/${provider}`
-}
+/**
+ * 没有 `migrationsPathOf` —— **这个项目不用迁移文件**。
+ *
+ * 结构同步走 `prisma db push`（schema 直接推到库），所以既没有 `prisma/migrations/`，
+ * 也没有 `_prisma_migrations` 表要维护。原因见 docs/05-data-persistence.md：
+ * 两种 provider 的 DDL 方言不同（`BLOB`/`BYTEA`、SQLite 不能改列…），
+ * 迁移文件必然要写两份、条条对应，而这个项目没有需要照顾的存量数据。
+ */
 
 /**
  * 判断用哪种库：

@@ -4,7 +4,7 @@
 
 ## 1. 目标
 
-默认给应用一个**零外部依赖**的持久层：不需要单独部署数据库服务，一个文件即全部状态，同时保证 CLI（迁移工具）和服务端进程永远打开同一个库。
+默认给应用一个**零外部依赖**的持久层：不需要单独部署数据库服务，一个文件即全部状态，同时保证 CLI（prisma 命令）和服务端进程永远打开同一个库。
 
 同时留出**换成 PostgreSQL** 的口子：需要多副本、需要真正的并发写、或者公司里本来就有 PG 时，改两个环境变量就能切过去，业务代码一行不动。
 
@@ -14,7 +14,7 @@
 |---|---|
 | SQLite（默认） | 单文件、无需额外服务；配合 PVC 就能在 k8s 上跑 |
 | PostgreSQL（可选） | 需要多副本 / 并发写 / 外部托管库时切过去 |
-| Prisma 7 | 迁移工具链完整；7.x 强制要求 driver adapter |
+| Prisma 7 | 类型安全的 client + 一条命令同步结构；7.x 强制要求 driver adapter |
 | `@prisma/adapter-better-sqlite3` / `@prisma/adapter-pg` | 两种库各自的 driver adapter，`server/db.ts` 按 provider 动态 import |
 | client 生成到 `server/generated/prisma` | 生成为 TypeScript 源码而非塞进 `node_modules`，这样 `pnpm prune --prod` 之后依然存在，能跟着 `server/` 一起进镜像 |
 
@@ -42,19 +42,91 @@
 4. 两者中的**相对路径都以仓库根目录为基准，不是 cwd**；
 5. sqlite 两边都要 `mkdir -p` 父目录 —— better-sqlite3 不会自动建目录；PG 无此步。
 
-> 这条一致性是硬要求：CLI 迁移和服务端运行时必须操作同一个库，否则会出现"迁移跑了但服务端说表不存在"。
+> 这条一致性是硬要求：CLI 和服务端运行时必须操作同一个库，否则会出现「db push 推了但服务端说表不存在」。
 
-### 3.3 一份模型，两份 schema
+### 3.3 一份模型，两个 provider（多文件 schema + 符号链接）
 
-Prisma 的 `datasource.provider` 只能写字面量、一份 schema 也只能有一个 datasource，所以"同时支持"只能是两份 schema 文件：
+两份 schema 是躲不掉的：Prisma 的 `datasource.provider` **只接受字面量** —— `env()` 被明确禁止
+（[prisma#998](https://github.com/prisma/prisma/issues/998)），2.2 那个 `provider = ["sqlite", "postgresql"]`
+的数组写法已经废弃（[prisma#3834](https://github.com/prisma/prisma/issues/3834)），
+"让 provider 动态化"的诉求（[prisma#1487](https://github.com/prisma/prisma/issues/1487)）也已关闭。
+一份 schema 还只能有一个 datasource。**但模型可以只有一份物理文件**，靠多文件 schema：
 
-- `prisma/models.prisma` —— **唯一的手写来源**，只有 generator + model，没有 datasource；
-- `prisma/schema.sqlite.prisma` / `prisma/schema.postgresql.prisma` —— `pnpm db:schema` 从上面那份生成，两份都提交进仓库；
-- `pnpm db:schema:check` 在 `build:server` 前跑，生成物和模型对不上就构建失败。
+```
+prisma/
+  models/                  ← 唯一的手写来源，按域拆：auth.prisma / canvas.prisma
+  sqlite/
+    schema.prisma          ← 只有 generator + datasource { provider = "sqlite" }
+    models -> ../models    ← 符号链接
+  postgresql/
+    schema.prisma          ← 同上，只有 provider 那行不同
+    models -> ../models    ← 符号链接
+```
 
-模型里**不许出现 provider 专属的东西**（`@db.*` 原生类型、数组、`Json`、enum…），两边生成的 client 类型必须一模一样 —— 这是业务代码不用分叉的前提。`roles` / `tags` 这类字段统一用 `String` 存 JSON 字符串。
+`prisma.config.ts` 的 `schema` 指向**目录**（`prisma/<provider>`），Prisma 把目录下所有 `.prisma`
+合并成一份完整 schema。于是两个 provider 的差别**只剩 datasource 里的一行**。
 
-迁移历史按 provider 分目录：`prisma/migrations/sqlite/` 和 `prisma/migrations/postgresql/`（DDL 方言不同，不能共用）。PG 的第一条迁移就是全量结构 —— 这个支持是后加的，不存在需要升级的旧 PG 库；从那条往后，改一次模型就在两个目录各加一条同名迁移。
+**没有生成物，也就没有漂移。** 以前是 `models.prisma` + 一个生成脚本吐出两份完整 schema，
+还得有 `db:schema:check` 在 `build:server` 前守着别漂；现在两份 schema 就是手写的十来行，
+模型是同一批文件，生成脚本和守卫都删了。
+
+几个要点：
+
+- **Prisma 7 不允许 datasource 里写 `url`**（报 P1012，连接串必须放 `prisma.config.ts`），
+  所以 datasource block 里就只剩 `provider` 一行 —— 这也是两份 schema 差异能缩到一行的原因。
+- **generator 必须在 `--schema` 指定目录的 `schema.prisma` 里**，不能放进 `models/`，
+  所以那 4 行在两边各写一份。
+- 模型里**不许出现 provider 专属的东西**（`@db.*` 原生类型、数组、`Json`、enum…），
+  两边生成的 client 类型必须一模一样 —— 这是业务代码不用分叉的前提。
+  `roles` / `tags` 这类字段统一用 `String` 存 JSON 字符串。
+- **依赖符号链接**，所以不考虑原生 Windows（要在 Windows 上开发就用开发容器 / WSL）。
+  容器构建没问题：`COPY prisma ./prisma` 会原样保留相对链接，实测容器里
+  `readlink -f` 两个 provider 的 `models` 都指到同一个 `/app/prisma/models`。
+- **构建产物是例外**：`scripts/build-server.mjs` 拷 schema 目录时用 `dereference: true`
+  把链接解成真实文件（产物里是 `prisma/schema.prisma` + `prisma/models/*.prisma`），
+  否则产物里那条 `../models` 会指向 `output/prisma/../models` —— 那儿什么都没有。
+- **产物侧 `prisma.config.js` 的 `schema` 同样必须指向目录**。这里踩过一次：指到
+  `prisma/schema.prisma` 那个文件时，Prisma 只读那一个文件、一个 model 都看不到，
+  于是 `db push` 认为「schema 是空的，库也是空的，已经一致」，建出一个 **0 字节的空库**
+  还报 `already in sync`，一张表都没有 —— 等服务起来才发现。
+
+> 横向对照：Drizzle 也**故意**不做「一套定义多方言」（`pgTable` / `sqliteTable` 分开），
+> 理由和上面一样 —— 方言能力不同，统一 builder 就得降到最小公分母。
+> 所以这不是 Prisma 的缺陷，而是这一类工具的共识。
+
+### 3.3.1 结构同步：`prisma db push`，**没有迁移文件**
+
+**这个项目不留迁移历史。** 没有 `prisma/migrations/`，库里没有 `_prisma_migrations` 表，
+`prisma.config.ts` 也不配 `migrations.path`。建表 / 改表就一条命令：
+
+```bash
+pnpm db:push        # = prisma db push（schema 目录由 prisma.config.ts 按 provider 选）
+```
+
+开发、测试、容器启动走的是**同一条路径**：`pnpm dev` 先 `db:push` 再起服务，
+容器的 `CMD` 是 `npx prisma db push && node server/index.js`。
+
+**为什么不用迁移文件。** 迁移这条路在两个 provider 下**必然要写两份**，而且不是措辞不同、是结构不同：
+
+- `migration.sql` 是纯文本 DDL，按 datasource 的 provider 生成，运行时不做方言转换；
+- 每个迁移目录的 `migration_lock.toml` 锁着 provider，混用会被 Prisma 直接拒绝，
+  所以两种库必然是两个目录、两套历史、条条对应；
+- 方言真的不一样：`BLOB`/`BYTEA`、`DATETIME`/`TIMESTAMP(3)`、内联外键 vs 独立的
+  `ALTER TABLE ADD CONSTRAINT`，而且 **SQLite 不支持改列/删列** —— 同一次「删 5 列加 1 列」的变更，
+  PG 是一条 `ALTER TABLE`，SQLite 得整表重建（建 `new_` 表 → 搬数据 → `DROP` → `RENAME`）。
+
+这套双份历史的维护成本，只有在需要**照顾存量数据**时才划得来。这个项目是学习/实验性质的，
+没有要升级的生产数据，所以选了 db push：`prisma/models/` 是唯一的结构来源，
+改完推一下就行，两种库天然一致。
+
+**代价，写在这儿别忘了：**
+
+- **没有结构变更的历史**，也就没有「这张表什么时候加的列」可查，更没有回滚脚本；
+- **破坏性变更需要人工确认**。db push 遇到要删列删表时会拒绝执行，除非加 `--accept-data-loss`。
+  两个 Dockerfile 和产物的 `db:push` 脚本**故意不带**这个 flag —— 宁可容器启动失败、
+  让人来看一眼，也不要在生产库上静默丢数据。真需要时手动跑一次
+  `npx prisma db push --accept-data-loss`；
+- 因此**生产升级前要自己判断这次模型改动是不是破坏性的**。加表加列是安全的，改名/改类型/删字段不是。
 
 ### 3.4 两种库的行为差异
 
@@ -68,24 +140,22 @@ Prisma 的 `datasource.provider` 只能写字面量、一份 schema 也只能有
 | `Session` | 服务端会话，存 access / refresh / id token | 主键是 Cookie 中随机 token 的 **HMAC-SHA256**（密钥 `SESSION_SECRET`），token 本身不落库；`userId` 建索引；随 User 级联删除 |
 | `AuthRequest` | 一次授权请求的临时凭据（state / nonce / PKCE verifier / redirectTo） | `state` 唯一；回调时一次性消费；过期由定时清扫回收 |
 
-字段级说明见 `prisma/models.prisma` 中的注释。
+字段级说明见 `prisma/models/*.prisma` 中的注释（`auth.prisma` / `canvas.prisma`）。
 
 ### 3.6 客户端单例
 
 - `server/db.ts` 导出唯一的 `PrismaClient`，缓存在 `globalThis` 上，避免 `tsx watch` 每次热重启泄漏连接；adapter 按 provider **动态** import（构建产物里只留用得上的那个）。
 
-### 3.7 迁移
+### 3.7 命令
 
 | 命令 | 作用 |
 |---|---|
-| `pnpm db:schema` | 从 `models.prisma` 生成两份 schema（`db:generate` / `db:migrate` 会自动先跑） |
 | `pnpm db:generate` | 重新生成 client（改完模型必跑；`postinstall` 也会跑） |
-| `pnpm db:migrate` | 开发环境建 / 改表并生成迁移文件 —— 只生成**当前 provider** 那一份 |
-| `pnpm db:deploy` | 生产环境应用已有迁移（容器启动时自动执行） |
+| `pnpm db:push` | 把表结构对齐到 schema（**没有迁移文件**，见 3.3.1）；`pnpm dev` 会先跑一遍 |
 | `pnpm db:studio` | 可视化查看数据 |
 
-- 迁移文件必须提交进仓库；生产环境**只允许** `migrate deploy`，不允许 `migrate dev`。
-- 改一次模型要生成**两条**迁移：`pnpm db:migrate` 跑一遍 sqlite，再 `DB_PROVIDER=postgresql DATABASE_URL=… pnpm db:migrate` 跑一遍 PG，两条用同一个名字。
+改完模型（`prisma/models/*.prisma`）的标准动作：`pnpm db:generate`（client）+ `pnpm db:push`（库结构）。两种库各自 push 一次，
+用的是同一批 `prisma/models/` 文件，不存在「两份 schema 要对齐」这回事了。
 
 ### 3.8 业务 API 样板：`/api/notes`
 
@@ -110,14 +180,14 @@ Prisma 的 `datasource.provider` 只能写字面量、一份 schema 也只能有
 
 ## 4. 验收标准
 
-- [ ] 全新克隆仓库后执行 `pnpm install && pnpm db:migrate`，`data/app.db` 被自动创建（含父目录）。
-- [ ] 在任意子目录下执行 `pnpm db:migrate` 与 `pnpm dev`，两者操作的是同一个库文件。
+- [ ] 全新克隆仓库后执行 `pnpm install && pnpm db:push`，`data/app.db` 被自动创建（含父目录）。
+- [ ] 在任意子目录下执行 `pnpm db:push` 与 `pnpm dev`，两者操作的是同一个库文件。
 - [ ] `pnpm prune --prod` 之后服务端仍能启动（生成的 client 未被删掉）。
 - [ ] 未登录访问 `/api/notes` 返回 401。
 - [ ] notes 的五个端点全部符合上表的状态码与错误格式，并有对应测试覆盖。
-- [ ] 删除 `data/app.db` 后重新 `db:deploy` 能从零重建全部表结构。
-- [ ] `pnpm db:schema:check` 在模型改了但没重新生成 schema 时失败。
-- [ ] 设 `DB_PROVIDER=postgresql` + PG 的 `DATABASE_URL` 后，`pnpm db:generate && pnpm db:deploy && pnpm dev` 全流程可用，接口行为与 SQLite 一致。
+- [ ] 删除 `data/app.db` 后重新 `db:push` 能从零重建全部表结构。
+- [ ] 两个 provider 目录下的 `models` 符号链接都指向 `prisma/models/`；`prisma validate` 在两种 DB_PROVIDER 下都通过。
+- [ ] 设 `DB_PROVIDER=postgresql` + PG 的 `DATABASE_URL` 后，`pnpm db:generate && pnpm db:push && pnpm dev` 全流程可用，接口行为与 SQLite 一致。
 - [ ] `TEST_DATABASE_URL=postgresql://… pnpm test:server` 整套后端测试在 PG 上同样全绿。
 - [ ] `DB_PROVIDER` 与 `DATABASE_URL` 协议不一致时启动直接失败，不会连错库。
 
@@ -138,8 +208,9 @@ Prisma 的 `datasource.provider` 只能写字面量、一份 schema 也只能有
 - `notes` 是继续当纯样板，还是作为第一个真实持久化业务落库。
 - SQLite 单写入者模型在协同场景下是否够用。协同**已经在落盘**了（`Flow.ydoc` + `FlowOperation`），
   目前靠 `server/collab/persistence.ts` 里的按房间串行队列避开并发写，单进程下够用；
-  真要多副本就是切 PG 的时候，而且那时 Yjs 也得先解决跨进程的问题（见 [REQ-COLLAB §7](04-realtime-collab.md)）。
-- `FlowOperation.seq` 是「查最大值 +1」+ 进程内缓存，并发靠 `@@unique([flowId, seq])` 兜底（会抛 P2002）。
-  单进程下写是串行的所以撞不上；**多进程时这个方案不成立**，要改成显式的行锁 / 序列。
+  多副本就是切 PG 的时候（Yjs 的跨进程问题已经解掉了，见 [REQ-CLUSTER](14-clustering.md)）。
+- ~~`FlowOperation.seq` 是「查最大值 +1」+ 进程内缓存~~ —— 已改成共享号码机（`SharedCounter`）：
+  单副本下还是进程内计数，多副本下走 Redis `INCR`，键不存在时按库里的 `max(seq)` 播种，
+  所以 Redis 被清空也能重新对齐。`@@unique([flowId, seq])` 仍然是最后一道兜底。
 - **更新流只存不清，会无限增长**（`FlowOperation` 每次客户端更新一行）。文档本身有 Yjs 的 GC 兜底，
   这张表没有。按条数 / 天数裁剪，还是定期合并成「基线 + 增量」？量级真成问题时再定。

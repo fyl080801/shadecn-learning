@@ -1,0 +1,21 @@
+// SQLite 版 schema —— 和 postgresql/schema.prisma **只差 datasource 的一行 provider**。
+//
+// 模型不在这里：`models` 是指向 ../models 的符号链接，Prisma 的多文件 schema
+// 会把这个目录下所有 .prisma 合并成一份 schema，所以两个 provider 共用同一批物理文件。
+// 改模型改 ../models/*.prisma，这里永远不用动。
+//
+// datasource 里没有 url：Prisma 7 不允许把连接串写在 schema 里，
+// CLI 的连接串来自 prisma.config.ts，运行时来自 server/db.ts 的 driver adapter。
+//
+// 为什么必须是两份而不是一份：Prisma 的 datasource.provider 只接受字面量
+// （`env()` 被明确禁止，2.2 的 `provider = [...]` 数组写法已废弃），
+// 而 SQLite / PostgreSQL 的 DDL 方言本来就不同。详见 docs/05-data-persistence.md §3.3。
+
+generator client {
+  provider = "prisma-client"
+  output   = "../../server/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
