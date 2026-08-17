@@ -48,9 +48,10 @@ beforeEach(() => {
   vi.stubGlobal("location", {
     assign,
     replace,
+    origin: "http://localhost:3000",
     pathname: "/2048",
     search: "?a=1",
-    href: "http://localhost/2048?a=1"
+    href: "http://localhost:3000/2048?a=1"
   })
 })
 
@@ -258,7 +259,7 @@ describe("apiFetch()", () => {
     })
   })
 
-  it("401 说明会话没了 → 清掉本地用户并跳登录页，带上当前地址", async () => {
+  it("401 说明会话没了 → 清掉本地用户、弹确认框，但先不跳", async () => {
     const { apiFetch, fetchSession, useAuth } = await loadAuth({
       authenticated: true,
       user: alice
@@ -269,17 +270,17 @@ describe("apiFetch()", () => {
     await apiFetch("/api/notes")
 
     expect(useAuth().isAuthenticated.value).toBe(false)
-    expect(assign).toHaveBeenCalledWith(
-      `/api/auth/login?redirect=${encodeURIComponent("/2048?a=1")}`
-    )
+    expect(useAuth().sessionExpired.value).toBe(true)
+    expect(assign).not.toHaveBeenCalled()
   })
 
-  it("后端没开登录时，401 不该把人踢去登录页", async () => {
-    const { apiFetch, fetchSession } = await loadAuth({ enabled: false })
+  it("后端没开登录时，401 既不弹框也不跳", async () => {
+    const { apiFetch, fetchSession, useAuth } = await loadAuth({ enabled: false })
     await fetchSession()
     fetchMock.mockResolvedValue(new Response("{}", { status: 401 }))
 
     await apiFetch("/api/notes")
+    expect(useAuth().sessionExpired.value).toBe(false)
     expect(assign).not.toHaveBeenCalled()
   })
 
@@ -301,5 +302,103 @@ describe("apiFetch()", () => {
 
     await apiFetch("/api/admin")
     expect(assign).not.toHaveBeenCalled()
+  })
+})
+
+describe("会话过期的确认框", () => {
+  async function expire(): Promise<AuthModule> {
+    const mod = await loadAuth({ authenticated: true, user: alice })
+    await mod.fetchSession()
+    fetchMock.mockResolvedValue(new Response("{}", { status: 401 }))
+    await mod.apiFetch("/api/notes")
+    return mod
+  }
+
+  it("退出 → 关掉框并整页跳登出，带上过期时那个地址当 return url", async () => {
+    const { logoutFromExpired, useAuth } = await expire()
+
+    logoutFromExpired()
+
+    expect(assign).toHaveBeenCalledWith(
+      `/api/auth/logout?redirect=${encodeURIComponent("/2048?a=1")}`
+    )
+    expect(useAuth().sessionExpired.value).toBe(false)
+  })
+
+  it("内嵌登录的地址落在服务端那张完成页上", async () => {
+    const { embeddedLoginUrl, EMBEDDED_LOGIN_DONE_PATH } = await loadAuth()
+
+    expect(EMBEDDED_LOGIN_DONE_PATH).toBe("/auth/embedded-done")
+    expect(embeddedLoginUrl()).toBe(
+      `/api/auth/login?redirect=${encodeURIComponent("/auth/embedded-done")}`
+    )
+  })
+
+  it("finishReLogin：真登上了才收工，没登上就当没发生", async () => {
+    const { finishReLogin, useAuth } = await expire()
+
+    // 还是匿名：框留着
+    fetchMock.mockResolvedValue(meResponse({ authenticated: false }))
+    await expect(finishReLogin()).resolves.toBe(false)
+    expect(useAuth().sessionExpired.value).toBe(true)
+
+    // 登上了：框收起来，用户回来了
+    fetchMock.mockResolvedValue(
+      meResponse({ authenticated: true, user: alice })
+    )
+    await expect(finishReLogin()).resolves.toBe(true)
+    expect(useAuth().sessionExpired.value).toBe(false)
+    expect(useAuth().isAuthenticated.value).toBe(true)
+    expect(assign).not.toHaveBeenCalled()
+  })
+
+  it("isEmbeddedLoginDone：同源 + 标记都对才认", async () => {
+    const { isEmbeddedLoginDone, EMBEDDED_LOGIN_MESSAGE } = await loadAuth()
+    const origin = window.location.origin
+    const data = { source: "app-auth", type: EMBEDDED_LOGIN_MESSAGE }
+
+    expect(
+      isEmbeddedLoginDone(new MessageEvent("message", { origin, data }))
+    ).toBe(true)
+    expect(
+      isEmbeddedLoginDone(
+        new MessageEvent("message", { origin: "https://evil.example.com", data })
+      )
+    ).toBe(false)
+    expect(
+      isEmbeddedLoginDone(
+        new MessageEvent("message", { origin, data: { source: "somebody" } })
+      )
+    ).toBe(false)
+  })
+
+  it("不选 → 只关框，页面留在原地", async () => {
+    const { dismissReLogin, useAuth } = await expire()
+
+    dismissReLogin()
+
+    expect(assign).not.toHaveBeenCalled()
+    expect(replace).not.toHaveBeenCalled()
+    expect(useAuth().sessionExpired.value).toBe(false)
+  })
+
+  it("关掉之后再来一个 401，会再问一遍", async () => {
+    const { apiFetch, dismissReLogin, useAuth } = await expire()
+    dismissReLogin()
+
+    await apiFetch("/api/notes")
+
+    expect(useAuth().sessionExpired.value).toBe(true)
+  })
+
+  it("requestReLogin 可以指定 return url（守卫用的是目标路由）", async () => {
+    const { requestReLogin, logoutFromExpired } = await loadAuth()
+
+    requestReLogin("/projects/p1?tab=members")
+    logoutFromExpired()
+
+    expect(assign).toHaveBeenCalledWith(
+      `/api/auth/logout?redirect=${encodeURIComponent("/projects/p1?tab=members")}`
+    )
   })
 })

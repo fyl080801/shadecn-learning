@@ -111,3 +111,31 @@ describe('GET /login', () => {
     expect(res.headers.get('location')).toBe('/2048')
   })
 })
+
+describe('GET /auth/embedded-done', () => {
+  it('登录完成后落在这里，只负责通知父窗口，不加载 SPA', async () => {
+    const { cookie } = await signIn()
+
+    const res = await app.request('/auth/embedded-done', {
+      headers: { ...NAVIGATION, cookie },
+    })
+    const html = await res.text()
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+    expect(html).toContain('postMessage')
+    expect(html).toContain('app-auth:login-done')
+    // 消息只发给同源，别人监听不到
+    expect(html).toContain('window.location.origin')
+    expect(html).not.toContain('/src/main.ts')
+  })
+
+  it('没登录成功就还是被闸门送回登录页（iframe 里就地再登一次）', async () => {
+    const res = await app.request('/auth/embedded-done', { headers: NAVIGATION })
+
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toBe(
+      `/login?redirect=${encodeURIComponent('/auth/embedded-done')}`,
+    )
+  })
+})

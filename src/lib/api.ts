@@ -44,8 +44,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const body: unknown = await res.json().catch(() => null)
   if (!res.ok) {
+    // 401 时 apiFetch 已经弹了「要不要去登录」的确认框，这里只把顺带冒出来的
+    // 那条 toast 说人话（后端给的是 "Unauthorized"）
     const message =
-      (body as { error?: string } | null)?.error ?? `请求失败（${res.status}）`
+      res.status === 401
+        ? "登录状态已失效，请重新登录"
+        : ((body as { error?: string } | null)?.error ??
+          `请求失败（${res.status}）`)
     throw new ApiError(message, res.status, body)
   }
   return body as T

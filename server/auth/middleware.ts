@@ -46,7 +46,7 @@ export const withSession: MiddlewareHandler = async (c, next) => {
   await next()
 }
 
-/** 未登录直接 401，前端拿到 401 会跳登录页 */
+/** 未登录直接 401，前端拿到 401 会弹「要不要去登录」的确认框 */
 export const requireAuth: MiddlewareHandler = async (c, next) => {
   if (!authEnabled) return next()
   if (!c.get('user')) {

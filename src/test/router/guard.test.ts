@@ -85,6 +85,37 @@ describe("会话失效时", () => {
     )
   })
 
+  it("人已经在应用里了：不直接跳走，停在当前页弹确认框", async () => {
+    const router = await loggedIn()
+    await router.push("/2048")
+
+    // 会话中途失效：下一次问 /api/auth/me 就没人了
+    const auth = await import("@/lib/auth")
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              enabled: true,
+              authenticated: false,
+              user: null,
+              expiresAt: null
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+        )
+      )
+    )
+    await auth.fetchSession(true)
+
+    await router.push("/snake")
+
+    expect(auth.useAuth().sessionExpired.value).toBe(true)
+    expect(replace).not.toHaveBeenCalled()
+    expect(router.currentRoute.value.path).toBe("/2048")
+  })
+
   it("只问一次 /api/auth/me，之后的导航走缓存", async () => {
     const router = await anonymous()
     await router.push("/2048")

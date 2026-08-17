@@ -1,5 +1,5 @@
-import { createRouter, createWebHistory } from "vue-router"
-import { fetchSession, goToLoginPage, useAuth } from "@/lib/auth"
+import { createRouter, createWebHistory, START_LOCATION } from "vue-router"
+import { fetchSession, goToLoginPage, requestReLogin, useAuth } from "@/lib/auth"
 import { setPageTitle } from "@/composables/usePageTitle"
 
 declare module "vue-router" {
@@ -148,17 +148,24 @@ const router = createRouter({
 
 /**
  * 兜底守卫。真正的闸门在服务端（server/frontend/guard.ts）：未登录根本拿不到
- * 这份 bundle，所以这里只处理「用着用着会话过期了」——整页跳到服务端渲染的
- * /login，而不是在 SPA 内部渲染一个登录页。
+ * 这份 bundle，所以这里只处理「用着用着会话过期了」——登录页是服务端渲染的，
+ * 只能整页跳，不能在 SPA 内部渲染。
  */
-router.beforeEach(async (to) => {
+router.beforeEach(async (to, from) => {
   await fetchSession()
   const { isAuthenticated, authEnabled } = useAuth()
 
   // 后端没配 Keycloak：整站放行
   if (!authEnabled.value || isAuthenticated.value) return true
 
-  goToLoginPage(to.fullPath)
+  // 首屏就没会话：页面上本来什么都还没有，问也白问，直接跳
+  if (from === START_LOCATION) {
+    goToLoginPage(to.fullPath)
+    return false
+  }
+
+  // 已经在应用里了：留在当前页，弹确认框问一句，用户点了才跳
+  requestReLogin(to.fullPath)
   return false
 })
 

@@ -223,13 +223,19 @@ export async function revokeRefreshToken(refreshToken: string) {
   }).catch(() => undefined)
 }
 
-/** RP-initiated logout：让浏览器跳过去，把 Keycloak 上的 SSO cookie 也清掉 */
-export async function buildLogoutUrl(idToken?: string | null) {
+/**
+ * RP-initiated logout：让浏览器跳过去，把 Keycloak 上的 SSO cookie 也清掉。
+ * `postLogoutUri` 用来带上「退出时人在哪」（登录页的 ?redirect=），
+ * 路径仍是 `postLogoutRedirectUri` 那个 /login，只是多一段 query ——
+ * 所以 Keycloak 的 Valid post logout redirect URIs 要按前缀通配配置。
+ */
+export async function buildLogoutUrl(idToken?: string | null, postLogoutUri?: string) {
   const { end_session_endpoint } = await discover()
-  if (!end_session_endpoint) return authConfig.postLogoutRedirectUri
+  const target = postLogoutUri ?? authConfig.postLogoutRedirectUri
+  if (!end_session_endpoint) return target
 
   const url = new URL(end_session_endpoint)
-  url.searchParams.set('post_logout_redirect_uri', authConfig.postLogoutRedirectUri)
+  url.searchParams.set('post_logout_redirect_uri', target)
   // 带上 id_token_hint，Keycloak 才认 post_logout_redirect_uri
   if (idToken) url.searchParams.set('id_token_hint', idToken)
   else url.searchParams.set('client_id', authConfig.clientId)

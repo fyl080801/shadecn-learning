@@ -396,6 +396,32 @@ describe('GET /api/auth/logout', () => {
     expect(res.status).toBe(302)
   })
 
+  it('?redirect= 是「退出时人在哪」：接在登录页的 redirect 上一起带走', async () => {
+    const { cookie } = await signIn()
+
+    const res = await app.request(`/api/auth/logout?redirect=${encodeURIComponent('/2048?a=1')}`, {
+      headers: { cookie },
+    })
+
+    const location = new URL(res.headers.get('location') ?? '')
+    expect(location.searchParams.get('post_logout_redirect_uri')).toBe(
+      `http://127.0.0.1:3000/login?redirect=${encodeURIComponent('/2048?a=1')}`,
+    )
+  })
+
+  it('站外的 redirect 回落到 /，不能借登出做跳板', async () => {
+    const { cookie } = await signIn()
+
+    const res = await app.request('/api/auth/logout?redirect=%2F%2Fevil.example%2Fpwn', {
+      headers: { cookie },
+    })
+
+    const location = new URL(res.headers.get('location') ?? '')
+    expect(location.searchParams.get('post_logout_redirect_uri')).toBe(
+      'http://127.0.0.1:3000/login?redirect=%2F',
+    )
+  })
+
   it('Keycloak 连不上也不能卡住登出：本地会话照样清掉，不是 500', async () => {
     const { cookie } = await signIn()
     stub.discovery = { status: 500, body: null }

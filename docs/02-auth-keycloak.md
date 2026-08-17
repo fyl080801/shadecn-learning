@@ -47,9 +47,10 @@
 | `GET /api/auth/me` | **永远返回 200**，body 为 `{ enabled, authenticated, user, expiresAt }`。这样路由守卫不需要错误分支 |
 | `GET /api/auth/login` | 生成 state/nonce/PKCE，302 到 Keycloak authorize |
 | `GET /api/auth/callback` | 消费 state、换 token、验 id_token、建会话、302 回原页面 |
-| `GET /api/auth/logout` | 销毁本地会话、撤销 refresh_token，并跳 Keycloak RP-initiated logout |
+| `GET /api/auth/logout` | 销毁本地会话、撤销 refresh_token，并跳 Keycloak RP-initiated logout；`?redirect=` 是「退出时人在哪」，会接到登录页的 `?redirect=` 上一起带走（不给就是干净的 `/login`） |
 
 | `GET /login` | **服务端模板渲染**的登录页（不是 SPA 路由）；带 `?redirect=` / `?error=`；已登录则 302 回 redirect |
+| `GET /auth/embedded-done` | 内嵌登录窗口的终点站：同样是服务端渲染的自包含 HTML，只 `postMessage` 一条同源消息告诉父窗口「登录好了」。挂在页面闸门**之后**，所以没登录成功就还是被送回 `/login` |
 
 `/api/auth/*` 与 `/api/health` 属于公开路径，其余 `/api/*` 一律经过登录校验。
 
@@ -105,13 +106,36 @@
 | 导出 | 说明 |
 |---|---|
 | `fetchSession()` | 请求一次 `/api/auth/me` 并缓存结果 |
-| `useAuth()` | `user` / `roles` / `isAuthenticated` / `authEnabled` / `hasRole` / `displayName` / `startLogin` / `startLogout` |
-| `apiFetch()` | 带凭据的 fetch 封装，遇 401 自动进入登录流程 |
+| `useAuth()` | `user` / `roles` / `isAuthenticated` / `authEnabled` / `sessionExpired` / `hasRole` / `displayName` / `startLogin` / `startLogout` |
+| `apiFetch()` | 带凭据的 fetch 封装，遇 401 调 `requestReLogin()`（**不直接跳**） |
+| `requestReLogin(redirect)` | 记下 return url、把提示打开；**不跳转** |
+| `logoutFromExpired()` | 「退出」：整页跳 `/api/auth/logout?redirect=<return url>` |
+| `embeddedLoginUrl()` / `isEmbeddedLoginDone()` / `finishReLogin()` | 「重新登录」那条路：iframe 的地址、校验完成消息、确认真登上了 |
+| `dismissReLogin()` | 关掉、什么都不做 |
 | `goToLoginPage()` | 整页 `location.replace` 到服务端渲染的 `/login` |
 
 - 登录 / 登出是**整页跳转**到 `/api/auth/login`、`/api/auth/logout`，不是 XHR。
 - 登录页由服务端渲染，SPA 路由表里**没有** `/login`，也没有对应的 Vue 组件。
-- 前端路由守卫只是兜底：正常情况下未登录根本加载不到 SPA，守卫处理的是「用着用着会话过期」，此时整页跳 `/login`。
+- **会话过期要有反馈，且怎么走由用户决定**：接口拿到 401 时只把 `sessionExpired` 置上，
+  由 `App.vue` 里挂一次的 `SessionExpiredDialog` 弹出来。两个出口，外加随时可以关掉：
+
+  | 选择 | 行为 |
+  |---|---|
+  | 退出 | 整页跳 `/api/auth/logout?redirect=<过期时的地址>` → 清会话 → Keycloak 登出 → 落回 `/login?redirect=<原地址>`，重新登录完回到原来那一页 |
+  | 重新登录 | **不离开当前页**：模态窗里开一个 iframe 走完整套 OIDC（`/api/auth/login?redirect=/auth/embedded-done`），登录成功后模态自己关掉，页面和没提交的内容全在 |
+  | 关掉（× / Esc / 点遮罩） | 什么都不做；之后再有 401 会再问一遍 |
+
+  悄悄整页跳走既会带走用户正在填的东西，也让人看不出发生了什么。
+- **内嵌登录怎么知道登成功了**：会话是 httpOnly cookie，前端读不到，所以靠两条腿——
+  `/auth/embedded-done` 的 `postMessage`（快，父窗口按 `event.origin === location.origin` +
+  消息标记两道校验），外加模态开着时每 3 秒问一次 `/api/auth/me` 兜底（消息被拦、或用户是在
+  新窗口里登的）。**只有 `/api/auth/me` 真的答「已登录」才收工**，登录失败时窗口留着。
+- **iframe 能不能显示取决于 Keycloak**（见 4.1）：默认的 `X-Frame-Options: SAMEORIGIN` 会让
+  模态里一片空白，所以模态底部常备一个「在新窗口登录」的退路——那条路登完由 `window.opener`
+  发同一条消息，收尾逻辑完全一样。
+- 前端路由守卫只是兜底：正常情况下未登录根本加载不到 SPA，守卫处理的是「用着用着会话过期」。
+  首屏导航（`from === START_LOCATION`，页面上本来就没内容）直接整页跳 `/login`；
+  已经在应用里再导航时走同一个提示，导航被拦下，人留在当前页。
 
 ### 3.8 未配置时的降级
 
@@ -133,9 +157,16 @@
 | Standard flow | 开 |
 | Direct access grants / Service accounts | 关 |
 | Valid redirect URIs | `http://127.0.0.1:3000/api/auth/callback`，线上再加 `https://<域名>/api/auth/callback` |
-| Valid post logout redirect URIs | `http://127.0.0.1:3000/login`，线上同理 |
+| Valid post logout redirect URIs | `http://127.0.0.1:3000/login*`，线上同理。**要带通配**：「退出」会把 return url 挂在登录页的 query 上（`/login?redirect=%2F2048`），精确匹配的 `/login` 认不了 |
 | Web origins | 同源部署填 `+` |
 | PKCE | Advanced → Proof Key for Code Exchange 设为 `S256`（留空也能跑） |
+
+**要用模态窗里的「重新登录」，还得允许 Keycloak 的登录页被本站嵌进 iframe**：
+Realm Settings → Security defenses 里把 `X-Frame-Options` 清空，并把
+`Content-Security-Policy` 的 `frame-ancestors 'self'` 改成 `frame-ancestors 'self' <APP_ORIGIN>`。
+不配也不会坏——模态里只是显示不出内容，用户改走底部的「在新窗口登录」。另外浏览器的第三方
+Cookie 限制会挡住 iframe 里 Keycloak 自己的 SSO Cookie，所以内嵌登录通常要重新输一次密码
+（我们自己的 `sid` 是顶层同站的 first-party cookie，不受影响）。
 
 ### 4.2 环境变量
 

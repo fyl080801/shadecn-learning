@@ -27,8 +27,13 @@ const state = reactive({
   enabled: true,
   /** 是否已经问过后端 */
   ready: false,
-  user: null as AuthUser | null
+  user: null as AuthUser | null,
+  /** 会话过期了，正在问用户「要不要现在去登录」——由全局的确认框渲染 */
+  sessionExpired: false
 })
+
+/** 用户点「去登录」后要回到的地址；只在 requestReLogin 时记一次 */
+let reLoginRedirect = "/"
 
 let inflight: Promise<void> | null = null
 
@@ -79,8 +84,75 @@ export function startLogin(redirect = "/") {
   window.location.assign(loginUrl(redirect))
 }
 
-export function startLogout() {
-  window.location.assign("/api/auth/logout")
+/**
+ * 登出同样是整页跳转。`returnTo` 是「退出时人在哪」：服务端把它接到登录页的
+ * ?redirect= 上，所以重新登录完人回到原来那一页，而不是首页。
+ */
+export function startLogout(returnTo?: string) {
+  const query = returnTo ? `?redirect=${encodeURIComponent(returnTo)}` : ""
+  window.location.assign(`/api/auth/logout${query}`)
+}
+
+/** 当前地址（回登录页之后要跳回来的那个） */
+function currentPath() {
+  return window.location.pathname + window.location.search
+}
+
+/**
+ * 会话过期时的统一入口：**不直接把人踢走**，先记下要回来的地址、把确认框打开。
+ * 用户不选就停在原地——页面还在，没提交的内容也不会被一次跳转冲掉。
+ */
+export function requestReLogin(redirect = currentPath()) {
+  state.user = null
+  reLoginRedirect = redirect
+  state.sessionExpired = true
+}
+
+/** 会话过期时记下的那个地址（内嵌登录窗、退出都要用它当回跳目标） */
+export function reLoginTarget() {
+  return reLoginRedirect
+}
+
+/** 「退出」：清掉会话回登录页，并把 return url 记在登录页的 ?redirect= 上 */
+export function logoutFromExpired() {
+  state.sessionExpired = false
+  startLogout(reLoginRedirect)
+}
+
+/** 用户什么都不选（关窗 / Esc / 点遮罩）：页面原样不动；下次再有 401 会再问一遍 */
+export function dismissReLogin() {
+  state.sessionExpired = false
+}
+
+// ---------------------------------------------------------------- 内嵌登录
+
+/** 内嵌登录走完之后落地的服务端页面，它会 postMessage 通知父窗口 */
+export const EMBEDDED_LOGIN_DONE_PATH = "/auth/embedded-done"
+
+/** 那条消息的标记；连同 origin 一起校验，别人发的不认 */
+export const EMBEDDED_LOGIN_MESSAGE = "app-auth:login-done"
+
+/** 模态窗里的 iframe（或「在新窗口登录」的弹窗）打开的地址 */
+export function embeddedLoginUrl() {
+  return loginUrl(EMBEDDED_LOGIN_DONE_PATH)
+}
+
+/** 是不是那条「内嵌登录完成」的消息：同源 + 标记，两道都要过 */
+export function isEmbeddedLoginDone(event: MessageEvent): boolean {
+  if (event.origin !== window.location.origin) return false
+  const data = event.data as { source?: string; type?: string } | null
+  return data?.source === "app-auth" && data.type === EMBEDDED_LOGIN_MESSAGE
+}
+
+/**
+ * 内嵌窗口里登录完了：重新问一次登录态，真登上了才把提示收起来。
+ * 会话是 httpOnly cookie，前端只能这样确认。
+ */
+export async function finishReLogin(): Promise<boolean> {
+  await fetchSession(true)
+  if (!state.user) return false
+  state.sessionExpired = false
+  return true
 }
 
 export function useAuth() {
@@ -93,22 +165,28 @@ export function useAuth() {
     isAuthenticated: computed(() => Boolean(state.user)),
     authEnabled: computed(() => state.enabled),
     ready: computed(() => state.ready),
+    /** 会话过期确认框的开关，只有根组件的 SessionExpiredDialog 用得上 */
+    sessionExpired: computed(() => state.sessionExpired),
     hasRole: (role: string) => (state.user?.roles ?? []).includes(role),
     fetchSession,
     startLogin,
-    startLogout
+    startLogout,
+    requestReLogin,
+    logoutFromExpired,
+    dismissReLogin,
+    finishReLogin
   }
 }
 
 /**
- * 调后端接口用这个：401 说明会话没了（过期/被登出），
- * 直接把人送回登录页，省得每个调用点自己判断。
+ * 调后端接口用这个：401 说明会话没了（过期/被登出）。
+ * 这里只把「要重新登录」这件事亮出来（弹确认框），跳不跳由用户决定 ——
+ * 悄悄整页跳走会把用户正在填的东西一起带走，连出了什么事都看不见。
  */
 export async function apiFetch(input: string, init: RequestInit = {}) {
   const res = await fetch(input, { credentials: "same-origin", ...init })
   if (res.status === 401 && state.enabled) {
-    state.user = null
-    startLogin(window.location.pathname + window.location.search)
+    requestReLogin()
   }
   return res
 }

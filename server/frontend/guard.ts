@@ -3,6 +3,7 @@ import type { ServerApp, ServerEnv } from '../app.ts'
 import { safeRedirect } from '../auth/redirect.ts'
 import { authEnabled, isApiPath } from '../config.ts'
 import { renderLoginPage } from './login-page.ts'
+import { EMBEDDED_LOGIN_DONE_PATH, renderEmbeddedDonePage } from './embedded-done-page.ts'
 
 /** 登录页由服务端渲染，不是 SPA 路由 */
 export const LOGIN_PATH = '/login'
@@ -63,4 +64,10 @@ export function attachPageGuard(app: ServerApp) {
   })
 
   app.use('*', pageGuard)
+
+  // 挂在闸门之后：没登录成功就还是会被送回 /login（iframe 里就地再登一次），
+  // 所以能看到这一页本身就说明会话已经建起来了
+  app.get(EMBEDDED_LOGIN_DONE_PATH, (c) =>
+    c.html(renderEmbeddedDonePage(), 200, { 'cache-control': 'no-store' }),
+  )
 }

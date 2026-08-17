@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import { authConfig, authEnabled } from '../config.ts'
+import { appOrigin, authConfig, authEnabled } from '../config.ts'
 import { prisma } from '../db.ts'
 import {
   type AuthVariables,
@@ -159,19 +159,27 @@ export const auth = new Hono<{ Variables: AuthVariables }>()
   /**
    * 登出：先清本地会话，再跳 Keycloak 的 end_session 把 SSO cookie 也清掉。
    * 用 GET 是因为这是一次浏览器整页跳转。
+   *
+   * `?redirect=` 是「退出时人在哪」：最终落在登录页上，作为它的 ?redirect=
+   * 带着走，重新登录完人就回到原来那一页，而不是首页。
    */
   .get('/logout', async (c) => {
+    const returnTo = c.req.query('redirect')
+    const loginPath = returnTo
+      ? `/login?redirect=${encodeURIComponent(safeRedirect(returnTo))}`
+      : '/login'
+
     const session = await deleteSessionByToken(readSessionCookie(c))
     clearSessionCookie(c)
 
-    if (!authEnabled) return c.redirect('/login')
+    if (!authEnabled) return c.redirect(loginPath)
 
     if (session?.refreshToken) await revokeRefreshToken(session.refreshToken)
 
     try {
-      return c.redirect(await buildLogoutUrl(session?.idToken))
+      return c.redirect(await buildLogoutUrl(session?.idToken, `${appOrigin}${loginPath}`))
     } catch {
       // Keycloak 连不上也不该卡住登出，本地会话已经清了
-      return c.redirect('/login')
+      return c.redirect(loginPath)
     }
   })
