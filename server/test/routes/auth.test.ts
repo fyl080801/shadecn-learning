@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from '../../app.ts'
+import { identiconUrl } from '../../avatar/index.ts'
 import { prisma, resetDb } from '../helpers/db.ts'
 import {
   AUTHORIZATION_ENDPOINT,
@@ -206,6 +207,22 @@ describe('GET /api/auth/callback', () => {
     // 拿新 cookie 立刻就能过闸门
     const me = await app.request('/api/auth/me', { headers: { cookie: `sid=${sid}` } })
     await expect(me.json()).resolves.toMatchObject({ authenticated: true })
+  })
+
+  it('Keycloak 没给头像时，登录后补一张默认头像', async () => {
+    const { txId, request } = await startLogin()
+    stub.token = { status: 200, body: tokenResponse({ nonce: request?.nonce }) }
+
+    const res = await callback({ code: 'the-code', state: request?.state ?? '' }, txId)
+
+    const user = await prisma.user.findFirstOrThrow()
+    expect(user.avatarUrl).toBe(identiconUrl(user.issuer, user.subject))
+
+    // 前端从 /api/auth/me 拿到的就是这个地址，直接能当 <img src>
+    const me = await app.request('/api/auth/me', {
+      headers: { cookie: `sid=${cookieValue(res, 'sid')}` },
+    })
+    await expect(me.json()).resolves.toMatchObject({ user: { avatarUrl: user.avatarUrl } })
   })
 
   it('token 端点收到的是库里那个 code_verifier（PKCE 闭环）', async () => {

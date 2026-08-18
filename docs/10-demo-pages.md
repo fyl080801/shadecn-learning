@@ -16,9 +16,9 @@
 - 用 `Card` / `Button` / `Badge` / `Separator` 验证 shadcn-vue 基础组件的引入方式与主题变量。
 - 提供 Vue 官方文档外链。
 
-### 2.2 About `/about`
+### 2.2 关于（模态窗，无路由）
 
-- 静态项目介绍卡片：技术栈说明。
+- 静态项目介绍：技术栈说明。已从 `/about` 页面改成侧栏用户菜单里弹出的模态窗（`src/components/AboutDialog.vue`），见 [REQ-SHELL](01-app-shell.md) 2.3。
 
 ### 2.3 打砖块 Demo3 `/demo3`
 

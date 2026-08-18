@@ -19,7 +19,6 @@ import BlankLayout from "@/layouts/BlankLayout.vue"
 
 // 视图按功能分目录：canvas（项目与画布）/ three（3D）/ games（小游戏）/ demos（单页验证）
 import Home from "@/views/Home.vue"
-import About from "@/views/About.vue"
 import Demo3 from "@/views/games/Demo3.vue"
 import SnakeGame from "@/views/games/SnakeGame.vue"
 import Game2048 from "@/views/games/Game2048.vue"
@@ -42,10 +41,10 @@ const router = createRouter({
           meta: { title: "首页" }
         },
         {
-          path: "about",
-          name: "About",
-          component: About,
-          meta: { title: "关于" }
+          path: "settings",
+          name: "Settings",
+          component: () => import("@/views/Settings.vue"),
+          meta: { title: "设置" }
         },
         {
           path: "demo3",

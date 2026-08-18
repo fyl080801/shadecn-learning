@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Dialog,
@@ -565,7 +565,13 @@ function displayName(member: ProjectMemberView) {
                 <TableRow v-for="member in members" :key="member.userId">
                   <TableCell>
                     <div class="flex items-center gap-3">
-                      <Avatar class="size-8">
+                      <!-- bg-muted 是给默认头像垫的底：那张图是透明底的像素方块 -->
+                      <Avatar class="size-8 bg-muted">
+                        <AvatarImage
+                          v-if="member.avatarUrl"
+                          :src="member.avatarUrl"
+                          :alt="displayName(member)"
+                        />
                         <AvatarFallback>{{ initials(member) }}</AvatarFallback>
                       </Avatar>
                       <div class="min-w-0">

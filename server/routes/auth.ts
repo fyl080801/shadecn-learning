@@ -18,6 +18,7 @@ import {
   rolesFromAccessToken,
   verifyIdToken,
 } from '../auth/oidc.ts'
+import { completeUserProfile } from '../auth/profile.ts'
 import {
   createSession,
   deleteSessionByToken,
@@ -136,7 +137,9 @@ export const auth = new Hono<{ Variables: AuthVariables }>()
       if (!tokens.id_token) throw new Error('Keycloak 没返回 id_token，检查 client 的 scope 是否含 openid')
 
       const claims = await verifyIdToken(tokens.id_token, request.nonce)
-      const user = await upsertUser(claims, rolesFromAccessToken(tokens.access_token))
+      const account = await upsertUser(claims, rolesFromAccessToken(tokens.access_token))
+      // 落库之后补一遍缺的档案字段（默认头像之类）。补什么由钩子决定，登录流程不认识它们
+      const user = await completeUserProfile(account)
 
       const token = await createSession({
         user,

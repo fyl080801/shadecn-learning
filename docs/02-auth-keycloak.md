@@ -94,6 +94,27 @@
 - client 角色（`resource_access.<clientId>.roles`）加 `clientId:` 前缀后写入。
 - 后端用 `requireRole('admin')` 卡接口（403），前端用 `useAuth().hasRole('admin')` 控制展示。
 
+### 3.5.1 登录后的档案补齐（默认头像）
+
+登录成功之后，用户档案里空着的字段由一层**补齐钩子**填上。这层挂在 `upsertUser` **外面**：
+`upsertUser` 只负责把 id_token 的 claims 落库，「还该给这个人补点什么」是另一件事，
+以后再加规则（默认显示名、默认时区……）不该往登录流程里堆。
+
+- 机制在 `server/auth/profile.ts`：`registerProfileHook()` 挂规则，`completeUserProfile(user)`
+  在登录回调里跑一遍。钩子只回答「缺什么」，合并成一次 update；某条钩子抛异常只记日志，**不能挡住登录**。
+- **每次登录都跑**，所以存量用户下次进来自动补齐 —— 不需要迁移脚本，读取侧也不用到处兜底。
+- 当前只有一条规则（`server/avatar/`）：**没有头像的用户补一张 identicon** ——
+  GitHub 那种由身份算出来的像素方块，用 [minidenticons](https://github.com/laurentpayot/minidenticons)（MIT）生成 SVG。
+  Keycloak 给了 `picture` 就用人家的，这条规则只管空着的。
+- 头像**不落图片**：库里存的是 `/api/avatars/<seed>.svg`，请求进来现算。
+  `seed = sha256(issuer + "\n" + subject)` 取前 16 位十六进制 —— 用 `(issuer, subject)` 而不是 `user.id`，
+  重建库之后头像还是原来那张；取哈希是为了不把 subject 明文挂在图片地址上。
+- `GET /api/avatars/:seed` 无数据库读写、不认请求者，按不可变资源缓存（`max-age=31536000, immutable`）；
+  种子形状不对一律 404。它和其它 `/api/*` 一样要求登录。
+- 没配 Keycloak 的本地模式，那个固定的开发用户走同一条补齐路径。
+- 界面上凡是显示头像的地方都垫一层圆形底色（identicon 是透明底的图案）：
+  侧边栏用户区、设置页、项目成员列表、协同在场头像。
+
 ### 3.6 回跳地址安全
 
 - `?redirect=` 只允许**站内路径**。
@@ -203,6 +224,8 @@ pnpm dev                  # http://127.0.0.1:3000
 - [ ] Keycloak 侧强制下线后，前端下一次请求被弹回登录页。
 - [ ] 未登录发起 `/ws/<room>` 握手返回 401 并断开。
 - [ ] 不配 Keycloak 时：dev 全站放行；`NODE_ENV=production` 启动失败并给出明确报错。
+- [ ] Keycloak 没给 `picture` 的用户，登录后 `/api/auth/me` 里带着 `/api/avatars/<seed>.svg`，界面上能看到头像；
+      给了 `picture` 的不被覆盖；同一个人每次登录都是同一张图。
 
 ## 6. 本期不做
 

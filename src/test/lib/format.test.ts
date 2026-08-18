@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { formatDate, formatDateTime, formatTime, formatWith } from "@/lib/format"
+import { displayPreferences, resetDisplayPreferences } from "@/lib/preferences"
 
 /** 后端出口一律是这种 UTC ISO（带 Z） */
 const UTC_ISO = "2026-08-15T14:33:18.000Z"
@@ -11,6 +12,7 @@ function stubLocales(...languages: string[]) {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  resetDisplayPreferences()
 })
 
 describe("formatWith()", () => {
@@ -92,5 +94,65 @@ describe("formatDateTime() / formatDate() / formatTime()", () => {
     expect(formatDateTime("坏值")).toBe("-")
     expect(formatDate(null)).toBe("-")
     expect(formatTime(undefined)).toBe("-")
+  })
+})
+
+describe("跟着设置页的显示偏好走", () => {
+  it("设了时区就按它换算，不再跟浏览器", () => {
+    stubLocales("zh-CN")
+    displayPreferences.value.timeZone = "UTC"
+    expect(formatTime(UTC_ISO)).toBe("14:33")
+
+    displayPreferences.value.timeZone = "Asia/Shanghai"
+    expect(formatTime(UTC_ISO)).toBe("22:33")
+  })
+
+  it("设了语言就按它排年月日", () => {
+    stubLocales("zh-CN")
+    displayPreferences.value.timeZone = "UTC"
+
+    displayPreferences.value.locale = "en-US"
+    expect(formatDate(UTC_ISO)).toBe("8/15/26")
+
+    displayPreferences.value.locale = "de-DE"
+    expect(formatDate(UTC_ISO)).toBe("15.08.26")
+  })
+
+  it("日期/时间的档位影响 formatDate 与 formatTime", () => {
+    stubLocales("zh-CN")
+    displayPreferences.value.timeZone = "UTC"
+
+    displayPreferences.value.dateStyle = "full"
+    expect(formatDate(UTC_ISO)).toContain("星期")
+
+    displayPreferences.value.timeStyle = "medium"
+    expect(formatTime(UTC_ISO)).toContain("18")
+  })
+
+  it("12/24 小时制按设置来", () => {
+    stubLocales("zh-CN")
+    displayPreferences.value.timeZone = "UTC"
+
+    displayPreferences.value.hourCycle = "h23"
+    expect(formatTime(UTC_ISO)).toBe("14:33")
+
+    displayPreferences.value.hourCycle = "h12"
+    expect(formatTime(UTC_ISO)).toMatch(/2:33/)
+  })
+
+  it("调用方显式传的选项优先于偏好", () => {
+    stubLocales("zh-CN")
+    displayPreferences.value.timeZone = "Asia/Tokyo"
+    displayPreferences.value.locale = "de-DE"
+
+    // 某处一定要按 UTC 显示时，自己传 timeZone —— 偏好不该把它盖掉
+    expect(formatWith(UTC_ISO, { timeStyle: "short", timeZone: "UTC" })).toBe("14:33")
+  })
+
+  it("语言标签是坏的也不抛异常，退回浏览器语言", () => {
+    stubLocales("zh-CN")
+    displayPreferences.value.locale = "这不是语言标签"
+    expect(() => formatDate(UTC_ISO)).not.toThrow()
+    expect(formatDate(UTC_ISO)).not.toBe("-")
   })
 })

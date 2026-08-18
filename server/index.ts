@@ -65,8 +65,17 @@ server.listen(port, host, () => {
   )
 })
 
+const orphanTimer = watchForOrphan()
+
+let shuttingDown = false
+
 async function shutdown() {
+  // SIGINT 和 SIGTERM 可能前后脚都到，孤儿守卫也可能在退出过程中再触发一次
+  if (shuttingDown) return
+  shuttingDown = true
+
   clearInterval(sweepTimer)
+  if (orphanTimer) clearInterval(orphanTimer)
 
   // 退出前把还开着的房间落库：内容的事实源是内存里的 Y.Doc，直接退等于丢掉
   // 最后一个防抖窗口内的改动。不靠 flushPendingStores() —— 它触发的落库要过一段
@@ -89,3 +98,22 @@ async function shutdown() {
 
 process.once('SIGINT', () => void shutdown())
 process.once('SIGTERM', () => void shutdown())
+
+// dev 下真正 listen 的是 tsx watch fork 出来的这个进程，上面还压着 tsx、sh、pnpm 三层。
+// 终端里 Ctrl+C 时信号发给整个前台进程组，四层都收得到；但从 IDE 点停止、kill 顶层 pid、
+// 或者直接关掉终端标签时，信号只送到最上面一两层，这里收不到 —— 于是端口还占着、连接还连着，
+// 进程被 init 收养成了孤儿，下次启动就是 EADDRINUSE。攒几天能攒出几十个。
+// 父进程一死 ppid 就会变成 1，据此自我了断（走正常 shutdown，Y.Doc 该落库的照样落库）。
+// 定时器 unref 掉：它只是个哨兵，不该成为进程活着的理由
+function watchForOrphan() {
+  if (!isDev) return undefined
+  const parentPid = process.ppid
+  const timer = setInterval(() => {
+    if (process.ppid !== parentPid) {
+      console.log('[dev] 父进程已退出，自动关闭以释放端口')
+      void shutdown()
+    }
+  }, 2000)
+  timer.unref()
+  return timer
+}

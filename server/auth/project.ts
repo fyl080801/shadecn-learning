@@ -3,6 +3,7 @@ import { authEnabled } from '../config.ts'
 import { prisma } from '../db.ts'
 import { projects, type ProjectRole } from '../store/projects.ts'
 import { flows } from '../store/flows.ts'
+import { completeUserProfile } from './profile.ts'
 import type { SessionUser } from './session.ts'
 
 /**
@@ -36,7 +37,8 @@ async function devUserId(): Promise<string> {
     update: {},
     create: { ...DEV_USER, email: null, roles: '[]' },
   })
-  return user.id
+  // 本地模式也走一遍档案补齐，头像这类东西不该只有连了 Keycloak 才有
+  return (await completeUserProfile(user)).id
 }
 
 /** 取当前请求者的 user id；未登录返回 null */

@@ -8,6 +8,7 @@ import type { ProjectVariables } from './auth/project.ts'
 import { appOrigin, isApiPath } from './config.ts'
 import { attachPageGuard } from './frontend/guard.ts'
 import { auth } from './routes/auth.ts'
+import { avatars } from './routes/avatars.ts'
 import { collab } from './routes/collab.ts'
 import { flows } from './routes/flows.ts'
 import { health } from './routes/health.ts'
@@ -40,6 +41,7 @@ app.use('/api/*', (c, next) => {
 const routes = app
   .route('/api/health', health)
   .route('/api/auth', auth)
+  .route('/api/avatars', avatars)
   .route('/api/notes', notes)
   .route('/api/projects', projects)
   .route('/api/invites', invites)

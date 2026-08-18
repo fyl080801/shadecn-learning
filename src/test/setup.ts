@@ -26,6 +26,11 @@ if (!window.matchMedia) {
   })) as unknown as typeof window.matchMedia
 }
 
+/** jsdom 没有实现 scrollIntoView，reka-ui 的列表在移动高亮项时会调它 */
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {}
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllEnvs()

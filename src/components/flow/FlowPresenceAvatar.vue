@@ -18,7 +18,8 @@ const props = defineProps<{
 </script>
 
 <template>
-  <Avatar :class="cn('size-7', props.class)">
+  <!-- bg-muted 垫在图片下面：默认头像是透明底的像素方块，没有底色就只剩几个色块浮着 -->
+  <Avatar :class="cn('size-7 bg-muted', props.class)">
     <AvatarImage v-if="user.avatarUrl" :src="user.avatarUrl" :alt="user.name" />
     <AvatarFallback
       class="text-[10px] font-semibold text-white"
