@@ -4,6 +4,7 @@ import { flushPromises, mount } from "@vue/test-utils"
 import Settings from "@/views/Settings.vue"
 import { fetchSession } from "@/lib/auth"
 import { displayPreferences, resetDisplayPreferences } from "@/lib/preferences"
+import { THEME_AUTO, theme } from "@/lib/theme"
 
 /**
  * 设置页。用户信息是只读的一块，日期偏好那一块的关键在于「改完立刻反映到预览上」——
@@ -40,6 +41,7 @@ async function signIn() {
 
 afterEach(() => {
   resetDisplayPreferences()
+  theme.value = THEME_AUTO
 })
 
 describe("设置页", () => {
@@ -62,6 +64,23 @@ describe("设置页", () => {
     const text = wrapper.text()
     expect(text).not.toContain("sub-1")
     expect(text).not.toContain("canvas:editor")
+  })
+
+  it("点「深色」立刻切主题，<html> 上就是那个类", async () => {
+    await signIn()
+    const wrapper = mount(Settings)
+    await flushPromises()
+
+    // 默认「跟随系统」，并且写明此刻跟到了哪一档
+    expect(wrapper.get('[data-testid="theme-system-hint"]').text()).toContain("浅色")
+
+    await wrapper.get('[data-testid="theme-dark"]').trigger("click")
+    await flushPromises()
+
+    expect(theme.value).toBe("dark")
+    expect(document.documentElement.classList.contains("dark")).toBe(true)
+    // 选了具体档位就不该再说「跟随系统」
+    expect(wrapper.find('[data-testid="theme-system-hint"]').exists()).toBe(false)
   })
 
   it("改时区，预览里的时刻跟着换算", async () => {

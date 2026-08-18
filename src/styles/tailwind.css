@@ -42,6 +42,11 @@
 }
 
 :root {
+  /*
+   * 滚动条、原生下拉、日期控件这些浏览器自己画的东西只认 color-scheme，
+   * 不看我们的变量 —— 少了它，深色页面上会挂一条白色滚动条。
+   */
+  color-scheme: light;
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -76,38 +81,46 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+/*
+ * 深色整体比 shadcn 默认那套**亮一档**（背景 0.145 → 0.215，卡片 0.205 → 0.255，
+ * 依次类推），是刻意的：默认值接近纯黑，大片留白的页面上黑得发闷，卡片和背景也几乎分不开。
+ * 提亮之后层级关系不变 —— 背景 < 侧栏 < 卡片/浮层 < muted/accent，每档之间仍差 0.04 左右，
+ * 边框和 input 的白色不透明度也跟着提一点，否则底色一亮，分割线就看不见了。
+ * 前景色保持 0.985：背景亮了对比度会掉，别在这一头再让。
+ */
 .dark {
-  --background: oklch(0.145 0 0);
+  color-scheme: dark;
+  --background: oklch(0.215 0 0);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  --card: oklch(0.255 0 0);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
+  --popover: oklch(0.255 0 0);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
+  --primary-foreground: oklch(0.215 0 0);
+  --secondary: oklch(0.315 0 0);
   --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
+  --muted: oklch(0.315 0 0);
+  --muted-foreground: oklch(0.735 0 0);
+  --accent: oklch(0.315 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --border: oklch(1 0 0 / 14%);
+  --input: oklch(1 0 0 / 20%);
+  --ring: oklch(0.6 0 0);
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
+  --sidebar: oklch(0.24 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent: oklch(0.315 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar-border: oklch(1 0 0 / 14%);
+  --sidebar-ring: oklch(0.6 0 0);
 }
 
 @layer base {

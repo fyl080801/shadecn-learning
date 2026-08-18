@@ -86,15 +86,17 @@ const STYLES = `
     --danger: oklch(0.577 0.245 27.325);
     --warn: oklch(0.55 0.14 80);
   }
+  /* 数值跟 src/styles/tailwind.css 的 .dark 对齐（比 shadcn 默认亮一档），
+     不然从登录页进应用会明显亮一下 */
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: oklch(0.145 0 0);
-      --card: oklch(0.205 0 0);
+      --bg: oklch(0.215 0 0);
+      --card: oklch(0.255 0 0);
       --fg: oklch(0.985 0 0);
-      --muted: oklch(0.708 0 0);
-      --border: oklch(1 0 0 / 12%);
+      --muted: oklch(0.735 0 0);
+      --border: oklch(1 0 0 / 14%);
       --primary: oklch(0.985 0 0);
-      --primary-fg: oklch(0.205 0 0);
+      --primary-fg: oklch(0.215 0 0);
       --danger: oklch(0.704 0.191 22.216);
       --warn: oklch(0.78 0.13 80);
     }

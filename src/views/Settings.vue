@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed } from "vue"
 import { useNow } from "@vueuse/core"
-import { RotateCcw, TriangleAlert, User as UserIcon } from "lucide-vue-next"
+import {
+  Monitor,
+  Moon,
+  RotateCcw,
+  Sun,
+  TriangleAlert,
+  User as UserIcon
+} from "lucide-vue-next"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -39,12 +46,21 @@ import {
   offsetLabelOf,
   useDisplayPreferences
 } from "@/lib/preferences"
+import {
+  THEME_AUTO,
+  THEME_OPTIONS,
+  type ThemePreference,
+  systemTheme,
+  theme
+} from "@/lib/theme"
 
 /**
- * 设置页。两块内容：
+ * 设置页。三块内容：
  *   - 当前用户：只读，来自 /api/auth/me（前端没有 token，这里能看到的就是全部）
+ *   - 外观：深色 / 浅色 / 跟随系统
  *   - 日期显示：时区 / 语言 / 格式，存在这台浏览器的 localStorage 里，默认跟随浏览器
- * 改动即时生效 —— 偏好是响应式的，全站 `@/lib/format` 的输出会一起变，没有「保存」按钮。
+ * 后两块都是本机偏好，改动即时生效 —— 偏好是响应式的（主题直接改 `<html>` 的类，
+ * 时间全站走 `@/lib/format`），所以没有「保存」按钮。
  */
 
 const { user, displayName, isAuthenticated, authEnabled } = useAuth()
@@ -95,6 +111,17 @@ const isDefault = computed(() => {
     p.hourCycle === AUTO
   )
 })
+
+const THEME_ICONS: Record<ThemePreference, typeof Sun> = {
+  light: Sun,
+  dark: Moon,
+  auto: Monitor
+}
+
+/** 「跟随系统」此刻跟到了哪一档，写在括号里 —— 否则选了它看不出结果是什么 */
+const systemThemeLabel = computed(() =>
+  systemTheme.value === "dark" ? "深色" : "浅色"
+)
 
 const userFields = computed(() => [
   { label: "显示名", value: user.value?.name ?? displayName.value },
@@ -169,6 +196,47 @@ const userFields = computed(() => [
             </div>
           </dl>
         </template>
+      </CardContent>
+    </Card>
+
+    <!-- 外观 -->
+    <Card>
+      <CardHeader>
+        <CardTitle>外观</CardTitle>
+        <CardDescription>
+          只影响这台浏览器，改完立即生效。默认跟随系统。
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <Label>主题</Label>
+          <!--
+            三档并排，不用 Select：选项只有三个，且每一档都有直观的图标 ——
+            展开一层下拉才能换主题，比直接点一下慢。
+          -->
+          <div class="flex gap-2" role="radiogroup" aria-label="主题">
+            <Button
+              v-for="option in THEME_OPTIONS"
+              :key="option.value"
+              :variant="theme === option.value ? 'default' : 'outline'"
+              size="sm"
+              role="radio"
+              :aria-checked="theme === option.value"
+              :data-testid="`theme-${option.value}`"
+              @click="theme = option.value"
+            >
+              <component :is="THEME_ICONS[option.value]" class="size-4" />
+              {{ option.label }}
+            </Button>
+          </div>
+        </div>
+        <p
+          v-if="theme === THEME_AUTO"
+          class="mt-2 text-xs text-muted-foreground"
+          data-testid="theme-system-hint"
+        >
+          跟随系统设置，当前是{{ systemThemeLabel }}。
+        </p>
       </CardContent>
     </Card>
 

@@ -5,6 +5,28 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>my-vue-app</title>
+    <!--
+      主题必须在第一帧之前定下来，所以这段脚本内联在这里、且是同步的：
+      等到 src/lib/theme.ts 跑起来，bundle 已经下完解析完，深色偏好的用户会先被
+      白底闪一下。存的键和格式跟 @/lib/theme 里的 useColorMode 一致（裸字符串）。
+      读不到或者读到不认的值就跟随系统，和 auto 一个行为。
+    -->
+    <script>
+      ;(function () {
+        try {
+          var stored = localStorage.getItem("app:theme")
+          var mode =
+            stored === "light" || stored === "dark"
+              ? stored
+              : matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light"
+          document.documentElement.classList.add(mode)
+        } catch (e) {
+          /* 隐私模式下 localStorage 会抛；主题不值得为它挡住页面 */
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>
