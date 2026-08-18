@@ -21,12 +21,14 @@
 | REQ-DEPLOY | 构建与部署 | [12-deployment.md](12-deployment.md) | 已实现 |
 | REQ-CANVAS | 项目、画布管理与操作历史 | [13-flow-canvas-management.md](13-flow-canvas-management.md) | 已实现 |
 | REQ-CLUSTER | 单副本 / 多副本双模式 | [14-clustering.md](14-clustering.md) | 已实现 |
+| — | 协同方案案例研究：竞品与横向对比 | [15-collab-case-study.md](15-collab-case-study.md) | 调研 |
 
 ## 状态口径
 
 - **已实现** — 文档中列出的功能需求在当前代码里都能跑通。
 - **部分实现** — 有可用实现，但文档中标注了明确的缺口。
 - **规划中** — 只有需求，尚无实现。
+- **调研** — 不是需求，是给设计决策提供依据的外部考察记录。
 
 
 ## 剩余优化项与已知问题
@@ -66,6 +68,7 @@
 - **元素占用**（谁在编辑就别人别动）：仲裁逻辑与测试都在 `src/lib/presence.ts`，
   但没接进画布 —— 当前谁都能同时改同一样东西，节点标签只*显示*还有谁在碰它。
   这是产品选择，不是缺陷；要恢复见 [REQ-COLLAB §4.0.1](04-realtime-collab.md)。
+  竞品 libtv 把占用接进去之后的翻车现场见 [协同案例研究 §2](15-collab-case-study.md)。
 - **只读连接**：Hocuspocus 的 `connectionConfig.readOnly` 现成可用，但还没有「只读分享」这个功能，
   所以没有入口。
 
