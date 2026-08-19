@@ -1,18 +1,17 @@
 /**
- * Public surface of `prompt-input`.
+ * `prompt-input` 的对外接口。
  *
- * The component's value is a plain string; plugins decide how inline
- * tokens (e.g. `@[name](id)`, `{{Ref 3}}`) round-trip through `parse`
- * and `serialize` hooks.  Trigger-driven popovers remain optional.
+ * 组件的值是纯字符串；由插件决定内联 token（如 `@[name](id)`、`{{Ref 3}}`）
+ * 如何通过 `parse` 和 `serialize` 钩子进行往返转换。基于触发符的弹出层是可选的。
  *
- * Recommended API (plugin-based):
+ * 推荐用法（基于插件）：
  *
  *   const { editor, addPlugin } = createEditor()
  *   addPlugin(definePlugin({
  *     name: 'mention',
- *     trigger: { key: '@' },          // optional — input popover
- *     parse: (text) => …,             // text → segments
- *     serialize: (node) => …          // node → text
+ *     trigger: { key: '@' },          // 可选 —— 输入弹出层
+ *     parse: (text) => …,             // 文本 → 片段
+ *     serialize: (node) => …          // 节点 → 文本
  *   }))
  *
  *   <PromptInput v-model="text" :editor>
@@ -38,6 +37,8 @@ export {
   defaultTriggerPattern,
   getTriggerPattern
 } from "./definePlugin"
+
+export { normalizeChildren, normalizeParagraphChildren } from "./operations"
 
 export {
   toDOMRange,
@@ -77,7 +78,4 @@ export type {
   ParsedSegment
 } from "./types"
 
-export type {
-  CreateEditorResult,
-  CreateEditorOptions
-} from "./operations"
+export type { CreateEditorResult, CreateEditorOptions } from "./operations"

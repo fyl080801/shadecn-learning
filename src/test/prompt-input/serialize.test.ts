@@ -101,12 +101,31 @@ describe("textToModel()", () => {
     expect(model).toEqual([{ type: "paragraph", children: [{ text: "" }] }])
   })
 
-  it("\\n\\n 分段，单个 \\n 留在段内", () => {
+  it("每个 \\n 都切一段，空行就是空段落", () => {
     const model = textToModel("a\nb\n\nc", [])
 
-    expect(model).toHaveLength(2)
-    expect(texts(model[0]!)).toEqual(["a\nb"])
-    expect(texts(model[1]!)).toEqual(["c"])
+    expect(model).toHaveLength(4)
+    expect(texts(model[0]!)).toEqual(["a"])
+    expect(texts(model[1]!)).toEqual(["b"])
+    expect(texts(model[2]!)).toEqual([""])
+    expect(texts(model[3]!)).toEqual(["c"])
+  })
+
+  it("文本叶子里不留字面 \\n", () => {
+    const model = textToModel("a\nb", [])
+    for (const block of model) {
+      for (const child of para(block).children) {
+        if ("text" in child) expect(child.text).not.toContain("\n")
+      }
+    }
+  })
+
+  it("\\r\\n / \\r 统一按 \\n 分段", () => {
+    expect(textToModel("a\r\nb\rc", [])).toHaveLength(3)
+  })
+
+  it("剥掉存量数据里残留的零宽占位符", () => {
+    expect(texts(textToModel("a\u200Bb\uFEFFc", [])[0]!)).toEqual(["abc"])
   })
 
   it("插件把 @xxx 解析成行内节点", () => {
@@ -172,7 +191,9 @@ describe("modelToText()", () => {
     expect(modelToText(model, [mention])).toBe("hi @bob !")
   })
 
-  it("段落之间用 \\n\\n 连接", () => {
+  it("一个段落块 = 一行，段落之间用单个 \\n 连接", () => {
+    expect(modelToText(textToModel("a\nb", []), [])).toBe("a\nb")
+    // 空行也是一个段落块，往返后仍是空行
     expect(modelToText(textToModel("a\n\nb", []), [])).toBe("a\n\nb")
   })
 
@@ -244,14 +265,14 @@ describe("serializeRange()", () => {
     expect(text).toBe("@bob world")
   })
 
-  it("跨段落时用 \\n\\n 连接", () => {
-    const multi = textToModel("first\n\nsecond", [])
+  it("跨段落时用单个 \\n 连接", () => {
+    const multi = textToModel("first\nsecond", [])
     const text = serializeRange(
       multi,
       { anchor: { path: [0, 0], offset: 0 }, focus: { path: [1, 0], offset: 6 } },
       []
     )
-    expect(text).toBe("first\n\nsecond")
+    expect(text).toBe("first\nsecond")
   })
 
   it("选中的行内节点没有 serializer 时丢掉并 warn", () => {

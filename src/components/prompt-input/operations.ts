@@ -1,20 +1,19 @@
 /**
- * Editor + Transforms namespaces, modelled on Slate's API.
+ * Editor + Transforms 命名空间，仿照 Slate API 设计。
  *
- * Design (mirrors slate-react):
+ * 设计（镜像 slate-react）：
  *
- * 1. **Model is source of truth.**  `editor.children` is the only thing
- *    the v-for renders.  All operations assign a brand-new array to
- *    `editor.children` (immutable style) so Vue's reactivity fires.
+ * 1. **模型为唯一数据源。** `editor.children` 是 v-for 渲染的唯一内容。
+ *    所有操作都给 `editor.children` 赋一个全新数组（不可变风格），确保 Vue 响应式触发。
  *
- * 2. **Normalization invariants** (called after every commit):
- *    - Every paragraph has at least one child (a text leaf with empty text).
- *    - First and last child of a paragraph are always text leaves.
- *    - Between two mention (inline void) elements there is always a text leaf.
- *    - Adjacent text leaves are merged.
+ * 2. **规范化不变式**（每次提交后执行）：
+ *    - 每个段落至少有一个子节点（空文本叶）。
+ *    - 段落的首尾子节点始终是文本叶。
+ *    - 两个 mention（inline void）元素之间始终存在一个文本叶。
+ *    - 相邻的文本叶会被合并。
  *
- * 3. **Selection only stops on text leaves.**  Mentions are inline voids;
- *    the caret sits in the surrounding empty text leaves.
+ * 3. **选区仅停留在文本叶上。** mention 是 inline void；
+ *    光标位于其周围空文本叶中。
  */
 import { reactive } from "vue"
 import type {
@@ -30,14 +29,12 @@ import type {
   PromptPlugin
 } from "./types"
 
-// ---------- type guards -------------------------------------------------
+// ---------- 类型守卫 -------------------------------------------------
 
 const isCustomText = (n: Descendant | undefined | null): n is CustomText =>
   !!n && !("children" in n)
 
-const isInlineNode = (
-  n: Descendant | undefined | null
-): n is CustomInline =>
+const isInlineNode = (n: Descendant | undefined | null): n is CustomInline =>
   !!n &&
   "children" in n &&
   (n as { type?: string }).type !== undefined &&
@@ -46,7 +43,7 @@ const isInlineNode = (
 const isParagraph = (n: Descendant | undefined | null): n is Paragraph =>
   !!n && "children" in n && (n as { type?: string }).type === "paragraph"
 
-// ---------- path / point / range helpers --------------------------------
+// ---------- 路径 / 点 / 范围辅助函数 --------------------------------
 
 export const pathsEqual = (a: Path, b: Path): boolean => {
   if (a.length !== b.length) return false
@@ -84,7 +81,7 @@ export const RangeCreate = (
   focus: focus ?? anchor
 })
 
-/** Deep-copy a range so undo/redo stacks don't alias live selections. */
+/** 深拷贝选区，避免 undo/redo 栈引用到活跃选区。 */
 const cloneRange = (range: RangeType | null): RangeType | null => {
   if (!range) return null
   return {
@@ -99,7 +96,7 @@ export const Range = {
   create: RangeCreate
 }
 
-// ---------- tree walking (read-only) -----------------------------------
+// ---------- 树遍历（只读） -----------------------------------
 
 export const getText = (editor: EditorType, path: Path): CustomText | null => {
   if (path.length < 2) return null
@@ -116,7 +113,7 @@ const getBlock = (editor: EditorType, blockIdx: number): Paragraph | null => {
   return isParagraph(b) ? b : null
 }
 
-// ---------- Editor namespace -------------------------------------------
+// ---------- Editor 命名空间 -------------------------------------------
 
 export const EditorString = (editor: EditorType, range: RangeType): string => {
   if (RangeIsCollapsed(range)) return ""
@@ -146,7 +143,7 @@ export const EditorBefore = (
     }
     return { path: point.path.slice(), offset: point.offset - 1 }
   }
-  // Cross-leaf: find the previous text leaf.
+  // 跨文本叶：查找前一个文本叶。
   const prev = previousTextLeaf(editor, point.path)
   if (prev) {
     const inline = getText(editor, prev)
@@ -230,16 +227,16 @@ export const Editor = {
   unhangRange: EditorUnhangRange
 }
 
-// ---------- normalization (Slate-style invariants) ---------------------
+// ---------- 规范化（Slate 风格不变式） ---------------------
 
 /**
- * Normalize the children of a paragraph:
- *  - Ensure first/last child is a text leaf
- *  - Ensure adjacent inline-void elements have a text leaf between them
- *  - Merge adjacent text leaves
- *  - Ensure at least one text leaf exists
+ * 规范化段落的子节点：
+ *  - 确保首尾子节点是文本叶
+ *  - 确保相邻 inline-void 元素之间有文本叶
+ *  - 合并相邻文本叶
+ *  - 确保至少存在一个文本叶
  */
-const normalizeParagraphChildren = (
+export const normalizeParagraphChildren = (
   children: Array<CustomText | CustomInline>
 ): Array<CustomText | CustomInline> => {
   const out: Array<CustomText | CustomInline> = []
@@ -247,25 +244,25 @@ const normalizeParagraphChildren = (
     if (isCustomText(c)) {
       const last = out[out.length - 1]
       if (isCustomText(last)) {
-        // merge
+        // 合并
         out[out.length - 1] = { ...last, text: last.text + c.text }
       } else {
         out.push({ ...c })
       }
     } else if (isInlineNode(c)) {
       const last = out[out.length - 1]
-      // Ensure there's a text leaf before the inline element
+      // 确保 inline 元素之前有文本叶
       if (!last || isInlineNode(last)) {
         out.push({ text: "" })
       }
       out.push(c)
     }
   }
-  // Ensure first child is text
+  // 确保首子节点是文本
   if (out.length === 0 || isInlineNode(out[0]!)) {
     out.unshift({ text: "" })
   }
-  // Ensure last child is text
+  // 确保尾子节点是文本
   const last = out[out.length - 1]
   if (!last || isInlineNode(last)) {
     out.push({ text: "" })
@@ -273,7 +270,7 @@ const normalizeParagraphChildren = (
   return out
 }
 
-const normalizeChildren = (children: Descendant[]): Descendant[] => {
+export const normalizeChildren = (children: Descendant[]): Descendant[] => {
   const out: Descendant[] = []
   for (const block of children) {
     if (isParagraph(block)) {
@@ -292,14 +289,12 @@ const normalizeChildren = (children: Descendant[]): Descendant[] => {
 }
 
 /**
- * After normalization the model can shift inline indices (e.g. inserting
- * an empty text leaf in front of a mention).  Translate a "logical"
- * point computed against pre-normalize children into a valid post-
- * normalize point.  We do this by recovering the same text leaf via
- * its block index and offset-by-text count.
+ * 规范化后模型中的 inline 索引可能移位（如在 mention 前插入空文本叶）。
+ * 将基于规范化前子节点计算的"逻辑"点转换为规范化后的有效点。
+ * 通过 block 索引和按文本计数的 offset 来恢复对应的文本叶。
  *
- * Simpler approach: expect callers to pass a target *text leaf* path
- * and offset, and we re-locate the equivalent leaf after normalization.
+ * 更简单的做法：期望调用方传入目标*文本叶*路径和 offset，
+ * 规范化后重新定位等价的文本叶。
  */
 const renormalizeAndCommit = (
   editor: EditorType,
@@ -310,8 +305,7 @@ const renormalizeAndCommit = (
   editor.children = normalized
 
   if (desired) {
-    // Walk paragraphs and find the requested text leaf by index in
-    // text-leaf-only order.
+    // 遍历段落，按纯文本叶顺序查找指定索引的文本叶。
     const block = normalized[desired.blockIdx]
     if (isParagraph(block)) {
       const textLeaves: number[] = []
@@ -345,7 +339,7 @@ const commitSelection = (editor: EditorType, sel: RangeType | null): void => {
   editor.selection = sel
 }
 
-// ---------- pure tree builders ----------------------------------------
+// ---------- 纯树构建器 ----------------------------------------
 
 const replaceLeafText = (
   children: Descendant[],
@@ -387,7 +381,7 @@ const dropChild = (children: Descendant[], path: Path): Descendant[] => {
   return replaceBlockChildren(children, blockIdx, newBlockChildren)
 }
 
-// Count which "text leaf index" within a block a given inline index is.
+// 计算 block 中某个 inline 索引对应的"文本叶索引"。
 const textLeafIndex = (block: Paragraph, inlineIdx: number): number => {
   let n = 0
   for (let i = 0; i < inlineIdx; i++) {
@@ -396,10 +390,43 @@ const textLeafIndex = (block: Paragraph, inlineIdx: number): number => {
   return n
 }
 
-// ---------- insert / delete / split ------------------------------------
+// ---------- 插入 / 删除 / 分割 ------------------------------------
+
+/**
+ * 进入模型的文本统一清洗（textToModel 与 insertText 共用）：
+ *  - `\r\n` / `\r` → `\n`：随后按"换行 = 段落块边界"处理；
+ *  - 剥离 U+200B（零宽空格）与 U+FEFF（零宽不换行空格/BOM）：旧版
+ *    contenteditable 编辑器会把自身的零宽占位符序列化进存量值，这些
+ *    字符不可见却占据一个光标停靠点——行尾残留时，方向键需要多按一次
+ *    才能跨到下一行，且中间一步光标 rect 塌缩（视觉上"光标消失"）。
+ *    注意 ZWJ/ZWNJ（U+200C/200D）参与 emoji 与复杂文字合字，不可剥离。
+ */
+export const sanitizeInputText = (text: string): string =>
+  text.replace(/\r\n?/g, "\n").replace(/[\u200B\uFEFF]/g, "")
 
 const EditorInsertText = (editor: EditorType, text: string): void => {
+  text = sanitizeInputText(text)
   if (!text) return
+  // 模型不变式：文本叶内禁止出现字面 `\n`（换行 = 段落块边界，见
+  // serialize.ts 的段落映射约定）。含 `\n` 的叶会绕过零宽占位渲染分支，
+  // 空行 div 高度塌为 0。而插入文本携带 `\n` 是真实存在的输入路径：
+  // Chrome 在部分 Enter / IME 序列下会发出 data 为 "\n" 的 insertText
+  // beforeinput，IME 组合结果也可能带换行。在此唯一入口统一拆成
+  // "逐行插入 + splitBlock"，batch 折叠为单条撤销记录。
+  if (text.includes("\n")) {
+    const lines = text.split("\n")
+    editor.batch(() => {
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i]) insertSingleLineText(editor, lines[i]!)
+        if (i < lines.length - 1) EditorSplitBlock(editor)
+      }
+    })
+    return
+  }
+  insertSingleLineText(editor, text)
+}
+
+const insertSingleLineText = (editor: EditorType, text: string): void => {
   const sel = editor.selection
   if (!sel) return
   if (!RangeIsCollapsed(sel)) {
@@ -447,7 +474,7 @@ const deleteRange = (editor: EditorType, range: RangeType): void => {
     }
     return
   }
-  // Cross-leaf rebuild
+  // 跨文本叶重建
   const newChildren: Descendant[] = []
   const sBlock = start.path[0] ?? 0
   const eBlock = end.path[0] ?? 0
@@ -477,20 +504,23 @@ const deleteRange = (editor: EditorType, range: RangeType): void => {
       }
       if (bi === sBlock && ii === sInline) {
         if (isCustomText(inline)) {
-          newInlines.push({ ...inline, text: inline.text.slice(0, start.offset) })
+          newInlines.push({
+            ...inline,
+            text: inline.text.slice(0, start.offset)
+          })
         }
         continue
       }
       if (bi === eBlock && ii === eInline) {
         if (isCustomText(inline)) {
-          // merged onto the start leaf later; track separately
+          // 稍后合并到起始叶上；此处单独跟踪
         }
         continue
       }
-      // Nodes strictly inside the range — drop
+      // 严格在选区内的节点 — 丢弃
     }
     if (bi === sBlock) {
-      // Append the trailing portion of end leaf into the start block
+      // 将结束叶的尾部追加到起始块中
       const endBlock = editor.children[eBlock]
       if (isParagraph(endBlock)) {
         const endLeaf = endBlock.children[eInline]
@@ -506,17 +536,17 @@ const deleteRange = (editor: EditorType, range: RangeType): void => {
             newInlines.push({ text: tail })
           }
         }
-        // Also append remaining inlines after end leaf in end block
+        // 同时追加结束块中结束叶之后的剩余 inline
         for (let k = eInline + 1; k < endBlock.children.length; k++) {
           newInlines.push(endBlock.children[k]!)
         }
       }
       newChildren.push({ ...block, children: newInlines })
     }
-    // skip blocks strictly between sBlock and eBlock (do not push)
-    // skip eBlock (already merged above)
+    // 跳过 sBlock 和 eBlock 之间的块（不推入）
+    // 跳过 eBlock（已在上方合并）
   }
-  // Selection lands at start
+  // 选区落在起点
   const startBlock = newChildren[sBlock]
   let tlIdx = 0
   if (isParagraph(startBlock)) {
@@ -544,18 +574,18 @@ const EditorDeleteBackward = (editor: EditorType): void => {
   const block = getBlock(editor, blockIdx)
   if (!block) return
 
-  // Caret at offset 0 of a text leaf:
+  // 光标在文本叶的 offset 0 处：
   if (at.offset === 0) {
-    // If previous sibling is an inline-void element, drop it.
+    // 如果前一个兄弟节点是 inline-void 元素，移除它。
     const prev = block.children[inlineIdx - 1]
     if (isInlineNode(prev)) {
       const newChildren = dropChild(editor.children, [blockIdx, inlineIdx - 1])
-      // After dropping the mention, normalization will merge the
-      // surrounding empty text leaves.  Land caret at the merged leaf.
-      // The merged text leaf will be at the position of the previous
-      // text leaf (inlineIdx - 2 if exists) merged with current.
-      const prevTextIdx = inlineIdx >= 2 ? textLeafIndex(block, inlineIdx - 2) : 0
-      // Recover caret offset = length of the previous text leaf at merge.
+      // 移除 mention 后，规范化会合并周围的空文本叶。
+      // 光标落在合并后的文本叶上。合并后的文本叶位于前一个
+      // 文本叶的位置（若存在则为 inlineIdx - 2）与当前叶合并处。
+      const prevTextIdx =
+        inlineIdx >= 2 ? textLeafIndex(block, inlineIdx - 2) : 0
+      // 恢复光标 offset = 合并处前一个文本叶的长度。
       const prevText = inlineIdx >= 2 ? block.children[inlineIdx - 2] : null
       const prevLen =
         prevText && isCustomText(prevText) ? prevText.text.length : 0
@@ -567,8 +597,8 @@ const EditorDeleteBackward = (editor: EditorType): void => {
       editor.apply()
       return
     }
-    // If we are at the very start of the block (first text leaf, offset 0),
-    // and there is a previous block, merge with previous.
+    // 如果位于块的最开头（第一个文本叶，offset 0），
+    // 且存在前一个块，则与前一个块合并。
     const isFirstTextLeaf = !block.children
       .slice(0, inlineIdx)
       .some((c) => isCustomText(c))
@@ -576,7 +606,7 @@ const EditorDeleteBackward = (editor: EditorType): void => {
       mergeWithPrevious(editor)
       return
     }
-    // Otherwise, fall through: backspace deletes a char from previous text.
+    // 否则继续：退格删除前一个文本中的字符。
     const prevTextPath = previousTextLeaf(editor, at.path)
     if (prevTextPath) {
       const prevLeaf = getText(editor, prevTextPath)
@@ -600,12 +630,12 @@ const EditorDeleteBackward = (editor: EditorType): void => {
         return
       }
     }
-    // No-op
+    // 无操作
     editor.apply()
     return
   }
 
-  // Caret in middle of a text leaf: delete one char.
+  // 光标在文本叶中间：删除一个字符。
   const inline = getText(editor, at.path)
   if (!inline) return
   const newText =
@@ -637,7 +667,7 @@ const EditorDeleteForward = (editor: EditorType): void => {
   const inline = block.children[inlineIdx]
   if (!isCustomText(inline)) return
 
-  // Caret in the middle of a text leaf: delete one char forward.
+  // 光标在文本叶中间：向前删除一个字符。
   if (at.offset < inline.text.length) {
     const newText =
       inline.text.slice(0, at.offset) + inline.text.slice(at.offset + 1)
@@ -653,14 +683,13 @@ const EditorDeleteForward = (editor: EditorType): void => {
     return
   }
 
-  // Caret at end of current text leaf:
-  // If next sibling is an inline-void element, drop it.
+  // 光标在当前文本叶末尾：
+  // 如果下一个兄弟节点是 inline-void 元素，移除它。
   const next = block.children[inlineIdx + 1]
   if (isInlineNode(next)) {
     const newChildren = dropChild(editor.children, [blockIdx, inlineIdx + 1])
-    // Normalization will merge the current and following text leaves;
-    // caret stays at end of current text leaf (which becomes start +
-    // currentLength inside the merged leaf).
+    // 规范化会合并当前和后续文本叶；
+    // 光标停在当前文本叶末尾（在合并后的叶中变为 start + currentLength）。
     const tl = textLeafIndex(block, inlineIdx)
     renormalizeAndCommit(editor, newChildren, {
       blockIdx,
@@ -671,7 +700,7 @@ const EditorDeleteForward = (editor: EditorType): void => {
     return
   }
 
-  // If we are at the last text leaf of the block, merge with next block.
+  // 如果位于块的最后一个文本叶，与下一个块合并。
   const isLastTextLeaf = !block.children
     .slice(inlineIdx + 1)
     .some((c) => isCustomText(c))
@@ -680,7 +709,7 @@ const EditorDeleteForward = (editor: EditorType): void => {
     return
   }
 
-  // Otherwise: delete first char of next text leaf.
+  // 否则：删除下一个文本叶的首字符。
   const nextTextPath = nextTextLeaf(editor, at.path)
   if (nextTextPath) {
     const nextLeaf = getText(editor, nextTextPath)
@@ -718,9 +747,9 @@ const mergeWithPrevious = (editor: EditorType): void => {
   const prevBlock = getBlock(editor, blockIdx - 1)
   if (!curBlock || !prevBlock) return
 
-  // Caret will land at the join point: end of last text leaf of prevBlock
-  // (or after merging, the corresponding text leaf in the merged block).
-  // Compute the prevBlock text-leaf count and the offset at the join.
+  // 光标落在合并点：prevBlock 最后一个文本叶的末尾
+  // （合并后在合并块中对应的文本叶）。
+  // 计算 prevBlock 的文本叶数量和合并处的 offset。
   let joinTextIdx = 0
   let joinOffset = 0
   for (let i = 0; i < prevBlock.children.length; i++) {
@@ -761,7 +790,7 @@ const mergeWithNext = (editor: EditorType): void => {
   const nextBlock = getBlock(editor, blockIdx + 1)
   if (!curBlock || !nextBlock) return
 
-  // Caret stays at end of curBlock's last text leaf (logical join point).
+  // 光标停在 curBlock 最后一个文本叶末尾（逻辑合并点）。
   let joinTextIdx = 0
   let joinOffset = 0
   for (let i = 0; i < curBlock.children.length; i++) {
@@ -804,10 +833,9 @@ const EditorSplitBlock = (editor: EditorType): void => {
   const beforeText = inline.text.slice(0, at.offset)
   const afterText = inline.text.slice(at.offset)
 
-  // Build new current block (before the split) and the new block
-  // (after the split).  Keep all inlines before inlineIdx in the
-  // current block; split the leaf at inlineIdx; everything after
-  // inlineIdx goes to the new block.
+  // 构建分割后的当前块（分割前）和新块（分割后）。
+  // inlineIdx 之前的所有 inline 留在当前块；
+  // inlineIdx 处的叶被分割；inlineIdx 之后的内容进入新块。
   const newCurChildren: Array<CustomText | CustomInline> = [
     ...block.children.slice(0, inlineIdx),
     { text: beforeText }
@@ -823,7 +851,7 @@ const EditorSplitBlock = (editor: EditorType): void => {
   )
   newChildren.splice(blockIdx + 1, 0, newBlock)
 
-  // Caret lands at start of the new block's first text leaf.
+  // 光标落在新块第一个文本叶的起点。
   renormalizeAndCommit(editor, newChildren, {
     blockIdx: blockIdx + 1,
     textLeafIdx: 0,
@@ -832,7 +860,7 @@ const EditorSplitBlock = (editor: EditorType): void => {
   editor.apply()
 }
 
-// ---------- Transforms namespace --------------------------------------
+// ---------- Transforms 命名空间 --------------------------------------
 
 export const Transforms = {
   select(editor: EditorType, range: RangeType | null): void {
@@ -854,7 +882,7 @@ export const Transforms = {
     const offset = at.offset
     const leaf = block.children[inlineIdx]
 
-    // Insert a single inline-void node at the caret.
+    // 在光标处插入单个 inline-void 节点。
     if (list.length === 1 && isInlineNode(list[0]!)) {
       const inlineNode = list[0] as CustomInline
       if (isCustomText(leaf)) {
@@ -872,8 +900,7 @@ export const Transforms = {
           blockIdx,
           newBlockChildren
         )
-        // After normalization, caret should be at the start of the
-        // text leaf AFTER the inline-void (so user can keep typing).
+        // 规范化后，光标应位于 inline-void 之后文本叶的起点（便于继续输入）。
         const tlBefore = textLeafIndex(block, inlineIdx)
         renormalizeAndCommit(editor, newChildren, {
           blockIdx,
@@ -885,7 +912,7 @@ export const Transforms = {
       }
     }
 
-    // Insert text/inline list at caret in the middle of a leaf.
+    // 在叶中间光标处插入 text/inline 列表。
     if (isCustomText(leaf)) {
       const before: CustomText = { text: leaf.text.slice(0, offset) }
       const after: CustomText = { text: leaf.text.slice(offset) }
@@ -903,11 +930,11 @@ export const Transforms = {
         newBlockChildren
       )
       const tlBefore = textLeafIndex(block, inlineIdx)
-      // Caret after the last inserted node; place at start of trailing
-      // text leaf.
+      // 光标在最后插入节点之后；放在尾随文本叶的起点。
       renormalizeAndCommit(editor, newChildren, {
         blockIdx,
-        textLeafIdx: tlBefore + 1 + inserted.filter((n) => isCustomText(n)).length,
+        textLeafIdx:
+          tlBefore + 1 + inserted.filter((n) => isCustomText(n)).length,
         offset: 0
       })
       editor.apply()
@@ -939,14 +966,14 @@ export const Transforms = {
   }
 }
 
-// ---------- factory + with* plugins ----------------------------------
+// ---------- 工厂 + with* 插件 ----------------------------------
 
 export const initializeEditor = (
   editor: EditorType,
   initialValue: Descendant[]
 ): void => {
   commitChildren(editor, initialValue)
-  // Place caret at end of the last text leaf in the last block.
+  // 将光标放在最后一个块最后一个文本叶的末尾。
   const children = editor.children
   for (let bi = children.length - 1; bi >= 0; bi--) {
     const block = children[bi]
@@ -954,7 +981,10 @@ export const initializeEditor = (
     for (let ii = block.children.length - 1; ii >= 0; ii--) {
       const leaf = block.children[ii]
       if (isCustomText(leaf)) {
-        commitSelection(editor, RangeCreate({ path: [bi, ii], offset: leaf.text.length }))
+        commitSelection(
+          editor,
+          RangeCreate({ path: [bi, ii], offset: leaf.text.length })
+        )
         editor.apply()
         return
       }
@@ -965,31 +995,30 @@ export const initializeEditor = (
 }
 
 /**
- * Result returned by {@link createEditor}.  Destructure to obtain the
- * editor instance and the registration helpers.
+ * {@link createEditor} 返回的结果。解构获取编辑器实例和注册辅助函数。
  *
  *   const { editor, addPlugin, removePlugin, getPlugins } = createEditor()
  *   addPlugin(mentionPlugin)
  */
 export type CreateEditorResult = {
-  /** The reactive editor instance. */
+  /** 响应式编辑器实例。 */
   editor: EditorType
-  /** Register a plugin (idempotent on `plugin.name`). */
+  /** 注册插件（对 `plugin.name` 幂等）。 */
   addPlugin: (plugin: PromptPlugin) => void
-  /** Remove a plugin by name. */
+  /** 按名称移除插件。 */
   removePlugin: (name: string) => void
-  /** Inspect the current plugin registry (read-only snapshot). */
+  /** 查看当前插件注册表（只读快照）。 */
   getPlugins: () => PromptPlugin[]
 }
 
 export type CreateEditorOptions = {
-  /** Plugins to register up-front. */
+  /** 预注册的插件列表。 */
   plugins?: PromptPlugin[]
 }
 
 /**
- * Build a registry-backed `isInline`/`isVoid` predicate sothe editor
- * dynamically recognises any plugin-registered inline element types.
+ * 构建基于注册表的 `isInline`/`isVoid` 断言，使编辑器
+ * 动态识别所有插件注册的 inline 元素类型。
  */
 const installPluginRecognizers = (editor: EditorType): void => {
   if (!editor.__plugins) editor.__plugins = new Map<string, PromptPlugin>()
@@ -1019,16 +1048,14 @@ export const createEditor = (
   options: CreateEditorOptions = {}
 ): CreateEditorResult => {
   /**
-   * History stacks.  A snapshot is `{ children, selection }`; we push
-   * to `undoStack` whenever `apply()` runs after a content-changing
-   * commit (i.e. the `children` reference moved).  Selection-only
-   * commits (e.g. `Transforms.select`, caret moves) do **not** create
-   * a new history entry — they are folded into the next content commit
-   * so a single `Ctrl+Z` rolls back the last visible edit, not just a
-   * caret jump.
+   * 历史栈。快照为 `{ children, selection }`；每次 `apply()` 在内容变更
+   * 提交后（即 `children` 引用变化）推入 `undoStack`。纯选区提交
+   * （如 `Transforms.select`、光标移动）**不**创建新的历史条目——
+   * 它们合并到下一次内容提交中，使单次 `Ctrl+Z` 回滚最后一次可见编辑，
+   * 而非仅回退光标移动。
    *
-   * `historyMuted` is true while we are *replaying* an undo/redo so
-   * the resulting `apply()` doesn't push onto the stack again.
+   * `historyMuted` 在 *重放* undo/redo 时为 true，
+   * 使产生的 `apply()` 不会再次推入栈。
    */
   type Snapshot = { children: Descendant[]; selection: RangeType | null }
   const undoStack: Snapshot[] = []
@@ -1037,9 +1064,9 @@ export const createEditor = (
   let lastChildrenRef: Descendant[] | null = null
   let historyMuted = false
   /**
-   * Batch depth counter.  While > 0, `apply()` still mutates `children`
-   * and bumps `revision`, but it does **not** push to `undoStack` — the
-   * entire batch is collapsed into a single history entry on exit.
+   * batch 深度计数器。当 > 0 时，`apply()` 仍会修改 `children` 并自增
+   * `revision`，但**不会**推入 `undoStack` —— 整个 batch 在退出时
+   * 折叠为单条历史记录。
    *
    * 用于"一次粘贴 = 一次撤销"这类需要把多个 Transforms 合并的场景：
    * 进入 batch 时记录 `children` 的引用作为起点，退出时仅当 children
@@ -1053,7 +1080,7 @@ export const createEditor = (
     children: [] as Descendant[],
     selection: null as RangeType | null,
     revision: 0,
-    // Defaults; overridden once `installPluginRecognizers` runs below.
+    // 默认值；下方 `installPluginRecognizers` 运行后覆盖。
     isInline: (_: Element) => false,
     isVoid: (_: Element) => false,
     insertText(text: string) {
@@ -1066,33 +1093,47 @@ export const createEditor = (
       EditorDeleteForward(this)
     },
     apply() {
-      // Push to undo stack iff this commit changed `children` and we're
-      // not currently replaying history.  Inside a batch we update
-      // `lastChildrenRef` (so post-batch deltas are detected correctly)
-      // but skip the push — the batch wrapper produces a single entry.
-      if (!historyMuted && this.children !== lastChildrenRef) {
-        if (lastChildrenRef !== null && batchDepth === 0) {
+      // 内容变更时推进 undo 栈（受 historyMuted / batch 控制）；
+      // 纯选区提交仅跟踪选区快照。batch 内部跳过推入——
+      // batch 包装器会产生单一条目。
+      if (this.children !== lastChildrenRef) {
+        // 仅非静音的内容变更推入 undo 栈。
+        if (!historyMuted && lastChildrenRef !== null && batchDepth === 0) {
           undoStack.push({
             children: lastChildrenRef,
             selection: lastSelectionSnapshot
           })
           if (undoStack.length > HISTORY_LIMIT) undoStack.shift()
-          // A fresh edit invalidates the redo branch.
+        }
+        // 任何内容变更（含静音）都使 redo 分支失效，避免 redo
+        // 恢复到不含静音变更的旧态。
+        if (batchDepth === 0) {
+          // 新编辑使 redo 分支失效。
           redoStack.length = 0
         }
+        // 即使静音也要推进 lastChildrenRef，使后续非静音 apply
+        // 的 undo 快照以"静音变更后"的状态为 before，避免回退到
+        // 静音前的旧态。
         lastChildrenRef = this.children
         lastSelectionSnapshot = cloneRange(this.selection)
       } else if (!historyMuted) {
-        // Selection-only commit: keep tracking the latest selection so
-        // it lands in the next snapshot.
+        // 纯选区提交：继续跟踪最新选区，使其落入下一次快照。
         lastSelectionSnapshot = cloneRange(this.selection)
       }
       this.revision = this.revision + 1
     },
+    muteHistory(fn: () => void) {
+      const wasMuted = historyMuted
+      historyMuted = true
+      try {
+        fn()
+      } finally {
+        historyMuted = wasMuted
+      }
+    },
     /**
-     * Run `fn` so that all `apply()` calls inside it collapse into a
-     * single history entry.  Reentrant: nested batches are merged into
-     * the outermost one.
+     * 运行 `fn`，使其内部所有 `apply()` 调用折叠为单条历史记录。
+     * 可重入：嵌套的 batch 合并到最外层。
      *
      * 典型用法：粘贴富文本时把多次 insertText / insertNodes / splitBlock
      * 包裹起来，使 Ctrl+Z 能一次性回滚整段粘贴。
@@ -1101,8 +1142,8 @@ export const createEditor = (
       if (batchDepth === 0) {
         batchStartChildren = this.children
         batchStartSelection = cloneRange(this.selection)
-        // Fold the pre-batch selection so it becomes the "before" for the
-        // single history entry we'll emit on exit.
+        // 折叠 batch 前的选区，使其成为退出时发出的单条历史记录
+        // 的"before"快照。
         lastSelectionSnapshot = batchStartSelection
       }
       batchDepth++
@@ -1111,8 +1152,8 @@ export const createEditor = (
       } finally {
         batchDepth--
         if (batchDepth === 0) {
-          // Only push if the batch produced a real content change and we
-          // are not muted by an in-flight undo/redo replay.
+          // 仅当 batch 产生了真实的内容变更、且未被进行中的
+          // undo/redo 重放所静音时才推入。
           if (
             !historyMuted &&
             batchStartChildren !== null &&
@@ -1133,7 +1174,7 @@ export const createEditor = (
     undo() {
       const prev = undoStack.pop()
       if (!prev) return
-      // Stash current state on the redo stack before rolling back.
+      // 回滚前将当前状态存入 redo 栈。
       redoStack.push({
         children: this.children,
         selection: cloneRange(this.selection)
@@ -1164,9 +1205,8 @@ export const createEditor = (
     __plugins: new Map<string, PromptPlugin>()
   }) as unknown as EditorType
 
-  // Tracks the selection that was current at the time of the last
-  // content-bearing snapshot.  Defined out here (instead of inside the
-  // reactive object) so the closures in `apply/undo/redo` can mutate it.
+  // 跟踪最后一次内容快照时的选区。定义在外部（而非响应式对象内部），
+  // 使 `apply/undo/redo` 闭包可以修改它。
   let lastSelectionSnapshot: RangeType | null = null
 
   installPluginRecognizers(editor)
@@ -1188,7 +1228,7 @@ export const createEditor = (
   return { editor, addPlugin, removePlugin, getPlugins }
 }
 
-// ---------- factory helpers ------------------------------------------
+// ---------- 工厂辅助函数 ------------------------------------------
 
 export const createText = (
   text: string,
@@ -1199,14 +1239,10 @@ export const createText = (
 })
 
 /**
- * Create a generic inline-void node for plugin-defined element types.
- * The `data` field carries plugin-specific payload and is opaque to the
- * editor core.
+ * 为插件定义的元素类型创建通用 inline-void 节点。
+ * `data` 字段携带插件特定的载荷，对编辑器核心透明。
  */
-export const createInline = (
-  type: string,
-  data?: unknown
-): CustomInline => ({
+export const createInline = (type: string, data?: unknown): CustomInline => ({
   type,
   data,
   children: [{ text: "" }]

@@ -168,6 +168,40 @@ describe("Transforms.insertText()", () => {
 
     expect(editor.revision).toBeGreaterThan(before)
   })
+
+  it("带 \\n 的文本拆成多个段落块，文本叶子里不留 \\n", () => {
+    const { editor } = makeEditor("a")
+    caret(editor, [0, 0], 1)
+
+    Transforms.insertText(editor, "b\nc\nd")
+
+    expect(editor.children).toHaveLength(3)
+    expect(asText(editor)).toBe("ab\nc\nd")
+    for (const block of editor.children) {
+      for (const child of (block as Paragraph).children) {
+        if ("text" in child) expect(child.text).not.toContain("\n")
+      }
+    }
+  })
+
+  it("一次带 \\n 的插入只算一次撤销", () => {
+    const { editor } = makeEditor("a")
+    caret(editor, [0, 0], 1)
+
+    Transforms.insertText(editor, "b\nc")
+    editor.undo()
+
+    expect(asText(editor)).toBe("a")
+  })
+
+  it("\\r\\n 归一成 \\n，零宽占位符被剥掉", () => {
+    const { editor } = makeEditor("")
+    caret(editor, [0, 0], 0)
+
+    Transforms.insertText(editor, "a\r\n\u200Bb\uFEFF")
+
+    expect(asText(editor)).toBe("a\nb")
+  })
 })
 
 describe("Transforms.insertNodes() —— 插入行内 void", () => {
@@ -252,7 +286,7 @@ describe("删除", () => {
   })
 
   it("段首退格会和上一段合并", () => {
-    const { editor } = makeEditor("aa\n\nbb")
+    const { editor } = makeEditor("aa\nbb")
     caret(editor, [1, 0], 0)
 
     Transforms.delete(editor)
@@ -278,7 +312,7 @@ describe("删除", () => {
   })
 
   it("段尾按 Delete 和下一段合并", () => {
-    const { editor } = makeEditor("aa\n\nbb")
+    const { editor } = makeEditor("aa\nbb")
     caret(editor, [0, 0], 2)
 
     Transforms.delete(editor, { reverse: false })
@@ -296,7 +330,7 @@ describe("Transforms.splitBlock()", () => {
     Transforms.splitBlock(editor)
 
     expect(editor.children).toHaveLength(2)
-    expect(asText(editor)).toBe("ab\n\ncd")
+    expect(asText(editor)).toBe("ab\ncd")
     expect(editor.selection?.anchor).toEqual({ path: [1, 0], offset: 0 })
   })
 
@@ -316,7 +350,7 @@ describe("Transforms.splitBlock()", () => {
 
     Transforms.splitBlock(editor)
 
-    expect(asText(editor)).toBe("x\n\n @bob")
+    expect(asText(editor)).toBe("x\n @bob")
   })
 })
 
@@ -537,6 +571,69 @@ describe("editor.batch() —— 一次粘贴 = 一次撤销", () => {
     ).toThrowError("boom")
 
     // depth 已经归零：后续编辑照常记录撤销点
+    Transforms.insertText(editor, "b")
+    editor.undo()
+    expect(asText(editor)).toBe("a")
+  })
+})
+
+describe("editor.muteHistory() —— 自动同步不算撤销步", () => {
+  it("静音期间的改动不产生撤销点", () => {
+    const { editor } = makeEditor("a")
+    caret(editor, [0, 0], 1)
+
+    Transforms.insertText(editor, "b")
+    editor.muteHistory(() => {
+      Transforms.insertText(editor, "c")
+    })
+
+    // 撤销只回退到静音变更之后、上一次真实编辑之前的状态
+    editor.undo()
+    expect(asText(editor)).toBe("a")
+  })
+
+  it("静音变更后的下一次撤销不会把静音变更一起吐回来", () => {
+    const { editor } = makeEditor("a")
+    caret(editor, [0, 0], 1)
+
+    editor.muteHistory(() => {
+      Transforms.insertText(editor, "X")
+    })
+    Transforms.insertText(editor, "b")
+
+    editor.undo()
+    // 快照的 before 是"静音变更之后"的状态，X 保留
+    expect(asText(editor)).toBe("aX")
+  })
+
+  it("可重入：嵌套静音退出后恢复到进入前的状态", () => {
+    const { editor } = makeEditor("")
+    caret(editor, [0, 0], 0)
+
+    editor.muteHistory(() => {
+      editor.muteHistory(() => {
+        Transforms.insertText(editor, "a")
+      })
+      Transforms.insertText(editor, "b")
+    })
+    // 静音结束，恢复记录
+    Transforms.insertText(editor, "c")
+
+    editor.undo()
+    expect(asText(editor)).toBe("ab")
+  })
+
+  it("静音期间抛异常也要恢复静音状态", () => {
+    const { editor } = makeEditor("")
+    caret(editor, [0, 0], 0)
+
+    expect(() =>
+      editor.muteHistory(() => {
+        throw new Error("boom")
+      })
+    ).toThrowError("boom")
+
+    Transforms.insertText(editor, "a")
     Transforms.insertText(editor, "b")
     editor.undo()
     expect(asText(editor)).toBe("a")

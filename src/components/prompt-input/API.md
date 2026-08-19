@@ -69,11 +69,14 @@ type Editor = {
   undo(): void // 回滚上一次"内容性"提交
   redo(): void // 重做
   batch(fn: () => void): void // 合并多个提交为一次 undo
+  muteHistory(fn: () => void): void // 期间的改动不进 undo 栈（自动同步 / 规范化）
   __plugins?: Map<string, PromptPlugin> // 内部注册表（外部只读）
 }
 ```
 
 > 关键约定：`Transforms.select` 等**仅改 selection** 的提交**不**单独入历史栈，它会随下一次内容提交合并。
+
+> `muteHistory` 用于"这次改动是程序联动、不该占一个撤销步"的场景（删除某个 badge 后的重编号、外部素材删除后联动移除引用）。它仍推进 `revision` 与内部的 `lastChildrenRef`，所以下一次正常编辑的撤销点是**静音变更之后**的状态——不会把静音变更一起吐回来。可重入。
 
 ### 1.4 插件接口
 
@@ -148,6 +151,7 @@ type ParsedSegment =
 | `showLimitTip(message)` | `(message: string) => void`          | 外部触发限制提示                                                        |
 | `toDOMRange(range)`     | `(range: Range) => DOMRange \| null` | 把 model range 转为 DOM Range                                           |
 | `closeTrigger()`        | `() => void`                         | 主动关闭当前 popover                                                    |
+| `commitActive(payload)` | `(payload: { data: unknown }) => void` | 提交当前激活的触发器（等价于 `#portal` 槽位里的 `commit`），供插件 `onKeyDown` 等拿不到 slot scope 的地方调用 |
 | `getSelectedText()`     | `() => string`                       | 选区对应的**真实字符串**（经 `plugin.serialize` 还原）；折叠时返回 `""` |
 | `getFullText()`         | `() => string`                       | 整篇文档的真实字符串，等价于 `modelValue`                               |
 | `repositionPopover()`   | `() => Promise<void>`                | 重新定位 popover（视口变化时由外部调用）                                |
@@ -202,12 +206,22 @@ type ParsedSegment =
 | `createInline`       | `(type, data?) => CustomInline`                                  | 构造内联 void 节点       |
 | `createParagraph`    | `(children) => Paragraph`                                        | 构造段落                 |
 
+### 3.5 规范化 / 清洗（供插件与外部构造文档时复用）
+
+| 函数                        | 签名                                              | 说明                                                                                 |
+| --------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `normalizeChildren`         | `(children: Descendant[]) => Descendant[]`        | 对整篇文档施加不变式（每段至少一个叶、首尾是文本叶、相邻 inline 间补叶、合并相邻叶） |
+| `normalizeParagraphChildren` | `(children) => Array<CustomText \| CustomInline>` | 同上，只作用于一个段落的 children                                                    |
+| `sanitizeInputText`         | `(text: string) => string`                        | 入模型文本的统一清洗：`\r\n`/`\r` → `\n`，剥掉 `U+200B` / `U+FEFF`（见 §6.1）        |
+
+> `sanitizeInputText` 只从 `operations.ts` 导出（`serialize.ts` 与 `Transforms.insertText` 内部共用），未在 `index.ts` 再导出。
+
 **历史栈语义**：
 
 - 默认 100 条上限（`HISTORY_LIMIT`）。
 - `apply()` 在 `children` 引用变化时入栈。
 - `batch(fn)` 内的多次 `apply` 合并为一条历史；可重入（嵌套合并到最外层）。
-- `undo/redo` 通过 `historyMuted` 防止重入入栈。
+- `undo/redo` 通过 `historyMuted` 防止重入入栈；`muteHistory(fn)` 把同一个开关暴露出来，用于"程序联动、不占撤销步"的改动（见 §1.3）。任何内容变更——包括静音的——都会清空 redo 分支，否则 redo 会恢复到不含静音变更的旧态。
 
 ---
 
@@ -250,13 +264,21 @@ const mention = definePlugin({
     <span data-slate-leaf="true" data-leaf-path="[bi,ii]">
       <span data-slate-string="true">…</span>
       <!-- 非空 -->
-      <!-- 或 -->
-      <span data-slate-zero-width="z|n" data-slate-length="0">FEFF</span>
+      <!-- 或（空段落，"n" 型：FEFF 后必须恰好一个 br 撑起行高） -->
+      <span data-slate-zero-width="n" data-slate-length="0">FEFF<br /></span>
+      <!-- 或（inline 相邻的空叶，"z" 型：不允许 br） -->
+      <span data-slate-zero-width="z" data-slate-length="0">FEFF</span>
     </span>
   </span>
   <span data-void-path="[bi,ii]" contenteditable="false">…</span>
 </div>
 ```
+
+零宽 span 的第一个子节点必须是内容为 `FEFF` 的文本节点——它是光标的停靠点，缺了就没地方放光标，空行 div 高度塌为 0（表现为"回车后光标消失"）。除零宽 span 与插件自治区外，编辑器内不允许出现 `<br>`。
+
+浏览器会主动破坏这个结构：Firefox 在 Enter 的 `beforeinput` **之前**就往 DOM 里预注入 `<br>` 并吞掉 FEFF 文本节点，`preventDefault` 拦不住；而对应的模型叶是没变化的空文本，Vue 的 vdom diff 不会碰这个 span，破坏于是永久残留。`PromptInput.vue` 的 `repairLeafPlaceholders()` 在每次 `revision` 变化和 focus 后按上述不变式自愈（IME 组合期间跳过，插件自治区跳过）。
+
+三个渲染分支全部用 `<span v-if / v-else-if / v-else>` 而不是 `<template v-if>`：后者产生 Fragment VNode，Chrome 的 contenteditable 会在 normalize 时删掉 Fragment 边界的空文本节点，Vue 的 `removeFragment` 遍历时拿到 `null.nextSibling` 直接崩。
 
 ### 5.2 导出函数
 
@@ -278,8 +300,9 @@ const mention = definePlugin({
 
 ### 6.1 段落映射约定
 
-- `\n\n` 分隔**段落**（产生新 `<paragraph>` 块）。
-- 单个 `\n` 作为文本叶内的字符保留。
+- 每个 `\n` 分隔一个**段落块**（产生新 `<paragraph>`，DOM 上是独立的 `<div data-block-path>`）；空行即空段落（渲染为零宽叶）。
+- 文本叶内**禁止**出现字面 `\n`：靠 `white-space: pre-wrap` 在叶内折行时，浏览器在折行点的点击定位/光标换算不可靠（长段落尤甚），且与 Enter 的 `splitBlock` 行为不一致。`Transforms.insertText` 会把带 `\n` 的文本自动拆成"逐行插入 + splitBlock"，并折叠为一次撤销。
+- 进入模型的文本统一经 `sanitizeInputText`（`operations.ts`）清洗：`\r\n` / `\r` 归一为 `\n`，并剥掉 `U+200B` / `U+FEFF`（存量数据里泄漏出来的零宽占位符——不可见却占一个光标停靠点，行尾残留时方向键跨行要多按一次）。ZWJ/ZWNJ（`U+200C`/`U+200D`）参与 emoji 合字，不剥。
 
 ### 6.2 导出函数
 
@@ -288,7 +311,7 @@ const mention = definePlugin({
 | `splitByRegex`   | `(text, pattern, build) => ParsedSegment[]` | 写 plugin `parse` 的核心工具；**pattern 必须含 `g` flag**，否则抛错；自动处理零宽匹配死循环 |
 | `textToModel`    | `(text, plugins) => Descendant[]`           | 字符串 → 文档；空串生成单空段落                                                             |
 | `modelToText`    | `(children, plugins) => string`             | 文档 → 字符串；缺序列化器时 `console.warn` 并丢弃节点                                       |
-| `serializeRange` | `(children, range, plugins) => string`      | 序列化选区为字符串；折叠选区返回 `""`；多段落用 `\n\n` 拼接                                 |
+| `serializeRange` | `(children, range, plugins) => string`      | 序列化选区为字符串；折叠选区返回 `""`；多段落用 `\n` 拼接                                   |
 
 ### 6.3 优先级
 
@@ -378,3 +401,4 @@ const text = ref("hello @[Yoda](yoda)!")
 | 日期       | 变更             | 责任人 |
 | ---------- | ---------------- | ------ |
 | 2026-06-08 | 初版方法规约落档 | —      |
+| 2026-08-18 | 换行语义改为「一个 `\n` = 一个段落块」，文本叶内禁止字面 `\n`；新增 `muteHistory` / `commitActive` / `normalizeChildren` 等导出；补齐 Firefox 选区与零宽占位自愈的相关约定 | — |

@@ -66,7 +66,7 @@
 
 **后端**：`app`（路由挂载与 404/500）、`config`、`auth/oidc`、`auth/session`、`auth/middleware`、`auth/ws`（协同握手的房间级鉴权 + 认定身份）、`frontend/guard`（页面闸门与服务端渲染的登录页）、`routes/auth`、`routes/health`、`routes/notes`、`routes/projects`、`routes/invites`、`routes/flows`（含**画布内容的写入路径**：散场落库、从 `ydoc` 恢复、老 `graph` 自动迁移、CRDT 字段级合并）、`store/notes`、`collab/hardening`（三道防线：悬空边清理 / 内容配额 / awareness 身份防伪）。
 
-**前端**：`lib/utils`、`lib/format`、`lib/id`、`lib/auth`（`fetchSession` / `apiFetch` 完整契约）、`prompt-input` 的 `serialize`（round-trip）与 `operations`（transform / undo / batch）、路由守卫（会话失效 → 整页跳 `/login`）、`stores/flow`（Y.Doc 投影：写入落到文档、别人的改动进投影、**并发改不同字段真合并**、
+**前端**：`lib/utils`、`lib/format`、`lib/id`、`lib/auth`（`fetchSession` / `apiFetch` 完整契约）、`prompt-input` 的 `serialize`（round-trip、换行=段落块的约定）、`operations`（transform / undo / batch / muteHistory）与 `PromptInput.vue` 组件本身（块结构渲染、零宽占位不变式及其自愈）、路由守卫（会话失效 → 整页跳 `/login`）、`stores/flow`（Y.Doc 投影：写入落到文档、别人的改动进投影、**并发改不同字段真合并**、
 **撤销只撤自己的**、视口不进文档也不进撤销）、`lib/presence`（占用仲裁与防御性解析，不起 socket）、`composables/useAsyncAction`（防连点守卫：同步上锁、失败解锁、按 key 分行上锁）、`ui/button` 的 `loading`（转圈 + 自动禁用，防止被 `shadcn-vue add` 覆盖回去）、`views/canvas/ProjectHome`（删画布 / 移除成员的二次确认真的发出请求；连点按钮、连按回车、连点确认框都只发一次请求）。
 
 **内容写入路径怎么测**：画布内容没有 REST 写入口，唯一的写路径是「客户端改 Y.Doc → WebSocket 同步 → 落库」。

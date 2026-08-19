@@ -39,6 +39,7 @@
 - **只有内容性提交入栈**；仅改选区的提交（`Transforms.select`）不单独入栈，会并入下一次内容提交。
 - `editor.batch(fn)` 把多次提交合并成一条撤销记录（粘贴等复合操作必须使用），支持嵌套。
 - `undo` / `redo` 期间禁止重入入栈。
+- `editor.muteHistory(fn)` 让"程序联动"的改动不占撤销步（删除某个 badge 后的重编号、外部素材删除后联动移除引用）：期间的提交照常推进内容与 `revision`，但不入栈，且下一次正常编辑的撤销点是**静音变更之后**的状态——撤销不会把静音变更一起吐回来。静音变更同样清空 redo 分支。
 
 ### 3.3 触发器与 popover
 
@@ -65,7 +66,10 @@
 
 ### 3.6 字符串序列化约定
 
-- `\n\n` 分隔段落（产生新块）；单个 `\n` 作为文本叶内的普通字符保留。
+- **一个 `\n` = 一个段落块**（DOM 上是独立的 `<div data-block-path>`），空行即空段落；文本叶内**禁止**出现字面 `\n`。
+  - 理由：靠 `white-space: pre-wrap` 在叶内折行时，浏览器在折行点的点击定位与光标换算不可靠（长段落尤甚），而且与 Enter 的 `splitBlock` 行为不一致——同样是"换行"，一个进模型是字符、一个是新块。
+  - 因此 `Transforms.insertText` 收到带 `\n` 的文本（Chrome 某些 Enter / IME 序列会发出 `data: "\n"` 的 `insertText`）时，自动拆成"逐行插入 + `splitBlock`"，并 `batch` 成一次撤销。
+- 入模型的文本统一清洗：`\r\n` / `\r` 归一为 `\n`，剥掉 `U+200B` / `U+FEFF`（存量数据里泄漏的零宽占位符——不可见却占一个光标停靠点，行尾残留时方向键跨行要多按一次且光标短暂消失）。ZWJ / ZWNJ 参与 emoji 合字，不剥。
 - `parse` 和 `serialize` 都按插件**注册的逆序**执行：后注册者优先认领。
 - 节点找不到序列化器时 `console.warn` 并丢弃该节点，不得抛错。
 - `splitByRegex` 要求正则必须带 `g` 标志，否则抛错；并且要能处理零宽匹配导致的死循环。
@@ -79,7 +83,20 @@
 - `deferFocusOnClick` —— 挂载时不自动聚焦，避免嵌在画布类页面中时抢走 Delete 键。
 - 通过 ref 暴露 `getSelectedText()` / `getFullText()` / `focus()` / `closeTrigger()` / `toDOMRange()` 等方法。
 
-### 3.8 演示页要求
+### 3.8 浏览器行为纠偏（contenteditable 的现实）
+
+`contenteditable` 在不同浏览器下会自作主张地改 DOM 和选区，模型层看不见这些改动（模型没变 → Vue 不重渲染 → 破坏永久残留）。组件必须自愈：
+
+- **零宽占位结构自愈**：空段落叶渲染为 `FEFF + <br>`（`<br>` 撑行高），inline 相邻的空叶只有 `FEFF`（光标停靠点）。Firefox 会在 Enter 的 `beforeinput` **之前**注入 `<br>` 并吞掉 `FEFF`（`preventDefault` 拦不住），组件在每次 `revision` 变化和 focus 后按不变式修复；除零宽 span 与插件自治区外，编辑区内不允许存在 `<br>`。
+- **Enter 前的选区快照**：Firefox 在 `keydown` 与 `beforeinput` 之间会插一次 `selectionchange`，可能把选区挪到段首；`keydown` 时拍快照，`insertParagraph` 时用快照做 `splitBlock`。
+- **选区读写用 anchor/focus，不用 `getRangeAt(0)`**：`start/end` 丢方向（反向拖选会被存成正向），且 Firefox 会把跨 `contenteditable=false` 内联的选区拆成多个 Range，第一段只覆盖 void 之前。写回同理用 `setBaseAndExtent`——`addRange` 只能表达正向选区。
+- **拖选期间只读不写**：拖选中任何程序化写 DOM 选区都会重置浏览器的拖选锚点（Firefox 表现为选区闪烁 / 选不中）；`mouseup` 后补一次归一。原生 HTML5 拖拽不触发 `mouseup`，必须同时监听 `dragend`，否则拖一次徽章后标记永久卡住。
+- **游离节点兜底**：点击空行、最后一行下方 padding 等位置时，Firefox 会把选区落在不属于任何叶的节点上。此时不能返回 `null`（那会让模型选区过期，下一次按键落回旧光标位置），要解析到文档顺序上最近的文本叶。
+- **点击不抢光标**：`focus` 时不要把存储的模型选区写回 DOM——那会让光标弹回上次的位置（"点了某一行但光标不动"）。只有 DOM 选区不在编辑区内（程序式 `.focus()`）才恢复模型选区。
+- **光标跟随滚动**：写回选区后按 focus 端插入点矩形滚动容器，模拟 `<textarea>` 的行为（量测 focus 端而非整段包围盒，否则反向拖选会把滚动条拉回选区尾部）。
+- **渲染分支用 `<span v-if/v-else-if/v-else>`，不用 `<template v-if>`**：后者产生 Fragment VNode，Chrome 的 contenteditable 会删掉 Fragment 边界的空文本节点，Vue 卸载 Fragment 时读 `null.nextSibling` 直接崩。
+
+### 3.9 演示页要求
 
 `/richeditor` 需同时挂载四个插件，覆盖所有插件形态：
 
@@ -109,7 +126,11 @@
 - [ ] 粘贴一段含多个标记的长文本，一次 `Ctrl+Z` 全部撤销。
 - [ ] 连续移动光标不产生任何撤销记录。
 - [ ] 设置 `maxLength` 后超限输入被拦截并触发 `exceed-limit`。
-- [ ] 单测覆盖 `serialize` 的 round-trip 与 `operations` 的 transform / undo / batch。
+- [ ] 单测覆盖 `serialize` 的 round-trip 与 `operations` 的 transform / undo / batch / muteHistory。
+- [ ] 按 Enter 换行后光标可见、空行有正常行高；Firefox 下同样成立。
+- [ ] 点击任意一行（含空行、最后一行下方的空白）光标落到点击处，而不是弹回上次位置。
+- [ ] 反向拖选、跨行拖选、跨内联节点拖选都能选中且不闪烁；拖动一次内联节点徽章后，后续编辑的光标同步仍正常。
+- [ ] 粘贴多行文本得到多个段落块，其结构与逐行手敲 Enter 完全一致，且一次 `Ctrl+Z` 全部撤销。
 
 ## 6. 本期不做
 
@@ -123,5 +144,5 @@
 ## 7. 待确认事项
 
 - 是否抽成独立 npm 包发布。
-- 多段落场景下的 `\n\n` 约定是否会与实际业务文本冲突（正文里本来就有空行时）。
+- ~~多段落场景下的 `\n\n` 约定是否会与实际业务文本冲突~~ —— 已改为「一个 `\n` = 一个段落块」，见 §3.6。
 - 是否需要提供一套默认样式主题，减少每个宿主重复写渲染插槽。
