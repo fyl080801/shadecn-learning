@@ -54,6 +54,7 @@ function project(): ProjectSummary {
     id: PROJECT_ID,
     name: "测试项目",
     description: null,
+    kind: "team",
     memberCount: 1,
     flowCount: 2,
     myRole: "admin",
@@ -67,6 +68,7 @@ function flow(id: string, name: string): FlowSummary {
   return {
     id,
     projectId: PROJECT_ID,
+    mode: "collab",
     name,
     description: null,
     status: "draft",

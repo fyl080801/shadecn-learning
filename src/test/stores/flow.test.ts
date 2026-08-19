@@ -27,6 +27,7 @@ function detail(overrides: Partial<FlowDetail> = {}): FlowDetail {
   return {
     id: "flow-1",
     projectId: "project-1",
+    mode: "collab",
     name: "测试画布",
     description: null,
     status: "draft",

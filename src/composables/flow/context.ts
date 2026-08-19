@@ -1,10 +1,10 @@
-import { inject, provide, toRef, watch, type InjectionKey } from "vue"
+import { computed, inject, provide, toRef, watch, type InjectionKey } from "vue"
 import { useFlowStore } from "@/stores/flow"
 import { useFlowCanvas } from "./useFlowCanvas"
-import { useFlowCollab } from "./useFlowCollab"
 import { useFlowDocument } from "./useFlowDocument"
 import { useFlowPresence } from "./useFlowPresence"
 import { useFlowSelection } from "./useFlowSelection"
+import { useFlowSync } from "./sync"
 
 /**
  * 画布编辑器的共享上下文。
@@ -19,8 +19,11 @@ export interface FlowEditorContext {
   flowId: Readonly<ReturnType<typeof toRef<string>>>
   /** 底层状态与撤销；写操作最终都落到 store.mutate */
   store: ReturnType<typeof useFlowStore>
-  /** 协同连接：内容的 Y.Doc 和在场用的 awareness 都从这儿来 */
-  collab: ReturnType<typeof useFlowCollab>
+  /**
+   * 内容的同步层：Y.Doc 从这儿来，协同画布的 awareness 也从这儿来。
+   * 走 WebSocket 还是 HTTP 由画布的 `mode` 决定，上层不用关心。
+   */
+  sync: ReturnType<typeof useFlowSync>
   /** 文档级：加载 / 改名 / 复制 / 删除 */
   document: ReturnType<typeof useFlowDocument>
   /** 画布交互：Vue Flow 绑定、视口、新增节点 */
@@ -42,22 +45,34 @@ export function provideFlowEditor(props: { flowId: string }): FlowEditorContext 
    * 构造顺序 = 依赖方向，是条直线，不成环：
    *
    *   selection ──┐
-   *   collab ──┬──┴─→ canvas   （canvas 是唯一同时认识三者的接合层）
+   *   sync ────┬──┴─→ canvas   （canvas 是唯一同时认识三者的接合层）
    *            └─→ presence ──┘
    *
    * presence 不认识 selection 也不认识 Vue Flow，只提供「上报」和「读别人」；
    * 本地状态怎么接进去、别人的占用怎么落到画布上，都由 canvas 负责。
    */
   const selection = useFlowSelection()
-  const collab = useFlowCollab(flowId)
-  const presence = useFlowPresence(collab)
 
   /**
-   * 连上之后把 Y.Doc 交给 store —— **画布内容从这一刻起就是它了**。
-   * 换画布、断线重连都会给出新的 session，跟着换一次接管对象。
+   * 这张画布走哪条同步通道 —— 服务端说了算，跟着元信息一起回来（REQ-SOLO）。
+   *
+   * **必须比对 id**：换画布时 `store.meta` 会在新元信息到达之前继续留着上一张的，
+   * 拿它去挂通道就会用旧画布的模式连新画布 —— 个人画布连上协同房间会被服务端拒掉，
+   * 项目画布走 HTTP 会拿到 409。对不上就是「还不知道」，等着。
+   */
+  const mode = computed(() =>
+    store.meta && store.meta.id === flowId.value ? store.meta.mode : null
+  )
+
+  const sync = useFlowSync(flowId, mode)
+  const presence = useFlowPresence(sync)
+
+  /**
+   * 文档建好之后交给 store —— **画布内容从这一刻起就是它了**。
+   * 换画布、重建传输都会给出新的 session，跟着换一次接管对象。
    */
   watch(
-    () => collab.session.value,
+    () => sync.session.value,
     (session) => {
       if (session) store.attachDoc(session.doc)
       else store.detach()
@@ -68,8 +83,8 @@ export function provideFlowEditor(props: { flowId: string }): FlowEditorContext 
   const context: FlowEditorContext = {
     flowId,
     store,
-    collab,
-    document: useFlowDocument(flowId, store, collab),
+    sync,
+    document: useFlowDocument(flowId, store, sync),
     canvas: useFlowCanvas(store, presence, selection),
     selection,
     presence

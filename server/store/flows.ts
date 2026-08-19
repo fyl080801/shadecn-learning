@@ -1,6 +1,7 @@
 import { prisma } from '../db.ts'
 import { type FlowGraph, type FlowUserState, emptyGraph, readGraph } from './flow-types.ts'
 import { flowUserState } from './flow-user-state.ts'
+import type { ProjectKind } from './projects.ts'
 import { nameContains } from './text.ts'
 
 /**
@@ -15,9 +16,24 @@ export const FLOW_STATUSES: readonly FlowStatus[] = ['draft', 'published', 'arch
 
 export type FlowSort = 'updatedAt' | 'createdAt' | 'name'
 
+/**
+ * 这张画布走哪条同步通道（REQ-SOLO）。
+ *
+ * **派生自所属项目的 `kind`，不落库**：一张画布在个人空间里就是 solo，
+ * 挪进团队项目就是 collab。存一份标记在 `Flow` 上，早晚会和归属对不上，
+ * 而对不上的那一刻没人看得出是哪边错了。
+ */
+export type FlowMode = 'solo' | 'collab'
+
+export function modeOfKind(kind: ProjectKind): FlowMode {
+  return kind === 'personal' ? 'solo' : 'collab'
+}
+
 export interface FlowSummary {
   id: string
   projectId: string
+  /** solo = 不走协同（个人画布）；collab = 走 WebSocket 房间 */
+  mode: FlowMode
   name: string
   description: string | null
   status: FlowStatus
@@ -64,6 +80,8 @@ export interface ListFlowsOptions {
 type FlowRow = {
   id: string
   projectId: string
+  /** 所属项目的形态，mode 从它派生 —— 每次查画布都顺带取出来 */
+  project: { kind: string }
   name: string
   description: string | null
   status: string
@@ -94,6 +112,7 @@ function toSummary(row: FlowRow): FlowSummary {
   return {
     id: row.id,
     projectId: row.projectId,
+    mode: modeOfKind(row.project.kind === 'personal' ? 'personal' : 'team'),
     name: row.name,
     description: row.description,
     status: toStatus(row.status),
@@ -112,6 +131,8 @@ function toSummary(row: FlowRow): FlowSummary {
 const SUMMARY_SELECT = {
   id: true,
   projectId: true,
+  // mode 是派生的，所以每次都要把归属项目的形态带出来
+  project: { select: { kind: true } },
   name: true,
   description: true,
   status: true,
@@ -173,13 +194,22 @@ export const flows = {
     return { ...toSummary(row), graph, userState: {} }
   },
 
-  /** 只取归属信息，给鉴权中间件用 —— 不读 graph */
-  async projectIdOf(flowId: string): Promise<string | null> {
+  /**
+   * 只取归属信息，给鉴权用 —— 不读 graph。
+   *
+   * 连 `kind` 一起给：调用方除了「谁能进」还要知道「这是不是个人画布」
+   * （协同握手要据此拒掉 solo 画布，路由要据此拒掉走错通道的写入）。
+   */
+  async locate(flowId: string): Promise<{ projectId: string; kind: ProjectKind } | null> {
     const row = await prisma.flow.findFirst({
       where: { id: flowId, deletedAt: null, project: { deletedAt: null } },
-      select: { projectId: true },
+      select: { projectId: true, project: { select: { kind: true } } },
     })
-    return row?.projectId ?? null
+    if (!row) return null
+    return {
+      projectId: row.projectId,
+      kind: row.project.kind === 'personal' ? 'personal' : 'team',
+    }
   },
 
   /** 详情永远是「谁在看」的详情：userState 那部分因人而异 */

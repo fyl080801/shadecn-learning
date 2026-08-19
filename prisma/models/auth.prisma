@@ -27,6 +27,8 @@ model User {
   sessions        Session[]
   memberships     ProjectMember[]
   createdProjects Project[]       @relation("ProjectCreator")
+  /// 这个人的个人空间（REQ-SOLO）；没进过就没有，懒创建
+  personalSpace   Project?        @relation("PersonalSpace")
   flowStates      FlowUserState[]
 
   @@unique([issuer, subject])

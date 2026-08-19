@@ -5,18 +5,18 @@ import { flowApi } from "@/lib/api"
 import { usePageTitle } from "@/composables/usePageTitle"
 import { useAsyncAction } from "@/composables/useAsyncAction"
 import type { useFlowStore } from "@/stores/flow"
-import type { FlowCollab } from "./useFlowCollab"
+import type { FlowSync } from "./sync"
 
 type FlowStore = ReturnType<typeof useFlowStore>
 
 /**
  * 「这张画布」这一层：加载元信息、改名、复制、删除。
- * 都是文档级动作，跟画布上画了什么无关 —— 内容走协同那条路，不经过这里。
+ * 都是文档级动作，跟画布上画了什么无关 —— 内容走同步层，不经过这里。
  */
 export function useFlowDocument(
   flowId: Ref<string>,
   store: FlowStore,
-  collab: FlowCollab
+  sync: FlowSync
 ) {
   const router = useRouter()
 
@@ -50,41 +50,55 @@ export function useFlowDocument(
   /**
    * 画布上那行小字。
    *
-   * **没有「保存」这回事了** —— 改动进 Y.Doc 的那一刻就已经同步出去、并由服务端落库。
-   * 用户需要知道的只剩一件事：这条连接还在不在。断了的话本地改动会攒在
-   * Y.Doc 里，重连后自动补发（CRDT 合并，不会冲突），所以也不必惊慌。
+   * **两种画布这里的说法不一样，而且不能混**（REQ-SOLO §4.6）：
+   * 项目画布是「同步」（改动进 Y.Doc 就走了，没有保存这一步），
+   * 个人画布是「保存」（推一次 HTTP 才算落地）。跟个人画布的用户说
+   * 「协作会话已过期」，他会去找那个根本不存在的协作者。
    */
   const syncText = computed(() => {
     /*
-     * 终局关闭要**先判、且分开判**。这些都不会自己好，套用下面那句
+     * 终局失败要**先判、且分开判**。这些都不会自己好，套用下面那句
      * 「恢复连接后自动同步」就是在骗人：用户会照着继续画，而那些改动进得了本地
-     * IndexedDB、永远发不出去。三种原因三条出路，所以文案也得是三句。
+     * IndexedDB、永远发不出去。几种原因几条出路，所以文案也得分开写。
      */
-    switch (collab.fatal.value) {
+    switch (sync.fatal.value) {
       case "superseded":
         return "协作会话已过期，请刷新页面"
       case "unauthorized":
         return "登录态已过期，请重新登录"
       case "forbidden":
         return "已失去访问权限，改动不再同步"
+      case "too-large":
+        return "画布太大，最近的改动没能保存"
     }
-    // 断网时改的东西存在本地 IndexedDB 里，刷新也不丢，重连后自动补发 —— 说清楚这一点，
-    // 用户才不会以为「断了就白改了」而不敢动
-    if (!collab.connected.value) return "已离线，改动存在本地，恢复连接后自动同步"
-    return collab.session.value?.synced.value ? "已同步" : "同步中…"
+
+    if (store.meta?.mode === "solo") {
+      // 断网时改的东西存在本地 IndexedDB 里，刷新也不丢，恢复后自动补发
+      if (!sync.connected.value) {
+        return sync.session.value?.synced.value
+          ? "已离线，改动存在本地，恢复网络后自动保存"
+          : "连不上服务器，改动只存在本地"
+      }
+      return sync.pending.value ? "保存中…" : "已保存"
+    }
+
+    if (!sync.connected.value) return "已离线，改动存在本地，恢复连接后自动同步"
+    return sync.session.value?.synced.value ? "已同步" : "同步中…"
   })
 
-  /** 断线时给个视觉提醒，但不做成可点的动作 —— 用户没什么能做的，重连是自动的 */
-  const syncWarning = computed(() => !collab.connected.value || collab.fatal.value !== null)
+  /** 断线时给个视觉提醒，但不做成可点的动作 —— 用户没什么能做的，重试是自动的 */
+  const syncWarning = computed(() => !sync.connected.value || sync.fatal.value !== null)
 
   // —— 文档动作 ——
 
   /**
-   * 离开这张画布之前把「我怎么看」（视口）落库。
-   * 内容不用管：它一直是同步的。
+   * 离开这张画布之前，把还没送出去的都送走：「我怎么看」（视口）——
+   * 以及个人画布那边可能还攒着的内容改动。
+   *
+   * 项目画布的内容不用管，它一直是同步的；`sync.flush()` 在那边是个空动作。
    */
   async function flushBeforeLeave() {
-    await store.saveNow()
+    await Promise.all([store.saveNow(), sync.flush()])
   }
 
   /**

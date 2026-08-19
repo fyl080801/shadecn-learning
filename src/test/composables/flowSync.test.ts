@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { classifyClose } from "@/composables/flow/useFlowCollab"
+import { classifyClose } from "@/composables/flow/sync"
 
 /**
  * 「这次关闭是终局的吗、是哪一种」的识别。

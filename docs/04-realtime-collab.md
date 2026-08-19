@@ -184,6 +184,10 @@ Hocuspocus 之后就不存在了。）
 第一个落地场景是流程画布（REQ-CANVAS，`/flows/:flowId`），一张画布一个房间：`flow:<flowId>`。
 连接层在 `src/composables/flow/useFlowCollab.ts`，一条 WebSocket 上驮两件互不相干的事。
 
+> **不是每张画布都进这一层。** 个人画布（[REQ-SOLO](16-personal-flow.md)）内容同样是 Y.Doc、
+> 同样存 `Flow.ydoc`，但传输换成 HTTP 增量推拉，不开房间、没有 awareness ——
+> 服务端会主动拒绝它的 WebSocket 握手，反过来项目画布也不许走那条 HTTP 通道。
+
 ### 4.0 行为规范：数据层 vs 反馈层
 
 协同的一切行为都落在这两层之一。**判断一个新东西该放哪层，只问一句：刷新页面之后它还该在吗？**

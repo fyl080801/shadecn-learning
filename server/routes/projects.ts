@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { AuthVariables } from '../auth/middleware.ts'
 import {
   currentUserId,
+  rejectPersonalSpace,
   requireProjectAdmin,
   requireProjectMember,
   type ProjectVariables,
@@ -14,6 +15,7 @@ import {
   PROJECT_LIMITS,
   projects as store,
   type InviteExpiryDays,
+  type ProjectKind,
 } from '../store/projects.ts'
 import { FLOW_STATUSES, flows, type FlowSort, type FlowStatus } from '../store/flows.ts'
 import {
@@ -101,6 +103,21 @@ export const projects = new Hono<Env>()
     return c.json(project, 201)
   })
 
+  /**
+   * 我的个人空间（REQ-SOLO）—— 读接口也会建：第一次点进「个人画布」就有了。
+   *
+   * **必须注册在 `/:projectId` 的中间件之前**，否则 `personal` 会被当成一个项目 id，
+   * 在成员检查那里变成 404。
+   *
+   * 拿到 id 之后，个人画布的列表 / 新建 / 改名 / 删除全都复用
+   * `/:projectId/flows` 那几条 —— 个人空间在接口层面就是个项目，没有第二套 CRUD。
+   */
+  .get('/personal', async (c) => {
+    const userId = await currentUserId(c)
+    if (!userId) return c.json({ error: 'Unauthorized', message: '需要登录' }, 401)
+    return c.json(await store.ensurePersonalSpace(userId))
+  })
+
   // 下面所有 /:projectId* 都要求是成员；不是成员一律 404
   .use('/:projectId', requireProjectMember)
   .use('/:projectId/*', requireProjectMember)
@@ -112,7 +129,7 @@ export const projects = new Hono<Env>()
     return c.json(project)
   })
 
-  .patch('/:projectId', requireProjectAdmin, async (c) => {
+  .patch('/:projectId', rejectPersonalSpace, requireProjectAdmin, async (c) => {
     const body = await readJson<ProjectPayload>(c.req)
     if (!body) return c.json({ error: INVALID_JSON }, 400)
 
@@ -136,7 +153,7 @@ export const projects = new Hono<Env>()
     return c.json(project)
   })
 
-  .delete('/:projectId', requireProjectAdmin, async (c) => {
+  .delete('/:projectId', rejectPersonalSpace, requireProjectAdmin, async (c) => {
     await store.softDelete(c.req.param('projectId'))
     // 项目没了，它下面画布的房间也就没人有权待着 —— 当场断掉，别等轮询
     await revokeCollabAccess()
@@ -146,7 +163,7 @@ export const projects = new Hono<Env>()
   // —— 成员 ——
   .get('/:projectId/members', async (c) => c.json(await store.listMembers(c.req.param('projectId'))))
 
-  .delete('/:projectId/members/:userId', requireProjectAdmin, async (c) => {
+  .delete('/:projectId/members/:userId', rejectPersonalSpace, requireProjectAdmin, async (c) => {
     const me = await currentUserId(c)
     const target = c.req.param('userId')
     if (me === target) {
@@ -168,7 +185,7 @@ export const projects = new Hono<Env>()
   })
 
   // —— 分享链接（一个项目一条）——
-  .get('/:projectId/invite', requireProjectAdmin, async (c) => {
+  .get('/:projectId/invite', rejectPersonalSpace, requireProjectAdmin, async (c) => {
     const userId = await currentUserId(c)
     if (!userId) return c.json({ error: 'Unauthorized', message: '需要登录' }, 401)
 
@@ -181,7 +198,7 @@ export const projects = new Hono<Env>()
   })
 
   // 改有效期：token 不变，已经发出去的链接继续可用
-  .patch('/:projectId/invite', requireProjectAdmin, async (c) => {
+  .patch('/:projectId/invite', rejectPersonalSpace, requireProjectAdmin, async (c) => {
     const body = await readJson<InvitePayload>(c.req)
     if (!body) return c.json({ error: INVALID_JSON }, 400)
 
@@ -200,7 +217,7 @@ export const projects = new Hono<Env>()
   })
 
   // 重置：换一个 token，旧链接立刻失效
-  .post('/:projectId/invite/reset', requireProjectAdmin, async (c) => {
+  .post('/:projectId/invite/reset', rejectPersonalSpace, requireProjectAdmin, async (c) => {
     const body = (await readJson<InvitePayload>(c.req)) ?? {}
 
     const days = parseExpiry(body.expiresInDays ?? DEFAULT_INVITE_EXPIRY_DAYS)
@@ -257,7 +274,15 @@ export const projects = new Hono<Env>()
     const description = parseDescription(body.description ?? null)
     if (!description.ok) return c.json({ error: description.error }, 400)
 
-    if ((await flows.countByProject(projectId)) >= PROJECT_LIMITS.flows) {
+    /*
+     * 画布数上限**只对团队项目**生效。个人空间是自己的草稿箱，给它设一个
+     * 早晚会挡住自己的上限没有意义（docs/16 §4.5）；协同那边的成本（房间、在场、
+     * 复验）它也一样都不产生。
+     */
+    if (
+      (c.get('projectKind') as ProjectKind | undefined) !== 'personal' &&
+      (await flows.countByProject(projectId)) >= PROJECT_LIMITS.flows
+    ) {
       return c.json({ error: `项目内画布数已达上限 ${PROJECT_LIMITS.flows}` }, 400)
     }
 

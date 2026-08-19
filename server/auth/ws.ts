@@ -146,9 +146,18 @@ export async function authorizeCollab(
   const flowId = room.slice(FLOW_ROOM_PREFIX.length)
   // 画布不存在 / 已删也算 forbidden：登录态没问题，是这个房间进不去。
   // 和 `requireFlowMember` 一样不区分「不存在」和「没权限」，免得给出探测的机会
-  const projectId = await flows.projectIdOf(flowId)
-  if (!projectId) return FORBIDDEN
+  const target = await flows.locate(flowId)
+  if (!target) return FORBIDDEN
 
-  const role = await projects.roleOf(projectId, session.user.id)
+  /*
+   * **个人画布没有房间**（REQ-SOLO）：它的内容走 HTTP 增量推拉，不进协同层。
+   *
+   * 这道拒绝不是多余的 —— `mode` 是服务端算的、前端照着分流，但前端的分流拦不住
+   * 任何人手搓一个 provider 直接连过来。少了这一句，别人的个人画布上就会冒出
+   * 光标和在场头像，而那正是「个人」这个词要排除的东西。
+   */
+  if (target.kind === 'personal') return FORBIDDEN
+
+  const role = await projects.roleOf(target.projectId, session.user.id)
   return role ? { ok: true, identity } : FORBIDDEN
 }

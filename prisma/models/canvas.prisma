@@ -7,12 +7,19 @@ model Project {
   id          String    @id @default(cuid())
   name        String
   description String?
+  /// team | personal —— personal 是每人一个的私人空间，里面的画布不走协同（REQ-SOLO）。
+  /// 画布的 mode 由它派生，不在 Flow 上另存一份：存两处必然漂移
+  kind        String    @default("team")
+  /// 个人空间的归属者；团队项目为 null。
+  /// unique 就是「一人最多一个个人空间」这条约束本身 —— 不靠代码去保证
+  personalOwnerId String? @unique
   createdById String
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   deletedAt   DateTime?
 
-  createdBy User            @relation("ProjectCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  createdBy     User            @relation("ProjectCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  personalOwner User?           @relation("PersonalSpace", fields: [personalOwnerId], references: [id], onDelete: Cascade)
   members   ProjectMember[]
   /// 分享链接，一个项目最多一条
   invite    ProjectInvite?

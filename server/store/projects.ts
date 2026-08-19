@@ -9,8 +9,23 @@ import { nameContains } from './text.ts'
 
 export type ProjectRole = 'admin' | 'member'
 
+/**
+ * 项目的两种形态（REQ-SOLO）。
+ *
+ * - `team` —— 正常项目：有成员、有分享链接，里面的画布走协同。
+ * - `personal` —— 每人一个的私人空间：只有自己一个成员、没有分享链接，
+ *   里面的画布**不走协同**（`mode = 'solo'`）。
+ *
+ * 画布的 mode 由它派生，不在 `Flow` 上另存一份 —— 存两处必然漂移。
+ */
+export type ProjectKind = 'team' | 'personal'
+
+/** 个人空间的名字。界面上不展示，也不给改 —— 它不是一个「项目」 */
+const PERSONAL_SPACE_NAME = '我的画布'
+
 export const PROJECT_LIMITS = {
   members: 200,
+  /** 只对团队项目生效：个人空间是自己的草稿箱，不设上限（docs/16 §4.5） */
   flows: 500,
 } as const
 
@@ -23,6 +38,8 @@ export interface ProjectSummary {
   id: string
   name: string
   description: string | null
+  /** team | personal —— personal 里的画布不走协同 */
+  kind: ProjectKind
   memberCount: number
   flowCount: number
   /** 当前请求者在这个项目里的角色 */
@@ -30,6 +47,12 @@ export interface ProjectSummary {
   createdById: string
   createdAt: string
   updatedAt: string
+}
+
+/** 一个人在某个项目里的身份 —— 角色 + 这是哪种项目，一次查询取齐 */
+export interface Membership {
+  role: ProjectRole
+  kind: ProjectKind
 }
 
 export interface ProjectMemberView {
@@ -75,6 +98,10 @@ function toRole(value: string): ProjectRole {
   return value === 'admin' ? 'admin' : 'member'
 }
 
+function toKind(value: string): ProjectKind {
+  return value === 'personal' ? 'personal' : 'team'
+}
+
 function iso(value: Date): string {
   return value.toISOString()
 }
@@ -104,10 +131,16 @@ function toInviteView(row: {
 }
 
 export const projects = {
-  /** 我参与的项目（软删的不算），按更新时间倒序 */
+  /**
+   * 我参与的项目（软删的不算），按更新时间倒序。
+   *
+   * **个人空间不在这里**：它不是一个「项目」，不该出现在项目列表里、也不该被搜到 ——
+   * 它在同一个页面的另一个 Tab 里直接列画布（docs/16 §4.8）。
+   */
   async listForUser(userId: string, options: ListProjectsOptions) {
     const where = {
       deletedAt: null,
+      kind: 'team',
       members: { some: { userId } },
       ...(options.keyword ? { name: nameContains(options.keyword) } : {}),
     }
@@ -138,6 +171,7 @@ export const projects = {
       id: row.id,
       name: row.name,
       description: row.description,
+      kind: toKind(row.kind),
       memberCount: row._count.members,
       flowCount: flowCountBy.get(row.id) ?? 0,
       myRole: toRole(row.members[0]?.role ?? 'member'),
@@ -164,6 +198,7 @@ export const projects = {
       id: row.id,
       name: row.name,
       description: row.description,
+      kind: toKind(row.kind),
       memberCount: 1,
       flowCount: 0,
       myRole: 'admin',
@@ -176,11 +211,75 @@ export const projects = {
 
   /** 请求者在项目里的角色；不是成员或项目已软删都返回 null */
   async roleOf(projectId: string, userId: string): Promise<ProjectRole | null> {
+    return (await this.membershipOf(projectId, userId))?.role ?? null
+  },
+
+  /**
+   * 角色 + 项目形态，一次查询取齐。
+   *
+   * 鉴权中间件要的就是这两样：前者决定能不能干，后者决定这是不是个人空间
+   * （个人空间上不许有分享链接、成员管理这些动作）。
+   */
+  async membershipOf(projectId: string, userId: string): Promise<Membership | null> {
     const row = await prisma.projectMember.findFirst({
       where: { projectId, userId, project: { deletedAt: null } },
-      select: { role: true },
+      select: { role: true, project: { select: { kind: true } } },
     })
-    return row ? toRole(row.role) : null
+    return row ? { role: toRole(row.role), kind: toKind(row.project.kind) } : null
+  },
+
+  /**
+   * 拿到我的个人空间，没有就现建一个（REQ-SOLO）。
+   *
+   * **懒创建**：登录路径上不做这件事 —— 一个可能永远不会被用到的功能，不值得
+   * 让每次登录多写一次库。第一次点进「个人画布」时才建。
+   *
+   * 唯一性由 `Project.personalOwnerId` 的 unique 约束保证，不靠这里的先查后建：
+   * 两个请求同时进来时，输的那个会撞 P2002，重查一次就拿到赢家建的那条。
+   */
+  async ensurePersonalSpace(userId: string): Promise<ProjectSummary> {
+    const existing = await this.findPersonalSpace(userId)
+    if (existing) return existing
+
+    try {
+      const row = await prisma.project.create({
+        data: {
+          name: PERSONAL_SPACE_NAME,
+          kind: 'personal',
+          personalOwnerId: userId,
+          createdById: userId,
+          // 成员行照样真实写入：这样 roleOf / requireProjectMember 一行特判都不用加
+          members: { create: { userId, role: 'admin' } },
+        },
+      })
+
+      return {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        kind: 'personal',
+        memberCount: 1,
+        flowCount: 0,
+        myRole: 'admin',
+        createdById: row.createdById,
+        createdAt: iso(row.createdAt),
+        updatedAt: iso(row.updatedAt),
+      }
+    } catch {
+      // 并发下输掉的那个：赢家已经建好了，重查即可。查不到才是真的出了问题
+      const raced = await this.findPersonalSpace(userId)
+      if (raced) return raced
+      throw new Error('个人空间创建失败')
+    }
+  },
+
+  /** 我的个人空间；没建过返回 null。软删对它不适用（没有删除入口） */
+  async findPersonalSpace(userId: string): Promise<ProjectSummary | null> {
+    const row = await prisma.project.findFirst({
+      where: { personalOwnerId: userId, deletedAt: null },
+      select: { id: true },
+    })
+    return row ? this.get(row.id, userId) : null
   },
 
   /** 详情，只给成员看 */
@@ -200,6 +299,7 @@ export const projects = {
       id: row.id,
       name: row.name,
       description: row.description,
+      kind: toKind(row.kind),
       memberCount: row._count.members,
       flowCount,
       myRole: toRole(row.members[0]?.role ?? 'member'),

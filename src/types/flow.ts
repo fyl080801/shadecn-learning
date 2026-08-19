@@ -11,10 +11,17 @@ export const GRAPH_SCHEMA_VERSION = 1
 
 export type ProjectRole = "admin" | "member"
 
+/**
+ * 项目的两种形态（REQ-SOLO）：`personal` 是每人一个的私人空间，
+ * 里面的画布不走协同。服务端镜像在 `server/store/projects.ts`。
+ */
+export type ProjectKind = "team" | "personal"
+
 export interface ProjectSummary {
   id: string
   name: string
   description: string | null
+  kind: ProjectKind
   memberCount: number
   flowCount: number
   myRole: ProjectRole
@@ -63,9 +70,21 @@ export interface InvitePreview {
 
 export type FlowStatus = "draft" | "published" | "archived"
 
+/**
+ * 这张画布走哪条同步通道（REQ-SOLO）。
+ *
+ * - `collab` —— 协同：Hocuspocus WebSocket，一张画布一个房间；
+ * - `solo` —— 个人画布：HTTP 增量推拉，没有房间、没有在场。
+ *
+ * **由服务端从所属项目派生**，客户端只照着执行 —— 自己声明的模式不算数
+ * （服务端两条通道都会拒掉走错的那一边）。
+ */
+export type FlowMode = "solo" | "collab"
+
 export interface FlowSummary {
   id: string
   projectId: string
+  mode: FlowMode
   name: string
   description: string | null
   status: FlowStatus

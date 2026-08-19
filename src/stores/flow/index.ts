@@ -153,6 +153,9 @@ export const useFlowStore = defineStore("flow", () => {
    *
    */
   function attachDoc(next: Y.Doc) {
+    // 同一个文档就什么都不用做。协同挂上 awareness 之后会换一个新的 session 对象
+    // （在场层靠它重挂钩子），但文档还是那一个 —— 重挂一遍会白白清空撤销栈
+    if (doc === next) return
     detachDoc?.()
     doc = next
 

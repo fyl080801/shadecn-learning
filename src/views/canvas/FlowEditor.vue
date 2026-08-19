@@ -24,7 +24,7 @@ const router = useRouter()
 const editor = provideFlowEditor(props)
 useFlowShortcuts(editor)
 
-const { collab, document: doc } = editor
+const { sync, document: doc } = editor
 
 /**
  * 内容来自 Y.Doc，所以「能不能开始画」不只看元信息拿到没有。
@@ -36,10 +36,13 @@ const { collab, document: doc } = editor
  * 「本地缓存加载完了但里面是空的」不算 —— 那既可能是这张画布本来就空，
  * 也可能是我从没打开过它而此刻又断着网。这时候继续显示加载中，
  * 比甩一张空画布让人以为内容丢了要好。
+ *
+ * 两种画布共用这一段：个人画布的「同步完成」是拉完了那一次 HTTP，
+ * 项目画布的是 WebSocket 首次同步 —— 判据一样，通道不同。
  */
 const ready = computed(() => {
   if (doc.loading.value) return false
-  const session = collab.session.value
+  const session = sync.session.value
   if (!session) return false
   return session.synced.value || (session.cached.value && session.hasContent.value)
 })

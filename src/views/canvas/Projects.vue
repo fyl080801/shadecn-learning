@@ -28,6 +28,8 @@ import {
   TableRow
 } from "@/components/ui/table"
 
+import FlowList from "@/components/canvas/FlowList.vue"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { projectApi } from "@/lib/api"
 import type { ProjectSummary } from "@/types/flow"
 import { formatDateTime } from "@/lib/format"
@@ -123,20 +125,58 @@ const { run: submitCreate, pending: submitting } = useAsyncAction(async () => {
   toast.success(`项目「${project.name}」已创建`)
   void router.push(`/projects/${project.id}`)
 }, { errorMessage: "创建失败" })
+
+// —— 个人画布 Tab ——
+//
+// 个人空间在接口层面就是个 `kind='personal'` 的项目，所以这里拿到 id 之后，
+// 列表整个交给 `FlowList`（和项目主页的画布 Tab 是同一个组件）。
+//
+// **懒加载**：`GET /api/projects/personal` 是个读接口也会建的接口，
+// 没点进这个 Tab 的人不该被建出一个空间来。
+
+const tab = ref<"projects" | "personal">("projects")
+const personalId = ref<string | null>(null)
+const personalError = ref<string | null>(null)
+const personalTotal = ref(0)
+
+const { run: openPersonal, pending: personalLoading } = useAsyncAction(async () => {
+  if (personalId.value) return
+  personalError.value = null
+  try {
+    personalId.value = (await projectApi.personal()).id
+  } catch (err) {
+    personalError.value = err instanceof Error ? err.message : String(err)
+  }
+})
+
+watch(tab, (value) => {
+  if (value === "personal") void openPersonal()
+})
 </script>
 
 <template>
   <div class="mx-auto flex h-full w-full max-w-6xl flex-col gap-6 p-6">
     <header class="flex items-center justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-semibold tracking-tight">项目</h1>
-        <p class="text-sm text-muted-foreground">画布按项目归类，项目成员共享其中的全部画布。</p>
+        <h1 class="text-2xl font-semibold tracking-tight">画布</h1>
+        <p class="text-sm text-muted-foreground">
+          项目里的画布多人实时协作；个人画布只有你自己看得到，也不走协同。
+        </p>
       </div>
-      <Button @click="openCreate">
+      <Button v-if="tab === 'projects'" @click="openCreate">
         <FolderPlus />
         新建项目
       </Button>
     </header>
+
+    <!-- 同页 Tab，不改路由：两边各自维护自己的分页，互不干扰 -->
+    <Tabs v-model="tab" class="flex min-h-0 flex-1 flex-col gap-4">
+      <TabsList>
+        <TabsTrigger value="projects">项目</TabsTrigger>
+        <TabsTrigger value="personal">个人画布</TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="projects" class="flex min-h-0 flex-1 flex-col gap-4">
 
     <div class="relative max-w-sm">
       <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -223,7 +263,31 @@ const { run: submitCreate, pending: submitting } = useAsyncAction(async () => {
           </Button>
         </div>
       </div>
-    </template>
+        </template>
+      </TabsContent>
+
+      <!-- Tab 2 · 个人画布：直接列画布，没有项目那一层 -->
+      <TabsContent value="personal" class="flex min-h-0 flex-1 flex-col gap-4">
+        <div v-if="personalLoading" class="space-y-2">
+          <Skeleton v-for="i in 3" :key="i" class="h-12 w-full" />
+        </div>
+
+        <div
+          v-else-if="personalError"
+          class="flex flex-col items-center gap-3 rounded-lg border border-dashed p-12 text-center"
+        >
+          <p class="text-sm text-destructive">{{ personalError }}</p>
+          <Button variant="outline" size="sm" @click="openPersonal()">重试</Button>
+        </div>
+
+        <FlowList
+          v-else-if="personalId"
+          v-model:total="personalTotal"
+          :project-id="personalId"
+          empty-hint="这里只有你自己看得到 —— 新建一张画布试试"
+        />
+      </TabsContent>
+    </Tabs>
 
     <Dialog v-model:open="creating">
       <DialogContent>

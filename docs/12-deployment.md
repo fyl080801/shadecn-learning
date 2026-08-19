@@ -170,6 +170,53 @@ kubectl -n dev create secret generic shadecn-learning-auth \
 - 需要支持 **WebSocket** 透传（`/ws/collaboration`）。
 - 建议启用 TLS；生产环境的会话 Cookie 依赖 HTTPS。
 
+### 3.6 schema 变更：`db push` 会拦下破坏性变更，容器就起不来
+
+这个项目**没有迁移文件**（理由见 [REQ-DATA §3](05-data-persistence.md)），表结构靠容器启动时的
+一句 `prisma db push` 对齐：
+
+```dockerfile
+CMD ["sh", "-c", "npx prisma db push && node server/index.js"]
+```
+
+三处都**故意不带** `--accept-data-loss`：仓库根 `Dockerfile`、`scripts/output-image/Dockerfile`、
+以及产物 `package.json` 里的 `db:push`。于是遇到它认为有风险的变更时，`db push` 直接以非 0 退出，
+`&&` 断掉，`node server/index.js` 根本不执行 —— **不是启动慢，是启动失败**，k8s 上表现为
+CrashLoopBackOff，探针的宽限期救不了。多副本下每个 Pod 启动都跑一次，三个一起失败。
+
+**会被拦下的变更**（不限于破坏性的那些）：
+
+| 变更 | 真的会丢数据吗 |
+|---|---|
+| 删列 / 改列类型 / 重命名 | **会**。SQLite 尤其危险：它不能 ALTER/DROP 列，一次「删 5 列加 1 列」是整表重建 |
+| 新增 `@unique` 约束 | 不会（若现有数据无重复）。Prisma 无法预判，所以一律拦 |
+| 新增无默认值的 `NOT NULL` 列 | 表非空时会失败 |
+
+后两类是「明明安全却被拦」的常客 —— REQ-SOLO 给 `Project` 加 `personalOwnerId @unique`
+就是这么一次（[docs/16 §4.10](16-personal-flow.md) 记了那次的完整 DDL）。
+
+**改完模型、上线之前，先把 DDL 打出来看一眼**：
+
+```bash
+pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/postgresql --script
+```
+
+只有 `ADD COLUMN` / `CREATE INDEX` / `ADD CONSTRAINT` 就是安全的；出现 `DROP` 或
+`ALTER ... TYPE` 才是真需要停下来想的变更。
+
+**被拦下之后怎么上线**，按保守程度排序：
+
+1. **手工执行那几条 DDL**（推荐）。不给任何工具「允许丢数据」的权限；执行完之后正常的
+   `db push` 会发现无差异、直接放行，容器照常启动。
+2. 在能连到目标库的地方跑一次 `npx prisma db push --accept-data-loss`。一条命令解决，
+   但那一刻会把 schema 的**全部**差异一并放行 —— 库里若还有没意识到的漂移，也一起执行了。
+3. 用一次性的 k8s Job / initContainer 做迁移。更工程化，但为一次变更引入一套机制。
+
+**不要图省事给镜像的 CMD 加上这个 flag。** 没有迁移文件，`db push` 就是 schema 变更的唯一通道，
+那句拒绝是唯一的守门人；加上之后，以后每一次 rename / drop / retype 都会在生产库上静默执行。
+用一个长期护栏换一次性的方便，不划算。（旁证：Prisma 7 对 AI agent 执行这个 flag 内置了拦截，
+必须先拿到人的明确同意 —— 上游同样认为这该由人拍板。）
+
 ## 4. CI/CD 需求：Argo Workflows 构建 + ArgoCD 部署
 
 集群里跑的是两段式 GitOps，**分界线是「谁改 `k8s/deployment.yaml` 里的 image tag」**：Argo

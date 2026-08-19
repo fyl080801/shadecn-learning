@@ -38,6 +38,16 @@ export function roomOf(flowId: string): string {
  */
 const queues = new Map<string, Promise<unknown>>()
 
+/**
+ * 排到某张画布的写队列后面。
+ *
+ * 个人画布的 REST 写入（`flow-writer.ts`）和协同的落库共用这一条队列 ——
+ * 两者写的是同一行、同一张审计表，各排各的队等于没排。
+ */
+export function enqueueFlowWrite(key: string, task: () => Promise<void>): Promise<void> {
+  return enqueue(key, task)
+}
+
 function enqueue(key: string, task: () => Promise<void>): Promise<void> {
   const previous = queues.get(key) ?? Promise.resolve()
   const next = previous.then(task, task).catch((err: unknown) => {
@@ -59,7 +69,7 @@ function enqueue(key: string, task: () => Promise<void>): Promise<void> {
  */
 const seqCounter = sharedCounter('flow-seq')
 
-function takeSeq(flowId: string): Promise<number> {
+export function takeSeq(flowId: string): Promise<number> {
   return seqCounter.next(flowId, async () => {
     const last = await prisma.flowOperation.findFirst({
       where: { flowId },
@@ -87,6 +97,17 @@ export async function loadFlowState(documentName: string): Promise<Uint8Array | 
   })
   if (!row) return null
 
+  return stateFromRow(row)
+}
+
+/**
+ * 一行 `Flow` → 它的 Yjs 状态；内容为空返回 `null`。
+ *
+ * 单独拎出来是因为个人画布的 REST 写入（`flow-writer.ts`）也要走这一步，而它已经
+ * 自己查过那一行了 —— 老数据的迁移规则只能有一份，不然两条通道打开同一张老画布
+ * 会得到不一样的东西。
+ */
+export function stateFromRow(row: { ydoc: Uint8Array | null; graph: string }): Uint8Array | null {
   if (row.ydoc && row.ydoc.length > 0) return new Uint8Array(row.ydoc)
 
   const graph = readGraph(row.graph)
@@ -115,10 +136,15 @@ const storedVersions = sharedMap<Uint8Array>('flow-state-vector', bytesCodec)
 async function sameAsStored(documentName: string, doc: Y.Doc): Promise<boolean> {
   const previous = await storedVersions.get(documentName)
   if (!previous) return false
-  const current = Y.encodeStateVector(doc)
-  if (current.length !== previous.length) return false
-  for (let i = 0; i < current.length; i += 1) {
-    if (current[i] !== previous[i]) return false
+  return sameBytes(Y.encodeStateVector(doc), previous)
+}
+
+/** 两段字节一不一样。状态向量的比较到处都要用，别各写各的 */
+export function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i += 1) {
+    // eslint-disable-next-line security/detect-object-injection -- 下标是循环变量，不是外部输入
+    if (a[i] !== b[i]) return false
   }
   return true
 }
@@ -159,29 +185,52 @@ export async function storeFlowState(
       revision: { increment: 1 },
     }
 
-    if (options.projection) {
-      // 派生投影：列表页的计数、缩略图、将来的只读预览读它，编辑器不读
-      const graph = readGraphFromDoc(doc)
-      const serialized = JSON.stringify(graph)
-      // 超过 readGraph 那道字节关的投影不写：写了也会在读的那头降级成空图，
-      // 反而把「detail 空图、复制出空画布」这种坑埋进去。留着上一份还能看
-      if (Buffer.byteLength(serialized) > GRAPH_LIMITS.bytes) {
-        console.warn(
-          `[collab] ${documentName} 的投影 ${Buffer.byteLength(serialized)} 字节超过 GRAPH_LIMITS.bytes，跳过本次投影写入`,
-        )
-      } else {
-        data.graph = serialized
-        data.nodeCount = graph.nodes.length
-        data.edgeCount = graph.edges.length
-      }
-    }
+    if (options.projection) Object.assign(data, deriveProjection(doc, documentName) ?? {})
 
     await prisma.flow.updateMany({
       where: { id: flowId, deletedAt: null },
       data,
     })
-    await storedVersions.set(documentName, Y.encodeStateVector(doc))
+    await rememberStoredVersion(documentName, doc)
   })
+}
+
+/** 写库时能直接铺进 `data` 的那几个派生字段 */
+export interface FlowProjection {
+  graph: string
+  nodeCount: number
+  edgeCount: number
+}
+
+/**
+ * 从文档派生出 `graph` 投影 —— 列表页的计数、缩略图、将来的只读预览读它，编辑器不读。
+ *
+ * 超过 `readGraph` 那道字节关的投影**不写**（返回 `null`）：写了也会在读的那头降级成空图，
+ * 反而把「detail 空图、复制出空画布」这种坑埋进去。留着上一份还能看。
+ */
+export function deriveProjection(doc: Y.Doc, label: string): FlowProjection | null {
+  const graph = readGraphFromDoc(doc)
+  const serialized = JSON.stringify(graph)
+  const bytes = Buffer.byteLength(serialized)
+
+  if (bytes > GRAPH_LIMITS.bytes) {
+    console.warn(
+      `[collab] ${label} 的投影 ${bytes} 字节超过 GRAPH_LIMITS.bytes，跳过本次投影写入`,
+    )
+    return null
+  }
+
+  return { graph: serialized, nodeCount: graph.nodes.length, edgeCount: graph.edges.length }
+}
+
+/**
+ * 记下「库里现在是这个版本」。
+ *
+ * 个人画布那条 REST 通道写完也要记一笔：这张画布哪天被移进项目、开出房间来，
+ * 第一次落库才不会拿一个过期的状态向量误判成「和上次一样」而整个跳过。
+ */
+export function rememberStoredVersion(documentName: string, doc: Y.Doc): Promise<void> {
+  return storedVersions.set(documentName, Y.encodeStateVector(doc))
 }
 
 /** 追加一条审计：这次改了什么（Yjs 增量）、是谁改的 */

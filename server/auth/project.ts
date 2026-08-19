@@ -1,7 +1,7 @@
 import type { Context, MiddlewareHandler } from 'hono'
 import { authEnabled } from '../config.ts'
 import { prisma } from '../db.ts'
-import { projects, type ProjectRole } from '../store/projects.ts'
+import { projects, type ProjectKind, type ProjectRole } from '../store/projects.ts'
 import { flows } from '../store/flows.ts'
 import { completeUserProfile } from './profile.ts'
 import type { SessionUser } from './session.ts'
@@ -18,6 +18,13 @@ import type { SessionUser } from './session.ts'
 export type ProjectVariables = {
   projectId?: string
   projectRole?: ProjectRole
+  /**
+   * 这是团队项目还是个人空间。
+   *
+   * 路由拿它决定两件事：个人空间上不许有分享链接 / 成员管理这类动作，
+   * 以及画布内容该走哪条通道（solo 走 REST，collab 走 WebSocket）。
+   */
+  projectKind?: ProjectKind
 }
 
 const DEV_USER = {
@@ -64,11 +71,26 @@ export const requireProjectMember: MiddlewareHandler = async (c, next) => {
   const projectId = c.req.param('projectId')
   if (!projectId) return notFound(c)
 
-  const role = await projects.roleOf(projectId, userId)
-  if (!role) return notFound(c)
+  const membership = await projects.membershipOf(projectId, userId)
+  if (!membership) return notFound(c)
 
   c.set('projectId', projectId)
-  c.set('projectRole', role)
+  c.set('projectRole', membership.role)
+  c.set('projectKind', membership.kind)
+  await next()
+}
+
+/**
+ * 叠在 `requireProjectMember` 之后：个人空间上不许干的事（分享链接、成员管理、
+ * 删项目、改名）用它挡掉。
+ *
+ * 是 **403 不是 404** —— 请求者确实是这个「项目」的成员，不存在泄露存在性的问题，
+ * 他只是在对自己的私人空间做一件没有意义的事。
+ */
+export const rejectPersonalSpace: MiddlewareHandler = async (c, next) => {
+  if ((c.get('projectKind') as ProjectKind | undefined) === 'personal') {
+    return c.json({ error: 'Forbidden', message: '个人空间不支持这个操作' }, 403)
+  }
   await next()
 }
 
@@ -91,13 +113,14 @@ export const requireFlowMember: MiddlewareHandler = async (c, next) => {
   const flowId = c.req.param('flowId')
   if (!flowId) return c.json({ error: 'Not Found', message: '画布不存在' }, 404)
 
-  const projectId = await flows.projectIdOf(flowId)
-  if (!projectId) return c.json({ error: 'Not Found', message: '画布不存在' }, 404)
+  const target = await flows.locate(flowId)
+  if (!target) return c.json({ error: 'Not Found', message: '画布不存在' }, 404)
 
-  const role = await projects.roleOf(projectId, userId)
-  if (!role) return c.json({ error: 'Not Found', message: '画布不存在' }, 404)
+  const membership = await projects.membershipOf(target.projectId, userId)
+  if (!membership) return c.json({ error: 'Not Found', message: '画布不存在' }, 404)
 
-  c.set('projectId', projectId)
-  c.set('projectRole', role)
+  c.set('projectId', target.projectId)
+  c.set('projectRole', membership.role)
+  c.set('projectKind', membership.kind)
   await next()
 }

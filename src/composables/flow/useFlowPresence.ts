@@ -17,7 +17,7 @@ import {
   type PresencePeer,
   type PresencePoint
 } from "@/lib/presence"
-import type { FlowCollab } from "./useFlowCollab"
+import type { FlowSync } from "./sync"
 
 /**
  * 画布的**反馈层** —— 跑在 yjs 的 awareness 协议上。
@@ -39,14 +39,14 @@ import type { FlowCollab } from "./useFlowCollab"
 /** 光标 / 拖动几何上报的节流窗口（毫秒）：够跟手，又不至于每帧一个包 */
 const FEEDBACK_THROTTLE = 40
 
-export function useFlowPresence(collab: FlowCollab) {
+export function useFlowPresence(sync: FlowSync) {
   const { user, displayName } = useAuth()
 
   const peers = shallowRef<PresencePeer[]>([])
   const localClientId = shallowRef(-1)
 
   function awareness() {
-    return collab.session.value?.awareness ?? null
+    return sync.session.value?.awareness ?? null
   }
 
   // —— 上报 ——
@@ -138,17 +138,23 @@ export function useFlowPresence(collab: FlowCollab) {
 
   // 换画布 / 重连都会给出新的 session，钩子跟着重挂一遍
   watch(
-    () => collab.session.value,
+    () => sync.session.value,
     (next, _prev, onCleanup) => {
-      if (!next) {
+      /*
+       * 没有 awareness 就没有在场这一层 —— 个人画布（`mode: 'solo'`）走的是
+       * HTTP 通道，房间里只有自己一个人，没有谁的光标可看。上面那些 `setXxx`
+       * 也因此全都变成空动作（`awareness()` 返回 null），画布那边一行都不用改。
+       */
+      if (!next?.awareness) {
         localClientId.value = -1
         peers.value = []
         return
       }
 
+      const { awareness: current } = next
       localClientId.value = next.clientId
-      next.awareness.on("change", refresh)
-      onCleanup(() => next.awareness.off("change", refresh))
+      current.on("change", refresh)
+      onCleanup(() => current.off("change", refresh))
 
       publishUser()
       refresh()
@@ -218,7 +224,7 @@ export function useFlowPresence(collab: FlowCollab) {
   }
 
   return {
-    connected: collab.connected,
+    connected: sync.connected,
     // 读
     members,
     others,

@@ -22,6 +22,7 @@
 | REQ-CANVAS | 项目、画布管理与操作历史 | [13-flow-canvas-management.md](13-flow-canvas-management.md) | 已实现 |
 | REQ-CLUSTER | 单副本 / 多副本双模式 | [14-clustering.md](14-clustering.md) | 已实现 |
 | — | 协同方案案例研究：竞品与横向对比 | [15-collab-case-study.md](15-collab-case-study.md) | 调研 |
+| REQ-SOLO | 个人画布（不走协同的画布） | [16-personal-flow.md](16-personal-flow.md) | 已实现 |
 
 ## 状态口径
 
@@ -46,6 +47,7 @@
 | `FlowOperation` 只增不减 | 活跃画布的更新流会一直长；文档本身有 Yjs GC，这张表没有 | [REQ-DATA §6](05-data-persistence.md) |
 | 断网时刷新打不开页面 | 数据有 IndexedDB 兜底，但应用本体要从服务器加载 —— 没有 Service Worker 就刷不出来 | [REQ-COLLAB §7](04-realtime-collab.md) |
 | 侧栏导航与路由表各写一份 | 容易漏配；`Example.vue` / `Emu3DView.vue` 已无对应路由 | [REQ-SHELL §3](01-app-shell.md) |
+| schema 变更可能让容器起不来 | 启动时的 `prisma db push` 不带 `--accept-data-loss`（有意为之），遇到删列、改类型、**新增 unique** 一律拒绝执行 → CrashLoopBackOff。上线前先 `migrate diff` 看 DDL，被拦了按文档处置 | [REQ-DEPLOY §3.6](12-deployment.md) |
 
 ### 值得做的优化（按性价比排序）
 
