@@ -9,16 +9,11 @@ import { useFlowEditor } from "@/composables/flow"
  * 画布内的编辑动作都归这一组，胶囊那边只放「这张画布是什么、拿它怎么办」。
  * 必须渲染在 `<VueFlow>` 的插槽里 —— Controls 依赖它注入的画布实例。
  */
-const { store, selection } = useFlowEditor()
+const { store } = useFlowEditor()
 </script>
 
 <template>
-  <!-- 属性面板展开时整组左移让位，否则会被压在面板下面 -->
-  <Controls
-    position="top-right"
-    class="transition-transform"
-    :class="selection.selectedNode.value ? '-translate-x-80' : ''"
-  >
+  <Controls position="top-right">
     <ControlButton title="撤销 (Ctrl+Z)" :disabled="!store.canUndo" @click="store.undo()">
       <Undo2 class="size-3.5" />
     </ControlButton>

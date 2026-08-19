@@ -2,8 +2,10 @@
 import { computed, nextTick, ref } from "vue"
 import { Handle, Position, type NodeProps } from "@vue-flow/core"
 import { NodeToolbar } from "@vue-flow/node-toolbar"
+import { Copy, Trash2 } from "lucide-vue-next"
 
 import FlowPresenceAvatar from "@/components/flow/FlowPresenceAvatar.vue"
+import { Button } from "@/components/ui/button"
 import { useFlowEditor } from "@/composables/flow"
 
 export interface ProcessNodeData {
@@ -12,7 +14,28 @@ export interface ProcessNodeData {
 
 const props = defineProps<NodeProps<ProcessNodeData>>()
 
-const { presence, selection, store } = useFlowEditor()
+/** 名字那一行贴节点上边的距离 */
+const LABEL_OFFSET = 4
+
+/**
+ * 操作栏贴节点上边的距离 = 名字行的偏移 + 名字行自身的高度 + 一点间距。
+ *
+ * 两块是各自独立定位的（NodeToolbar 各管各的），没有文档流会把它们推开 ——
+ * 所以「堆叠」是靠这个偏移量算出来的，名字行的高度变了就得跟着调。
+ */
+const TOOLBAR_OFFSET = LABEL_OFFSET + 20 + 6
+
+const { canvas, presence, selection, store } = useFlowEditor()
+
+/**
+ * 节点工具栏什么时候露出来。
+ *
+ * 两个选中态都认：Vue Flow 自己的 `selected`（框选、点选都会置上），
+ * 以及我们自己那份给属性面板用的 `selection` —— 免得某一路没同步上时按钮不出现。
+ */
+const showToolbar = computed(
+  () => props.selected || selection.selectedNodeId.value === props.id
+)
 
 /**
  * 谁正在动这个节点（远端）。
@@ -68,8 +91,13 @@ function cancelEdit() {
 </script>
 
 <template>
+  <!--
+    宽度固定 360，高度下限按 16:9 给到 202.5（= 360 × 9 / 16），内容更高就自然撑开。
+    写成 `min-h` 而不是 `aspect-video`：aspect-ratio 只在高度自动、且内容装得下时才成立，
+    内容一旦超出，块级盒子是溢出而不是长高 —— 那正好和「内容高就撑开」相反。
+  -->
   <div
-    class="relative min-h-12 min-w-32 rounded-md border bg-card px-3 py-2 text-sm text-card-foreground shadow-sm transition-shadow"
+    class="relative w-[360px] min-h-[202.5px] rounded-md border bg-card px-3 py-2 text-sm text-card-foreground shadow-sm transition-shadow"
     :class="selected ? 'border-primary shadow-md ring-2 ring-primary/40' : ''"
   >
     <!--
@@ -77,7 +105,7 @@ function cancelEdit() {
       （position=Top + align=start），缩放/拖动时的跟随由它负责，这里不写定位样式。
       is-visible 常开，否则默认只在节点被选中时出现。
     -->
-    <NodeToolbar :is-visible="true" :position="Position.Top" align="start" :offset="4">
+    <NodeToolbar :is-visible="true" :position="Position.Top" align="start" :offset="LABEL_OFFSET">
       <div class="flex items-center gap-1.5">
         <!-- nodrag / nopan：在输入框里拖选文字不该变成拖节点或拖画布 -->
         <input
@@ -109,6 +137,46 @@ function cancelEdit() {
           <FlowPresenceAvatar :user="peer.user" class="size-3.5" />
           {{ peer.user.name }}
         </span>
+      </div>
+    </NodeToolbar>
+
+    <!--
+      选中时才出现的操作栏：**堆在名字那一行的上面**，水平居中对齐节点。
+      样式照搬底部的 FlowToolbar（圆角胶囊 + 半透明卡片底 + backdrop-blur + size-8 圆按钮），
+      画布上的浮动工具栏就该长一个样。
+
+      定位仍旧交给 NodeToolbar：`align=center` 负责水平居中，
+      `offset` 是它离节点上边的距离 —— 给到 TOOLBAR_OFFSET 就正好落在名字行上方，
+      两块互不遮挡。别自己写 absolute，缩放平移时会歪。
+    -->
+    <NodeToolbar
+      :is-visible="showToolbar"
+      :position="Position.Top"
+      align="center"
+      :offset="TOOLBAR_OFFSET"
+    >
+      <div
+        class="nodrag nopan flex items-center gap-1 rounded-full border bg-card/95 p-1.5 shadow-lg backdrop-blur"
+      >
+        <!-- 复制的是节点 + 进入它的边，见 useFlowCanvas.duplicateNode -->
+        <Button
+          variant="ghost"
+          size="icon"
+          class="size-8 rounded-full"
+          title="复制节点（含进入它的连线）"
+          @click.stop="canvas.duplicateNode(id)"
+        >
+          <Copy />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          class="size-8 rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive"
+          title="删除节点"
+          @click.stop="canvas.deleteNode(id)"
+        >
+          <Trash2 />
+        </Button>
       </div>
     </NodeToolbar>
 

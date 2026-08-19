@@ -478,7 +478,7 @@ model FlowOperation {
    | 返回画布首页 | 回到 `/projects/:projectId`，与点 logo 等价（给一个带文字的显式出口） |
 
 - 缩放 / 适应视图 / 锁定的控件组挪到**右上角**（[REQ-FLOW](09-flow-chart.md) 里它在左上角，这里和胶囊对调），**撤销 / 重做**也加进这一组 —— 胶囊只放「这张画布是什么、拿它怎么办」，不放画布内的编辑动作。
-- 右侧属性面板：选中节点时编辑 `data.label` / `data.description` / `data.config`；`config` 本期用 JSON 编辑器兜底（项目里已有 CodeMirror 依赖），后续按 `kind` 出定制表单。面板展开时右上角控件组要让位（左移），不能被压在下面。
+- **没有属性面板**：点节点不弹出任何侧栏，选中只是选中。节点的编辑入口都长在节点自己身上 —— 双击名字改名，选中时节点上方浮出工具栏（复制 / 删除）。原来那块右侧面板（label / description / config 的表单）连同「面板展开时右上角控件组左移让位」的布局一起去掉了：画布本身才是主角，为一个表单常驻挤掉三分之一画面不划算；真要编辑 `data.config` 这类结构化字段，将来按 `kind` 出**就地**的编辑形态，而不是把画布推到一边。
 
 #### 4.4.2 编辑器的拆分方式
 
@@ -490,15 +490,34 @@ model FlowOperation {
   | `useFlowDocument` | 加载元信息、改名、新建/复制/删除、同步状态文案、离开前 flush 视图状态 |
   | `useFlowCollab` | **这一条 WebSocket 连接**：房间 `flow:<flowId>`，交出 `doc`（给 store）和 `awareness`（给 presence） |
   | `useFlowCanvas` | Vue Flow 绑定：拖动 → `store.moveNodes`、连线 → `store.addEdge`、视口同步、Ctrl+滚轮缩放、新增节点 |
-  | `useFlowSelection` | 选中态、`updateNodeData`、删除选中（连带边，合成一条撤销） |
+  | `useFlowSelection` | 选中了哪个节点（只有一个 id：上报给反馈层、决定节点工具栏露不露、给删除一个默认目标） |
   | `useFlowPresence` | 反馈层：上报光标/选中/拖动几何，读别人的 |
+  | `useFlowSnapping` | 拖动时的网格 / 辅助线吸附（见 4.4.3），两者都常开、无开关、无持久化状态 |
   依赖是一条直线：`selection`/`collab` → `presence` → `canvas`，只有 `useFlowCanvas` 同时认识这三者。另有 `useFlowShortcuts(ctx)` 管快捷键和离开前的 flush。
-- **组件层（`src/components/flow/`）** —— 一块界面一个组件，各自直接读上下文：`FlowCanvas`（画布本体，留了 `<slot/>` 给画布内浮层）、`FlowViewControls`（右上角控件 + 撤销/重做）、`FlowTitleCapsule`（左上角胶囊，自带删除确认）、`FlowToolbar`（底部工具栏）、`FlowNodeInspector`（右侧属性面板）、`ProcessNode`（节点本体），以及协同带来的三个：`FlowPresenceBar`（头像栏）、`FlowPresenceAvatar`、`FlowPresenceCursors`（别人的光标与正在拉的线）。
+- **组件层（`src/components/flow/`）** —— 一块界面一个组件，各自直接读上下文：`FlowCanvas`（画布本体，留了 `<slot/>` 给画布内浮层）、`FlowViewControls`（右上角控件 + 撤销/重做）、`FlowTitleCapsule`（左上角胶囊，自带删除确认）、`FlowToolbar`（底部工具栏）、`ProcessNode`（节点本体，含名字标签和选中时的复制/删除工具栏），`FlowSnapGuides`（拖动时的对齐辅助线），以及协同带来的三个：`FlowPresenceBar`（头像栏）、`FlowPresenceAvatar`、`FlowPresenceCursors`（别人的光标与正在拉的线）。
 
 判据：**加一块新面板 / 新工具按钮，不应该需要改 `FlowEditor.vue` 或任何中间层** —— 新建组件、`useFlowEditor()` 取上下文、挂到模板上即可。
 - 快捷键：`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Delete` / `Backspace` 删除选中。**`Ctrl/Cmd+S` 只是拦住浏览器的「保存网页」对话框**，本身不再有任何含义 —— 没有要保存的东西。
 - 删除键必须自己接：Vue Flow 的 `deleteKeyCode` 在 `applyDefault: true` 下直接改它内部的 nodes/edges，绕开 store，删掉的东西既不进撤销也不同步更不落库。所以 `FlowCanvas` 传 `:delete-key-code="null"`，`canvas.deleteSelection()` 是唯一的删除路径。
 - 离开页面时**没有未保存的内容可丢**，所以不再有 `beforeunload` 拦截。`onBeforeRouteLeave` 里只做一件事：把攒着的视图状态 flush 掉。
+
+#### 4.4.3 拖动吸附：网格与辅助线
+
+摆节点靠手是摆不齐的 —— 差两三个像素看得出来，却又懒得去调。所以拖动时同时跑两种吸附，**都没有开关，始终生效**：
+
+| 吸附 | 行为 |
+|---|---|
+| **网格吸附** | 拖动时节点左上角对到背景点阵的格点上（和 `<Background>` 的 `gap` 是同一个常量 `FLOW_GRID_SIZE`，否则「吸到网格上」在画面上对不齐任何东西） |
+| **辅助线吸附** | 拖动时拿自己的**左 / 中 / 右**和**上 / 中 / 下**六条线去比其他节点的同名线，进入容差就吸过去，并把对上的那条线画出来 |
+
+- **不给开关是有意的。** 格子就是背景那圈点阵，辅助线只在真的对齐时才出现、平时完全不干预 —— 两者都是「默认就该有的手感」，一枚开关只会让人多点一下才拿到它，还得替开和关两种状态各解释一遍行为。于是也没有任何要持久化的东西：不进 Y.Doc，也不占浏览器本地存储，工具栏上一个吸附按钮都没有。
+
+- **容差按屏幕像素算**（6px ÷ 当前缩放）。写成画布坐标的话，放大到 4 倍时磁力范围会跟着变成 4 倍，手感完全变形。
+- **辅助线画在画布坐标系里**，放在 `<VueFlow>` 的 `#zoom-pane` 插槽（和别人的光标同一层），跟随缩放平移是 Vue Flow 自己的变换负责的；只有线宽和虚线疏密做反向缩放，因为它是界面不是内容。线的长度覆盖**所有**压在这条线上的节点，而不只是吸中的那一个 —— 三个节点左边对齐时，一条贯穿三者的线才说明发生了什么。
+- **两种吸附同时命中时辅助线赢**：先按网格量化，再让对齐把位置拉到线上。对齐是更明确的意图，被网格拽回去反而是错的 —— 也就是说，只要吸上了辅助线，落点通常就不在格点上。
+- **多选拖动按外接矩形吸附**，算出的位移原样施加到每个被拖节点，相对位置不会被拆散。
+- **吸附只作用在拖动上，不去动已经摆好的节点。** 所以没有用 Vue Flow 自带的 `:snap-to-grid`：它除了拖动，还会在**节点挂载时**（`NodeWrapper` 的 `clampPosition`）把位置对到格子上 —— 那是一次只发生在本地视图、不进文档的位移，开着吸附的人和没开的人看到的画布从此不一样。两种吸附收在同一个函数（`src/lib/flow-snap.ts`，纯几何、可单测）里算，结果只有一个位移。
+- 吸附发生在 `onNodeDrag` 里、Vue Flow 写完位置之后：它每帧都从**指针位置**重新算一遍节点位置，所以这一下修正不会累加到下一帧 —— 手移开对齐线，吸附自然松开。落点仍然只在 `onNodeDragStop` 一次性进文档，中间态照旧不落库（见 4.5）；上报给协作者的拖动几何是**吸附之后**的位置，否则别人看到的是没吸住的那个。
 
 ### 4.5 Pinia store（`src/stores/flow/`）
 
@@ -535,7 +554,7 @@ store 的职责边界：
 现在的路径是：
 
 ```
-浏览器 ──Yjs update──▶ /ws ──▶ Hocuspocus 房间 flow:<id> 的 Y.Doc
+浏览器 ──Yjs update──▶ /ws/collaboration ──▶ Hocuspocus 房间 flow:<id> 的 Y.Doc
                                  ├─ onChange：每条更新即时写 FlowOperation（带握手认定的 actorId）
                                  └─ onStoreDocument：全量状态写 Flow.ydoc + 派生 graph/计数
                                     （框架自带防抖：2s，持续编辑最长 10s；散场时再存一次）
@@ -586,7 +605,7 @@ store 的职责边界：
 | GET | `/api/flows/:id/operations` | member | 更新流分页（`page` / `pageSize` / `sinceSeq`），供调试与将来的回放。只出元信息，不出 `update` 字节 |
 | — | ~~`POST /api/flows/:id/commit`~~ | — | **已删除**，见 4.6。内容不再经过 HTTP |
 
-**画布内容走的不是 HTTP**：`ws://<host>/ws/flow:<flowId>`，握手时按项目成员身份鉴权（`server/auth/ws.ts`），此后服务端每分钟对在线连接**复验**一遍会话 + 成员身份，被移出项目的人连着的 WebSocket 也会被踢掉。协议与运行参数见 [REQ-COLLAB](04-realtime-collab.md)。
+**画布内容走的不是 HTTP**：`ws://<host>/ws/collaboration`（房间 `flow:<flowId>` 走消息，不在路径里），握手时按项目成员身份鉴权（`server/auth/ws.ts`），此后服务端还会持续确认这条连接的权限还在：**移除成员 / 删项目 / 删画布这三个接口会当场把受影响的 WebSocket 踢掉**（本实例立即，其它实例 ≤3 秒），另有每 20 秒一轮的复验兜底。所以「移除成员」对正在编辑的人不再有可观的窗口期——这很要紧，因为他在窗口期里改的东西会被 CRDT 合并落库，而留下的人**撤销不回来**（撤销只跟踪自己的操作）。踢下线时会区分「会话过期」和「不是成员了」，两者给用户的出路不同。协议与运行参数见 [REQ-COLLAB](04-realtime-collab.md)。
 
 约定沿用 [REQ-DATA](05-data-persistence.md)：错误响应统一 `{ error: string }`；请求体非法 JSON → 400；参数校验在路由层，数据访问全在 `server/store/projects.ts` 与 `server/store/flows.ts`，路由文件里不出现 `prisma`。
 

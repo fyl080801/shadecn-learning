@@ -41,6 +41,7 @@ const { canvas } = useFlowEditor()
       class="mx-1 data-[orientation=vertical]:h-5"
     />
 
+    <!-- 吸附（网格 + 辅助线）没有开关：始终生效，见 useFlowSnapping -->
     <Button
       variant="ghost"
       size="icon"

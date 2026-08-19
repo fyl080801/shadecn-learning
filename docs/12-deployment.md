@@ -167,7 +167,7 @@ kubectl -n dev create secret generic shadecn-learning-auth \
 
 ### 3.5 Ingress
 
-- 需要支持 **WebSocket** 透传（`/ws/*`）。
+- 需要支持 **WebSocket** 透传（`/ws/collaboration`）。
 - 建议启用 TLS；生产环境的会话 Cookie 依赖 HTTPS。
 
 ## 4. CI/CD 需求：Argo Workflows 构建 + ArgoCD 部署
@@ -261,7 +261,7 @@ Application 的 `source.directory.exclude` 还留着一条 `argo-workflow.yaml` 
 - [ ] 容器首次启动时自动建库、跑完迁移再对外服务。
 - [ ] 删除 Pod 重建后，`/app/data` 中的数据仍在（用户和会话不丢）。
 - [ ] 通过 Ingress 完整走通 Keycloak 登录回跳。
-- [ ] 通过 Ingress 能建立 `/ws/<room>` WebSocket 连接。
+- [ ] 通过 Ingress 能建立 `/ws/collaboration` WebSocket 连接。
 - [ ] 缺少 `KEYCLOAK_ISSUER` 时容器启动失败并给出明确报错（不能静默放行）。
 - [ ] `/api/health` 返回 200，探针不误杀。
 - [ ] `DB_PROVIDER=postgresql` 构建出的产物里没有 `@prisma/adapter-better-sqlite3`，`prisma/schema.prisma` 是 PG 那份。

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { AuthVariables } from '../auth/middleware.ts'
 import { currentUserId, requireFlowMember, type ProjectVariables } from '../auth/project.ts'
-import { flushRoomToDatabase } from '../collab/index.ts'
+import { flushRoomToDatabase, revokeCollabAccess } from '../collab/index.ts'
 import { parseUserStatePatch } from '../store/flow-types.ts'
 import { flowUserState } from '../store/flow-user-state.ts'
 import { FLOW_STATUSES, flows as store, type FlowStatus } from '../store/flows.ts'
@@ -73,6 +73,9 @@ export const flows = new Hono<Env>()
 
   .delete('/:flowId', async (c) => {
     await store.softDelete(c.req.param('flowId'))
+    // 画布已删 = 这个房间谁都进不去了（`projectIdOf` 会过滤 deletedAt）。
+    // 还开着那张画布的人当场断掉，不然他会继续对着一张已经不存在的画布画
+    await revokeCollabAccess()
     return c.body(null, 204)
   })
 

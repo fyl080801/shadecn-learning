@@ -55,6 +55,19 @@ export function useFlowDocument(
    * Y.Doc 里，重连后自动补发（CRDT 合并，不会冲突），所以也不必惊慌。
    */
   const syncText = computed(() => {
+    /*
+     * 终局关闭要**先判、且分开判**。这些都不会自己好，套用下面那句
+     * 「恢复连接后自动同步」就是在骗人：用户会照着继续画，而那些改动进得了本地
+     * IndexedDB、永远发不出去。三种原因三条出路，所以文案也得是三句。
+     */
+    switch (collab.fatal.value) {
+      case "superseded":
+        return "协作会话已过期，请刷新页面"
+      case "unauthorized":
+        return "登录态已过期，请重新登录"
+      case "forbidden":
+        return "已失去访问权限，改动不再同步"
+    }
     // 断网时改的东西存在本地 IndexedDB 里，刷新也不丢，重连后自动补发 —— 说清楚这一点，
     // 用户才不会以为「断了就白改了」而不敢动
     if (!collab.connected.value) return "已离线，改动存在本地，恢复连接后自动同步"
@@ -62,7 +75,7 @@ export function useFlowDocument(
   })
 
   /** 断线时给个视觉提醒，但不做成可点的动作 —— 用户没什么能做的，重连是自动的 */
-  const syncWarning = computed(() => !collab.connected.value)
+  const syncWarning = computed(() => !collab.connected.value || collab.fatal.value !== null)
 
   // —— 文档动作 ——
 

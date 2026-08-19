@@ -6,6 +6,7 @@ import {
   requireProjectMember,
   type ProjectVariables,
 } from '../auth/project.ts'
+import { revokeCollabAccess } from '../collab/index.ts'
 import { appOrigin } from '../config.ts'
 import {
   DEFAULT_INVITE_EXPIRY_DAYS,
@@ -137,6 +138,8 @@ export const projects = new Hono<Env>()
 
   .delete('/:projectId', requireProjectAdmin, async (c) => {
     await store.softDelete(c.req.param('projectId'))
+    // 项目没了，它下面画布的房间也就没人有权待着 —— 当场断掉，别等轮询
+    await revokeCollabAccess()
     return c.body(null, 204)
   })
 
@@ -152,6 +155,15 @@ export const projects = new Hono<Env>()
 
     const removed = await store.removeMember(c.req.param('projectId'), target)
     if (!removed) return c.json({ error: 'Not Found', message: '成员不存在' }, 404)
+
+    /*
+     * **正在协同编辑的那个人要当场断掉**，不能等 `REAUTH_INTERVAL` 的轮询。
+     * HTTP 那边是实时的（每个请求都查一次成员身份），但 WebSocket 是长连接，
+     * 握手时鉴过的权不会自己失效 —— 而他在那段时间里改的东西会被 CRDT 合并、落库，
+     * 并且**其他人撤销不回来**（撤销只跟踪自己的 origin）。
+     * 返回 204 之前 await：接口说成功了，人就真的已经不在画布上了。
+     */
+    await revokeCollabAccess()
     return c.body(null, 204)
   })
 

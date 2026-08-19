@@ -33,7 +33,7 @@
 
 之后**每个**请求（不只是 `/api/*`）：中间件取 `sid` → 查 Session → access_token 快过期就用 refresh_token 续一次 → 把用户挂到 `c.get('user')`。**会话就是被请求本身养活的**：有请求就续期，久到没人发请求了，refresh token 过了 Keycloak 的 SSO Session Idle，才算真的过期。刷新被 Keycloak 明确回绝（4xx，比如 `invalid_grant`）时删除本地会话并清 Cookie，下一跳回登录页。
 
-`/ws/*` 的 WebSocket 握手走同一套：握手本身是普通 HTTP 请求，同源会带 Cookie；校验不过直接回 401 并断开。
+`/ws/collaboration` 的 WebSocket 握手走同一套：握手本身是普通 HTTP 请求，同源会带 Cookie；校验不过直接回 401 并断开。
 
 **长连接不算「有请求」**：协同连着的那一分钟一次的成员资格复验调的是 `loadSession(token, { refresh: false })` —— 只判此刻有没有效，不续期。否则「会话被请求养活」这条就被一条永不断开的 WebSocket 架空了：挂着画布标签页不动的人永远不会空闲超时。续期由真实请求负责，画布场景下就是编辑触发的那次视图状态 PATCH（见 [REQ-COLLAB](04-realtime-collab.md) 4.2）。
 
@@ -222,7 +222,7 @@ pnpm dev                  # http://127.0.0.1:3000
 - [ ] `?redirect=//evil.com`、`?redirect=/\evil.com` 都回退到 `/`。
 - [ ] access_token 过期后继续操作可自动续期，用户无感知。
 - [ ] Keycloak 侧强制下线后，前端下一次请求被弹回登录页。
-- [ ] 未登录发起 `/ws/<room>` 握手返回 401 并断开。
+- [ ] 未登录发起 `/ws/collaboration` 握手返回 401 并断开。
 - [ ] 不配 Keycloak 时：dev 全站放行；`NODE_ENV=production` 启动失败并给出明确报错。
 - [ ] Keycloak 没给 `picture` 的用户，登录后 `/api/auth/me` 里带着 `/api/avatars/<seed>.svg`，界面上能看到头像；
       给了 `picture` 的不被覆盖；同一个人每次登录都是同一张图。

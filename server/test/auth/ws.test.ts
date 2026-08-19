@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createSession } from '../../auth/session.ts'
-import { authorizeCollab } from '../../auth/ws.ts'
+import { appOrigin } from '../../config.ts'
+import { authorizeCollab, isAllowedCollabOrigin } from '../../auth/ws.ts'
 import { createUser, resetDb } from '../helpers/db.ts'
 import { idTokenClaims, stubOidcFetch, tokenResponse } from '../helpers/oidc.ts'
 import { actor, createFlow, createProject, joinViaInvite } from '../helpers/project.ts'
@@ -71,6 +72,99 @@ describe('authorizeCollab', () => {
   it('画布不存在 → 拒绝（不给探测画布是否存在的机会）', async () => {
     const alice = await actor('alice')
     expect(await allows(alice.cookie, 'flow:不存在的画布')).toBe(false)
+  })
+})
+
+/**
+ * 拒绝要说清是哪一种，因为出路完全不同：会话没了重新登录就能回来，
+ * 不是成员则登了也白登。混作一谈的后果是给用户错误的指引 ——
+ * 一个只看不编辑、会话空闲超时的人会被告知「你已不是这个项目的成员」。
+ */
+describe('拒绝的原因', () => {
+  beforeEach(resetDb)
+
+  it('没有会话 → unauthorized', async () => {
+    expect(await authorizeCollab(undefined, 'demo')).toEqual({
+      ok: false,
+      reason: 'unauthorized',
+    })
+    expect(await authorizeCollab('sid=伪造的', 'demo')).toEqual({
+      ok: false,
+      reason: 'unauthorized',
+    })
+  })
+
+  it('登着但不是项目成员 → forbidden（不是 unauthorized）', async () => {
+    const alice = await actor('alice')
+    const bob = await actor('bob')
+    const flowId = await createFlow(alice, await createProject(alice))
+
+    expect(await authorizeCollab(bob.cookie, `flow:${flowId}`)).toEqual({
+      ok: false,
+      reason: 'forbidden',
+    })
+  })
+
+  it('画布不存在也算 forbidden —— 登录态没问题，是这个房间进不去', async () => {
+    const alice = await actor('alice')
+    expect(await authorizeCollab(alice.cookie, 'flow:不存在的画布')).toEqual({
+      ok: false,
+      reason: 'forbidden',
+    })
+  })
+
+  it('被移出项目之后就变成 forbidden —— 复验据此把在线连接踢下线', async () => {
+    const alice = await actor('alice')
+    const bob = await actor('bob')
+    const projectId = await createProject(alice)
+    const flowId = await createFlow(alice, projectId)
+    await joinViaInvite(alice, projectId, bob)
+
+    expect(await allows(bob.cookie, `flow:${flowId}`)).toBe(true)
+
+    await alice.request(`/api/projects/${projectId}/members/${bob.userId}`, { method: 'DELETE' })
+
+    expect(await authorizeCollab(bob.cookie, `flow:${flowId}`, { refresh: false })).toEqual({
+      ok: false,
+      reason: 'forbidden',
+    })
+  })
+})
+
+/**
+ * CSWSH（跨站 WebSocket 劫持）那道闸。
+ *
+ * WebSocket 不受同源策略保护：别的站点也能连过来，而 cookie 会被浏览器照常带上。
+ * HTTP 那边有 CORS，但 upgrade 走的是裸的 `server.on('upgrade')`，Hono 的中间件
+ * 一个都不经过，所以这一道必须自己判。
+ */
+describe('isAllowedCollabOrigin', () => {
+  const host = new URL(appOrigin).host
+
+  it('没有 Origin → 放行：非浏览器客户端（探针、脚本）没有这个头，而浏览器一定带', () => {
+    expect(isAllowedCollabOrigin(undefined, host)).toBe(true)
+  })
+
+  it('Origin 就是 APP_ORIGIN → 放行', () => {
+    expect(isAllowedCollabOrigin(appOrigin, host)).toBe(true)
+  })
+
+  it('别的站点发起的握手 → 拒绝，这正是要挡的那一下', () => {
+    expect(isAllowedCollabOrigin('https://evil.example', host)).toBe(false)
+    // 前缀像、其实是别人的域名
+    expect(isAllowedCollabOrigin(`${appOrigin}.evil.example`, host)).toBe(false)
+  })
+
+  it('Origin 的 host 和请求的 Host 一致 → 放行：APP_ORIGIN 没配对时也不该断线', () => {
+    // dev 下 APP_ORIGIN 默认是 127.0.0.1，人却从 localhost 打开
+    expect(isAllowedCollabOrigin('http://localhost:3000', 'localhost:3000')).toBe(true)
+    // 端口不同就是不同源，不能放
+    expect(isAllowedCollabOrigin('http://localhost:5173', 'localhost:3000')).toBe(false)
+  })
+
+  it('Origin 不是合法 URL（沙箱 iframe 的 "null"、被改过的头）→ 拒绝', () => {
+    expect(isAllowedCollabOrigin('null', host)).toBe(false)
+    expect(isAllowedCollabOrigin('不是个 URL', host)).toBe(false)
   })
 })
 

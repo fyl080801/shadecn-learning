@@ -761,8 +761,15 @@ function displayName(member: ProjectMemberView) {
           <AlertDialogTitle>
             把 {{ removingMember ? displayName(removingMember) : "" }} 移出项目？
           </AlertDialogTitle>
+          <!--
+            这两句都是事实，不能只写第一句：分享链接是一条、可无限次使用、只看有效期，
+            对方手里若还留着当初进来用的那条，移除之后自己点一下就能回来。
+            不说的话，管理员会以为「移除」等于「收回权限」。
+          -->
           <AlertDialogDescription>
-            移除后对方立刻访问不到本项目及其中的画布。要再加入只能重新发邀请链接。
+            移除后对方立刻访问不到本项目及其中的画布，正在编辑的人会在几十秒内断开。
+            注意：分享链接可以重复使用，对方若还留着那条链接可以自行重新加入——
+            要彻底断掉，请在分享面板里重置链接。
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

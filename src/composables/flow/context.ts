@@ -25,7 +25,7 @@ export interface FlowEditorContext {
   document: ReturnType<typeof useFlowDocument>
   /** 画布交互：Vue Flow 绑定、视口、新增节点 */
   canvas: ReturnType<typeof useFlowCanvas>
-  /** 选中态与针对选中节点的编辑 */
+  /** 选中了哪个节点（只是个 id，不再挂任何面板） */
   selection: ReturnType<typeof useFlowSelection>
   /** 多人在场：谁在线、光标在哪、哪些元素被别人占住 */
   presence: ReturnType<typeof useFlowPresence>
@@ -48,7 +48,7 @@ export function provideFlowEditor(props: { flowId: string }): FlowEditorContext 
    * presence 不认识 selection 也不认识 Vue Flow，只提供「上报」和「读别人」；
    * 本地状态怎么接进去、别人的占用怎么落到画布上，都由 canvas 负责。
    */
-  const selection = useFlowSelection(store)
+  const selection = useFlowSelection()
   const collab = useFlowCollab(flowId)
   const presence = useFlowPresence(collab)
 

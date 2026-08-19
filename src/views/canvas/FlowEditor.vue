@@ -4,7 +4,7 @@ import { useRouter } from "vue-router"
 import { Button } from "@/components/ui/button"
 
 import FlowCanvas from "@/components/flow/FlowCanvas.vue"
-import FlowNodeInspector from "@/components/flow/FlowNodeInspector.vue"
+import FlowConnectionEndedDialog from "@/components/flow/FlowConnectionEndedDialog.vue"
 import FlowPresenceBar from "@/components/flow/FlowPresenceBar.vue"
 import FlowTitleCapsule from "@/components/flow/FlowTitleCapsule.vue"
 import FlowToolbar from "@/components/flow/FlowToolbar.vue"
@@ -72,7 +72,9 @@ const ready = computed(() => {
       </div>
 
       <FlowToolbar />
-      <FlowNodeInspector />
     </template>
+
+    <!-- 放在加载分支之外：连接被终结跟画布加载到哪一步无关，任何时候都得盖住整屏 -->
+    <FlowConnectionEndedDialog />
   </div>
 </template>

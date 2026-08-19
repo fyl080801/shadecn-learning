@@ -4,6 +4,7 @@ import * as Y from "yjs"
 import { HocuspocusProvider } from "@hocuspocus/provider"
 import { IndexeddbPersistence } from "y-indexeddb"
 import { nodesMap } from "@/lib/flow-doc"
+import { requestReLogin, useAuth } from "@/lib/auth"
 
 /**
  * 画布协同的**连接层**：一张画布一个房间、一个 `Y.Doc`、一条 WebSocket。
@@ -30,10 +31,56 @@ import { nodesMap } from "@/lib/flow-doc"
  */
 
 /** WebSocket 挂载点，和后端 `COLLAB_PATH` 一致。房间名不在路径里 */
-const COLLAB_PATH = "/ws"
+const COLLAB_PATH = "/ws/collaboration"
 
 /** 房间名前缀；服务端靠它认出「这是某张画布的房间」并去查项目成员身份 */
 const FLOW_ROOM_PREFIX = "flow:"
+
+/**
+ * **终局关闭**：这条连接不会自己好，重连也只会被同样地拒掉。
+ *
+ * 三种原因、三条出路，所以必须分得开 —— 一律显示「已离线，恢复连接后自动同步」
+ * 是最坏的一种处理：provider 默认无限重连（`maxAttempts: 0`），用户会对着一句
+ * 「稍后自动同步」继续画，而那些改动只进得了本地 IndexedDB，永远发不出去。
+ */
+export type FatalClose =
+  /** 自己在别处开了新窗口，这一条被顶下线（`server/collab/exclusive.ts`）。刷新即可接管回来 */
+  | "superseded"
+  /** 登录态没了。走全站那套「会话过期」确认框，登录完原地重连 */
+  | "unauthorized"
+  /** 还登着，但已经不是这个项目的成员了（复验踢的）。没有自救路径 */
+  | "forbidden"
+
+/**
+ * 判断一个终局信号是哪一种；不是终局的返回 `null`。
+ *
+ * **服务端有两条完全不同的路把这件事告诉我们**，而且都得认：
+ *
+ * 1. **连接已经建起来之后被关掉** —— 顶下线、复验没过。服务端两条腿一起发
+ *    （见 `server/collab/close.ts`）：CLOSE **消息**只带 reason（code 被 provider
+ *    填成 1000），随后的 WebSocket **关闭帧**才带真正的 4xxx。
+ * 2. **握手当场被拒** —— `onConnect` 抛异常。这条路**既不关 socket 也没有关闭码**：
+ *    Hocuspocus 只回一条 `PermissionDenied` 消息，provider 把它变成
+ *    `onAuthenticationFailed({ reason })`。所以这里只有 reason 可用。
+ *
+ * 两条路共用同一套 reason 字符串，正是为了这个函数能同时服务两边 —— 不然就要维护
+ * 两张映射表。**reason 才是通用判据，code 只在关闭帧上有效**。
+ *
+ * 认错的代价不对称：漏认 → 无限重连（被顶下线的话还会反过来踢掉用户真正在用的窗口）；
+ * 错认 → 本来能自动恢复的普通断线被判了死刑。所以只认明确的信号，1006 之类一律不算。
+ */
+export function classifyClose(
+  event: { code?: number; reason?: string } | undefined
+): FatalClose | null {
+  if (!event) return null
+  const { code, reason } = event
+  if (code === 4409 || reason === "session-superseded") return "superseded"
+  // "Unauthorized" 同时是 Hocuspocus 内置的 4401 和我们握手拒绝时送的 reason
+  if (code === 4401 || reason === "Unauthorized") return "unauthorized"
+  // 4403 / "permission-revoked"：复验踢人，以及握手时判定「不是这个项目的成员」
+  if (code === 4403 || reason === "permission-revoked") return "forbidden"
+  return null
+}
 
 /**
  * 测试环境（jsdom）里没有真的服务端，连上去只会无限重连刷日志 ——
@@ -80,6 +127,16 @@ export function useFlowCollab(flowId: Ref<string>) {
   const linked = ref(false)
 
   /**
+   * 这条连接被服务端**终局**关掉了，以及为什么（`null` = 没有）。
+   *
+   * 和「断线」是两回事，所以绝不能混进 `connected`：断线会自动重连、改动会补发，
+   * 用户什么都不用做；终局关闭则是这个窗口不再同步，而且不会自己好。
+   * 界面按原因给出不同的出路 —— 刷新 / 重新登录 / 离开，见 `useFlowDocument` 的
+   * `syncText` 和 `FlowConnectionEndedDialog.vue`。
+   */
+  const fatal = ref<FatalClose | null>(null)
+
+  /**
    * 网卡说自己通不通。
    *
    * 单看 provider 的状态不够：拔网线之后它要等心跳超时（默认几十秒）才察觉，
@@ -108,6 +165,7 @@ export function useFlowCollab(flowId: Ref<string>) {
 
   function connect(id: string) {
     teardown()
+    fatal.value = null
     if (!id || !CAN_CONNECT) return
 
     doc = new Y.Doc()
@@ -129,7 +187,34 @@ export function useFlowCollab(flowId: Ref<string>) {
     })
     target.on("update", refreshHasContent)
 
-    provider = new HocuspocusProvider({
+    let created: HocuspocusProvider | null = null
+
+    /**
+     * 收到终局信号：记下原因、停掉重连、按原因给出路。两条路（连接被关 / 握手被拒）
+     * 都汇到这里，所以行为只写一份。
+     *
+     * **停重连是必须的**。provider 默认对任何断开都退避重连（`maxAttempts: 0`，无限次），
+     * 而这三种原因重连一次都好不了：被顶下线时，重连的握手在服务端看来就是「又开了一个
+     * 新窗口」，会把用户真正在用的那个顶掉，两个窗口从此互相踢；另外两种则是每次握手
+     * 被同一套检查原样拒回来。握手被拒那条路更要停 —— 它连 socket 都不关，
+     * 不管的话会一直挂着一条**连着但没通过认证**的 socket 空转，直到服务端 30 秒超时
+     * 掐掉，然后再重连、再空转，无限循环，而界面上一直是「同步中…」。
+     *
+     * `disconnect()` 只停连接，文档和 awareness 都留着（画面还在，只是不再同步）。
+     * 挪到微任务里执行：此刻正在 provider 自己的回调里，不在它的调用栈上拆它。
+     */
+    function endConnection(reason: FatalClose) {
+      fatal.value = reason
+      queueMicrotask(() => created?.disconnect())
+      /*
+       * 登录态没了：交给全站那套「会话过期」确认框（`requestReLogin` → `SessionExpiredDialog`）。
+       * 它能在**不离开这一页**的前提下重新登录（内嵌 iframe），所以画布上还没同步出去的
+       * 改动不会被一次跳转带走 —— 登录完由下面那个 watch 就地重连，Y.Doc 里攒着的自动补发。
+       */
+      if (reason === "unauthorized") requestReLogin()
+    }
+
+    created = new HocuspocusProvider({
       url: collabUrl(),
       name: room,
       document: doc,
@@ -140,8 +225,27 @@ export function useFlowCollab(flowId: Ref<string>) {
         // 断线重连会再同步一次，此时不能退回未同步状态：那之后到达的都是我真的漏掉的
         synced.value = true
         refreshHasContent()
+      },
+      /** 连接建起来之后被服务端关掉：顶下线、复验没过。普通断线在这里被 `classifyClose` 滤掉 */
+      onClose: ({ event }) => {
+        const reason = classifyClose(event)
+        if (reason) endConnection(reason)
+      },
+      /**
+       * **握手当场被拒**（`onConnect` 抛异常）—— 这条路没有 close 事件，只有这个回调。
+       *
+       * 「被移出项目后重新打开这张画布」「会话过期后重连」走的都是它，是最常见的
+       * 拒绝路径，漏接的代价前面说了：socket 挂着空转、界面永远停在「同步中…」。
+       *
+       * 认不出的 reason 归为 `forbidden`：Hocuspocus 自己那些拒绝路径会送
+       * `permission-denied` 之类，「你进不去」是它们确定的含义，而「你该重新登录」
+       * 是更强的断言 —— 猜错了会让一个登录得好好的人对着会话过期框发愣。
+       */
+      onAuthenticationFailed: ({ reason }) => {
+        endConnection(classifyClose({ reason }) ?? "forbidden")
       }
     })
+    provider = created
 
     const awareness = provider.awareness
     if (!awareness) throw new Error("协同连接没有 awareness，在场状态无法工作")
@@ -158,9 +262,24 @@ export function useFlowCollab(flowId: Ref<string>) {
 
   // 路由在画布之间跳（`/flows/:flowId` 换 id）时换房间，不是重建组件
   watch(flowId, connect, { immediate: true })
+
+  /**
+   * 重新登录成功之后就地重连 —— 用户不用刷新，画布上的东西一样不动。
+   *
+   * 两个条件缺一不可。**必须真的登上了**：确认框还能被关掉（× / Esc / 点遮罩，
+   * `dismissReLogin`），那一路 `sessionExpired` 也会变假，此时重连只会再被拒一次、
+   * 再弹一次框，来回空转。**必须是 `unauthorized`**：被顶下线和被移出项目跟登录没关系，
+   * 重连解决不了，只会把用户正在用的另一个窗口踢掉。
+   */
+  const { sessionExpired, isAuthenticated } = useAuth()
+  watch(sessionExpired, (expired) => {
+    if (expired || fatal.value !== "unauthorized" || !isAuthenticated.value) return
+    connect(flowId.value)
+  })
+
   onBeforeUnmount(teardown)
 
-  return { connected, session }
+  return { connected, session, fatal }
 }
 
 export type FlowCollab = ReturnType<typeof useFlowCollab>

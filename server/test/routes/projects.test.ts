@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { app } from '../../app.ts'
+import { createRevocationWatcher } from '../../collab/revocation.ts'
 import { prisma, resetDb } from '../helpers/db.ts'
 import { actor, createProject, joinViaInvite } from '../helpers/project.ts'
 
@@ -152,6 +153,38 @@ describe('成员管理', () => {
     })
     expect(res.status).toBe(204)
     expect((await bob.request(`/api/projects/${projectId}`)).status).toBe(404)
+  })
+
+  /**
+   * 移除成员必须把**正在协同编辑**的那条 WebSocket 也断掉，而且不能等定期复验：
+   * 那段时间里他改的东西会被 CRDT 合并、落库，其他人还撤销不回来
+   * （撤销只跟踪自己的 origin）。本实例当场踢，别的实例靠这条广播跟上。
+   */
+  it('移除成员会广播权限撤销 —— 人挂在别的实例上也踢得到', async () => {
+    const alice = await actor('alice')
+    const bob = await actor('bob')
+    const projectId = await createProject(alice)
+    await joinViaInvite(alice, projectId, bob)
+
+    // 另一个实例：先对齐，此后只有真的有人被撤权才会为真
+    const otherInstance = createRevocationWatcher()
+    await otherInstance.changed()
+
+    await alice.request(`/api/projects/${projectId}/members/${bob.userId}`, { method: 'DELETE' })
+
+    expect(await otherInstance.changed()).toBe(true)
+  })
+
+  it('删项目同样广播 —— 项目没了，它下面画布房间里的人都该断开', async () => {
+    const alice = await actor('alice')
+    const projectId = await createProject(alice)
+
+    const otherInstance = createRevocationWatcher()
+    await otherInstance.changed()
+
+    await alice.request(`/api/projects/${projectId}`, { method: 'DELETE' })
+
+    expect(await otherInstance.changed()).toBe(true)
   })
 
   it('admin 移除自己 → 400', async () => {

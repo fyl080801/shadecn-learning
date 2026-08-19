@@ -33,7 +33,7 @@
 ### 2.3 请求分发优先级
 
 ```
-/ws/*      → WebSocket upgrade（见 REQ-COLLAB）
+/ws/collaboration → WebSocket upgrade（见 REQ-COLLAB）
 /api/*     → Hono 路由（登录校验在此生效）
 其余       → 前端（dev: Vite 中间件；prod: dist 静态资源）
 ```

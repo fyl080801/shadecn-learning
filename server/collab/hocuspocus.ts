@@ -3,12 +3,33 @@ import { Hocuspocus, type Connection, type Document, type Extension } from '@hoc
 import crossws from 'crossws/adapters/node'
 import * as Y from 'yjs'
 
-import { authorizeCollab, type CollabIdentity } from '../auth/ws.ts'
+import {
+  authorizeCollab,
+  isAllowedCollabOrigin,
+  type CollabAuthorization,
+  type CollabDenialReason,
+  type CollabIdentity,
+} from '../auth/ws.ts'
 import { instanceId, isClustered, redisKeyPrefix, redisUrl } from '../config.ts'
 import { dropForeignClients, enforceIdentity, forgetClaims, releaseSocket } from './awareness.ts'
+import { CLOSE_REVOKED, CLOSE_UNAUTHORIZED, closeForGood, denialError } from './close.ts'
+import {
+  EXCLUSIVE_SWEEP_INTERVAL,
+  claimExclusive,
+  enforceExclusive,
+  forgetExclusive,
+  releaseExclusive,
+  type ExclusiveDocument,
+} from './exclusive.ts'
 import { pruneDanglingEdges } from './flow-doc.ts'
+import {
+  REVOCATION_POLL_INTERVAL,
+  announceRevocation,
+  createRevocationWatcher,
+} from './revocation.ts'
 import { flowIdOf, forgetFlow, loadFlowState, recordUpdate, roomOf, storeFlowState } from './persistence.ts'
 import { checkQuota, forgetQuota, quotaLocked, COLLAB_LIMITS } from './quota.ts'
+import { scopedSocketId } from './socket-id.ts'
 
 /**
  * 协同服务端 —— [Hocuspocus](https://tiptap.dev/docs/hocuspocus) 挂在应用自己的 HTTP server 上。
@@ -17,7 +38,7 @@ import { checkQuota, forgetQuota, quotaLocked, COLLAB_LIMITS } from './quota.ts'
  * 而我们是单进程单端口。走官方的「接管已有 server」路径：自己监听 `upgrade`，
  * 判断路径后交给 crossws，由它调 `hocuspocus.handleConnection()`。
  *
- * **和 Vite HMR 共存**：只接管 `/ws`。其余 upgrade（HMR 的 `vite-hmr`，路径 `/`）
+ * **和 Vite HMR 共存**：只接管 `/ws/collaboration`。其余 upgrade（HMR 的 `vite-hmr`，路径 `/`）
  * 我们不碰 —— Node 的 `upgrade` 是多监听器事件，我们不处理，Vite 自己那个监听器就会收到。
  * crossws 的 node adapter 不自注册监听器，`handleUpgrade` 只在被调用时才动手，
  * 所以「不管」是真的不管，不会把别人的握手吃掉。（已实测：改文件能热更新，且不整页刷新。）
@@ -27,7 +48,7 @@ import { checkQuota, forgetQuota, quotaLocked, COLLAB_LIMITS } from './quota.ts'
  */
 
 /** WebSocket 挂载点。房间名走消息，不走路径 */
-export const COLLAB_PATH = '/ws'
+export const COLLAB_PATH = '/ws/collaboration'
 
 /** 连接上下文：`onConnect` 认定的身份。后续 hook（审计、awareness 改写）都读它 */
 export interface CollabContext {
@@ -37,7 +58,7 @@ export interface CollabContext {
 
 export interface CollabOptions {
   /**
-   * 非 `/ws` 的 upgrade 要不要直接断开。
+   * 非 `/ws/collaboration` 的 upgrade 要不要直接断开。
    * dev 下必须是 false —— Vite 的 HMR 走同一个事件，掐了就没有热更新了。
    */
   destroyUnmatchedUpgrades?: boolean
@@ -61,17 +82,6 @@ export function shouldRecordUpdate(transactionOrigin: unknown): boolean {
   return source !== 'redis'
 }
 
-/**
- * 给 socketId 加上实例前缀。
- *
- * Hocuspocus 的 socketId 只在**单个进程**里唯一，多副本下两个实例迟早撞号 ——
- * 而 awareness 的归属登记（`awareness.ts`）正是靠它判断「这个 clientID 是不是你的」，
- * 撞号会让正主的更新被当成冒用丢掉。
- */
-function scopedSocketId(socketId: string): string {
-  return `${instanceId}:${socketId}`
-}
-
 /** 这个 upgrade 请求是冲协同来的吗 */
 function isCollabUpgrade(url: string): boolean {
   const { pathname } = new URL(url, 'http://localhost')
@@ -82,14 +92,22 @@ function isCollabUpgrade(url: string): boolean {
 let instance: Hocuspocus | null = null
 
 /**
- * 成员资格复验的间隔。
+ * 成员资格复验的间隔 —— 也就是**权限被收回后还能继续写多久**的上限。
  *
- * `onConnect` 只在握手时跑一次 —— 没有这道复验的话，被移出项目、或已在 Keycloak
+ * `onConnect` 只在握手时跑一次，没有这道复验的话，被移出项目、或已在 Keycloak
  * 登出的用户，只要 WebSocket 不断就能无限期继续读写（老 REST 路径每次写都会过
- * `requireFlowMember`，这个保证得有人接替）。每分钟对**开着的房间**重查一遍，
- * 量级是「在线协作者数」，很小。
+ * `requireFlowMember`，这个保证得有人接替）。
+ *
+ * 这个数就是在「窗口期」和「查询量」之间挑一个点，两头都是线性的：
+ * 一轮的成本是**每个房间、每个不同 cookie** 三次数据库查询（会话 + 画布归属 + 成员角色，
+ * `refresh: false` 所以不碰 Keycloak），量级是「在线协作者数」；把间隔减半，
+ * 窗口期减半、查询量翻倍。
+ *
+ * 取 20 秒：被移出项目的人最多再写 20 秒，而不是一分钟。没有取更小的值，是因为再往下
+ * 收益已经很薄 —— 内容是 CRDT、每条改动都进审计表（带服务端认定的 `actorId`）、
+ * 想要「立刻」得换成登出时主动广播踢线，那是另一套机制，不是把这个数调小能得到的。
  */
-const REAUTH_INTERVAL = 60_000
+const REAUTH_INTERVAL = 20_000
 
 /** 这一条消息超限、临时被置为 readOnly 的连接 —— `afterHandleMessage` 里恢复 */
 const oversizedFrame = new WeakSet<Connection>()
@@ -116,36 +134,92 @@ function lockConnections(document: Document): void {
  *
  * 被踢的 provider 会自动重连，但重连的握手会在 `onConnect` 被同一套检查拒掉。
  */
-async function revalidateConnections(hocuspocus: Hocuspocus): Promise<void> {
-  for (const document of hocuspocus.documents.values()) {
-    // 同一份 cookie 在一轮里只查一次 —— 同一个人开多个标签页很常见
-    const verdicts = new Map<string, Promise<boolean>>()
-    const doomed: Connection[] = []
-    const checks: Promise<void>[] = []
+async function revalidateDocument(document: Document): Promise<void> {
+  // 同一份 cookie 在一轮里只查一次 —— 同一个人开多个标签页很常见
+  const verdicts = new Map<string, Promise<CollabAuthorization>>()
+  const doomed: { connection: Connection; reason: CollabDenialReason }[] = []
+  const checks: Promise<void>[] = []
 
-    document.connections.forEach((_clients, connection) => {
-      const cookie = connection.request?.headers?.get?.('cookie') ?? ''
-      let verdict = verdicts.get(cookie)
-      if (!verdict) {
-        verdict = authorizeCollab(cookie, document.name, { refresh: false }).then(
-          (result) => result.ok,
-          () => true,
-        )
-        verdicts.set(cookie, verdict)
-      }
-      checks.push(
-        verdict.then((ok) => {
-          if (!ok) doomed.push(connection)
-        }),
+  document.connections.forEach((_clients, connection) => {
+    const cookie = connection.request?.headers?.get?.('cookie') ?? ''
+    let verdict = verdicts.get(cookie)
+    if (!verdict) {
+      verdict = authorizeCollab(cookie, document.name, { refresh: false }).catch(
+        // 抛异常 = 基础设施出问题，证明不了任何事：当作通过，下一轮再查
+        (): CollabAuthorization => ({ ok: true, identity: null }),
       )
-    })
-
-    await Promise.all(checks)
-    for (const connection of doomed) {
-      console.warn(`[collab] ${document.name} 的连接复验未通过，断开`)
-      connection.close({ code: 4403, reason: 'permission-revoked' })
+      verdicts.set(cookie, verdict)
     }
+    checks.push(
+      verdict.then((result) => {
+        if (!result.ok) doomed.push({ connection, reason: result.reason })
+      }),
+    )
+  })
+
+  await Promise.all(checks)
+  for (const { connection, reason } of doomed) {
+    console.warn(`[collab] ${document.name} 的连接复验未通过（${reason}），断开`)
+    /*
+     * **按原因分别关**，别一律当成「被移出项目」。只看不编辑的人本来就会空闲超时
+     * （复验故意不续期，见上），那种人该收到的是「登录态过期，请重新登录」——
+     * 前端据此弹全站的会话过期确认框，登录完就地重连，画布连刷新都不用。
+     * 一律发 `permission-revoked` 的话，他看到的是「你已不是这个项目的成员」，纯属冤枉。
+     *
+     * 两条腿一起关：只发 CLOSE 消息的话 socket 还开着，客户端要等到下一次心跳
+     * 被重新鉴权时才知道自己没了 —— 那期间它以为一切正常。
+     */
+    closeForGood(connection, reason === 'unauthorized' ? CLOSE_UNAUTHORIZED : CLOSE_REVOKED)
   }
+}
+
+/** 上一轮还没跑完 —— 重入保护和「跑完了吗」都读它 */
+let revalidating: Promise<void> | null = null
+
+async function revalidateConnections(hocuspocus: Hocuspocus): Promise<void> {
+  /*
+   * **重入保护**：这是个 async 回调挂在 `setInterval` 上，房间多、数据库慢的时候
+   * 一轮可能超过一个间隔，下一轮就会叠上来 —— 数据库压力翻倍，同一批连接被重复查。
+   * 立刻踢线那条路（`revokeCollabAccess`）也走这个函数，叠加的可能性只增不减。
+   * 已经在跑就复用那一轮：调用方等到的是「有一轮完整的复验跑完了」，语义正好。
+   */
+  if (revalidating) return revalidating
+
+  revalidating = (async () => {
+    try {
+      /*
+       * 房间之间**并行**。以前是串行 await，于是第 N 个房间要等前 N-1 个查完，
+       * `REAUTH_INTERVAL` 就只是个下界而不是上界 —— 房间一多，最后那个房间的实际
+       * 窗口期是「间隔 + 前面所有房间的耗时」，而那正是我们想拿来当保证的数。
+       */
+      await Promise.all([...hocuspocus.documents.values()].map(revalidateDocument))
+    } finally {
+      revalidating = null
+    }
+  })()
+
+  return revalidating
+}
+
+/**
+ * **立刻**把权限已被收回的连接踢下线，本实例和其它实例都算。
+ *
+ * 改权限的路由（移除成员、删项目、删画布）在写库成功之后调它。不调也不会出错 ——
+ * `REAUTH_INTERVAL` 的轮询终究会发现 —— 但那意味着被移除的人还有一整轮的时间继续编辑，
+ * 而他在那段时间里改的东西会被 CRDT 合并、落库，**且其他人撤销不回来**
+ * （`Y.UndoManager` 只跟踪自己的 origin）。所以这条路径是主路径，轮询降级为兜底。
+ *
+ * 两件事的顺序无所谓，但两件都要做：
+ * - `announceRevocation()` —— 广播给别的实例，它们最迟一个巡检周期（3s）后跟上；
+ * - 本地跑一轮完整复验 —— 本实例上的连接当场断掉。
+ *
+ * **是 await 而不是即发即忘**：这样 `DELETE …/members/:userId` 返回 204 的时候，
+ * 「这个人已经不在画布上了」是成立的。权限变更本来就罕见，管理员那一个请求多等几毫秒
+ * 换一个能讲清楚的契约，划算。
+ */
+export async function revokeCollabAccess(): Promise<void> {
+  await announceRevocation()
+  if (instance) await revalidateConnections(instance)
 }
 
 /**
@@ -201,10 +275,26 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
         data.documentName,
       )
       if (!result.ok) {
-        console.warn(`[collab] 拒绝无权限的连接：${data.documentName}`)
-        throw new Error('Unauthorized')
+        console.warn(`[collab] 拒绝连接（${result.reason}）：${data.documentName}`)
+        // 原因要挂在错误的 `reason` 上带给客户端 —— 这条路不发关闭码，见 `close.ts`
+        throw denialError(result.reason === 'unauthorized' ? CLOSE_UNAUTHORIZED : CLOSE_REVOKED)
       }
       return { identity: result.identity } satisfies CollabContext
+    },
+
+    /**
+     * 连接真正建起来了（此时它已经挂在文档上，`context` 也定了）——
+     * **单连接互斥**在这里落地：把持有者改成这条新连接，然后把这个房间里
+     * 同一个人的旧连接顶下线（见 `exclusive.ts`）。
+     *
+     * 放在 `connected` 而不是 `onConnect`：那会儿连接对象还没建，也还没进
+     * `document.connections`，既拿不到要踢的对象，也可能把自己一起踢了。
+     */
+    async connected(data) {
+      const document: ExclusiveDocument = data.connection.document
+      await claimExclusive(data.documentName, data.connection)
+      // 本实例的那半当场生效；别的实例上的旧连接由巡检收敛
+      await enforceExclusive([document])
     },
 
     /**
@@ -309,9 +399,13 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
       }
     },
 
-    /** 有人离开：释放这条连接认领过的 awareness clientID，重连的新连接才接得上 */
+    /**
+     * 有人离开：释放这条连接认领过的 awareness clientID（重连的新连接才接得上），
+     * 以及它可能占着的单连接持有者登记。
+     */
     async onDisconnect(data) {
       await releaseSocket(data.documentName, scopedSocketId(data.socketId))
+      await releaseExclusive(data.documentName, data.socketId)
     },
 
     /**
@@ -323,9 +417,28 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
      */
     async afterUnloadDocument(data) {
       forgetQuota(data.documentName)
+      forgetExclusive(data.documentName)
       await forgetClaims(data.documentName)
       await forgetFlow(data.documentName)
     },
+
+    /**
+     * 多久没收到客户端的消息就掐掉这条连接。
+     *
+     * **它不是 ping 间隔** —— Hocuspocus 服务端不发心跳，这个定时器只比对
+     * 「最后一次收到消息」的时刻。真正的心跳是 y-protocols 的 awareness 重播：
+     * 本地状态每 `outdatedTimeout / 2` = **15 秒**重发一次（`useFlowPresence` 一连上就
+     * `setLocalStateField('user', …)`，所以这条一直在跑），而服务端的 awareness 广播
+     * **不排除发送者** —— 于是一来一回，两个方向各有一趟 15 秒的流量。
+     * 反代的空闲超时（nginx / k8s Ingress 默认都是 60s）由此被撑住，我们不用另外发包。
+     *
+     * 取 30 秒 = 容忍连丢两拍，正好和客户端的 `messageReconnectTimeout`（provider
+     * 默认 30s）对齐：两边在同一时刻放弃，谁也不会长时间抱着一条已经死掉的连接。
+     * 默认的 60s 太松 —— 那条连接还占着单连接互斥的持有者位置、在场栏里还挂着一个
+     * 幽灵光标。压到反代的 60s 以下还有一个用处：真断了是**我们**先发现、先跑
+     * `onDisconnect`（释放持有者、清 awareness 归属），而不是等中间层悄悄掐掉。
+     */
+    timeout: 30_000,
 
     /** 攒够一小段时间再广播，重编辑时能把每连接每次变更的消息数压下来 */
     flushDelay: 30,
@@ -367,6 +480,17 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
       if (destroyUnmatchedUpgrades) socket.destroy()
       return
     }
+    /*
+     * 跨站握手在这里就挡掉，进不到 `onConnect`。
+     * upgrade 是裸的 node 事件，Hono 那条中间件链（CORS、页面守卫）一个都没经过，
+     * 所以 CSWSH 这道只能自己判 —— 见 `auth/ws.ts` 的 `isAllowedCollabOrigin`。
+     * 回一行 403 再断开：配错 `APP_ORIGIN` 时，这比一个 TCP reset 好查得多。
+     */
+    if (!isAllowedCollabOrigin(req.headers.origin, req.headers.host)) {
+      console.warn(`[collab] 拒绝来自 ${req.headers.origin} 的跨站握手`)
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+      return
+    }
     void ws.handleUpgrade(req, socket, head)
   })
 
@@ -377,6 +501,33 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
     )
   }, REAUTH_INTERVAL)
   reauthTimer.unref()
+
+  /*
+   * 单连接互斥的巡检。新连接接入时 `connected` 已经把**本实例**的旧连接踢掉了，
+   * 这个定时器管的是另外两件事：把连在别的实例上的旧连接收敛掉（多副本），
+   * 以及给活着的持有者续期、补回丢失的登记。
+   */
+  const exclusiveTimer = setInterval(() => {
+    void enforceExclusive(
+      hocuspocus.documents.values(),
+    ).catch((err: unknown) => console.error('[collab] 单连接巡检失败', err))
+  }, EXCLUSIVE_SWEEP_INTERVAL)
+  exclusiveTimer.unref()
+
+  /*
+   * 别的实例上有人被移除权限了吗。只读共享层的一个键（内存模式下就是一次 Map 查询），
+   * 变了才跑复验 —— 权限变更罕见，所以这个定时器平时什么都不做。
+   * 它管的是**跨实例**那半：写权限的那个实例当场就把本地的踢了（`revokeCollabAccess`），
+   * 人挂在别的 Pod 上时就靠这里，延迟一个轮询周期。
+   */
+  const watcher = createRevocationWatcher()
+  const revocationTimer = setInterval(() => {
+    void watcher
+      .changed()
+      .then((changed) => (changed ? revalidateConnections(hocuspocus) : undefined))
+      .catch((err: unknown) => console.error('[collab] 权限撤销广播处理失败', err))
+  }, REVOCATION_POLL_INTERVAL)
+  revocationTimer.unref()
 
   instance = hocuspocus
   return hocuspocus

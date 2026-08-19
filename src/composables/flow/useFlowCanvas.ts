@@ -1,4 +1,4 @@
-import { computed, ref, watch, watchEffect } from "vue"
+import { computed, nextTick, ref, toRaw, watch, watchEffect } from "vue"
 import { until, useEventListener } from "@vueuse/core"
 import {
   useVueFlow,
@@ -13,6 +13,7 @@ import { elementKey, type PresencePoint } from "@/lib/presence"
 import { isEditableTarget } from "./editable"
 import type { FlowPresence } from "./useFlowPresence"
 import type { FlowSelection } from "./useFlowSelection"
+import { useFlowSnapping } from "./useFlowSnapping"
 import type { useFlowStore } from "@/stores/flow"
 import { defaultNodeData, type FlowEdge, type FlowNode } from "@/types/flow"
 
@@ -62,6 +63,8 @@ export function useFlowCanvas(
     findNode,
     getSelectedNodes,
     getSelectedEdges,
+    addSelectedNodes,
+    removeSelectedNodes,
     minZoom,
     maxZoom,
     fitView,
@@ -74,6 +77,9 @@ export function useFlowCanvas(
     onNodeDragStop,
     selectionKeyCode
   } = useVueFlow()
+
+  /** 拖动时的网格 / 辅助线吸附；两者都常开，没有开关 */
+  const snapping = useFlowSnapping()
 
   /**
    * 我自己是不是正在拖节点。
@@ -218,13 +224,22 @@ export function useFlowCanvas(
   onNodeDragStart(({ nodes: dragged }) => {
     localDragging.value = true
     for (const node of dragged) dragOrigin.set(node.id, { ...node.position })
+    // 参照物在按下这一刻量一次，拖动期间不再变
+    snapping.begin(dragged)
     // 一按下就发：别人得立刻看到它归我了，不然两个人会同时搬同一个节点
     publishDrag(dragged)
   })
 
-  onNodeDrag(({ nodes: dragged }) => publishDrag(dragged))
+  // 顺序要紧：**先**吸附再上报，否则别人看到的是没吸住的那个位置
+  onNodeDrag(({ nodes: dragged }) => {
+    snapping.apply(dragged)
+    publishDrag(dragged)
+  })
 
   onNodeDragStop(({ nodes: dragged }) => {
+    // 落点已经是最后一次 onNodeDrag 吸附过的位置，这里只需要把线收掉
+    snapping.end()
+
     const moved = new Map<string, { x: number; y: number }>()
     for (const node of dragged) {
       const before = dragOrigin.get(node.id)
@@ -394,6 +409,76 @@ export function useFlowCanvas(
     selection.clearSelection()
   }
 
+  /**
+   * 删掉指定的一个节点（节点工具栏上的删除按钮）。
+   *
+   * 和 `deleteSelection()` 的区别只在作用对象：这里删的是按钮所在的那个节点，
+   * 不管当前还框选着别的什么。连着的边照样由 store 一并清掉。
+   */
+  function deleteNode(nodeId: string) {
+    store.separateUndo()
+    store.removeElements([nodeId], [])
+    store.separateUndo()
+    if (selection.selectedNodeId.value === nodeId) selection.clearSelection()
+  }
+
+  // —— 复制节点 ——
+
+  /**
+   * 复制一个节点，**连同「进入它」的那些边一起复制**（`target === nodeId` 的边）。
+   *
+   * 复本接在同样的上游节点后面 —— 也就是说它跟原节点是「并联」的分支，
+   * 而不是一个孤零零的副本。出边不复制：那会凭空多出一条通往下游的路径，
+   * 这不是「复制一个节点」该有的意思。
+   *
+   * 节点和边在**同一个事务**里写进去（`store.addElements`），所以撤销一次就全撤，
+   * 别人那边也不会先看到一个还没连上线的节点。
+   */
+  async function duplicateNode(nodeId: string): Promise<string | null> {
+    const source = store.nodes.find((node) => node.id === nodeId)
+    if (!source) return null
+
+    const id = createId("n")
+    const clone: FlowNode = {
+      ...source,
+      id,
+      // 深拷贝：data 里有嵌套对象（config / ports），浅拷贝会让两个节点共用同一份
+      data: structuredClone(toRaw(source.data)),
+      position: {
+        x: source.position.x + CASCADE_STEP,
+        y: source.position.y + CASCADE_STEP
+      }
+    }
+
+    const incoming = store.edges
+      .filter((edge) => edge.target === nodeId)
+      .map<FlowEdge>((edge) => ({
+        ...edge,
+        id: createId("e"),
+        target: id,
+        data: structuredClone(toRaw(edge.data))
+      }))
+
+    // 「复制」是一个独立的动作，别和刚才那次编辑并成同一条撤销
+    store.separateUndo()
+    store.addElements([clone], incoming, "复制节点")
+    store.separateUndo()
+
+    // 选中复本：接着就能拖走或改名，符合复制完的下一步意图
+    selection.select(id)
+
+    // 选中态有两份（我们这份给属性面板，Vue Flow 那份决定节点的 selected/高亮），
+    // 只切一份的话原节点还亮着、两个节点头上会同时挂着工具栏。
+    // 复本要等一帧才渲染出来，findNode 之前必须 nextTick。
+    await nextTick()
+    const rendered = findNode(id)
+    if (rendered) {
+      removeSelectedNodes(getSelectedNodes.value)
+      addSelectedNodes([rendered])
+    }
+    return id
+  }
+
   // —— 在场（光标） ——
 
   /**
@@ -461,6 +546,7 @@ export function useFlowCanvas(
   return {
     nodes,
     edges,
+    snapping,
     interactionMode,
     spacePanning,
     panOnDrag,
@@ -472,6 +558,8 @@ export function useFlowCanvas(
     onPointerLeave,
     syncViewport,
     addNode,
+    duplicateNode,
+    deleteNode,
     deleteSelection
   }
 }

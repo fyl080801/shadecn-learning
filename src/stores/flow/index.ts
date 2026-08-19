@@ -276,6 +276,20 @@ export const useFlowStore = defineStore("flow", () => {
     mutate(({ edges: map }) => map.set(edge.id, toYEdge(edge)), "连线")
   }
 
+  /**
+   * 一次性加一批节点和边（复制节点这类「节点 + 它的连线一起进来」的动作）。
+   *
+   * 和分别调 `addNode` / `addEdge` 的区别在于它只有**一个** Y 事务：
+   * 一条撤销、一条操作日志、一次广播 —— 不会出现「节点到了、线还没到」的中间态。
+   */
+  function addElements(newNodes: FlowNode[], newEdges: FlowEdge[], label = "新增元素") {
+    if (newNodes.length === 0 && newEdges.length === 0) return
+    mutate(({ nodes: nodeMap, edges: edgeMap }) => {
+      for (const node of newNodes) nodeMap.set(node.id, toYNode(node))
+      for (const edge of newEdges) edgeMap.set(edge.id, toYEdge(edge))
+    }, label)
+  }
+
   function moveNodes(positions: Map<string, { x: number; y: number }>, label = "移动节点") {
     mutate(({ nodes: map }) => {
       for (const [id, position] of positions) {
@@ -478,6 +492,7 @@ export const useFlowStore = defineStore("flow", () => {
     redo,
     addNode,
     addEdge,
+    addElements,
     moveNodes,
     updateNodeData,
     removeElements,

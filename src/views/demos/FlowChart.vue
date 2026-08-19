@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue"
+import { markRaw, ref } from "vue"
 import { until } from "@vueuse/core"
 import {
   ConnectionMode,
@@ -18,6 +18,9 @@ import { Plus } from "lucide-vue-next"
 
 import { Button } from "@/components/ui/button"
 import ProcessNode from "@/components/flow/ProcessNode.vue"
+
+// 组件定义不能进响应式对象，理由同 FlowCanvas.vue
+const nodeTypes = markRaw({ process: ProcessNode })
 
 const nodes = ref<Node[]>([
   {
@@ -140,7 +143,7 @@ async function addNode() {
     <VueFlow
       v-model:nodes="nodes"
       v-model:edges="edges"
-      :node-types="{ process: ProcessNode }"
+      :node-types="nodeTypes"
       :connection-mode="ConnectionMode.Strict"
       :default-edge-options="{
         type: 'smoothstep',
