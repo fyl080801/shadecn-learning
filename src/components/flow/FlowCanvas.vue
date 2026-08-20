@@ -23,10 +23,14 @@ import {
 /**
  * 画布本体：只负责渲染 Vue Flow 和转发交互，不含任何业务动作。
  *
- * 数据与事件处理都来自 `useFlowEditor()` 的 canvas / selection ——
- * 这个组件里没有一处直接改 store。
+ * 数据与事件处理都来自 `useFlowEditor()` 的 canvas —— 这个组件里没有一处直接改 store。
+ *
+ * 这里**不接 `node-click` / `pane-click` 去维护选中态**：点选、框选、拖动选中、
+ * 点空白清空全由 Vue Flow 自己完成，我们那份「现在轮到哪个节点」是它的投影
+ * （`useFlowCanvas` 里的 `onSelectionChange`）。各接各的会漏掉拖动那一路 ——
+ * 拖动之后的 click 会被 d3-drag 吞掉。
  */
-const { canvas, selection } = useFlowEditor()
+const { canvas } = useFlowEditor()
 
 /**
  * 节点类型表要在模板外面定义并 markRaw。
@@ -81,8 +85,6 @@ const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
       :delete-key-code="null"
       class="h-full w-full"
       @nodes-change="canvas.onNodesChange"
-      @node-click="selection.select($event.node.id)"
-      @pane-click="selection.clearSelection()"
       @move-end="canvas.syncViewport"
     >
       <!--

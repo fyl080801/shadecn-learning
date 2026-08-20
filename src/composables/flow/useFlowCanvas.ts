@@ -121,20 +121,45 @@ export function useFlowCanvas(
   )
 
   /**
-   * 本地选中 → 上报。
+   * 选中态**只有一份来源：Vue Flow 自己那份**，`selection` 是它的投影。
    *
-   * 选中态有两个来源：节点走我们自己的 `selection`（属性面板要用），
-   * 边走 Vue Flow 内部的选中态（我们没有单独的边选中态）。
-   * 这里把两者合成一份统一的元素 key 列表，反馈层不关心它们从哪来。
+   * 各维护一份是不行的：点选走 `node-click`，而拖动一个节点也会选中它
+   * （`selectNodesOnDrag`，在 dragstart 里换选中态），并且 d3-drag 会把拖动之后
+   * 那次 click 吞掉 —— 于是「先点 A，再拖 B」时 Vue Flow 那份换成了 B，
+   * 我们这份还停在 A，两个节点头上同时挂着工具栏。
+   *
+   * 投影只在**恰好选中一个节点**时有值：它代表「现在轮到哪个节点」，
+   * 框选出来的一片没有「哪一个」可言。
+   *
+   * 用 watch 而不是某个 `onXxx` 钩子：Vue Flow 没有「选中变化」这个事件，
+   * 它把选中态放在 `getSelectedNodes` 上，改选中的路子（点选 / 框选 / 拖动 /
+   * 点空白）最后都汇到这里。
+   */
+  watch(
+    getSelectedNodes,
+    (selected) => selection.select(selected.length === 1 ? (selected[0]?.id ?? null) : null),
+    { immediate: true }
+  )
+
+  /**
+   * 只选中这一个节点，清掉其它的。
+   *
+   * 给**画布外的入口**用：`NodeToolbar` 是 teleport 出节点 DOM 的，点它不会冒泡成
+   * `node-click`，所以双击改名、复制出新节点这类动作得自己把选中态切过去。
+   */
+  function selectOnly(nodeId: string) {
+    const node = findNode(nodeId)
+    if (!node) return
+    removeSelectedNodes(getSelectedNodes.value.filter((item) => item.id !== nodeId))
+    addSelectedNodes([node])
+  }
+
+  /**
+   * 本地选中 → 上报。节点和边分别取自 Vue Flow 的两份选中列表，
+   * 合成一份统一的元素 key 列表，反馈层不关心它们是节点还是边。
    */
   const localSelection = computed(() => {
-    const keys: string[] = []
-    const nodeId = selection.selectedNodeId.value
-    if (nodeId) keys.push(elementKey("node", nodeId))
-    for (const node of getSelectedNodes.value) {
-      const key = elementKey("node", node.id)
-      if (!keys.includes(key)) keys.push(key)
-    }
+    const keys = getSelectedNodes.value.map((node) => elementKey("node", node.id))
     for (const edge of getSelectedEdges.value) keys.push(elementKey("edge", edge.id))
     return keys
   })
@@ -393,11 +418,7 @@ export function useFlowCanvas(
    *
    */
   function deleteSelection() {
-    const nodeIds = new Set<string>()
-    const selectedNodeId = selection.selectedNodeId.value
-    if (selectedNodeId) nodeIds.add(selectedNodeId)
-    for (const node of getSelectedNodes.value) nodeIds.add(node.id)
-
+    const nodeIds = new Set<string>(getSelectedNodes.value.map((node) => node.id))
     const edgeIds = new Set<string>(getSelectedEdges.value.map((edge) => edge.id))
 
     if (nodeIds.size === 0 && edgeIds.size === 0) return
@@ -464,18 +485,10 @@ export function useFlowCanvas(
     store.addElements([clone], incoming, "复制节点")
     store.separateUndo()
 
-    // 选中复本：接着就能拖走或改名，符合复制完的下一步意图
-    selection.select(id)
-
-    // 选中态有两份（我们这份给属性面板，Vue Flow 那份决定节点的 selected/高亮），
-    // 只切一份的话原节点还亮着、两个节点头上会同时挂着工具栏。
-    // 复本要等一帧才渲染出来，findNode 之前必须 nextTick。
+    // 选中复本：接着就能拖走或改名，符合复制完的下一步意图。
+    // 复本要等一帧才渲染出来，selectOnly 里的 findNode 之前必须 nextTick。
     await nextTick()
-    const rendered = findNode(id)
-    if (rendered) {
-      removeSelectedNodes(getSelectedNodes.value)
-      addSelectedNodes([rendered])
-    }
+    selectOnly(id)
     return id
   }
 
@@ -557,6 +570,7 @@ export function useFlowCanvas(
     onPointerMove,
     onPointerLeave,
     syncViewport,
+    selectOnly,
     addNode,
     duplicateNode,
     deleteNode,
