@@ -163,6 +163,9 @@ spec:
           - |
             set -euo pipefail
             COMMIT_ID="{{inputs.parameters.imageTag}}"
+            # 单个 platform 的构建最多试几次、每次之间等多久（见下面 build_one 的注释）
+            BUILD_ATTEMPTS=4
+            BUILD_RETRY_DELAY=90
             INTERNAL_IMAGE=$(echo {{workflow.parameters.imageName}}:${COMMIT_ID} | sed "s|192.168.68.95:31443|harbor-core.harbor.svc|")
             INTERNAL_REGISTRY=$(echo ${INTERNAL_IMAGE} | cut -d/ -f1)
             EXTERNAL_IMAGE={{workflow.parameters.imageName}}:${COMMIT_ID}
@@ -188,15 +191,40 @@ spec:
             # 最后把 aarch64 的 better_sqlite3.node 打进标着 amd64 的镜像推上线。
             # 三道防线都在 Dockerfile 里：同一个多架构引用 + 两处 TARGETARCH 校验 +
             # 运行时阶段逐个 dlopen 原生模块。详见 docs/12 §2.5。
+            # 拉基础镜像会**间歇性**失败，报
+            # `no image found in image index for architecture "amd64"`：Harbor 的 docker.io
+            # 代理缓存在补齐多架构 index 的过程中，会把一份缺架构的 index 发出来。
+            # 实测同一个节点、同一个 buildah、同一个引用，几分钟之内成功和失败会来回翻
+            # （匿名 / 已登录、buildah pull / bud、tag / digest 都试过，与这些都无关；
+            # Harbor 各组件的出网代理也都配着，直连 docker.io 超时、走代理正常）。
+            # 一轮构建二十多分钟、要在六个 FROM 上各拉一次，撞上坏窗口几乎是必然，
+            # 所以这里自己重试 —— 失败的是拉镜像，重来一次就好，不用重跑整条流水线。
+            build_one() {
+              local PLATFORM=$1
+              local attempt=1
+              while true; do
+                echo "=== Building ${PLATFORM}（第 ${attempt} 次）==="
+                if buildah bud --platform ${PLATFORM} --format docker \
+                  --pull=always --no-cache --layers=false \
+                  --file /workspace/Dockerfile \
+                  --build-arg NODE_IMAGE={{workflow.parameters.baseImage}} \
+                  --manifest ${INTERNAL_IMAGE} \
+                  $PROXY_ARGS \
+                  /workspace; then
+                  return 0
+                fi
+                if [ ${attempt} -ge ${BUILD_ATTEMPTS} ]; then
+                  echo "!!! ${PLATFORM} 连续 ${BUILD_ATTEMPTS} 次都没成功，放弃"
+                  return 1
+                fi
+                attempt=$((attempt + 1))
+                echo "--- ${PLATFORM} 失败，${BUILD_RETRY_DELAY}s 后重试 ---"
+                sleep ${BUILD_RETRY_DELAY}
+              done
+            }
+
             for PLATFORM in linux/amd64 linux/arm64; do
-              echo "=== Building ${PLATFORM} ==="
-              buildah bud --platform ${PLATFORM} --format docker \
-                --pull=always --no-cache --layers=false \
-                --file /workspace/Dockerfile \
-                --build-arg NODE_IMAGE={{workflow.parameters.baseImage}} \
-                --manifest ${INTERNAL_IMAGE} \
-                $PROXY_ARGS \
-                /workspace
+              build_one ${PLATFORM}
             done
             echo "=== Manifest contents ==="
             # 脚本开头是 set -euo pipefail，grep 没命中会让整步失败 —— 这只是打日志，兜住
