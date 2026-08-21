@@ -38,11 +38,23 @@ spec:
       - name: imageName
         value: 192.168.68.95:31443/apps/shadecn-learning
       # 三个构建阶段的基础镜像。Dockerfile 里是 `ARG NODE_IMAGE`，不写死地址。
-      # 默认那个是 Harbor 的 docker.io 代理缓存：缓存没填全时它会发一份缺架构的 index，
-      # buildah 报 `no image found in image index for architecture "amd64"` 直接失败 ——
-      # 先重试，热了就好。反复不行再改指一份不经代理缓存的引用。
+      #
+      # 指的是 Harbor **普通项目**里自存的一份多架构副本，不是 `docker.io/` 那个代理缓存 ——
+      # 代理缓存会间歇性地抽风：坏窗口里按 tag 拉会拿到一份**缺 amd64 的 index**
+      # （`no image found in image index for architecture "amd64"`），按 index digest 拉
+      # 直接 `not found`，也就是那一刻它本地根本没有这个 artifact。同一个节点、同一个
+      # buildah、同一个引用，几分钟内成功和失败来回翻；匿名 / 已登录、pull / bud、
+      # tag / digest 全都试过，与这些都无关。一轮构建二十多分钟、要在六个 FROM 上各拉
+      # 一次，撞上是必然 —— 实测连挂五次，其中一次 amd64 整轮跑完、arm64 刚开头挂掉。
+      #
+      # 副本是这么来的（换 node 版本时照做一次，然后改下面这行）：
+      #   buildah manifest create nodebase
+      #   buildah manifest add --all nodebase docker://docker.io/library/node:22-alpine
+      #   buildah manifest push --all nodebase docker://harbor-core.harbor.svc/apps/node:22-alpine
+      # 第二步走 xproxy 直接到 docker.io（HTTPS_PROXY 来自 workflow-proxy-config），
+      # 绕开代理缓存。推完确认 index 里 amd64 / arm64 都在再改这行。
       - name: baseImage
-        value: 192.168.68.95:31443/docker.io/library/node:22-alpine
+        value: 192.168.68.95:31443/apps/node:22-alpine
       - name: harborAuthSecret
         value: harbor-auth
       - name: harborCaSecret
