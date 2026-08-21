@@ -15,11 +15,9 @@ import FlowSelectionToolbar from "@/components/flow/FlowSelectionToolbar.vue"
 import FlowSnapGuides from "@/components/flow/FlowSnapGuides.vue"
 import FlowViewControls from "@/components/flow/FlowViewControls.vue"
 import { flowNodeComponents } from "@/components/flow/node-types"
-import {
-  FLOW_EDGE_TYPE,
-  FLOW_GRID_GAP,
-  useFlowEditor
-} from "@/composables/flow"
+import { useFlowEditor } from "@/composables/flow/editor-context"
+import { FLOW_EDGE_TYPE } from "@/composables/flow/useFlowCanvas"
+import { FLOW_GRID_GAP } from "@/composables/flow/useFlowSnapping"
 
 /**
  * 画布本体：只负责渲染 Vue Flow 和转发交互，不含任何业务动作。

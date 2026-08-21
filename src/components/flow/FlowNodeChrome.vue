@@ -6,7 +6,7 @@ import { Copy, Trash2 } from "lucide-vue-next"
 
 import FlowPresenceAvatar from "@/components/flow/FlowPresenceAvatar.vue"
 import { Button } from "@/components/ui/button"
-import { useFlowEditor } from "@/composables/flow"
+import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
  * 节点的「外壳」：贴在节点外部左上角的名字（可双击改名）+ 选中时浮在上方的操作栏。

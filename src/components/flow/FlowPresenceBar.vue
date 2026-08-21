@@ -8,7 +8,7 @@ import {
   TooltipProvider,
   TooltipTrigger
 } from "@/components/ui/tooltip"
-import { useFlowEditor } from "@/composables/flow"
+import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
  * 左上角标题胶囊右边那一枚：正在编辑这张画布的人。

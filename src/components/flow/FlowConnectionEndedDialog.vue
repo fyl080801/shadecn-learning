@@ -10,7 +10,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle
 } from "@/components/ui/alert-dialog"
-import { useFlowEditor } from "@/composables/flow"
+import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
  * 同步通道被**终局**掐掉时的提示：说清楚发生了什么，给一条出路。

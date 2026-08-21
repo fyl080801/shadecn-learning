@@ -3,6 +3,16 @@ import { defineConfig } from 'vite'
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
 
+/**
+ * 画布编辑器的模块 —— 下面的 onwarn 只对这片代码把「循环依赖」当错误。
+ *
+ * 为什么不是全仓库：`src/components/ui/` 下每个 shadcn-vue 组件都和自己那个
+ * `index.ts` 互相引（`index.ts` → `Button.vue` → `index.ts`），是 CLI 生成的形状，
+ * 改不了也没必要改 —— 一个 barrel 和它自己的组件总是落在同一个 chunk 里，
+ * rollup 不用跨 chunk 挑顺序，从来没出过事。真正咬人的是环**跨了 chunk**那种。
+ */
+const FLOW_MODULE = /src\/(components|composables)\/flow\//
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
@@ -29,6 +39,34 @@ export default defineConfig({
     // 前端产物直接落进后端的静态资源目录：output/ 里就是一份完整可跑的东西
     outDir: path.resolve(__dirname, 'output/public'),
     emptyOutDir: true,
+    rollupOptions: {
+      /**
+       * 跨 chunk 的循环 re-export **直接构建失败**，不要只是警告。
+       *
+       * rollup 原话是 "will likely lead to broken execution order" —— 落到浏览器里
+       * 就是 `ReferenceError: Cannot access 'XX' before initialization`：先被求值的
+       * chunk 用到了另一个还没初始化完的 chunk 里的绑定。
+       *
+       * 它只在**生产构建**里出现：dev 是原生 ESM，live binding 让环自己解开，
+       * 所以本地怎么点都是好的，一上线整页白屏。这种「只有线上才炸」的东西必须卡在
+       * 构建上 —— 真发生过一次（barrel `@/composables/flow` ↔ 节点组件成环，
+       * 存量画布全打不开），当时这条警告就在 build 日志里，滚过去了没人看见。
+       *
+       * 触发之后不要靠 manualChunks 去把它们塞进同一个 chunk —— 那只是把环藏起来。
+       * 断环：让被引的那一侧变成不 import 任何东西的叶子模块
+       * （`src/composables/flow/editor-context.ts`、`src/components/flow/node-constants.ts`
+       * 就是这么来的）。
+       */
+      onwarn(warning, defaultHandler) {
+        if (warning.code === 'CYCLIC_CROSS_CHUNK_REEXPORT') {
+          throw new Error(`[build] 存在跨 chunk 的循环 re-export，拒绝构建：\n${warning.message}`)
+        }
+        if (warning.code === 'CIRCULAR_DEPENDENCY' && FLOW_MODULE.test(warning.message ?? '')) {
+          throw new Error(`[build] 画布模块之间出现循环依赖，拒绝构建：\n${warning.message}`)
+        }
+        defaultHandler(warning)
+      },
+    },
   },
 })
 

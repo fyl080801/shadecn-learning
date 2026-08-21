@@ -2,7 +2,7 @@
 import { computed } from "vue"
 import { useVueFlow } from "@vue-flow/core"
 
-import { useFlowEditor } from "@/composables/flow"
+import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
  * 拖动时的对齐辅助线。

@@ -3,7 +3,7 @@ import { computed, nextTick, ref } from "vue"
 import { Handle, Position, type NodeProps } from "@vue-flow/core"
 
 import FlowNodeChrome from "@/components/flow/FlowNodeChrome.vue"
-import { useFlowEditor } from "@/composables/flow"
+import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
  * 文本节点 —— 一块可以就地写字的卡片，工具栏那枚加号建出来的就是它。

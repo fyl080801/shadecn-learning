@@ -1,6 +1,6 @@
 import { useEventListener } from "@vueuse/core"
 import { onBeforeRouteLeave } from "vue-router"
-import type { FlowEditorContext } from "./context"
+import type { FlowEditorContext } from "./editor-context"
 // 输入框里按 Ctrl+Z 应该是撤销输入，不是撤销画布操作
 import { isEditableTarget } from "./editable"
 

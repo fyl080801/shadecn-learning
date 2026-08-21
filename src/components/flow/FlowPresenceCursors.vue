@@ -3,7 +3,7 @@ import { computed } from "vue"
 import { getBezierPath, Position, useVueFlow } from "@vue-flow/core"
 
 import FlowPresenceAvatar from "@/components/flow/FlowPresenceAvatar.vue"
-import { useFlowEditor } from "@/composables/flow"
+import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
  * 别人的**操作反馈**：鼠标（箭头 + 头像 + 名字）和正在拉的连线。

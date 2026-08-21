@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Controls, ControlButton } from "@vue-flow/controls"
 import { Redo2, Undo2 } from "lucide-vue-next"
-import { useFlowEditor } from "@/composables/flow"
+import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
  * 右上角控件组：Vue Flow 自带的缩放 / 适应视图 / 锁定，加上撤销 / 重做。

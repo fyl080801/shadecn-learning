@@ -2,8 +2,8 @@
 import { Hand, MousePointer2, Plus } from "lucide-vue-next"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
-import { NEW_NODE_TYPE } from "@/components/flow/node-types"
-import { useFlowEditor } from "@/composables/flow"
+import { NEW_NODE_TYPE } from "@/components/flow/node-constants"
+import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
  * 底部悬浮工具栏 —— 指针模式 + 画布内容的编辑动作。

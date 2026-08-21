@@ -21,7 +21,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle
 } from "@/components/ui/alert-dialog"
-import { useFlowEditor } from "@/composables/flow"
+import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
  * 左上角悬浮胶囊：logo（回列表）+ 可就地编辑的画布名 + 保存状态 + 菜单。

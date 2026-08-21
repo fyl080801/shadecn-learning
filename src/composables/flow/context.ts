@@ -1,5 +1,6 @@
-import { computed, inject, provide, toRef, watch, type InjectionKey } from "vue"
+import { computed, provide, toRef, watch } from "vue"
 import { useFlowStore } from "@/stores/flow"
+import { FLOW_EDITOR_KEY, type FlowEditorContext } from "./editor-context"
 import { useFlowCanvas } from "./useFlowCanvas"
 import { useFlowDocument } from "./useFlowDocument"
 import { useFlowPresence } from "./useFlowPresence"
@@ -12,29 +13,11 @@ import { useFlowSync } from "./sync"
  * 编辑器根组件 `provideFlowEditor()` 一次，工具栏 / 胶囊 / 属性面板这些
  * 子组件 `useFlowEditor()` 就能拿到同一份状态和动作 —— 不用一层层传 props，
  * 加一个面板也不需要改中间任何一层。
+ *
+ * 这个文件只有**写入侧**（`provideFlowEditor`）：它要 import 每一个 composable。
+ * 读取侧（`FlowEditorContext` / `useFlowEditor`）在 `./editor-context.ts`，
+ * 那边是条不引任何东西的叶子 —— 原因写在它顶上，一句话是「不这么分就成环」。
  */
-
-export interface FlowEditorContext {
-  /** 当前画布 id（响应式，路由切换时会变） */
-  flowId: Readonly<ReturnType<typeof toRef<string>>>
-  /** 底层状态与撤销；写操作最终都落到 store.mutate */
-  store: ReturnType<typeof useFlowStore>
-  /**
-   * 内容的同步层：Y.Doc 从这儿来，协同画布的 awareness 也从这儿来。
-   * 走 WebSocket 还是 HTTP 由画布的 `mode` 决定，上层不用关心。
-   */
-  sync: ReturnType<typeof useFlowSync>
-  /** 文档级：加载 / 改名 / 复制 / 删除 */
-  document: ReturnType<typeof useFlowDocument>
-  /** 画布交互：Vue Flow 绑定、视口、新增节点 */
-  canvas: ReturnType<typeof useFlowCanvas>
-  /** 选中了哪个节点（只是个 id，不再挂任何面板） */
-  selection: ReturnType<typeof useFlowSelection>
-  /** 多人在场：谁在线、光标在哪、哪些元素被别人占住 */
-  presence: ReturnType<typeof useFlowPresence>
-}
-
-const FLOW_EDITOR_KEY: InjectionKey<FlowEditorContext> = Symbol("flow-editor")
 
 /** 只能在编辑器根组件的 setup 里调用一次 */
 export function provideFlowEditor(props: { flowId: string }): FlowEditorContext {
@@ -91,14 +74,5 @@ export function provideFlowEditor(props: { flowId: string }): FlowEditorContext 
   }
 
   provide(FLOW_EDITOR_KEY, context)
-  return context
-}
-
-/** 子组件取上下文；不在编辑器里用会直接报错，而不是拿到 undefined 到处炸 */
-export function useFlowEditor(): FlowEditorContext {
-  const context = inject(FLOW_EDITOR_KEY, null)
-  if (!context) {
-    throw new Error("useFlowEditor() 必须用在 provideFlowEditor() 的子树里")
-  }
   return context
 }

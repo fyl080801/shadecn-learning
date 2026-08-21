@@ -5,9 +5,9 @@ import { NodeResizer } from "@vue-flow/node-resizer"
 import { Ungroup } from "lucide-vue-next"
 
 import FlowNodeChrome from "@/components/flow/FlowNodeChrome.vue"
-import { GROUP_DEFAULT_BACKGROUND } from "@/components/flow/node-types"
+import { GROUP_DEFAULT_BACKGROUND } from "@/components/flow/node-constants"
 import { Button } from "@/components/ui/button"
-import { useFlowEditor } from "@/composables/flow"
+import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
  * 分组框 —— 把一片节点圈在一起的背景板。

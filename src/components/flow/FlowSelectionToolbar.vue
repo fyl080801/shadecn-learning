@@ -5,7 +5,7 @@ import { NodeToolbar } from "@vue-flow/node-toolbar"
 import { Group } from "lucide-vue-next"
 
 import { Button } from "@/components/ui/button"
-import { useFlowEditor } from "@/composables/flow"
+import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
  * 选区工具栏 —— 框选出一片节点之后，浮在这片节点**上方**的那一条。
