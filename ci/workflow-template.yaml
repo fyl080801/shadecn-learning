@@ -47,6 +47,23 @@ spec:
         value: dev
       - name: deploymentName
         value: shadecn-learning
+  # ⚠️ Argo 自己的 executor（每个步骤 Pod 的 init + wait 容器）默认从 quay.io 直连拉，
+  # 而 controller 的 configmap 里 executor 是 `imagePullPolicy: Always` —— 节点上缓存过
+  # 也没用，quay.io 一不通，每个步骤都卡在 Init:ImagePullBackOff（"failed to do request:
+  # Head https://quay.io/v2/... : EOF"），流水线一步都跑不动。ConfigMap 里的
+  # `workflow-proxy-config` 救不了：那是注入到容器里的 env，而拉镜像的是 kubelet。
+  # 所以这里把 executor 也改指到 Harbor 的 quay.io 代理缓存上。
+  # 镜像 tag 必须与集群里 argo 的版本一致（`kubectl -n argo get deploy` 看
+  # workflow-controller 的 tag），argo 升级后要跟着改。
+  podSpecPatch: |
+    initContainers:
+      - name: init
+        image: 192.168.68.95:31443/quay.io/argoproj/argoexec:v3.7.9
+    containers:
+      - name: wait
+        image: 192.168.68.95:31443/quay.io/argoproj/argoexec:v3.7.9
+  imagePullSecrets:
+    - name: harbor-pull-secret
   templates:
     # 三步串行。镜像 tag 一律取 clone 出来的提交短 hash，构建和写回用的是同一个值
     - name: main
@@ -131,7 +148,8 @@ spec:
           - name: imageTag
       workingDir: /workspace
       container:
-        image: quay.io/buildah/stable:latest
+        # 同样走 Harbor 的 quay.io 代理缓存，别直连 quay.io（见 spec.podSpecPatch 的注释）
+        image: 192.168.68.95:31443/quay.io/buildah/stable:latest
         command:
           - bash
           - -c
