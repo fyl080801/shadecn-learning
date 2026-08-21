@@ -21,6 +21,42 @@
  * ────────────────────────────────────────────────────────────
  */
 
+// —— 上报节流 ——
+
+/**
+ * 光标 / 拖动几何上报的基础节流窗口（毫秒），约 25fps：够跟手，又不至于每帧一个包。
+ */
+export const FEEDBACK_THROTTLE = 40
+
+/** 人数到这个数以内一律用基础窗口 —— 真实房间基本都落在这一档，行为和以前完全一样 */
+export const FEEDBACK_THROTTLE_ROOM = 6
+
+/** 再稀也不能稀过这个（约 6fps）。更稀的话对方的光标看着像卡死，那还不如干脆别发 */
+export const FEEDBACK_THROTTLE_MAX = 160
+
+/**
+ * 房间里有多少人 → 该用多大的节流窗口。
+ *
+ * **为什么跟人数走**：awareness 是**广播**，房间出站 ≈ `正在动的人数 × 帧率 × 包大小 × (N-1)`。
+ * 「正在动的人数」不随房间人数线性增长（10 个人里同时在拖东西的通常还是 1、2 个），
+ * 所以人数带来的是**扇出**那一项，窗口随人数放大正好把它抵掉。
+ *
+ * **为什么可以放心降帧**：awareness 是 last-writer-wins 的**状态**而不是事件流，
+ * 丢掉中间的包完全无害（最后一包携带完整的当前状态）。所以降帧率只损失流畅度，
+ * **不损失正确性** —— 真正不能丢的那些（落定的位置、提交的值）根本不走这条路，
+ * 它们走 Y.Doc，保证投递。这也是 trailing 必须开着的原因：中间的可以丢，最后一个不行。
+ *
+ * ⚠️ **这条曲线是判断，不是实测出来的**，而且它是**二阶**的：同样 10 人房、25fps，
+ * 一包 `{x, y}`（~100B）是 45KB/s，一包塞整个业务对象（4.8KB）是 2.16MB/s —— 差 48 倍。
+ * **先压包大小，再谈降帧率**：降帧率伤跟手感，压包大小不伤任何东西。
+ * 真要调，改这三个常量一处即可。
+ */
+export function feedbackThrottle(roomSize: number): number {
+  if (roomSize <= FEEDBACK_THROTTLE_ROOM) return FEEDBACK_THROTTLE
+  const steps = Math.ceil(roomSize / FEEDBACK_THROTTLE_ROOM)
+  return Math.min(FEEDBACK_THROTTLE * steps, FEEDBACK_THROTTLE_MAX)
+}
+
 // —— 元素：占用的单位 ——
 
 /**

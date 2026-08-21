@@ -116,7 +116,7 @@ interface ProjectSummary {
 applyFlowUpdate(flowId, update: Uint8Array) → { stateVector: Uint8Array } | { denied: 'too-large' }
 ```
 
-内部顺序：配额检查（同一套 `COLLAB_LIMITS` / `GRAPH_LIMITS`）→ 合并进库里的 ydoc →
+内部顺序：配额检查（同一套 `COLLAB_LIMITS`，也就是只量字节数）→ 合并进库里的 ydoc →
 按时机派生 `graph` 投影。协同路径由 hooks 调它，个人路径由 REST 调它 ——
 **配额与投影因此只有一份实现**。
 
@@ -232,7 +232,10 @@ type FlowSyncStatus =
 
 - `superseded` / `forbidden` 在 solo 下**不可达**（没有别的窗口来顶，没有成员身份可撤）。
 - `unauthorized` 两边都可达（会话过期），继续走全站的 `SessionExpiredDialog`。
-- `too-large` 是 solo 独有的第四种终局：提示「画布太大，最近的改动没能保存」。
+- `too-large` 是第四种终局：提示「画布太大，改动已停止保存」。**它不是 solo 独有的** ——
+  项目画布顶到内容硬限时，服务端会锁写清场并送 `4413` / `quota-exceeded`
+  （[REQ-COLLAB §4.4](04-realtime-collab.md)），前端归到同一个状态、同一份文案。
+  两边也共用同一条出路：这个框**可以关掉**，因为自救办法就是在这一页上删内容再刷新。
 - solo 下**绝不能**出现「协作会话已过期，请刷新页面」这类文案。
 
 推送节奏照抄 store 里已经验证过的形状（[REQ-CANVAS §4.6](13-flow-canvas-management.md)）：

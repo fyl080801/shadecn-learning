@@ -217,7 +217,8 @@ CMD ["sh", "-c", "npx prisma db push && node server/index.js"]
 ```
 
 三处都**故意不带** `--accept-data-loss`：仓库根 `Dockerfile`、`scripts/output-image/Dockerfile`、
-以及产物 `package.json` 里的 `db:push`。于是遇到它认为有风险的变更时，`db push` 直接以非 0 退出，
+以及产物 `package.json` 里的 `db:push`。（仓库根的 `pnpm db:push:force` 带这个 flag，但它是**开发期专用**的
+单独命令，既不在镜像里，也不挂在 `pnpm dev` 上 —— 见 [REQ-DATA §3.3](05-data-persistence.md)。）于是遇到它认为有风险的变更时，`db push` 直接以非 0 退出，
 `&&` 断掉，`node server/index.js` 根本不执行 —— **不是启动慢，是启动失败**，k8s 上表现为
 CrashLoopBackOff，探针的宽限期救不了。多副本下每个 Pod 启动都跑一次，三个一起失败。
 

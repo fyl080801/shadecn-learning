@@ -356,15 +356,33 @@ export const useFlowStore = defineStore("flow", () => {
     }, label)
   }
 
-  function updateNodeData(nodeId: string, patch: Partial<FlowNodeData>, label = "修改节点") {
+  /**
+   * 改一个节点 `data` 上的若干键 —— **写和删在同一个事务里**。
+   *
+   * 逐个 key 写，不整块替换：Y.Map 的合并粒度就是 key，整块替换会把别人同时改的字段盖掉。
+   *
+   * `remove` 是「平铺分键」（`src/lib/flow-collection.ts`）用得上的那一半：一批元素摊成
+   * `<前缀>.<id>` 之后，删掉其中一个元素就是删掉一个键，而不是改写某个数组。
+   * 删和写必须同笔 —— 「删掉角色 A、同时删掉它名下的轨」要一步撤干净，
+   * 分两次写别人会看到一个只剩半拉的中间态。
+   */
+  function writeNodeData(
+    nodeId: string,
+    changes: { set?: Partial<FlowNodeData>; remove?: Iterable<string> },
+    label = "修改节点"
+  ) {
     mutate(({ doc: target }) => {
       const data = nodeData(target, nodeId)
       if (!data) return
-      // 逐个 key 写：Y.Map 的合并粒度就是 key，整块替换会把别人同时改的字段盖掉
-      for (const [key, value] of Object.entries(patch)) {
+      for (const key of changes.remove ?? []) data.delete(key)
+      for (const [key, value] of Object.entries(changes.set ?? {})) {
         if (value !== undefined) data.set(key, value)
       }
     }, label)
+  }
+
+  function updateNodeData(nodeId: string, patch: Partial<FlowNodeData>, label = "修改节点") {
+    writeNodeData(nodeId, { set: patch }, label)
   }
 
   /**
@@ -576,6 +594,7 @@ export const useFlowStore = defineStore("flow", () => {
     groupNodes,
     moveNodes,
     resizeNode,
+    writeNodeData,
     updateNodeData,
     removeElements,
     // 视图状态

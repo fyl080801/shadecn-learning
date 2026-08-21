@@ -160,19 +160,34 @@ describe('个人画布的写入通道', () => {
     await forgetFlow(roomOf(flowId))
   })
 
-  it('超过节点上限 → 整段拒掉，库里一个节点都没多', async () => {
+  it('合并之后超过体积上限 → 整段拒掉，库里一个节点都没多', async () => {
     const flowId = await newFlow()
     await applyFlowUpdate(flowId, addNodes('keep'))
 
-    const tooMany = addNodes(
-      ...Array.from({ length: COLLAB_LIMITS.nodes + 1 }, (_, i) => `n${i}`),
-    )
-    const result = await applyFlowUpdate(flowId, tooMany)
+    /*
+     * 单次推送另有 `COLLAB_LIMITS.message`（1MB）那道关，所以一发请求撑不爆文档 ——
+     * 要够到体积上限得推上二十来次。直接把库里那份做大，等价于「已经推到那个规模了」，
+     * 测的是合并之后的判定，不是怎么长到那儿的。
+     */
+    const fat = new Y.Doc()
+    const node = new Y.Map<unknown>()
+    node.set('position', { x: 0, y: 0 })
+    const data = new Y.Map<unknown>()
+    data.set('label', 'x'.repeat(COLLAB_LIMITS.document + 1))
+    node.set('data', data)
+    nodesMap(fat).set('big', node)
+    await prisma.flow.update({
+      where: { id: flowId },
+      data: { ydoc: Buffer.from(Y.encodeStateAsUpdate(fat)) },
+    })
+    fat.destroy()
+
+    const result = await applyFlowUpdate(flowId, addNodes('n1'))
 
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toBe('too-large')
     // 拒绝就是拒绝：没有写一半
-    expect(await nodeIds(flowId)).toEqual(['keep'])
+    expect(await nodeIds(flowId)).toEqual(['big'])
 
     await forgetFlow(roomOf(flowId))
   })

@@ -25,12 +25,34 @@ export const GRAPH_SCHEMA_VERSION = 2
 /** 还认得的最低版本 */
 const GRAPH_SCHEMA_MIN_VERSION = 1
 
+/**
+ * **节点数 / 连线数不设上限，这是有意去掉的，不是漏了。**
+ *
+ * 那两个数（曾经是 2000 / 4000）是**产品判断**，不是安全护栏：资源那一面已经由字节数
+ * 一条管住（几千个节点也到不了字节上限），而用户先撞上的是 Vue Flow 在几百个节点时的
+ * 渲染卡顿，不是这两个数。用一条「超限就静默拒写」去执行「画布不该这么大」这个判断，
+ * 代价远大于收益 —— 尤其是它拒的方式是**事后**锁写，而删除也是写，人反而没了自救的路。
+ *
+ * 所以规模只剩字节数一条线，而且分成两条互不派生的：
+ *
+ * - **{@link GRAPH_LIMITS}.bytes** —— 派生投影（`graph` 这段 JSON）的上限，也就是下面这个数。
+ * - **`COLLAB_LIMITS.document`** —— 画布内容（Yjs 二进制）的上限，比它**大一个量级**。
+ *
+ * 两者曾经是同一个数，现在**故意不是**：投影会原样出现在 `GET /api/flows/:id` 的响应里
+ * （编辑器只用它带的元信息，从不读 graph），而内容只在 WebSocket 上走 —— 让内容的天花板
+ * 顺带把每次打开画布要下载的 JSON 抬到几十 MB，是白付的成本。
+ *
+ * 方向不能反：内容的上限必须 **≥** 投影的上限。两者之间那段（内容合法、投影超限）是
+ * 已经处理好的降级 —— `deriveProjection` 跳过本次投影写入、留上一份，列表页的计数会旧，
+ * 内容一个字节不受影响（复制画布复制的是 `ydoc`，不是投影）。
+ */
 export const GRAPH_LIMITS = {
-  /** 单画布节点上限 */
-  nodes: 2000,
-  /** 单画布边上限 */
-  edges: 4000,
-  /** 序列化后的 graph 字节上限 */
+  /**
+   * 序列化后的 graph **投影**字节上限。
+   *
+   * 超过它的投影不写（`deriveProjection` 返回 null）：写了在读的那头也会被
+   * `parseGraph` 判超限、降级成空图，反而把「detail 空图、复制出空画布」埋进去。
+   */
   bytes: 2 * 1024 * 1024,
   /** 单次 commit 的事务条数上限 */
   transactions: 200,
@@ -307,12 +329,7 @@ export function parseGraph(input: unknown): ParseResult<FlowGraph> {
   if (!Array.isArray(input.nodes)) return { ok: false, error: 'graph.nodes 必须是数组' }
   if (!Array.isArray(input.edges)) return { ok: false, error: 'graph.edges 必须是数组' }
 
-  if (input.nodes.length > GRAPH_LIMITS.nodes) {
-    return { ok: false, error: `节点数超过上限 ${GRAPH_LIMITS.nodes}` }
-  }
-  if (input.edges.length > GRAPH_LIMITS.edges) {
-    return { ok: false, error: `连线数超过上限 ${GRAPH_LIMITS.edges}` }
-  }
+  // 条数不判 —— 规模只看下面那道字节关（见 `GRAPH_LIMITS` 的注释）
 
   const nodeIds = new Set<string>()
   for (const raw of input.nodes) {

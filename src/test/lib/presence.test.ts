@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest"
 import {
   elementIdOf,
   elementKey,
+  feedbackThrottle,
+  FEEDBACK_THROTTLE,
+  FEEDBACK_THROTTLE_MAX,
+  FEEDBACK_THROTTLE_ROOM,
   lockOwner,
   lockedKeys,
   occupiedBy,
@@ -328,5 +332,30 @@ describe("remoteTransforms", () => {
   it("同一个元素被多人上报时取 clientId 最小者，和 lockOwner 一把尺子", () => {
     const peers = [dragging(9, "n1", 90, 90), dragging(4, "n1", 40, 40)]
     expect(remoteTransforms(peers, 1).get("node:n1")).toEqual({ x: 40, y: 40 })
+  })
+})
+
+describe("上报节流窗口", () => {
+  it("人数在阈值以内时就是基础窗口 —— 真实房间落在这一档，行为和以前一样", () => {
+    for (let size = 0; size <= FEEDBACK_THROTTLE_ROOM; size++) {
+      expect(feedbackThrottle(size)).toBe(FEEDBACK_THROTTLE)
+    }
+  })
+
+  it("人越多窗口越大：广播扇出是 (N-1)，窗口放大正好抵掉它", () => {
+    expect(feedbackThrottle(FEEDBACK_THROTTLE_ROOM + 1)).toBe(FEEDBACK_THROTTLE * 2)
+    expect(feedbackThrottle(FEEDBACK_THROTTLE_ROOM * 2)).toBe(FEEDBACK_THROTTLE * 2)
+    expect(feedbackThrottle(FEEDBACK_THROTTLE_ROOM * 2 + 1)).toBe(FEEDBACK_THROTTLE * 3)
+  })
+
+  it("再稀也不稀过上限 —— 更稀的话对方光标看着像卡死，那还不如别发", () => {
+    expect(feedbackThrottle(1000)).toBe(FEEDBACK_THROTTLE_MAX)
+    // 单调不减：人只会越多窗口越大，不会来回跳
+    let previous = 0
+    for (let size = 1; size <= 100; size++) {
+      const current = feedbackThrottle(size)
+      expect(current).toBeGreaterThanOrEqual(previous)
+      previous = current
+    }
   })
 })

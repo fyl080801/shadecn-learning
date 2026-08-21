@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue"
+import { computed, ref } from "vue"
 import { Handle, Position, type NodeProps } from "@vue-flow/core"
 
 import FlowNodeChrome from "@/components/flow/FlowNodeChrome.vue"
 import { useFlowEditor } from "@/composables/flow/editor-context"
+import { useDraftField } from "@/composables/flow/useDraftField"
 
 /**
  * 文本节点 —— 一块可以就地写字的卡片，工具栏那枚加号建出来的就是它。
@@ -22,38 +23,31 @@ const text = computed(() => (typeof props.data.text === "string" ? props.data.te
 
 const label = computed(() => (typeof props.data.label === "string" ? props.data.label : "文本"))
 
-const editing = ref(false)
-const draft = ref("")
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 
-async function startEdit() {
+/**
+ * 正文的草稿态。「本地草稿 + 一次提交」的样板全在 `useDraftField` 里
+ * （草稿接管画面、只在结束时写一次文档、前后夹 `separateUndo`）。
+ *
+ * 正文不 trim、允许清空 —— 把一段文字删光是一次正当的编辑，
+ * 和标题被清空（那是误操作）不一样，所以这里没有 `normalize`。
+ */
+const body = useDraftField<string>({
+  current: () => text.value,
+  commit: (next) => store.updateNodeData(props.id, { text: next }, "修改文本"),
+  focus: () => {
+    inputRef.value?.focus()
+    // 光标落到末尾，接着往下写；全选会让「双击补一句」变成「双击清空重写」
+    const end = inputRef.value?.value.length ?? 0
+    inputRef.value?.setSelectionRange(end, end)
+  }
+})
+
+function startEdit() {
   // 双击是在节点内部发生的，选中态本来就会切过来；但从 NodeToolbar 之类
   // teleport 出去的入口点进来时不会，所以这里显式切一次（和改名同理）
   canvas.selectOnly(props.id)
-  draft.value = text.value
-  editing.value = true
-  await nextTick()
-  inputRef.value?.focus()
-  // 光标落到末尾，接着往下写；全选会让「双击补一句」变成「双击清空重写」
-  const end = inputRef.value?.value.length ?? 0
-  inputRef.value?.setSelectionRange(end, end)
-}
-
-function commitEdit() {
-  if (!editing.value) return
-  editing.value = false
-
-  const next = draft.value
-  if (next === text.value) return
-
-  // 一次编辑 = 一条撤销，别和刚才的拖动之类并进同一条
-  store.separateUndo()
-  store.updateNodeData(props.id, { text: next }, "修改文本")
-  store.separateUndo()
-}
-
-function cancelEdit() {
-  editing.value = false
+  void body.start()
 }
 </script>
 
@@ -70,12 +64,12 @@ function cancelEdit() {
       Esc 退出、失焦提交；回车留给换行 —— 这是一块多行文本，不是一行标题。
     -->
     <textarea
-      v-if="editing"
+      v-if="body.editing.value"
       ref="inputRef"
-      v-model="draft"
+      v-model="body.draft.value"
       class="nodrag nopan nowheel min-h-[104px] w-full flex-1 resize-none rounded-sm border border-primary bg-background p-1 text-sm outline-none"
-      @blur="commitEdit"
-      @keydown.esc.prevent="cancelEdit"
+      @blur="body.commit()"
+      @keydown.esc.prevent="body.cancel()"
       @dblclick.stop
     />
     <p

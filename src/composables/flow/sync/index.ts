@@ -121,10 +121,24 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
     session.value = null
   }
 
+  /**
+   * 本窗口正在**主动**离开这张画布（删除它）。
+   *
+   * 删画布的请求会让服务端把这张画布的所有连接当场掐掉（`revokeCollabAccess`）——
+   * 包括**发起删除的这一条**，而且服务端是先踢人再回 204，所以关闭信号往往比响应先到。
+   * 不打这个标记的话，删完自己会先看到一个「已失去这张画布的访问权限，请联系项目管理员
+   * 重新邀请你」的模态框，然后才被路由带走：一件自己刚做完的事，被报成了一场事故。
+   *
+   * 只压提示，不改别的：连接照样断、内容照样不再同步 —— 那本来就是删除的应有之义。
+   */
+  let leaving = false
+
   /** 开一张画布：建文档、接上本地缓存。此时还不知道要走哪条通道 */
   function openDocument(id: string) {
     teardown()
     fatal.value = null
+    // 换了一张画布 = 上一次的「主动离开」翻篇了
+    leaving = false
     if (!id || !CAN_CONNECT) return
 
     doc = new Y.Doc()
@@ -162,6 +176,8 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
       flowId: flowId.value,
       doc: target,
       onFatal: (reason: FatalClose) => {
+        // 自己把这张画布删了，之后被服务端掐掉是预期之内的，不是新闻
+        if (leaving) return
         fatal.value = reason
       }
     }
@@ -227,7 +243,20 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
     /** 有没有还没送出去的本地改动（只有个人画布会为真） */
     pending,
     /** 离开前把攒着的送走；协同一直是同步的，这是个空动作 */
-    flush: () => transport?.flush() ?? Promise.resolve()
+    flush: () => transport?.flush() ?? Promise.resolve(),
+    /** 删这张画布之前打个招呼：接下来那次断开是自己招来的，别弹框（见上面 `leaving`） */
+    leave: () => {
+      leaving = true
+    },
+    /**
+     * 说好的离开没成行（删除失败），人还在这张画布上 —— 把标记撤回来。
+     *
+     * 不撤的话，这一整次打开剩下的时间里，**真**被踢（被移出项目、被顶下线）都会一声不响：
+     * 画布看着正常、状态栏写着「已同步」，而改动只进本地。正是这个模块存在的那类坑。
+     */
+    stay: () => {
+      leaving = false
+    }
   }
 }
 

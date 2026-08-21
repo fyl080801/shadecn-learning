@@ -124,8 +124,12 @@ pnpm db:push        # = prisma db push（schema 目录由 prisma.config.ts 按 p
 - **没有结构变更的历史**，也就没有「这张表什么时候加的列」可查，更没有回滚脚本；
 - **破坏性变更需要人工确认**。db push 遇到要删列删表时会拒绝执行，除非加 `--accept-data-loss`。
   两个 Dockerfile 和产物的 `db:push` 脚本**故意不带**这个 flag —— 宁可容器启动失败、
-  让人来看一眼，也不要在生产库上静默丢数据。真需要时手动跑一次
-  `npx prisma db push --accept-data-loss`；
+  让人来看一眼，也不要在生产库上静默丢数据。
+  **开发期的出口是 `pnpm db:push:force`**（就是带上这个 flag 的 `db push`）：本地库里是随时能重造的
+  测试数据，为了改个字段名去手写 DDL 不值得。它是**单独一条命令，不挂在 `pnpm dev` 上** ——
+  `dev` / `dev:cluster` 走的仍是不带 flag 的 `db:push`，否则每次启动开发服务器都可能悄悄删掉一列，
+  而那正是这道闸要拦的事。生产库上仍然只有手动跑 `npx prisma db push --accept-data-loss` 这一条路，
+  跑之前先按 [REQ-DEPLOY §3.6](12-deployment.md) 看一眼 DDL；
 - 因此**生产升级前要自己判断这次模型改动是不是破坏性的**。加表加列是安全的，改名/改类型/删字段不是。
 
 ### 3.4 两种库的行为差异

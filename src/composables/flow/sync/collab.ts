@@ -52,6 +52,12 @@ export function classifyClose(
   if (code === 4401 || reason === "Unauthorized") return "unauthorized"
   // 4403 / "permission-revoked"：复验踢人，以及握手时判定「不是这个项目的成员」
   if (code === 4403 || reason === "permission-revoked") return "forbidden"
+  /*
+   * 4413 / "quota-exceeded"：画布顶到内容硬限，服务端锁写并清了场。
+   * 和另外三种不同，它**跟人无关**（房间里每个人都会收到），出路也不是重连或重新登录，
+   * 而是删掉一些内容再刷新 —— 归到 `too-large`，和个人画布那边的 413 共用同一套文案。
+   */
+  if (code === 4413 || reason === "quota-exceeded") return "too-large"
   return null
 }
 

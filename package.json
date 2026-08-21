@@ -10,6 +10,7 @@
     "postinstall": "prisma generate || true",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
+    "db:push:force": "prisma db push --accept-data-loss",
     "db:studio": "prisma studio",
     "build": "pnpm build:client && pnpm build:server",
     "build:client": "vue-tsc -b && vite build",

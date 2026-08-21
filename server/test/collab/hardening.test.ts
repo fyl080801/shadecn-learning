@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { edgesMap, nodesMap, pruneDanglingEdges } from '../../collab/flow-doc.ts'
 import {
+  BYTES_CHECK_INTERVAL_OVERSIZED,
   COLLAB_LIMITS,
   HARD_LIMIT_FACTOR,
   checkQuota,
@@ -99,6 +100,9 @@ describe('内容配额', () => {
   const room = 'flow:quota-test'
 
   beforeEach(() => forgetQuota(room))
+  afterEach(() => {
+    vi.useRealTimers()
+  })
 
   it('正常规模不报警', () => {
     const doc = new Y.Doc()
@@ -107,66 +111,74 @@ describe('内容配额', () => {
     expect(quotaViolation(room)).toBeNull()
   })
 
-  /** 造一个有 count 个节点的文档 */
-  function docWithNodes(count: number): Y.Doc {
+  /**
+   * 造一个字节数超过 `bytes` 的文档：一个节点，label 是一大段文字。
+   *
+   * 用「一个大节点」而不是「很多小节点」，是因为条数已经不设上限 ——
+   * 现在唯一撑得起配额的就是内容本身的体积。
+   */
+  function docOfBytes(bytes: number): Y.Doc {
     const doc = new Y.Doc()
-    const nodes = nodesMap(doc)
-    doc.transact(() => {
-      for (let i = 0; i < count; i += 1) nodes.set(`n${i}`, nodeMap())
-    })
+    // 先挂进文档再写 label：没整合进文档的 Y.Map 读不出自己的嵌套字段（get 返回 undefined）
+    nodesMap(doc).set('n1', nodeMap())
+    const node = nodesMap(doc).get('n1') as Y.Map<unknown>
+    ;(node.get('data') as Y.Map<unknown>).set('label', 'x'.repeat(bytes))
     return doc
   }
 
-  it('节点数超过软限 → 标记，但不锁写（删除才有路可走）', () => {
-    const doc = docWithNodes(COLLAB_LIMITS.nodes + 1)
-
-    expect(checkQuota(room, doc)).toBeNull() // 返回值是「锁写原因」，软限不锁
-    expect(quotaViolation(room)).toMatch(/节点数/)
-    expect(quotaLocked(room)).toBeNull()
-  })
-
-  it('连线数超过软限同理', () => {
+  it('节点 / 连线再多，只要体积不超就不报警', () => {
     const doc = new Y.Doc()
-    const edges = edgesMap(doc)
     doc.transact(() => {
-      for (let i = 0; i <= COLLAB_LIMITS.edges; i += 1) edges.set(`e${i}`, edgeMap('a', 'b'))
+      // 老上限是 2000 / 4000，现在这两个数不存在了
+      for (let i = 0; i < 5000; i += 1) nodesMap(doc).set(`n${i}`, nodeMap())
+      for (let i = 0; i < 9000; i += 1) edgesMap(doc).set(`e${i}`, edgeMap('n0', 'n1'))
     })
 
     expect(checkQuota(room, doc)).toBeNull()
-    expect(quotaViolation(room)).toMatch(/连线数/)
+    expect(quotaViolation(room)).toBeNull()
+    expect(quotaLocked(room)).toBeNull()
   })
 
-  it('删回软限以内 → 标记自动解除，不用等散场', () => {
-    const doc = docWithNodes(COLLAB_LIMITS.nodes + 1)
+  it('体积超过软限 → 标记，但不锁写（删除才有路可走）', () => {
+    const doc = docOfBytes(COLLAB_LIMITS.document + 1)
+
+    expect(checkQuota(room, doc)).toBeNull() // 返回值是「锁写原因」，软限不锁
+    expect(quotaViolation(room)).toMatch(/字节/)
+    expect(quotaLocked(room)).toBeNull()
+  })
+
+  it('删回软限以内 → 下一次复量时解除标记，不用等散场', () => {
+    vi.useFakeTimers()
+    const doc = docOfBytes(COLLAB_LIMITS.document + 1)
     checkQuota(room, doc)
     expect(quotaViolation(room)).not.toBeNull()
 
-    const nodes = nodesMap(doc)
-    doc.transact(() => {
-      nodes.delete('n0')
-      nodes.delete('n1')
-    })
+    nodesMap(doc).delete('n1')
+    // 字节数是节流量的：删完当场再问，这一轮根本没复量，判定维持原样
+    expect(checkQuota(room, doc)).toBeNull()
+    expect(quotaViolation(room)).not.toBeNull()
+
+    vi.advanceTimersByTime(BYTES_CHECK_INTERVAL_OVERSIZED + 1)
     expect(checkQuota(room, doc)).toBeNull()
     expect(quotaViolation(room)).toBeNull()
   })
 
   it('顶到硬限 → 锁写，且锁是粘的（删回去也不解，散场重开才重判）', () => {
-    const doc = docWithNodes(Math.ceil(COLLAB_LIMITS.nodes * HARD_LIMIT_FACTOR) + 1)
+    vi.useFakeTimers()
+    const doc = docOfBytes(Math.ceil(COLLAB_LIMITS.document * HARD_LIMIT_FACTOR) + 1)
 
     expect(checkQuota(room, doc)).toMatch(/硬限/)
     expect(quotaLocked(room)).toMatch(/硬限/)
 
     // 锁写状态下本不会有写进来；就算有（比如锁之前已在途），也不解锁
-    const nodes = nodesMap(doc)
-    doc.transact(() => {
-      for (let i = 0; i < 1000; i += 1) nodes.delete(`n${i}`)
-    })
+    nodesMap(doc).delete('n1')
+    vi.advanceTimersByTime(BYTES_CHECK_INTERVAL_OVERSIZED + 1)
     expect(checkQuota(room, doc)).not.toBeNull()
     expect(quotaLocked(room)).not.toBeNull()
   })
 
   it('散场后清掉标记和锁，下次打开重新判', () => {
-    const doc = docWithNodes(Math.ceil(COLLAB_LIMITS.nodes * HARD_LIMIT_FACTOR) + 1)
+    const doc = docOfBytes(Math.ceil(COLLAB_LIMITS.document * HARD_LIMIT_FACTOR) + 1)
     checkQuota(room, doc)
     expect(quotaLocked(room)).not.toBeNull()
 

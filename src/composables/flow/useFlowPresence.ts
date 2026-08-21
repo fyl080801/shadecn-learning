@@ -5,6 +5,7 @@ import { useAuth } from "@/lib/auth"
 import {
   elementKey,
   elementIdOf,
+  feedbackThrottle,
   lockOwner,
   lockedKeys as computeLockedKeys,
   occupies,
@@ -36,14 +37,20 @@ import type { FlowSync } from "./sync"
  * 真正的边界在握手那一步：`server/auth/ws.ts` 只放项目成员进这个房间。
  */
 
-/** 光标 / 拖动几何上报的节流窗口（毫秒）：够跟手，又不至于每帧一个包 */
-const FEEDBACK_THROTTLE = 40
-
 export function useFlowPresence(sync: FlowSync) {
   const { user, displayName } = useAuth()
 
   const peers = shallowRef<PresencePeer[]>([])
   const localClientId = shallowRef(-1)
+
+  /**
+   * 上报的节流窗口 —— **跟着房间人数走**，见 `feedbackThrottle`。
+   *
+   * 写成 getter 而不是常量：`useThrottleFn` 每次调用都会 `toValue(ms)` 重读，
+   * 所以人进人出时窗口自动跟着变，不用重建节流函数。
+   * 人数在 `FEEDBACK_THROTTLE_ROOM` 以内时它就是原来那个常量，行为不变。
+   */
+  const throttleMs = computed(() => feedbackThrottle(peers.value.length))
 
   function awareness() {
     return sync.session.value?.awareness ?? null
@@ -75,7 +82,7 @@ export function useFlowPresence(sync: FlowSync) {
         point ? { x: Math.round(point.x), y: Math.round(point.y) } : null
       )
     },
-    FEEDBACK_THROTTLE,
+    throttleMs,
     true
   )
 
@@ -96,7 +103,7 @@ export function useFlowPresence(sync: FlowSync) {
     () => {
       awareness()?.setLocalStateField("transform", transformState)
     },
-    FEEDBACK_THROTTLE,
+    throttleMs,
     true
   )
 

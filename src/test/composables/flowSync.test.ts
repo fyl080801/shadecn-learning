@@ -28,6 +28,12 @@ describe("协同连接的终局关闭", () => {
     expect(classifyClose({ code: 1000, reason: "permission-revoked" })).toBe("forbidden")
   })
 
+  it("画布顶到内容硬限：4413 / quota-exceeded，和个人画布的 413 归成同一种", () => {
+    // 这一种跟人无关 —— 房间里每个人都会收到，出路是删内容再刷新，不是重连
+    expect(classifyClose({ code: 4413, reason: "quota-exceeded" })).toBe("too-large")
+    expect(classifyClose({ code: 1000, reason: "quota-exceeded" })).toBe("too-large")
+  })
+
   it("握手被拒那条路只有 reason，没有 code —— 一样要认得出", () => {
     // `onConnect` 抛异常时 Hocuspocus 既不关 socket 也不给关闭码，
     // 只回一条 PermissionDenied 消息，provider 交给 onAuthenticationFailed({ reason })

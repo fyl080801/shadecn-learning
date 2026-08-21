@@ -12,7 +12,13 @@ import {
 } from '../auth/ws.ts'
 import { instanceId, isClustered, redisKeyPrefix, redisUrl } from '../config.ts'
 import { dropForeignClients, enforceIdentity, forgetClaims, releaseSocket } from './awareness.ts'
-import { CLOSE_REVOKED, CLOSE_UNAUTHORIZED, closeForGood, denialError } from './close.ts'
+import {
+  CLOSE_QUOTA_LOCKED,
+  CLOSE_REVOKED,
+  CLOSE_UNAUTHORIZED,
+  closeForGood,
+  denialError,
+} from './close.ts'
 import {
   EXCLUSIVE_SWEEP_INTERVAL,
   claimExclusive,
@@ -30,6 +36,7 @@ import {
 import { flowIdOf, forgetFlow, loadFlowState, roomOf, storeFlowState } from './persistence.ts'
 import { checkQuota, forgetQuota, quotaLocked, COLLAB_LIMITS } from './quota.ts'
 import { scopedSocketId } from './socket-id.ts'
+import { collabWriteAuthorize, createWriteGate, isWriteSync } from './write-gate.ts'
 
 /**
  * 协同服务端 —— [Hocuspocus](https://tiptap.dev/docs/hocuspocus) 挂在应用自己的 HTTP server 上。
@@ -94,10 +101,48 @@ const REAUTH_INTERVAL = 20_000
 /** 这一条消息超限、临时被置为 readOnly 的连接 —— `afterHandleMessage` 里恢复 */
 const oversizedFrame = new WeakSet<Connection>()
 
-/** 把一个房间的所有连接锁成只读（顶到配额硬限时用） */
-function lockConnections(document: Document): void {
+/**
+ * 写操作的认证闸门（见 `write-gate.ts`）。
+ *
+ * 它和 `revalidateConnections` 是**同一件事的两个粒度**，缺一不可：复验负责把不合格的
+ * 连接踢下线（连接级，也是让前端弹重新登录框、拿回 IndexedDB 里那些改动的触发点），
+ * 闸门负责在那之前的每一个写帧上把内容挡在 Y.Doc 之外（消息级）。
+ */
+const writeGate = createWriteGate({ authorize: collabWriteAuthorize })
+
+/**
+ * 房间顶到配额硬限：锁写，并且**把所有人请出去**。
+ *
+ * 两步缺一不可，而且理由不一样。
+ *
+ * **锁只读**是同步的，立刻生效：此刻可能已经有帧排在这条连接的处理队列里，
+ * 置了 `readOnly` 它们才会被 NACK 掉，而不是继续往一个已经超限的文档里灌。
+ *
+ * **关连接**则是为了两件事：
+ *
+ * ① **让人知道**。Hocuspocus 的 NACK（`syncStatus=false`）在 provider 那边是**无声**的 ——
+ *    它既不重发也不报错（`applySyncStatusMessage` 只在 `applied` 为真时才减未同步计数），
+ *    于是用户会对着一张写着「已同步」的画布继续画，而每一笔都只进了本地 IndexedDB。
+ *    宁可弹一个说明白的框，也不能让界面替我们撒谎。
+ *
+ * ② **让房间散得掉**。硬限的锁是粘的，只有房间卸载（`afterUnloadDocument` → `forgetQuota`）
+ *    才会重判 —— 而房间只要还有一条连接就不会卸载。所以不清场的话，这张画布对**所有人**
+ *    永久锁写：谁都删不了东西，也就永远回不到上限以内。清了场，下一次打开是干净的房间，
+ *    第一笔写入会被应用（`onChange` 是事后记账）—— 那一笔如果是「一次性删掉一批」，
+ *    复量就会发现已经回到线内，不再锁。这是唯一的自救路径，前端的文案也是照着它写的。
+ *
+ * 关连接挪到微任务里：此刻还在 `onChange` 的调用栈上，就地拆连接会让这次更新的
+ * 后续处理踩在半拆的对象上。
+ */
+function lockRoom(document: Document, reason: string): void {
+  const doomed: Connection[] = []
   document.connections.forEach((_clients, connection) => {
     connection.readOnly = true
+    doomed.push(connection)
+  })
+  console.warn(`[collab] ${document.name} 锁写并清场（${reason}），共 ${doomed.length} 条连接`)
+  queueMicrotask(() => {
+    for (const connection of doomed) closeForGood(connection, CLOSE_QUOTA_LOCKED)
   })
 }
 
@@ -169,6 +214,16 @@ async function revalidateConnections(hocuspocus: Hocuspocus): Promise<void> {
 
   revalidating = (async () => {
     try {
+      /*
+       * **判定缓存先作废**。这个函数是三条路的汇合点 —— 主动撤销
+       * （`revokeCollabAccess`，改权限的路由里 await 的那个）、跨实例广播的 3 秒巡检、
+       * 20 秒的兜底复验 —— 所以清在这里，一次覆盖全部。
+       *
+       * 这也是写入闸门敢把 TTL 设成 10 秒的原因：真正紧急的那半（权限被收回）
+       * 是事件驱动失效的，下一个写帧必然重查，窗口 ≈ 0；TTL 只兜底登录态那半，
+       * 而它的发现下限本来就受制于 access token 的寿命。
+       */
+      writeGate.clear()
       /*
        * 房间之间**并行**。以前是串行 await，于是第 N 个房间要等前 N-1 个查完，
        * `REAUTH_INTERVAL` 就只是个下界而不是上界 —— 房间一多，最后那个房间的实际
@@ -274,9 +329,76 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
      */
     async connected(data) {
       const document: ExclusiveDocument = data.connection.document
+      // 握手刚认证过，把结论直接填进闸门，省掉开始编辑时的第一次查询
+      writeGate.prime(data.connection.socketId)
       await claimExclusive(data.documentName, data.connection)
       // 本实例的那半当场生效；别的实例上的旧连接由巡检收敛
       await enforceExclusive([document])
+    },
+
+    /**
+     * **写操作的认证闸门** —— 登录态没了、或已经不是项目成员了之后的编辑，
+     * 在进 Y.Doc 之前就拦住（见 `write-gate.ts`）。
+     *
+     * 挂在 `beforeSync` 而不是 `beforeHandleMessage`，是因为这里能分辨读写、
+     * 而且 awareness 帧根本不经过：拖拽时每次 pointermove 一帧光标，那些不该
+     * 付出鉴权成本；真正要管的是写。它又恰好跑在 Hocuspocus 自己那道 `readOnly`
+     * 检查**之前**，所以在这里置只读，当前这一帧就被 NACK 掉。
+     *
+     * **不 `throw`**：和配额那道同理 —— 抛出去会被 `processMessages` 接住去关连接，
+     * 而 provider 重连之后原样重发同一条消息，死循环。置只读则是 Hocuspocus
+     * 支持的拒绝方式：回一个 `syncStatus=false`，**不应用、不广播、不进 `onChange`、
+     * 不进落库队列，也不断连**。
+     *
+     * **拦下之后还要把连接关掉**，这一步不能省。provider 收到 `syncStatus=false`
+     * 时什么都不做（`applySyncStatusMessage` 只在 `applied` 为真时才减未同步计数），
+     * 它**不会重发** —— 被拒的改动只留在本地 Y.Doc 和 y-indexeddb 里。把它们送上来的
+     * 唯一时机是下一次握手后的 SyncStep1/SyncStep2 交换，而那要有人触发重连：
+     * 关连接 → 前端 `classifyClose` → 会话过期弹框 → 重新登录 → `useFlowSync`
+     * 那个 watch 就地重建 provider → 攒着的一次性推上去。不关的话，人登回来了
+     * 也没人告诉这条连接该重来，改动就一直卡在浏览器里。
+     */
+    async beforeSync(data) {
+      if (!isWriteSync(data.type)) return
+
+      const { connection, documentName } = data
+
+      /*
+       * **房间已经顶到硬限**：这一帧照样拒，而且照样要把连接关掉，理由和 `lockRoom` 里
+       * 那两条一模一样（NACK 是无声的；不清场房间就卸载不掉、锁就永远解不了）。
+       *
+       * 有了 `lockRoom` 还需要这一道，是因为锁写和「谁连在房间里」不是同步的：
+       * 清场之后新连进来的人（多副本下还有跟着共享标记一起拉回来的判定）不在那一轮的
+       * 名单里。落在**写帧**上而不是 `beforeHandleMessage` 上也是刻意的 —— 只看不写的人
+       * 该继续读得到内容，一帧光标不该换来一个弹窗。
+       */
+      const quotaReason = quotaLocked(documentName)
+      if (quotaReason) {
+        connection.readOnly = true
+        console.warn(`[collab] ${documentName} 拒绝写入（${quotaReason}）`)
+        queueMicrotask(() => closeForGood(connection, CLOSE_QUOTA_LOCKED))
+        return
+      }
+
+      const denial = await writeGate.check(
+        connection.socketId,
+        documentName,
+        connection.request?.headers?.get?.('cookie') ?? null,
+      )
+      if (!denial) return
+
+      // 这一帧、以及关连接落地之前排在队列里的那些，都会被下面的 readOnly 检查 NACK 掉
+      connection.readOnly = true
+      console.warn(`[collab] ${documentName} 拒绝写入（${denial}）`)
+
+      /*
+       * 挪到微任务里再关：此刻正在 `readSyncMessage` 的调用栈上，
+       * 就地把连接拆了会让这一帧后面的处理踩在半拆的对象上。
+       * 两条腿一起关（CLOSE 消息 + 关闭帧），否则旧窗口下一次心跳又把自己接回来。
+       */
+      queueMicrotask(() =>
+        closeForGood(connection, denial === 'unauthorized' ? CLOSE_UNAUTHORIZED : CLOSE_REVOKED),
+      )
     },
 
     /**
@@ -366,10 +488,9 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
 
     async onChange(data) {
       // 量一下规模。超软限只是标记（写入照常，删回去自动解除）；
-      // 顶到硬限就把整个房间的连接锁成只读，新加入的由 beforeHandleMessage 锁
-      if (checkQuota(data.documentName, data.document, data.update.byteLength)) {
-        lockConnections(data.document)
-      }
+      // 顶到硬限就锁写 + 清场（见 `lockRoom`），之后再来的写帧由 `beforeSync` 挡
+      const locked = checkQuota(data.documentName, data.document, data.update.byteLength)
+      if (locked) lockRoom(data.document, locked)
     },
 
     /**
@@ -377,6 +498,7 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
      * 以及它可能占着的单连接持有者登记。
      */
     async onDisconnect(data) {
+      writeGate.forget(data.socketId)
       await releaseSocket(data.documentName, scopedSocketId(data.socketId))
       await releaseExclusive(data.documentName, data.socketId)
     },

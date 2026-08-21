@@ -237,6 +237,84 @@ interface FlowPort {
 
 **`status` 是每个节点都有的字段，不是某一类节点的私有配置**：画布不只是画出来的图，节点将来要真的跑起来（生成、上传、转换），运行态属于框架层。
 
+#### 3.7.1 一批会被各改各的元素：平铺分键，而不是往 Y.Doc 里加结构
+
+功能越加越复杂，迟早有节点要装**一批元素**而不是几个标量 —— 3D 场景里的一串角色和机位、时间轴上的一堆轨道和关键帧、一个资源列表。把它们塞进 `data` 的**一个**键（`data.scene = { objects: [...] }`）会让这批元素共用一个合并单位：甲摆角色 A、乙同时摆角色 B，后到的那次整块盖掉。这和 v1 把业务字段裹在 `config` 里是同一个 bug，只是下沉了一层。
+
+**做法：`data` 仍然是一层 Y.Map、值仍然全是普通 JSON，把这批元素摊成 `<前缀>.<id>` 这样一串平级的键。** 工具在 `src/lib/flow-collection.ts`（`collectionKey` / `readCollection` / `spreadCollection` / `collectionKeys`），写和删同笔落库走 `store.writeNodeData(id, { set, remove })`。
+
+**为什么不是把 `scene` 变成嵌套的 `Y.Map`**（那样合并粒度最细，一次改动的 update 只有几十字节）：因为它把**结构**搬进了 CRDT 层。Y.Doc 没有版本号，新老客户端会同时往同一个 key 上写**不同的类型**——实测两个方向都跑过：赢家由 clientID 决定（等于随机），输家的整棵子树直接消失，而且输的那一方的代码当场 `TypeError`。这不是「读不懂就透传」能兜住的：读时升级（`upgradeNodeData` 那套）只对**形状**有效，对**类型**无效。平铺分键则对 CRDT 层完全不可见——`toYNode` / `fromYNode`（含服务端那份）一行不用改，`duplicateNode` 照跑，服务端连知道都不用知道，老客户端读到一堆不认识的键原样透传。所谓 schema 退化成一个**命名约定**，而命名约定的版本兼容就是普通的读时兼容（换前缀就两个都认一段时间）。
+
+实测（导演台样例，`data` 43.7KB、15 个 3D 对象、17 条轨）：
+
+| | 改一个元素要广播 | 两人改不同元素 | doc 体积 | 解码后内存 |
+|---|---:|---|---:|---:|
+| 整批塞一个键 | 26,626 B | ❌ 必然覆盖 | 33,394 B | 112 KB |
+| **平铺分键** | **3,358 B** | ✅ 都在 | 35,065 B（+5%） | 128 KB（+14%） |
+| 嵌套 Y.Map（不采用） | 25 B | ✅ 都在 | 44,857 B（+34%） | ~450 KB |
+
+三条硬规则：
+
+- **一个 key 的类型，从它第一次被写入起就固定，永远不能改。** 这是上一段那个结论的准确形式 —— 被禁的是「把一个已经是 plain 的 key 升级成 Y 类型」，因为那正是版本偏斜的成因。反过来，**一个从来没 plain 过、一上来就是 `Y.Text` 的新 key 是安全的**：老客户端 `toJSON()` 读到一个字符串，原样透传，永远不会在那个 key 上写 plain，两边不会在同一个 key 上写不同类型。所以平铺分键的值默认是普通 JSON，而真要字符级协同文本时，出路是**新开一个 key**，不是改老 key 的类型（见 3.7.2）。
+- **id 必须稳定，不能是下标。** 下标会因别人的增删而错位，写就打到别人身上。源数据没有 id 就先补一个（`createId()`）—— 样例里 `scene.objects` 15 个有 5 个没 `uuid`，`keyframes` 整个没有 id，`spreadCollection` 遇到取不出 id 的元素直接跳过而不是拿下标顶上，就是这个原因。
+- **前缀之间不许嵌套**（`dc.obj` 和 `dc.obj.pose` 会撞键：`dc.obj` + `pose.x` 和 `dc.obj.pose` + `x` 是同一个字符串）。目前只有约定，没有运行时防护。
+
+粒度**拆到「一个元素一个键」为止**，不必再往元素内部拆。两个人同时改同一个元素仍然只剩一边，这一格**当前不管**——和画布上其余元素一样（[REQ-COLLAB](04-realtime-collab.md) 4.0.1：谁都可以并发编辑，节点上只*显示*还有谁在碰它）。要收窄它，答案在占用/提示这一侧而不是更细的 CRDT；而且真要做，优先做**软提示**（「张三正在编辑，改动可能互相覆盖」，`presence.occupantsOf` 已经能用）或**提交时检测**，而不是把元素变只读——只读那条路要处理租约、TTL、断线泄漏，还有 Vue Flow 的 `Object.assign` 合并陷阱（标志必须显式写 `true` 也写 `false`，否则锁解除后元素永久死掉），成本和这一格的价值不成比例。
+
+**投影侧要留意的一点**：平铺分键会让 `data` 的 key 数量涨上去（一个导演台 42 个），而每个 key 在 `Flow.graph` 那份 JSON 投影里都要把前缀重写一遍。测过的是 Y.Doc 二进制（753 节点 1.98MB → 2.36MB），**JSON 投影侧还没量过**，而它的上限是 `GRAPH_LIMITS.bytes` = 2MB，参考样例已经 1.45MB。超了不是灾难（`deriveProjection` 跳过本次写入、留上一份，列表计数变旧，内容一字不受影响），但这是平铺分键引入的一条压力，真做导演台时补个测量。
+
+#### 3.7.2 连续变化的值：本地草稿 + 一次提交
+
+拖滑杆、拖 gizmo、拖关键帧、连续输入文本 —— 这些一次手势会产生几十上百个中间值，而**只有落点是数据**。
+
+**规则：本地草稿全程接管画面；想让别人看见就把草稿节流发到 awareness；只在手势结束时写一次文档，前后 `separateUndo()` 夹住。**
+
+**没有「松手」的那类（就地改标题、写正文）不用自己写这套样板**，用 `useDraftField`（`src/composables/flow/useDraftField.ts`）：
+
+```ts
+const title = useDraftField<string>({
+  current: () => props.label,                 // 当前已落库的值
+  normalize: (raw) => raw.trim() || null,     // null = 放弃这次提交（标题被清空是误操作）
+  commit: (next) => store.updateNodeData(props.nodeId, { label: next }, "修改节点标题"),
+  focus: () => inputRef.value?.select()       // 已经等过 nextTick，只给时机不给行为
+})
+```
+
+它吃掉的正是那三件样板：草稿 ref、`editing` 开关、以及**提交时前后各一次 `separateUndo()`**；顺带挡住两种白写（值没变、`normalize` 判否）和一种重复提交（**回车和失焦常常连着触发**，`commit()` 第二次进来时 `editing` 已经是 false）。`TextNode.vue`（正文，不 trim、允许清空）和 `FlowNodeChrome.vue`（标题，trim、拒绝空）就是它的两个消费者。
+
+有「松手」的那类（拖节点、将来拖滑杆）目前仍是手写的，参考 `useFlowCanvas.ts` 的 `onNodeDragStart` / `onNodeDrag` / `onNodeDragStop`：草稿由 Vue Flow 内部状态 + `dragOrigin` 承担，中间态经 `publishDrag()` → `presence.setTransform()` 发出去，落点在 `onNodeDragStop` 提交。**它和 `useDraftField` 只差一步**——把 `draft` 节流发到 awareness；那一步没有做进 composable，因为它需要一个新的 awareness 反馈字段（现有的 `transform` 只装 `{x, y}`），而目前还没有这样的消费者。真要接的时候在组件里 `watch(draft, useThrottleFn(publish, 40))` 即可，`start` / `commit` / `cancel` 三段不用改。
+
+**为什么不是「节流着写文档」。** 成本不在文档体积上 —— 实测拖 60 帧，doc 只从 33,411 涨到 33,438（Yjs 对 Map key 覆盖的 GC 很干净），代价**全在广播和落库**（同样 60 帧要广播 1.59MB，还要一路进服务端 `onStoreDocument` 的落库防抖）。节流到 10Hz 能砍掉大部分，但砍不掉两笔：**语义**（拖到一半的值不该活过刷新、不该能被撤销到；标签页中途崩了它会被当成有意的结果存下来）和**投递保证用反了**（awareness 是有损的 last-writer-wins，正合中间态；文档更新是保证投递 + 有序 + 合并，拿它送「可以随便丢」的东西是白付）。
+
+**「合并成一条撤销」靠的不是捕获窗口。** `Y.UndoManager` 的 `captureTimeout` 是 400ms，中间停顿超过它就会裂成两条。所以两个样板都是**显式提交一次 + 前后 `separateUndo()`**，不依赖窗口兜底。
+
+##### 中间态发 awareness 的四条
+
+1. **这是一个新的反馈信号，不要复用 `transform`。** 现有 `transform` 的值类型是 `PresencePoint`（`{x, y}`），`ElementKind` 只有 `node` / `edge`；骨骼角度、四元数、时间的形状都不一样。按 [REQ-COLLAB](04-realtime-collab.md) 4.0 那条，加一个反馈信号的代价是「一个 setter + 一个 computed」，key 用 `node:<id>/dc.obj.<uuid>` 这种带子路径的形式。
+2. **只发正在变的那几个数，别发整个元素。** 限帧只管住频率，包大小是正交的另一维，而 awareness 是**广播**：10 人房、2 个人在拖、25fps，一包 `{x,y}`（~100B）是 45KB/s，一包整个 3D 对象（4.8KB）是 **2.16MB/s** —— 同样人数差 48 倍。**先压包大小，再考虑降帧率**：降帧率伤跟手感，压包大小不伤任何东西。
+3. **手势结束必须清干净。** awareness 的 local state 每 15s 会被 y-protocols 全量重播一次（`outdatedTimeout / 2`，也正是靠它撑住连接不超时），草稿留着不清就是每人每 15 秒重播一份废数据，人越多越贵。`clearTransform()` 除了清还**绕过节流立刻发一次**，这个细节也要照抄。
+4. **节流两端都要开。** `useThrottleFn(fn, ms, trailing, leading)` —— leading 保证第一帧立刻发、跟手，trailing 保证窗口末尾补发。**trailing 不能省**：awareness 是 last-writer-wins 的**状态**而不是事件流，所以丢中间的包完全无害（最后一包携带完整当前状态），但**丢最后一包就是错的**。
+
+   也正因为是状态而非事件，降帧率**只损失流畅度、不损失正确性** —— 真正不能丢的那些（落定的位置、提交的值）根本不走这条路，走的是 Y.Doc。这条性质就是「窗口跟着人数走」能成立的前提：`ms` 是个 getter（`feedbackThrottle(roomSize)`，在 `src/lib/presence.ts`），VueUse 的过滤器每次调用都 `toValue(ms)` 重读，所以人进人出时窗口自动跟着变、不用重建节流函数。`FEEDBACK_THROTTLE_ROOM`（6 人）以内返回原来那个 40ms —— 真实房间基本都在这一档，**行为和以前完全一样**；再多就阶梯放大，封顶在 `FEEDBACK_THROTTLE_MAX`（约 6fps，再稀对方的光标看着就像卡死了，那还不如别发）。
+
+   ⚠️ **这条曲线是判断，不是实测出来的**，而且如上一条所说它是**二阶**的 —— 包大小的影响能压过它一个量级。真要调，改那三个常量一处即可。
+
+##### 本地拖动期间，面板要读草稿，不能读投影
+
+这是 `useFlowCanvas.ts` 那条「拖动期间不重建 `:nodes` 数组」规则的翻版：拖动中投影里那个值是**旧的**（中间态本来就没进文档），而别人的任何一次改动都会触发投影重算 —— 面板要是从投影读，你手上的滑杆会在队友打字时跳回文档值。
+
+##### 文本要按字段分三档
+
+文本和数值有一处不对称：**丢失的代价不同**。滑杆被覆盖是丢一次拖动，重拖即可；文本被覆盖是丢一整段，而且丢得无声无息。更要紧的是**草稿期间什么都没落地** —— 没进文档，自然也没进 y-indexeddb，标签页崩了就是全没，而同一张画布上别的改动都活着。
+
+1. **短文本、原子语义**（标题 / 名字 / 标签）—— 现状就够，blur 提交。编辑窗口通常几秒。
+2. **长文本、编辑时长以分钟计**（prompt / 说明）—— 加**停手防抖提交**（如 800ms），把崩溃损失从「整段」压到「最后一句」。代价要认：防抖间隔 > `captureTimeout` 的 400ms，所以每次提交都新起一条撤销，两分钟输入 ≈ 150 条。**持久化频率和撤销粒度此消彼长**，选哪头是产品判断，没有两全的写法。
+3. **真要字符级合并**（两人同时写同一段）—— 平铺分键做不到，它只能整段覆盖，那是 `Y.Text` 的活。按 3.7.1 那条硬规则，它必须是**一个全新的、从来没 plain 过的 key**。**而且 `duplicateNode` 必须一起改**：它走「投影 → `structuredClone` → `toYNode`」（`useFlowCanvas.ts` 的 `duplicateNode`），投影里 `Y.Text` 已经 `toJSON()` 成字符串了，写回去就是个 plain string —— **复制出来的副本会悄无声息地失去字符级合并**。
+
+##### 有些东西连 awareness 都不用进
+
+播放头位置、面板高度、当前视图这类：不需要让别人看见就是纯本地（`FlowUserState` 或 localStorage），既不进文档也不进 awareness。只有「想让队友看到我在看第几秒」才值得占一个 awareness 字段。运行态（`status` / `error`）同理 —— 它是任务的状态不是用户的编辑，进了文档就进撤销栈，Ctrl+Z 会「撤销」掉一个任务状态。
+
 **运行时状态不落库**：`selected` / `dragging` / `dimensions`（自动测量出来的尺寸）/ 校验结果，这些由 Vue Flow 或前端自己维护，序列化时必须剔除。**边上的 `sourceX/sourceY/targetX/targetY` 尤其不能存** —— 那是 Vue Flow 每帧回写到边对象上的渲染坐标，`toObject()` 不剥它，节点一动就是过期脏数据（参考实现里它占了 edges 体积的三分之一）。本项目的投影是白名单式的（`fromYEdge` 只读认识的字段），天然不会带上它。
 
 ### 3.8 边（`FlowEdge`）
@@ -636,11 +714,12 @@ store 的职责边界：
 - 单项目成员上限 200、画布上限 500，超出 → 400 并给出明确文案。
 - `graph`：**没有任何接口接受它了**，所以不存在请求体校验。`parseGraph` 仍在 `server/store/flow-types.ts` 里，用途变成两处**读**：把库里的老 `graph` JSON 灌进 Y.Doc 时（`bindState` 的迁移），以及列表页读投影时。读到坏数据的策略是**跳过而不是报错** —— 那是历史数据，拒绝它只会让画布打不开。
 - `user-state`：body 必须是非空对象；**未登记的分区 key → 400**；每个分区按 `FLOW_USER_STATE_PARSERS` 里自己的规则校验（视口要求 `x`/`y`/`zoom` 都是有限数字且 `zoom > 0`）；单个分区序列化后 16KB 封顶。任一分区不合法就整体拒绝，不「对一半存一半」。
-- 单个画布上限：**节点 2000、边 4000、文档 2MB、单条消息 1MB**（数字从 `GRAPH_LIMITS` 派生），
-  拦在 WebSocket 那一层（见 [REQ-COLLAB §4.2](04-realtime-collab.md)）。配额分两级：超**软限**只标记，
-  写入照常（删回去自动解除 —— 否则谁也删不了东西，房间就死了）；顶到**硬限**（软限 × 1.25）才锁写，
-  锁到散场重开。拒绝走连接 `readOnly`（NACK 不断连），绝不 `throw` —— throw 会让 Hocuspocus 关连接，
-  超限房间对所有人不可达。
+- 单个画布上限：**文档 20MB、单条消息 1MB**，拦在 WebSocket 那一层
+  （见 [REQ-COLLAB §4.2](04-realtime-collab.md)）。**节点数和连线数不设上限** —— 那是产品判断不是护栏，
+  规模由字节数一条管住。配额分两级：超**软限**只标记，写入照常（删回去自动解除 —— 否则谁也删不了东西，
+  房间就死了）；顶到**硬限**（软限 × 1.25 = 25MB）才锁写，锁到散场重开。拒绝走连接 `readOnly`
+  （NACK 不断连），绝不 `throw` —— throw 会让 Hocuspocus 关连接，超限房间对所有人不可达。
+  投影（`Flow.graph` 那段 JSON）另有一道 2MB 的关，超过就跳过本次投影写入、留上一份，内容不受影响。
 - **身份不接受客户端自报**：awareness 里的 `user` 在服务端转发前被覆盖成握手认定的那一份
   （见 [REQ-COLLAB §4.2](04-realtime-collab.md) 的第一道防线）。光标、选中这些不管 —— 它们不是身份。
 

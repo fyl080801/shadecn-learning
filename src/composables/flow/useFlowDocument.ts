@@ -159,7 +159,19 @@ export function useFlowDocument(
   const { run: remove, pending: removing } = useAsyncAction(async () => {
     // 先算好再删：删完 meta 还在，但「删除后该回哪儿」是删之前那张画布的属性
     const target = backPath()
-    await flowApi.remove(flowId.value)
+    /*
+     * **在发请求之前**打招呼：服务端删完会把这张画布的连接全部当场掐掉（含我自己这条），
+     * 而且是先踢人再回 204 —— 关闭信号往往比响应先到。不先说一声，删完自己会先吃到
+     * 一个「已失去这张画布的访问权限」的模态框，然后才被路由带走。
+     */
+    sync.leave()
+    try {
+      await flowApi.remove(flowId.value)
+    } catch (err) {
+      // 没删成，人还在这张画布上：撤回标记，否则之后真被踢也会一声不响
+      sync.stay()
+      throw err
+    }
     void router.push(target)
   }, { errorMessage: "删除失败" })
 

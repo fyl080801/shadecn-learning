@@ -1,6 +1,6 @@
 import * as Y from 'yjs'
 import { prisma } from '../db.ts'
-import { edgesMap, nodesMap, pruneDanglingEdges } from './flow-doc.ts'
+import { pruneDanglingEdges } from './flow-doc.ts'
 import {
   deriveProjection,
   enqueueFlowWrite,
@@ -240,17 +240,16 @@ export async function readFlowUpdate(
 /**
  * 合并之后的规模还在上限之内吗；超了返回原因。
  *
- * 用的是软限（`COLLAB_LIMITS`）本身，不是协同那边的软/硬两级：两级的存在是因为
+ * 和协同那边一样，只量字节数，不数节点 / 连线（理由见 `GRAPH_LIMITS` 的注释）。
+ *
+ * 用的是软限（`COLLAB_LIMITS.document`）本身，不是协同那边的软/硬两级：两级的存在是因为
  * 协同拦不住已经应用的更新，得留出「删回去」的余量。这里能事前拒，一级就够 ——
  * 而删除照样能通过，因为量的是**合并之后**的规模，删到线内就放行。
+ *
+ * 注意这条线是**累积**才够得着的：单次推送另有 `COLLAB_LIMITS.message`（1MB）那道关，
+ * 所以一发请求撑不爆文档，要涨到这里得推上二十来次。
  */
 function overQuota(doc: Y.Doc): string | null {
-  const nodes = nodesMap(doc).size
-  if (nodes > COLLAB_LIMITS.nodes) return `节点数 ${nodes} 超过上限 ${COLLAB_LIMITS.nodes}`
-
-  const edges = edgesMap(doc).size
-  if (edges > COLLAB_LIMITS.edges) return `连线数 ${edges} 超过上限 ${COLLAB_LIMITS.edges}`
-
   const bytes = Y.encodeStateAsUpdate(doc).byteLength
   if (bytes > COLLAB_LIMITS.document) {
     return `画布状态 ${bytes} 字节，超过上限 ${COLLAB_LIMITS.document}`

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue"
+import { computed, ref } from "vue"
 import { Position } from "@vue-flow/core"
 import { NodeToolbar } from "@vue-flow/node-toolbar"
 import { Copy, Trash2 } from "lucide-vue-next"
@@ -7,6 +7,7 @@ import { Copy, Trash2 } from "lucide-vue-next"
 import FlowPresenceAvatar from "@/components/flow/FlowPresenceAvatar.vue"
 import { Button } from "@/components/ui/button"
 import { useFlowEditor } from "@/composables/flow/editor-context"
+import { useDraftField } from "@/composables/flow/useDraftField"
 
 /**
  * 节点的「外壳」：贴在节点外部左上角的名字（可双击改名）+ 选中时浮在上方的操作栏。
@@ -58,9 +59,24 @@ const occupants = computed(() => presence.occupantsOf("node", props.nodeId))
 
 // —— 就地改标题 ——
 
-const editing = ref(false)
-const draft = ref("")
 const inputRef = ref<HTMLInputElement | null>(null)
+
+/**
+ * 标题的草稿态。「本地草稿 + 一次提交」的样板全在 `useDraftField` 里
+ * （草稿接管画面、只在结束时写一次文档、前后夹 `separateUndo`）——
+ * 走 store 而不是直接改 `data`，这样它才进撤销栈、才同步给别人、才被服务端落库。
+ *
+ * `normalize` 返回 null = 这次不提交：名字被清空不是一次改名，是一次误操作。
+ */
+const title = useDraftField<string>({
+  current: () => props.label,
+  normalize: (raw) => raw.trim() || null,
+  commit: (next) => store.updateNodeData(props.nodeId, { label: next }, "修改节点标题"),
+  focus: () => {
+    inputRef.value?.focus()
+    inputRef.value?.select()
+  }
+})
 
 /**
  * 双击标题就地改名。
@@ -69,35 +85,11 @@ const inputRef = ref<HTMLInputElement | null>(null)
  * 点它不会冒泡成 `node-click`，所以得自己切；切了才会上报到 awareness，
  * 别人也就看得到「有人在动这个节点」。
  */
-async function startEdit() {
+function startEdit() {
   canvas.selectOnly(props.nodeId)
-  draft.value = props.label
-  editing.value = true
-  await nextTick()
-  inputRef.value?.focus()
-  inputRef.value?.select()
+  void title.start()
 }
 
-/**
- * 提交改名。走 store 而不是直接改 `data` —— 这样它才进撤销栈、才同步给别人、
- * 才被服务端落库（数据层的铁律）。名字没变或被清空就当没改过。
- */
-function commitEdit() {
-  if (!editing.value) return
-  editing.value = false
-
-  const next = draft.value.trim()
-  if (!next || next === props.label) return
-
-  // 改标题是一次独立的操作，别和刚才的拖动之类并进同一条撤销
-  store.separateUndo()
-  store.updateNodeData(props.nodeId, { label: next }, "修改节点标题")
-  store.separateUndo()
-}
-
-function cancelEdit() {
-  editing.value = false
-}
 </script>
 
 <template>
@@ -116,13 +108,13 @@ function cancelEdit() {
     <div class="flex items-center gap-1.5">
       <!-- nodrag / nopan：在输入框里拖选文字不该变成拖节点或拖画布 -->
       <input
-        v-if="editing"
+        v-if="title.editing.value"
         ref="inputRef"
-        v-model="draft"
+        v-model="title.draft.value"
         class="nodrag nopan h-5 w-32 rounded border border-primary bg-card px-1 text-xs outline-none"
-        @blur="commitEdit"
-        @keydown.enter.prevent="commitEdit"
-        @keydown.esc.prevent="cancelEdit"
+        @blur="title.commit()"
+        @keydown.enter.prevent="title.commit()"
+        @keydown.esc.prevent="title.cancel()"
         @dblclick.stop
       />
       <span

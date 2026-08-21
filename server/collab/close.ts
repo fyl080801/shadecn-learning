@@ -29,6 +29,15 @@ export const CLOSE_UNAUTHORIZED: CloseReason = { code: 4401, reason: 'Unauthoriz
 export const CLOSE_REVOKED: CloseReason = { code: 4403, reason: 'permission-revoked' }
 
 /**
+ * 画布顶到内容硬限、房间锁写（`quota.ts`）。
+ *
+ * 和前三种不同，这一种**跟人无关** —— 同一个房间里的每个人都会收到它，因为不能保存的是
+ * 这张画布本身。4413 借的是 HTTP 的 413：个人画布那条 REST 通道超限回的正是 413，
+ * 前端两边归成同一个终局状态（`too-large`），文案也只写一份。
+ */
+export const CLOSE_QUOTA_LOCKED: CloseReason = { code: 4413, reason: 'quota-exceeded' }
+
+/**
  * 握手被拒时抛给 Hocuspocus 的错误。
  *
  * **`onConnect` 抛异常走的不是关闭那条路** —— Hocuspocus 既不关 socket 也不发关闭码，

@@ -8,6 +8,7 @@ import {
   useFlowStore
 } from "@/stores/flow"
 import { metaMap, nodesMap, toYNode } from "@/lib/flow-doc"
+import { collectionKey, readCollection, spreadCollection } from "@/lib/flow-collection"
 import {
   defaultNodeData,
   GRAPH_SCHEMA_VERSION,
@@ -24,6 +25,9 @@ import {
 function node(id: string, x = 0, y = 0, business?: Record<string, unknown>): FlowNode {
   return { id, type: "process", position: { x, y }, data: defaultNodeData(`节点 ${id}`, business) }
 }
+
+/** 「平铺分键」用例里那批元素的前缀 */
+const OBJ = "dc.obj"
 
 function edge(id: string, source: string, target: string): FlowEdge {
   return { id, source, target, sourceHandle: null, targetHandle: null, data: {} }
@@ -121,6 +125,44 @@ describe("内容读写", () => {
     // 平铺的业务字段各占一个 key，改标题碰不到它们 —— v1 那个整块 config 做不到这点
     expect(store.nodes[0]!.data.prompt).toBe("一只猫")
     expect(store.nodes[0]!.data.steps).toBe(30)
+  })
+
+  it("写和删在同一个事务里，撤销一次两边都回来", () => {
+    const { store } = setup()
+    store.addNode(node("n1", 0, 0, spreadCollection(OBJ, [{ uuid: "a1" }, { uuid: "a2" }], (o) => o.uuid)))
+    store.separateUndo() // 否则新建和下面这次改动会并进同一条撤销
+
+    // 删掉一个元素、同时补上另一个 —— 一步撤干净，不能撤出个只剩半拉的中间态
+    store.writeNodeData(
+      "n1",
+      { set: { [collectionKey(OBJ, "a3")]: { uuid: "a3" } }, remove: [collectionKey(OBJ, "a1")] },
+      "改场景"
+    )
+    expect([...readCollection(store.nodes[0]!.data, OBJ).keys()].sort()).toEqual(["a2", "a3"])
+
+    store.undo()
+    expect([...readCollection(store.nodes[0]!.data, OBJ).keys()].sort()).toEqual(["a1", "a2"])
+  })
+
+  it("平铺分键：两人同时改集合里的不同元素，两边都留下", () => {
+    const { store, doc } = setup()
+    store.addNode(
+      node("n1", 0, 0, spreadCollection(OBJ, [{ uuid: "a1", pose: 0 }, { uuid: "a2", pose: 0 }], (o) => o.uuid))
+    )
+
+    const remote = new Y.Doc()
+    sync(doc, remote)
+
+    // 甲改 a1、乙改 a2。整批塞进一个键的话这里必然只剩一边
+    store.updateNodeData("n1", { [collectionKey(OBJ, "a1")]: { uuid: "a1", pose: 111 } })
+    const remoteData = remote.getMap<Y.Map<unknown>>("nodes").get("n1")!.get("data") as Y.Map<unknown>
+    remoteData.set(collectionKey(OBJ, "a2"), { uuid: "a2", pose: 222 })
+
+    sync(remote, doc)
+
+    const objects = readCollection<{ pose: number }>(store.nodes[0]!.data, OBJ)
+    expect(objects.get("a1")!.pose).toBe(111)
+    expect(objects.get("a2")!.pose).toBe(222)
   })
 
   it("两个人同时改同一个节点的不同业务字段，两边都留下", () => {
