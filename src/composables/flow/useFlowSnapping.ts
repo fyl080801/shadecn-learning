@@ -33,7 +33,7 @@ const GUIDE_THRESHOLD_PX = 4
  * 这里把两种吸附收在同一个函数里算，结果只有一个位移。
  */
 export function useFlowSnapping() {
-  const { getNodes, viewport } = useVueFlow()
+  const { findNode, getNodes, viewport } = useVueFlow()
 
   /** 当前要画的辅助线；只在拖动期间非空 */
   const guides = ref<SnapGuide[]>([])
@@ -45,12 +45,17 @@ export function useFlowSnapping() {
   const targets = shallowRef<SnapRect[]>([])
 
   function rectOf(node: GraphNode): SnapRect {
-    // 这里一律用 `position` 而不是 `computedPosition`：拖动过程中后者由一个
+    // 被拖的节点一律用 `position` 而不是 `computedPosition`：拖动过程中后者由一个
     // post-flush 的 watcher 维护，`onNodeDrag` 跑的时候它还是上一帧的值。
-    // （本编辑器没有父子节点，两者对顶层节点本来就相等。）
+    //
+    // 组里的节点（`parentNode`）的 `position` 是**相对父节点**的，得补上父节点的位置 ——
+    // 参照物和被拖的节点必须在同一套坐标里，否则组内组外一比就是一条错位的线，
+    // 而辅助线本身画在画布坐标系里。父节点此刻一定不在被拖的那批里
+    // （Vue Flow 拖父节点时不会把子节点也算进来），所以读它的 computedPosition 是稳的。
+    const parent = node.parentNode ? findNode(node.parentNode) : undefined
     return {
-      x: node.position.x,
-      y: node.position.y,
+      x: node.position.x + (parent?.computedPosition.x ?? 0),
+      y: node.position.y + (parent?.computedPosition.y ?? 0),
       width: node.dimensions.width,
       height: node.dimensions.height
     }

@@ -1,7 +1,7 @@
 # REQ-SOLO 个人画布（不走协同的画布）
 
 > 状态：**已实现** —— 数据模型、`applyFlowUpdate` 写入通道、两条 REST、两处互拒、
-> 前端同步层（`useFlowSync` + 两种 transport）、`/projects` 的 Tab 界面均已落地，
+> 前端同步层（`useFlowSync` + 两种 transport）、`/personal` 界面均已落地，
 > 测试见第 5 节。
 >
 > 前置：[REQ-CANVAS](13-flow-canvas-management.md)（项目 / 画布 / 成员 / 分享链接）与
@@ -62,7 +62,7 @@ model Project {
 代价是两条，都可控：多一行 Project 记录；以及要在项目侧**堵住 personal 的口子**（见 §4.5）。
 
 **创建时机是懒创建**：`ensurePersonalProject(userId)`（按 `personalOwnerId` upsert），
-第一次进「个人画布」Tab 或第一次新建个人画布时建。**不挂 `registerProfileHook`** ——
+第一次进「个人画布」页或第一次新建个人画布时建。**不挂 `registerProfileHook`** ——
 登录路径不该为一个可能永远不会被用到的功能多写一次库。
 
 ### 3.2 `mode` 是派生的，不存在 Flow 上
@@ -145,7 +145,7 @@ applyFlowUpdate(flowId, update: Uint8Array) → { stateVector: Uint8Array } | { 
 
 ```
 GET  /api/projects/personal             → ProjectSummary（kind='personal'）
-     读接口也会建：第一次点进「个人画布」就有了。拿到 id 之后，列表 / 新建 /
+     读接口也会建：第一次进「个人画布」页就有了。拿到 id 之后，列表 / 新建 /
      改名 / 删除全部复用 /api/projects/:id/flows —— 个人空间在接口层就是个项目。
 
 GET  /api/flows/:id/doc?sv=<base64url>  → application/octet-stream
@@ -255,31 +255,47 @@ type FlowSyncStatus =
 个人画布的 `POST /doc` 本身就是真实 HTTP 请求，顺带把心跳问题消掉了 ——
 它没有一条长连接可以自己养活自己。
 
-### 4.8 界面：项目列表页加一个 Tab
+### 4.8 界面：个人画布是独立的一页、独立的侧栏入口
 
-**不在任何列表里混着区分两种画布**。个人画布和项目在 `/projects` 页用 Tab 分开：
+**不在任何列表里混着区分两种画布**，也**不在同一页用 Tab 区分**：
 
 ```
-/projects
- ├─ Tab「项目」    → 今天的项目列表（过滤掉 kind=personal），点进去是 /projects/:id
- └─ Tab「个人画布」 → 直接列画布，点进去是 /flows/:id
+侧栏
+ ├─「画布项目」  → /projects        只列项目（过滤掉 kind=personal），点进去是 /projects/:id
+ └─「个人画布」  → /personal        直接列画布，点进去是 /flows/:id
 ```
 
-- Tab 切换**不碰 URL**，和 `ProjectHome.vue` 的画布 / 成员 Tab 一个规矩。
-- **只有项目那一侧把页码 / 关键字写进 URL**（`FlowList` 的 `syncQuery`），个人画布那侧
-  用组件内部的 state。原本想的是「切 Tab 时清掉 query」，但那是在给一个不该存在的
-  共享状态打补丁 —— 两个并列的列表共用一份 `?page=`，本来就会互相串：
-  「项目搜到第 3 页」跟过去就落在一个空页上。一个页面里只该有一个列表拥有 URL。
+> **改过一次口径。** 最初两者是 `/projects` 页上的两个并列 Tab（§7 里当时留着
+> 「侧栏要不要给个人画布独立入口」这条待确认）。落地后的结论是：**要**。
+> Tab 表达的是「同一个东西的两个视图」，而项目和个人画布是两种东西 ——
+> 项目那一侧点进去还有一层（成员、分享、角色），个人画布点进去就是画布本身，
+> 两侧的头部按钮、空态文案、能做的操作没有一个是共用的。放成 Tab 的代价是
+> 「我现在在看哪一种」变成一个每次都要先看一眼才知道的问题，而且个人画布
+> 作为一个天天要用的入口，被藏在另一个入口的第二个 Tab 底下。
+
 - 列表本身是**同一个组件**（`src/components/canvas/FlowList.vue`）：搜索、排序、分页、
   新建 / 重命名 / 复制 / 删除全在里面，项目主页的画布 Tab 用的也是它。
   个人空间在接口层面就是个项目，所以组件只要一个 `projectId`，
   **不需要知道自己列的是哪一种**。
-- 个人画布 Tab **没有**成员、没有分享按钮。
+- 拆成两页之后，**两个列表各自独占一份 URL query**（都开 `FlowList` 的 `syncQuery`），
+  页码 / 关键字刷新即回原处。这是拆页顺带解决掉的一个问题：并列 Tab 时期两个列表
+  共用一份 `?page=`，本来就会互相串（「项目搜到第 3 页」跟过去落在一个空页上），
+  所以当时只能让项目那一侧独占 URL、个人画布那侧退回组件内部 state。
+- 个人画布页**没有**成员、没有分享按钮 —— 页面头部只有标题一行。
 - 个人空间是**懒创建**的，而 `GET /api/projects/personal` 是个「读也会建」的接口 ——
-  所以它挂在 Tab 的切换上，没点进这个 Tab 的人不会被凭空建出一个空间。
+  所以它挂在这一页的加载上，没进过 `/personal` 的人不会被凭空建出一个空间。
 
 编辑器（`/flows/:id`）两种模式共用一个路由和一个组件：solo 下在场栏为空、
 `FlowConnectionEndedDialog` 只在 collab 的终局原因下出现、标题胶囊的状态文案按 §4.6 走。
+
+**胶囊左上角那个「回去」按钮按 `mode` 决定落点，不按 `projectId`**：solo 回 `/personal`，
+collab 回 `/projects/:projectId`。个人空间是个项目，这是存储上的事实，不是用户看到的事实 ——
+照着 `projectId` 跳，个人画布会落到一个摆着成员、分享、「返回全部项目」的项目主页上，
+而那三样对个人空间全是 403。图标和文案跟着同一个判断走。删除后的落点同理，
+且要在删之前算好。
+
+反方向也堵上：`/projects/<个人空间 id>` 被直接打开时（老书签、历史记录），
+`ProjectHome.vue` 读到 `kind === 'personal'` 就 `replace` 到 `/personal`。
 
 ### 4.9 鉴权规则
 
@@ -338,7 +354,7 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
 11. `useFlowSync` 在 `mode = 'solo'` 时不创建 `HocuspocusProvider`。
 12. `syncText` 文案矩阵：solo 下不会出现任何协同专属文案；`too-large` 有独立提示。
 13. `stores/flow` 的既有测试**一行不改**照常通过 —— 这本身就是「模型没分叉」的证据。
-14. 切 Tab 时 `page` / `keyword` 被清掉，不会落在空页上。
+14. `/personal` 与 `/projects` 是两个页面，各自独占一份 `page` / `keyword`，互不串。
 
 ### 5.1 落地时才发现的三件事
 
@@ -368,9 +384,8 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
 
 1. ~~**`FlowOperation` 对个人画布是否值得写。**~~ —— 已定：不写。操作日志整体移除了，
    两条通道都只写 `ydoc` + 投影（[REQ-DATA §5](05-data-persistence.md)）。
-2. **侧栏是否要给个人画布一个独立入口。** 当前设计是只在 `/projects` 页用 Tab 区分，
-   侧栏仍然只有「画布项目」一项。如果个人画布成为主要用法，
-   再考虑把它提到侧栏一级（那时 Tab 与侧栏入口的关系要重新想）。
+2. ~~**侧栏是否要给个人画布一个独立入口。**~~ —— 已定：给。个人画布已经提到侧栏一级
+   （`/personal`），`/projects` 页回到只列项目，理由见 §4.8。
 3. **推送防抖的窗口取值。** 暂定沿用 user-state 那组（2s / 10s `maxWait`），
    但那组是为「视口 + 心跳」调的；个人画布推的是内容，丢窗口的代价更大（只在本地留着），
    可能应该更短。

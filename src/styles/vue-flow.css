@@ -32,6 +32,32 @@
   cursor: grabbing;
 }
 
+/*
+ * 分组框的拉伸手柄。
+ *
+ * 分组整块是 `pointer-events-none`（背景板不该挡住框选和平移，见 GroupNode.vue），
+ * 而手柄是它的子元素 —— 官方样式里没写 pointer-events，于是继承下来也是 none，
+ * 手柄看得见却按不动。这里把它要回来。
+ */
+.vue-flow__resize-control {
+  pointer-events: all;
+}
+
+/*
+ * 选中的连线。
+ *
+ * 框选时 Vue Flow 会把命中节点**相连的边**一并标成 selected，光有状态没有样式
+ * 等于没做 —— 默认主题给的是 `stroke: #555`，压在同样是灰的默认线色上几乎看不出来。
+ * 这里换成主题色并加粗一档，选中与否一眼可辨。`:focus` 一并带上，
+ * 键盘选中一条边时的反馈应该和鼠标选中一样。
+ */
+.vue-flow__edge.selected .vue-flow__edge-path,
+.vue-flow__edge:focus .vue-flow__edge-path,
+.vue-flow__edge:focus-visible .vue-flow__edge-path {
+  stroke: var(--primary);
+  stroke-width: 2;
+}
+
 .vue-flow__minimap {
   transform: scale(75%);
   transform-origin: bottom right;

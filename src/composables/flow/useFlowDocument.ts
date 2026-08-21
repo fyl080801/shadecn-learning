@@ -118,14 +118,26 @@ export function useFlowDocument(
     { errorMessage: "改名失败" }
   )
 
-  function projectPath() {
+  /**
+   * 「返回」回哪儿 —— **按画布自己的种类，不按它挂在哪个项目下**。
+   *
+   * 个人空间在接口层面是个 `kind='personal'` 的项目，`meta.projectId` 也确实指着它，
+   * 但那是存储上的事实，不是用户看到的事实：个人画布的列表页是 `/personal`，
+   * 那个「项目主页」（成员、分享、返回全部项目）从来就不该被走到。
+   * 所以这里认 `mode`，不认 `projectId`。
+   */
+  function backPath() {
+    if (store.meta?.mode === "solo") return "/personal"
     const projectId = store.meta?.projectId
     return projectId ? `/projects/${projectId}` : "/projects"
   }
 
-  const { run: backToProject } = useAsyncAction(async () => {
+  /** 文案和落点是同一个判断，放在一起，免得哪天只改了一半 */
+  const backLabel = computed(() => (store.meta?.mode === "solo" ? "返回个人画布" : "返回项目"))
+
+  const { run: goBack } = useAsyncAction(async () => {
     await flushBeforeLeave()
-    void router.push(projectPath())
+    void router.push(backPath())
   })
 
   const { run: createSibling, pending: creatingSibling } = useAsyncAction(async () => {
@@ -145,7 +157,8 @@ export function useFlowDocument(
   }, { errorMessage: "复制失败" })
 
   const { run: remove, pending: removing } = useAsyncAction(async () => {
-    const target = projectPath()
+    // 先算好再删：删完 meta 还在，但「删除后该回哪儿」是删之前那张画布的属性
+    const target = backPath()
     await flowApi.remove(flowId.value)
     void router.push(target)
   }, { errorMessage: "删除失败" })
@@ -158,7 +171,8 @@ export function useFlowDocument(
     syncWarning,
     flushBeforeLeave,
     rename,
-    backToProject,
+    goBack,
+    backLabel,
     createSibling,
     creatingSibling,
     duplicate,

@@ -1,17 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { flushPromises, mount } from "@vue/test-utils"
+import { toast } from "vue-sonner"
 
 import SessionExpiredDialog from "@/components/SessionExpiredDialog.vue"
-import {
-  EMBEDDED_LOGIN_MESSAGE,
-  dismissReLogin,
-  requestReLogin
-} from "@/lib/auth"
+import { LOGIN_DONE_MESSAGE, dismissReLogin, requestReLogin } from "@/lib/auth"
 
 /**
  * 会话过期的全局提示：401 之后不能一声不响地把人跳走。
- * 第一层给两条路 —— 退出（整页回登录页，带上 return url）、重新登录（模态里就地登）；
- * 两层都能直接关掉，关掉就什么都不做，页面留在原处。
+ * 它只是个提示，三条路 —— 退出（整页回登录页，带上 return url）、
+ * 重新登录（**新开一个窗口**走 OIDC，当前页不动）、直接关掉什么都不做。
  */
 
 vi.mock("vue-sonner", () => ({
@@ -20,6 +17,8 @@ vi.mock("vue-sonner", () => ({
 
 let assign: ReturnType<typeof vi.fn>
 let fetchMock: ReturnType<typeof vi.fn>
+let openMock: ReturnType<typeof vi.fn>
+let loginWindow: { focus: ReturnType<typeof vi.fn>; closed: boolean }
 
 const meResponse = (authenticated: boolean) =>
   new Response(
@@ -49,16 +48,22 @@ function dialogButton(text: string) {
   )
 }
 
-function loginFrame() {
-  return document.body.querySelector("iframe")
+function shown() {
+  return document.body.textContent ?? ""
 }
 
 beforeEach(() => {
   document.body.innerHTML = ""
   dismissReLogin()
+  vi.mocked(toast.error).mockClear()
+  vi.mocked(toast.success).mockClear()
 
   fetchMock = vi.fn(() => Promise.resolve(meResponse(false)))
   vi.stubGlobal("fetch", fetchMock)
+
+  loginWindow = { focus: vi.fn(), closed: false }
+  openMock = vi.fn(() => loginWindow)
+  vi.stubGlobal("open", openMock)
 
   assign = vi.fn()
   vi.stubGlobal("location", {
@@ -78,12 +83,12 @@ async function openDialog() {
   return wrapper
 }
 
-/** 内嵌登录页登完之后，服务端那张落地页发回来的消息 */
+/** 登录窗口登完之后，服务端那张落地页发回来的消息 */
 function postLoginDone(origin = "http://localhost:3000") {
   window.dispatchEvent(
     new MessageEvent("message", {
       origin,
-      data: { source: "app-auth", type: EMBEDDED_LOGIN_MESSAGE }
+      data: { source: "app-auth", type: LOGIN_DONE_MESSAGE }
     })
   )
 }
@@ -93,13 +98,13 @@ describe("SessionExpiredDialog", () => {
     mount(SessionExpiredDialog, { attachTo: document.body })
     await flushPromises()
 
-    expect(document.body.textContent).not.toContain("登录状态已失效")
+    expect(shown()).not.toContain("登录状态已失效")
   })
 
   it("会话过期后弹出来，退出和重新登录都在", async () => {
     await openDialog()
 
-    expect(document.body.textContent).toContain("登录状态已失效")
+    expect(shown()).toContain("登录状态已失效")
     expect(dialogButton("退出")).toBeTruthy()
     expect(dialogButton("重新登录")).toBeTruthy()
   })
@@ -115,19 +120,34 @@ describe("SessionExpiredDialog", () => {
     )
   })
 
-  it("点「重新登录」开模态窗，里面是登录页的 iframe，页面不跳走", async () => {
+  it("点「重新登录」新开一个窗口，当前页不跳走，提示留着等结果", async () => {
     await openDialog()
 
     dialogButton("重新登录")?.click()
     await flushPromises()
 
-    expect(loginFrame()?.getAttribute("src")).toBe(
-      `/api/auth/login?redirect=${encodeURIComponent("/auth/embedded-done")}`
+    expect(openMock).toHaveBeenCalledWith(
+      `/api/auth/login?redirect=${encodeURIComponent("/auth/login-done")}`,
+      "app-relogin",
+      expect.any(String)
     )
     expect(assign).not.toHaveBeenCalled()
+    expect(shown()).toContain("已在新窗口打开登录页")
   })
 
-  it("模态里登录成功 → 自动关掉，人留在原页", async () => {
+  it("弹窗被浏览器拦下 → 提示一句，不进入等待状态", async () => {
+    openMock.mockReturnValue(null)
+    await openDialog()
+
+    dialogButton("重新登录")?.click()
+    await flushPromises()
+
+    expect(toast.error).toHaveBeenCalled()
+    expect(shown()).not.toContain("已在新窗口打开登录页")
+    expect(dialogButton("重新登录")).toBeTruthy()
+  })
+
+  it("新窗口里登录成功 → 提示自动收起来，人留在原页", async () => {
     await openDialog()
     dialogButton("重新登录")?.click()
     await flushPromises()
@@ -136,12 +156,11 @@ describe("SessionExpiredDialog", () => {
     postLoginDone()
     await flushPromises()
 
-    expect(loginFrame()).toBeNull()
-    expect(document.body.textContent).not.toContain("登录状态已失效")
+    expect(shown()).not.toContain("登录状态已失效")
     expect(assign).not.toHaveBeenCalled()
   })
 
-  it("登录没成功（还是匿名）→ 模态继续开着", async () => {
+  it("登录没成功（还是匿名）→ 提示继续开着", async () => {
     await openDialog()
     dialogButton("重新登录")?.click()
     await flushPromises()
@@ -149,7 +168,7 @@ describe("SessionExpiredDialog", () => {
     postLoginDone()
     await flushPromises()
 
-    expect(loginFrame()).toBeTruthy()
+    expect(shown()).toContain("登录状态已失效")
   })
 
   it("别的站点发来的同名消息不算数", async () => {
@@ -162,10 +181,10 @@ describe("SessionExpiredDialog", () => {
     await flushPromises()
 
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(loginFrame()).toBeTruthy()
+    expect(shown()).toContain("登录状态已失效")
   })
 
-  it("关掉模态什么都不做：不跳转，提示也一起收起来", async () => {
+  it("关掉提示什么都不做：不跳转，也不再等登录窗口", async () => {
     const wrapper = await openDialog()
     dialogButton("重新登录")?.click()
     await flushPromises()
@@ -178,8 +197,7 @@ describe("SessionExpiredDialog", () => {
     await flushPromises()
 
     expect(assign).not.toHaveBeenCalled()
-    expect(loginFrame()).toBeNull()
-    expect(document.body.textContent).not.toContain("登录状态已失效")
+    expect(shown()).not.toContain("登录状态已失效")
     wrapper.unmount()
   })
 })

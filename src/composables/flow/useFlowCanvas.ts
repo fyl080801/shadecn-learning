@@ -1,6 +1,8 @@
 import { computed, nextTick, ref, toRaw, watch, watchEffect } from "vue"
 import { until, useEventListener } from "@vueuse/core"
 import {
+  getConnectedEdges,
+  getRectOfNodes,
   useVueFlow,
   type Connection,
   type Edge,
@@ -13,8 +15,9 @@ import { elementKey, type PresencePoint } from "@/lib/presence"
 import {
   buildNodeData,
   buildNodeDefaults,
-  DEFAULT_NODE_TYPE,
-  flowNodeTypeOf
+  flowNodeTypeOf,
+  GROUP_NODE_TYPE,
+  NEW_NODE_TYPE
 } from "@/components/flow/node-types"
 import { isEditableTarget } from "./editable"
 import type { FlowPresence } from "./useFlowPresence"
@@ -67,9 +70,11 @@ export function useFlowCanvas(
     getViewport,
     setViewport,
     findNode,
+    getEdges,
     getSelectedNodes,
     getSelectedEdges,
     addSelectedNodes,
+    addSelectedElements,
     removeSelectedNodes,
     minZoom,
     maxZoom,
@@ -81,8 +86,18 @@ export function useFlowCanvas(
     onNodeDragStart,
     onNodeDrag,
     onNodeDragStop,
-    selectionKeyCode
+    selectionKeyCode,
+    userSelectionActive
   } = useVueFlow()
+
+  /**
+   * 正在拉框（按下并且已经拖出了一个框）。
+   *
+   * 拉框期间画布上**不出现任何工具栏**：框扫过一个节点时它会短暂地成为「唯一选中」，
+   * 于是节点头上的复制/删除会闪一下又消失；而选区那条（打组）在框还在变的时候
+   * 也只是跟着乱跳。两者都等松手之后再说 —— 高亮实时翻转就够了，那才是拉框时要看的反馈。
+   */
+  const boxSelecting = computed(() => userSelectionActive.value)
 
   /** 拖动时的网格 / 辅助线吸附；两者都常开，没有开关 */
   const snapping = useFlowSnapping()
@@ -109,17 +124,46 @@ export function useFlowCanvas(
    * 对方看到的是松手瞬间的瞬移而不是跟手移动。
    */
   const nodes = computed<Node[]>(() => {
-    const source = store.nodes as unknown as Node[]
-    if (localDragging.value) return source
+    const source = store.nodes
+    if (localDragging.value) return source as unknown as Node[]
 
     const remote = presence.nodePositions.value
-    if (remote.size === 0) return source
 
-    return source.map((node) => {
+    let patched = false
+    const result = source.map((node) => {
       const at = remote.get(node.id)
-      return at ? ({ ...node, position: { ...at } } as unknown as Node) : node
+      const holdExtent = !extentReady(node)
+      if (!at && !holdExtent) return node
+
+      patched = true
+      return {
+        ...node,
+        ...(at ? { position: { ...at } } : {}),
+        // 显式写 undefined，不能只是「不给这个键」：Vue Flow 合并节点用的是
+        // Object.assign(它内部那份, 传进来的这份)，键不出现的话上一次那个 'parent' 会留着
+        ...(holdExtent ? { extent: undefined } : {})
+      }
     })
+
+    return (patched ? result : source) as unknown as Node[]
   })
+
+  /**
+   * 「不许拖出分组」这条现在能不能交给 Vue Flow —— **父节点量出尺寸了才算能**。
+   *
+   * Vue Flow 是拿父节点的 `dimensions` 算这个边界的，而分组框刚出现在画布上时
+   * 尺寸还是 0：边界退化成一个点，每个子节点当场被夹到「父节点左上角减去自己的宽高」，
+   * 一片节点全叠到框外面去 —— 文档里的坐标始终是对的，坏的只是本地视图。
+   *
+   * 这道门必须开在**交给 Vue Flow 之前**、而不是写文档的时候：打组的人可以等自己
+   * 这边渲染完再写，收到同步的人没有这个机会 —— 他是从文档里读到 `extent` 的，
+   * 读到就立刻夹。协同画布上「别人打的组，在我这儿散了一地」就是这么来的。
+   * 放在这里，本地、远端、刷新走的是同一条路。
+   */
+  function extentReady(node: FlowNode): boolean {
+    if (node.extent !== "parent" || !node.parentNode) return true
+    return (findNode(node.parentNode)?.dimensions.width ?? 0) > 0
+  }
 
   /** 老数据里可能存着 smoothstep 之类的折线类型，渲染时统一按曲线走 */
   const edges = computed<Edge[]>(() =>
@@ -146,6 +190,30 @@ export function useFlowCanvas(
     (selected) => selection.select(selected.length === 1 ? (selected[0]?.id ?? null) : null),
     { immediate: true }
   )
+
+  /**
+   * 拉框时，命中节点**相连的边也算选中** —— 边跟着它的端点走。
+   *
+   * Vue Flow 自己在拉框时也做这件事，但它拿「上一帧选中的边」和这一帧比，
+   * 相等就一条变更都不发；而按下时的 `removeSelectedElements()` 只清了元素上的
+   * 选中态、没清它那份缓存。于是**连着框选两次、两次命中同一条边**时，
+   * 第二次算出来的集合和上一次相等，它什么都不发，那条边就一直停在「没选中」上。
+   * 所以这条规则由我们自己兜底重申一遍。
+   *
+   * 只在拉框期间生效：点选一条边本身会把节点选中态清空，那时再按这条规则算一遍，
+   * 会把刚点中的边又取消掉。
+   */
+  watch(getSelectedNodes, (selected) => {
+    if (!boxSelecting.value) return
+
+    const connected = getConnectedEdges(selected, getEdges.value)
+    const wanted = new Set(connected.map((edge) => edge.id))
+    const current = getSelectedEdges.value
+    if (current.length === wanted.size && current.every((edge) => wanted.has(edge.id))) return
+
+    // 节点也一并传进去：这个 action 是「选中态就是这些」，只给边会把节点全清掉
+    addSelectedElements([...selected, ...connected])
+  })
 
   /**
    * 只选中这一个节点，清掉其它的。
@@ -523,7 +591,7 @@ export function useFlowCanvas(
    * 长什么样由**节点类型注册表**说了算（`src/components/flow/node-types.ts`）——
    * 这里不认识任何具体类型，加一种节点不用改这个函数。
    */
-  async function addNode(type: string = DEFAULT_NODE_TYPE): Promise<string | null> {
+  async function addNode(type: string = NEW_NODE_TYPE): Promise<string | null> {
     const bounds = vueFlowRef.value?.getBoundingClientRect()
     if (!bounds) return null
 
@@ -568,11 +636,97 @@ export function useFlowCanvas(
     return id
   }
 
+  // —— 打组 ——
+
+  /** 分组框在被圈住的节点之外留的余量 */
+  const GROUP_PADDING = 32
+
+  /** 顶上再多留一条，给分组自己的标题栏腾地方，免得压在第一个节点的名字上 */
+  const GROUP_HEADER = 20
+
+  /** 当前选中的节点 id（顺序同 Vue Flow 那份选中态），选区工具栏靠它定位 */
+  const selectedNodeIds = computed(() => getSelectedNodes.value.map((node) => node.id))
+
+  /**
+   * 这次选中里**能被圈进一个新分组**的那些。
+   *
+   * 两种挡在外面：已经在别的分组里的（换爹会把它从原来的框里抠出来，
+   * 而它在画面上明明还在那个框里），以及分组框自己（嵌套分组的层级和坐标
+   * 都要另说一套，现在不做）。
+   */
+  const groupableNodes = computed(() =>
+    getSelectedNodes.value.filter((node) => node.type !== GROUP_NODE_TYPE && !node.parentNode)
+  )
+
+  /** 至少两个才谈得上「一组」；一个节点的分组框没有意义 */
+  const canGroupSelection = computed(() => groupableNodes.value.length >= 2)
+
+  /**
+   * 把选中的节点圈进一个新建的分组框，返回它的 id。
+   *
+   * 分组是**围着已经选好的一片节点长出来的**，所以入口在框选后浮出的选区工具栏，
+   * 而不是底部工具栏上的「添加分组」—— 先凭空建一个空框、再把节点一个个拖进去，
+   * 顺序是反的（而且「拖进分组自动归属」还没做，那条路根本走不通）。
+   *
+   * 坐标要换算：挂上 `parentNode` 之后 `position` 由 Vue Flow 按**相对父节点**解释，
+   * 不减去分组框的位置的话，整片节点会按原来的绝对坐标再往框的位置上加一遍，
+   * 一起飞到右下角去。
+   */
+  async function groupSelection(): Promise<string | null> {
+    const members = groupableNodes.value
+    if (members.length < 2) return null
+
+    // 外接矩形按 computedPosition + 实测尺寸算（Vue Flow 自己的工具函数），
+    // 拿 store 里的 position 手算的话，没写过 width/height 的节点量不出高矮
+    const rect = getRectOfNodes(members)
+    const position = {
+      x: rect.x - GROUP_PADDING,
+      y: rect.y - GROUP_PADDING - GROUP_HEADER
+    }
+
+    const id = createId("n")
+    const group: FlowNode = {
+      id,
+      type: GROUP_NODE_TYPE,
+      position,
+      // 注册表给的是默认尺寸和层级，这里只把尺寸换成刚好罩住这片节点的大小
+      ...buildNodeDefaults(GROUP_NODE_TYPE),
+      width: rect.width + GROUP_PADDING * 2,
+      height: rect.height + GROUP_PADDING * 2 + GROUP_HEADER,
+      data: buildNodeData(
+        GROUP_NODE_TYPE,
+        `分组 ${store.nodes.filter((node) => node.type === GROUP_NODE_TYPE).length + 1}`
+      )
+    }
+
+    const children = new Map(
+      members.map((node) => [
+        node.id,
+        {
+          x: node.computedPosition.x - position.x,
+          y: node.computedPosition.y - position.y
+        }
+      ])
+    )
+
+    // 打组是一个独立的动作，别和刚才那次拖动并进同一条撤销
+    store.separateUndo()
+    store.groupNodes(group, children)
+    store.separateUndo()
+
+    // 选中新建的分组：接着就能拖走、改名或再删掉（删分组只删框，组内节点留下）。
+    // 分组要等一帧才渲染出来，selectOnly 里的 findNode 之前必须 nextTick。
+    await nextTick()
+    selectOnly(id)
+    return id
+  }
+
   return {
     nodes,
     edges,
     snapping,
     interactionMode,
+    boxSelecting,
     spacePanning,
     panOnDrag,
     nodesDraggable,
@@ -583,6 +737,9 @@ export function useFlowCanvas(
     onPointerLeave,
     syncViewport,
     selectOnly,
+    selectedNodeIds,
+    canGroupSelection,
+    groupSelection,
     addNode,
     duplicateNode,
     deleteNode,

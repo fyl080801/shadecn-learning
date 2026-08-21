@@ -325,12 +325,12 @@ describe("会话过期的确认框", () => {
     expect(useAuth().sessionExpired.value).toBe(false)
   })
 
-  it("内嵌登录的地址落在服务端那张完成页上", async () => {
-    const { embeddedLoginUrl, EMBEDDED_LOGIN_DONE_PATH } = await loadAuth()
+  it("登录窗口的地址落在服务端那张完成页上", async () => {
+    const { loginWindowUrl, LOGIN_DONE_PATH } = await loadAuth()
 
-    expect(EMBEDDED_LOGIN_DONE_PATH).toBe("/auth/embedded-done")
-    expect(embeddedLoginUrl()).toBe(
-      `/api/auth/login?redirect=${encodeURIComponent("/auth/embedded-done")}`
+    expect(LOGIN_DONE_PATH).toBe("/auth/login-done")
+    expect(loginWindowUrl()).toBe(
+      `/api/auth/login?redirect=${encodeURIComponent("/auth/login-done")}`
     )
   })
 
@@ -352,21 +352,19 @@ describe("会话过期的确认框", () => {
     expect(assign).not.toHaveBeenCalled()
   })
 
-  it("isEmbeddedLoginDone：同源 + 标记都对才认", async () => {
-    const { isEmbeddedLoginDone, EMBEDDED_LOGIN_MESSAGE } = await loadAuth()
+  it("isLoginDone：同源 + 标记都对才认", async () => {
+    const { isLoginDone, LOGIN_DONE_MESSAGE } = await loadAuth()
     const origin = window.location.origin
-    const data = { source: "app-auth", type: EMBEDDED_LOGIN_MESSAGE }
+    const data = { source: "app-auth", type: LOGIN_DONE_MESSAGE }
 
+    expect(isLoginDone(new MessageEvent("message", { origin, data }))).toBe(true)
     expect(
-      isEmbeddedLoginDone(new MessageEvent("message", { origin, data }))
-    ).toBe(true)
-    expect(
-      isEmbeddedLoginDone(
+      isLoginDone(
         new MessageEvent("message", { origin: "https://evil.example.com", data })
       )
     ).toBe(false)
     expect(
-      isEmbeddedLoginDone(
+      isLoginDone(
         new MessageEvent("message", { origin, data: { source: "somebody" } })
       )
     ).toBe(false)

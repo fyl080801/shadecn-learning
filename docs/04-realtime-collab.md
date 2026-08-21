@@ -525,7 +525,7 @@ socket 继续开着；provider 收到后 `emit('authenticationFailed')` 就完�
 （离线期间的改动在 IndexedDB 里，重连后自动补发）。
 
 **`4401` 不跳登录页**，而是复用全站那套会话过期确认框（`requestReLogin` →
-`SessionExpiredDialog`）：它能在**不离开这一页**的前提下用内嵌 iframe 重新登录，
+`SessionExpiredDialog`）：它能在**不离开这一页**的前提下另开一个窗口重新登录，
 画布上还没同步出去的改动不会被一次跳转带走。登上之后 `useFlowCollab` 里的 watch 就地
 重连，Y.Doc 里攒着的自动补发。那个 watch 有两个条件：**确实登上了**（确认框可以被关掉，
 关掉时也会把 `sessionExpired` 置假，此时重连只会再被拒一次、再弹一次框，来回空转）、

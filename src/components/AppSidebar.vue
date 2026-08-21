@@ -35,6 +35,7 @@ import {
   Boxes,
   Video,
   Workflow,
+  UserRoundPen,
   ChevronsUpDown,
   LogIn,
   LogOut,
@@ -60,7 +61,8 @@ const navItems: NavItem[] = [
   { label: "richeditor", to: "/richeditor", icon: Sun },
   { label: "Three Editor", to: "/three-editor", icon: Boxes },
   { label: "3D导演台", to: "/3d-scene", icon: Video },
-  { label: "画布项目", to: "/projects", icon: Workflow }
+  { label: "画布项目", to: "/projects", icon: Workflow },
+  { label: "个人画布", to: "/personal", icon: UserRoundPen }
 ]
 
 const { user, displayName, isAuthenticated, authEnabled, startLogin, startLogout } =

@@ -124,28 +124,39 @@ export function dismissReLogin() {
   state.sessionExpired = false
 }
 
-// ---------------------------------------------------------------- 内嵌登录
+// ---------------------------------------------------------------- 新窗口登录
 
-/** 内嵌登录走完之后落地的服务端页面，它会 postMessage 通知父窗口 */
-export const EMBEDDED_LOGIN_DONE_PATH = "/auth/embedded-done"
+/** 登录窗口走完之后落地的服务端页面，它会 postMessage 通知开它的那一页 */
+export const LOGIN_DONE_PATH = "/auth/login-done"
 
 /** 那条消息的标记；连同 origin 一起校验，别人发的不认 */
-export const EMBEDDED_LOGIN_MESSAGE = "app-auth:login-done"
+export const LOGIN_DONE_MESSAGE = "app-auth:login-done"
 
-/** 模态窗里的 iframe（或「在新窗口登录」的弹窗）打开的地址 */
-export function embeddedLoginUrl() {
-  return loginUrl(EMBEDDED_LOGIN_DONE_PATH)
+/** 新开的登录窗口打开的地址 */
+export function loginWindowUrl() {
+  return loginUrl(LOGIN_DONE_PATH)
 }
 
-/** 是不是那条「内嵌登录完成」的消息：同源 + 标记，两道都要过 */
-export function isEmbeddedLoginDone(event: MessageEvent): boolean {
+/** 登录窗口的名字：同名复用同一个窗口，连点几下不会开出一排 */
+const LOGIN_WINDOW_NAME = "app-relogin"
+
+/**
+ * 开一个窗口走完整套 OIDC —— 当前页原封不动。
+ * 被浏览器拦下时返回 null，由调用方提示用户。
+ */
+export function openLoginWindow(): Window | null {
+  return window.open(loginWindowUrl(), LOGIN_WINDOW_NAME, "width=520,height=680")
+}
+
+/** 是不是那条「登录完成」的消息：同源 + 标记，两道都要过 */
+export function isLoginDone(event: MessageEvent): boolean {
   if (event.origin !== window.location.origin) return false
   const data = event.data as { source?: string; type?: string } | null
-  return data?.source === "app-auth" && data.type === EMBEDDED_LOGIN_MESSAGE
+  return data?.source === "app-auth" && data.type === LOGIN_DONE_MESSAGE
 }
 
 /**
- * 内嵌窗口里登录完了：重新问一次登录态，真登上了才把提示收起来。
+ * 登录窗口里登完了：重新问一次登录态，真登上了才把提示收起来。
  * 会话是 httpOnly cookie，前端只能这样确认。
  */
 export async function finishReLogin(): Promise<boolean> {

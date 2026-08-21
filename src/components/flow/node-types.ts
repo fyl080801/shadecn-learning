@@ -1,8 +1,9 @@
 import { markRaw, type Component } from "vue"
-import { Box, Frame } from "lucide-vue-next"
+import { Box, Frame, Type } from "lucide-vue-next"
 
 import GroupNode from "@/components/flow/GroupNode.vue"
 import ProcessNode from "@/components/flow/ProcessNode.vue"
+import TextNode from "@/components/flow/TextNode.vue"
 import { defaultNodeData, type FlowNode, type FlowNodeData } from "@/types/flow"
 
 /**
@@ -12,6 +13,9 @@ import { defaultNodeData, type FlowNode, type FlowNodeData } from "@/types/flow"
  * `src/types/flow.ts`），这张表的键即是它：由谁渲染、菜单里叫什么、新建时长什么样，
  * 全在一处说清楚。画布（`FlowCanvas.vue`）、工具栏（`FlowToolbar.vue`）和
  * 新建逻辑（`useFlowCanvas.addNode`）都从这里取，没有第二处硬编码。
+ *
+ * 工具栏**不再按这张表铺一排按钮**：加号只建 `NEW_NODE_TYPE` 那一种，
+ * `label` / `icon` 留给节点自己和将来的类型菜单用。
  *
  * 示例数据（`sample/画布数据参考/`）里有 8 种节点，形状彼此完全不同 ——
  * 这张表就是让它们能共存的地方：`process` 是内容自适应的普通节点，
@@ -33,6 +37,9 @@ export interface FlowNodeTypeDef {
   defaultNode?: () => Partial<Omit<FlowNode, "id" | "type" | "position" | "data">>
 }
 
+/** 分组框的 `type`。打组（`useFlowCanvas.groupSelection`）建的就是它 */
+export const GROUP_NODE_TYPE = "group"
+
 /** 分组框的默认底色。半透明，因为它是背景板不是卡片 */
 export const GROUP_DEFAULT_BACKGROUND = "rgba(120, 120, 140, 0.10)"
 
@@ -48,6 +55,14 @@ export const GROUP_DEFAULT_SIZE = { width: 520, height: 360 }
 export const GROUP_Z_INDEX = -1
 
 export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
+  text: {
+    type: "text",
+    label: "文本",
+    icon: Type,
+    component: TextNode,
+    // 正文单独占一个 key（平铺在 data 上）：两个人一个改标题一个改正文才不会互相盖掉
+    defaultData: () => ({ text: "" })
+  },
   process: {
     type: "process",
     label: "流程节点",
@@ -64,8 +79,24 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
   }
 }
 
-/** 新建节点的默认类型 */
-export const DEFAULT_NODE_TYPE = "process"
+/**
+ * 工具栏那枚加号建出来的节点类型。
+ *
+ * 底部工具栏**不再一种节点一个按钮**：类型会越加越多，一整排图标既认不出来也放不下，
+ * 所以入口收成一枚加号，「加什么」由这个常量说了算 —— 目前是文本节点。
+ * 将来加号要变成一个类型菜单时，改的也还是这一处 + 那个按钮。
+ *
+ * 注意它和下面的兜底类型是两件事：这个管「新建给什么」，那个管「认不出来的怎么渲染」。
+ */
+export const NEW_NODE_TYPE = "text"
+
+/**
+ * 认不出 `type` 时按哪种节点渲染。
+ *
+ * 必须和 `fromYNode` 里那个兜底值一致（都是 `process`）—— 老画布里的节点写的就是它，
+ * 换成别的会让既有内容换一副样子。
+ */
+export const FALLBACK_NODE_TYPE = "process"
 
 /**
  * 喂给 `<VueFlow :node-types>` 的组件表。
@@ -81,7 +112,7 @@ export const flowNodeComponents = markRaw(
 
 /** 认不认识这个 type；认不出来的按默认类型渲染 */
 export function flowNodeTypeOf(type: string): FlowNodeTypeDef {
-  return FLOW_NODE_TYPES[type] ?? FLOW_NODE_TYPES[DEFAULT_NODE_TYPE]!
+  return FLOW_NODE_TYPES[type] ?? FLOW_NODE_TYPES[FALLBACK_NODE_TYPE]!
 }
 
 /** 按注册表拼一个新节点的 data —— 框架字段 + 该类型自己的业务字段 */

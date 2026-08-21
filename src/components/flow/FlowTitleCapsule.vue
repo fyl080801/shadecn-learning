@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref } from "vue"
-import { Copy, Menu, Plus, Trash2, Workflow } from "lucide-vue-next"
+import { computed, ref } from "vue"
+import { Copy, Menu, Plus, Trash2, UserRoundPen, Workflow } from "lucide-vue-next"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -24,7 +24,7 @@ import {
 import { useFlowEditor } from "@/composables/flow"
 
 /**
- * 左上角悬浮胶囊：logo（回项目）+ 可就地编辑的画布名 + 保存状态 + 菜单。
+ * 左上角悬浮胶囊：logo（回列表）+ 可就地编辑的画布名 + 保存状态 + 菜单。
  *
  * 页面是 bare 布局没有应用侧栏，所以这枚胶囊是「出去」的唯一入口，
  * 也是画布级动作（新建 / 复制 / 删除）的收口处。
@@ -48,6 +48,9 @@ function submitRename() {
 }
 
 const confirmingDelete = ref(false)
+
+/** 图标跟着落点走，和侧栏两个入口用的是同一对图标 —— 点下去会到哪儿，看图标就知道 */
+const backIcon = computed(() => (store.meta?.mode === "solo" ? UserRoundPen : Workflow))
 </script>
 
 <template>
@@ -59,10 +62,10 @@ const confirmingDelete = ref(false)
       variant="ghost"
       size="icon"
       class="size-8 rounded-full"
-      title="返回项目"
-      @click="doc.backToProject()"
+      :title="doc.backLabel.value"
+      @click="doc.goBack()"
     >
-      <Workflow class="text-primary" />
+      <component :is="backIcon" class="text-primary" />
     </Button>
 
     <Input
@@ -118,9 +121,9 @@ const confirmingDelete = ref(false)
           删除
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem @select="doc.backToProject()"
-          >返回项目</DropdownMenuItem
-        >
+        <DropdownMenuItem @select="doc.goBack()">
+          {{ doc.backLabel.value }}
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   </div>

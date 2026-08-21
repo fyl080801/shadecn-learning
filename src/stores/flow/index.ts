@@ -293,6 +293,39 @@ export const useFlowStore = defineStore("flow", () => {
     }, label)
   }
 
+  /**
+   * 打组：新建一个分组框，并把一批节点挂到它下面。
+   *
+   * 必须是**同一个事务**：分开写的话，别人（和本地的投影）会先看到一批
+   * `parentNode` 指着还不存在的节点的孤儿 —— Vue Flow 当场报 `NODE_MISSING_PARENT`，
+   * 这些节点的位置会被当成相对一个不存在的父节点，整片跳到画布原点附近。
+   * 撤销也一样：一次打组要一步撤干净，不能撤出个只剩半拉的中间态。
+   *
+   * `children` 里的位置是**相对分组框左上角**的 —— 挂上 `parentNode` 之后，
+   * Vue Flow 就按父子坐标系解释 `position`，调用方负责换算（见 `groupSelection`）。
+   *
+   * `extent: 'parent'`（不许拖出框）也在同一笔里写。它在渲染层有个时机问题
+   * （分组框还没量出尺寸时会把子节点夹飞），但那要在**交给 Vue Flow 之前**挡，
+   * 不能靠晚一点再写文档 —— 收到同步的人是直接从文档里读的，晚写只保得住自己。
+   * 见 `useFlowCanvas` 的 `extentReady`。
+   */
+  function groupNodes(
+    group: FlowNode,
+    children: Map<string, { x: number; y: number }>,
+    label = "打组"
+  ) {
+    mutate(({ nodes: map }) => {
+      map.set(group.id, toYNode(group))
+      for (const [id, position] of children) {
+        const target = map.get(id)
+        if (!target) continue
+        target.set("parentNode", group.id)
+        target.set("extent", "parent")
+        target.set("position", { ...position })
+      }
+    }, label)
+  }
+
   function moveNodes(positions: Map<string, { x: number; y: number }>, label = "移动节点") {
     mutate(({ nodes: map }) => {
       for (const [id, position] of positions) {
@@ -540,6 +573,7 @@ export const useFlowStore = defineStore("flow", () => {
     addNode,
     addEdge,
     addElements,
+    groupNodes,
     moveNodes,
     resizeNode,
     updateNodeData,

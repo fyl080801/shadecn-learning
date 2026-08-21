@@ -113,6 +113,12 @@ const router = createRouter({
           meta: { title: "画布项目" }
         },
         {
+          path: "personal",
+          name: "PersonalFlows",
+          component: () => import("@/views/canvas/PersonalFlows.vue"),
+          meta: { title: "个人画布" }
+        },
+        {
           path: "projects/:projectId",
           name: "ProjectHome",
           component: () => import("@/views/canvas/ProjectHome.vue"),

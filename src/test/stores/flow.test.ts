@@ -176,6 +176,52 @@ describe("内容读写", () => {
     expect(projected.parentNode).toBe("group")
     expect(projected.extent).toBe("parent")
   })
+
+  it("打组：新建分组框，成员挂到它下面，位置换成相对分组的", () => {
+    const { store } = setup()
+    store.addNode(node("n1", 100, 100))
+    store.addNode(node("n2", 300, 200))
+
+    const group: FlowNode = {
+      id: "g1",
+      type: "group",
+      position: { x: 60, y: 60 },
+      width: 400,
+      height: 300,
+      zIndex: -1,
+      data: defaultNodeData("分组 1")
+    }
+    store.groupNodes(
+      group,
+      new Map([
+        ["n1", { x: 40, y: 40 }],
+        ["n2", { x: 240, y: 140 }]
+      ])
+    )
+
+    const members = ["n1", "n2"].map((id) => store.nodes.find((item) => item.id === id)!)
+    expect(store.nodes.find((item) => item.id === "g1")!.type).toBe("group")
+    expect(members.map((item) => item.parentNode)).toEqual(["g1", "g1"])
+    expect(members[0]!.position).toEqual({ x: 40, y: 40 })
+    expect(members.map((item) => item.extent)).toEqual(["parent", "parent"])
+  })
+
+  it("打组是**一个**事务：撤销一次就全撤回去，不会剩下认不到爹的孤儿", () => {
+    const { store } = setup()
+    store.addNode(node("n1", 100, 100))
+    store.separateUndo()
+
+    store.groupNodes(
+      { id: "g1", type: "group", position: { x: 0, y: 0 }, data: defaultNodeData("分组 1") },
+      new Map([["n1", { x: 100, y: 100 }]])
+    )
+    store.undo()
+
+    const restored = store.nodes.find((item) => item.id === "n1")!
+    expect(store.nodes.map((item) => item.id)).toEqual(["n1"])
+    expect(restored.parentNode).toBeUndefined()
+    expect(restored.position).toEqual({ x: 100, y: 100 })
+  })
 })
 
 describe("协同合并", () => {

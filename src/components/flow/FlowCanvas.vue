@@ -4,12 +4,14 @@ import {
   ConnectionMode,
   PanOnScrollMode,
   Position,
+  SelectionMode,
   VueFlow
 } from "@vue-flow/core"
 import { Background } from "@vue-flow/background"
 import { MiniMap } from "@vue-flow/minimap"
 
 import FlowPresenceCursors from "@/components/flow/FlowPresenceCursors.vue"
+import FlowSelectionToolbar from "@/components/flow/FlowSelectionToolbar.vue"
 import FlowSnapGuides from "@/components/flow/FlowSnapGuides.vue"
 import FlowViewControls from "@/components/flow/FlowViewControls.vue"
 import { flowNodeComponents } from "@/components/flow/node-types"
@@ -48,6 +50,11 @@ const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
     `delete-key-code=null` 是把删除键从 Vue Flow 手里收回来：它自带的那个会直接改
     自己内部的 nodes/edges，绕过 store.apply —— 删掉的东西不进历史、不落库、
     也不会广播给别人。改由 useFlowShortcuts 调 canvas.deleteSelection()。
+
+    `selection-mode=Full` 是「**完全框住才算命中**」。它同时也是 Vue Flow 的默认值，
+    显式写出来是因为这是一条说得出口的产品规则，不是碰巧的默认：蹭到一个角就算选中的话，
+    拉框扫过谁就选中谁，想只挑出那几个节点会非常难。命中的节点**相连的边也一并算选中**，
+    这是 Vue Flow 在框选时顺手做的（见 `src/styles/vue-flow.css` 里选中连线的样式）。
   -->
   <div
     class="h-full w-full"
@@ -61,6 +68,7 @@ const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
       :edges="canvas.edges.value"
       :node-types="flowNodeComponents"
       :connection-mode="ConnectionMode.Strict"
+      :selection-mode="SelectionMode.Full"
       :default-edge-options="defaultEdgeOptions"
       :connection-line-type="ConnectionLineType.Bezier"
       :source-position="Position.Right"
@@ -89,6 +97,12 @@ const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
       <Background :gap="FLOW_GRID_GAP" />
       <FlowViewControls />
       <MiniMap pannable zoomable />
+
+      <!--
+        框选一片时浮在选区上方的工具栏。放在 <VueFlow> 里面是必须的：
+        它内部 teleport 到 viewport 容器上，拿的是这棵树里的那个 Vue Flow 实例。
+      -->
+      <FlowSelectionToolbar />
 
       <!-- 给上层留的扩展位：想往画布里再塞浮层（对齐线、批注…）从这儿进 -->
       <slot />

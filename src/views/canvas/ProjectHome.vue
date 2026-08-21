@@ -64,6 +64,8 @@ const project = ref<ProjectSummary | null>(null)
 const members = ref<ProjectMemberView[]>([])
 const loading = ref(true)
 const loadError = ref<string | null>(null)
+/** 正在把个人空间换到 /personal 去，见 loadProject */
+const redirecting = ref(false)
 
 const isAdmin = computed(() => project.value?.myRole === "admin")
 
@@ -80,6 +82,19 @@ async function loadProject() {
       projectApi.get(props.projectId),
       projectApi.members(props.projectId)
     ])
+    /**
+     * 个人空间在库里确实是个 `kind='personal'` 的项目，`/projects/<它的 id>` 也确实
+     * 打得开 —— 但这一页给它看的是成员、分享、删除项目，而这三样对它全是 403。
+     * 它的页面是 `/personal`，所以这里直接换过去（`replace`：这个地址不该留在返回栈里）。
+     * 老书签和历史记录是唯一还会走到这儿的路。
+     */
+    if (detail.kind === "personal") {
+      // 跳转要一帧才生效，这一帧里 project 还是 null —— 不举旗的话会闪一下「项目不存在」
+      redirecting.value = true
+      void router.replace("/personal")
+      return
+    }
+
     project.value = detail
     members.value = memberList
   } catch (err) {
@@ -93,8 +108,8 @@ watch(() => props.projectId, loadProject, { immediate: true })
 
 // —— 画布列表 ——
 //
-// 列表本身（搜索 / 排序 / 分页 / 增删改）在 `FlowList` 里，项目列表页的
-// 「个人画布」Tab 用的是同一个组件。这里只留下 Tab 标题要显示的那个数。
+// 列表本身（搜索 / 排序 / 分页 / 增删改）在 `FlowList` 里，个人画布页
+// （`PersonalFlows.vue`）用的是同一个组件。这里只留下 Tab 标题要显示的那个数。
 
 const flowTotal = ref(0)
 
@@ -230,7 +245,7 @@ function displayName(member: ProjectMemberView) {
 
 <template>
   <div class="mx-auto flex h-full w-full max-w-6xl flex-col gap-6 p-6">
-    <div v-if="loading" class="space-y-4">
+    <div v-if="loading || redirecting" class="space-y-4">
       <Skeleton class="h-9 w-64" />
       <Skeleton class="h-64 w-full" />
     </div>

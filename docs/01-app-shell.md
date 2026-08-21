@@ -93,6 +93,7 @@
 | `/vue-flow` | VueFlow | 流程图画布 demo（[REQ-FLOW](09-flow-chart.md)），已从侧栏移除，仅保留路由 | 懒加载 |
 | `/projects` | Projects | 项目列表（[REQ-CANVAS](13-flow-canvas-management.md)），侧栏入口「画布项目」 | 懒加载 |
 | `/projects/:projectId` | ProjectHome | 项目主页：画布 / 成员同页 Tab | 懒加载 |
+| `/personal` | PersonalFlows | 个人画布（[REQ-SOLO](16-personal-flow.md)），侧栏入口「个人画布」 | 懒加载 |
 | `/invite/:token` | InviteAccept | 邀请落地页 | 懒加载 |
 | `/flows/:flowId` | FlowEditor | 画布编辑器，**唯一挂在 `BlankLayout` 下的路由（无侧栏）** | 懒加载 |
 
