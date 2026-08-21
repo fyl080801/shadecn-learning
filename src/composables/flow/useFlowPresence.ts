@@ -131,9 +131,20 @@ export function useFlowPresence(sync: FlowSync) {
 
   // —— 接收 ——
 
+  /**
+   * 第三个参数是「这个 clientId 最后一次更新是什么时候」。
+   *
+   * `readPeers` 会把同一个人的多条状态折叠成一条（刷新页面的那一瞬间会有两条，
+   * 原因见它的注释），折叠时要挑还活着的那条 —— 判据就是这个时刻。
+   * `meta` 是 y-protocols 自己维护的，每收到一次更新就刷新一遍。
+   */
   function refresh() {
     const current = awareness()
-    peers.value = current ? readPeers(current.getStates(), current.clientID) : []
+    peers.value = current
+      ? readPeers(current.getStates(), current.clientID, (clientId) =>
+          current.meta.get(clientId)?.lastUpdated ?? 0
+        )
+      : []
   }
 
   // 换画布 / 重连都会给出新的 session，钩子跟着重挂一遍

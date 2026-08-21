@@ -171,6 +171,65 @@ describe("readPeers", () => {
     ])
     expect(readPeers(states, 1).map((p) => p.clientId)).toEqual([1, 3])
   })
+
+  /*
+   * 刷新页面的那一瞬间，同一个人会有两条状态：新连接已经建好，旧连接的条目
+   * 还留在房间里（清理要等旧 socket 真的关闭）。在场展示的是人不是连接，
+   * 所以这里折叠成一条，否则在场栏会冒出两个同名头像、画布上多一个不动的光标。
+   */
+  it("同一个人的两条状态折叠成一条，留最后更新的那条", () => {
+    const states = new Map<number, unknown>([
+      [3, state("u1", { cursor: { x: 1, y: 1 } })],
+      [9, state("u1", { cursor: { x: 2, y: 2 } })]
+    ])
+    const lastUpdated = new Map([
+      [3, 100],
+      [9, 200]
+    ])
+
+    const peers = readPeers(states, 0, (clientId) => lastUpdated.get(clientId) ?? 0)
+    expect(peers.map((p) => p.clientId)).toEqual([9])
+    expect(peers[0]?.cursor).toEqual({ x: 2, y: 2 })
+  })
+
+  it("折叠时自己那条永远留下，哪怕时间戳更旧", () => {
+    const states = new Map<number, unknown>([
+      [3, state("u1")],
+      [7, state("u1")]
+    ])
+    const lastUpdated = new Map([
+      [3, 999],
+      [7, 1]
+    ])
+
+    const peers = readPeers(states, 7, (clientId) => lastUpdated.get(clientId) ?? 0)
+    expect(peers.map((p) => p.clientId)).toEqual([7])
+    expect(peers[0]?.isSelf).toBe(true)
+  })
+
+  it("拿不到时间戳时保留先到的那条，而不是随机换", () => {
+    const states = new Map<number, unknown>([
+      [9, state("u1")],
+      [3, state("u1")]
+    ])
+    expect(readPeers(states, 0).map((p) => p.clientId)).toEqual([9])
+  })
+
+  it("没登录时大家的 id 都是 anonymous，不能折叠成一个人", () => {
+    const states = new Map<number, unknown>([
+      [1, state("anonymous")],
+      [2, state("anonymous")]
+    ])
+    expect(readPeers(states, 1).map((p) => p.clientId)).toEqual([1, 2])
+  })
+
+  it("不同的人各留各的", () => {
+    const states = new Map<number, unknown>([
+      [1, state("u1")],
+      [2, state("u2")]
+    ])
+    expect(readPeers(states, 1).map((p) => p.user.id)).toEqual(["u1", "u2"])
+  })
 })
 
 describe("占用判定", () => {

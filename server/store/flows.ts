@@ -5,10 +5,10 @@ import type { ProjectKind } from './projects.ts'
 import { nameContains } from './text.ts'
 
 /**
- * 画布与操作日志的数据访问层。
+ * 画布的数据访问层。
  *
- * 快照 + 日志双写：graph 是全量快照（读走它，O(1)），
- * FlowOperation 只追加、不修改、不删除，作为审计与将来回放的旁路。
+ * 内容的事实源是 `Flow.ydoc`（Yjs 状态）；这里读的 `graph` 是服务端从它派生的
+ * 只读投影，列表计数、缩略图走它，读是 O(1)。
  */
 
 export type FlowStatus = 'draft' | 'published' | 'archived'
@@ -54,17 +54,6 @@ export interface FlowDetail extends FlowSummary {
    * 没有的分区前端各自回落到默认值（视口回落到 graph.viewport）。
    */
   userState: FlowUserState
-}
-
-/** 操作日志的一行。`update` 二进制本身不出接口，只给量感和「谁在何时」 */
-export interface FlowOperationView {
-  id: string
-  seq: number
-  actorId: string | null
-  /** 服务端收到这次更新的时刻（UTC epoch ms）；排序以它为准 */
-  serverTs: number
-  /** 这次 Yjs 更新的字节数 */
-  size: number
 }
 
 export interface ListFlowsOptions {
@@ -283,49 +272,5 @@ export const flows = {
     })
     // 副本是新画布：谁都还没在它上面留下过视口
     return { ...toSummary(row), graph: readGraph(row.graph), userState: {} }
-  },
-
-  /**
-   * 操作日志。
-   *
-   * 每条是一次 Yjs 增量更新（`update` 二进制），由 WebSocket 那边的 persistence 写入 ——
-   * **没有 REST 提交入口了**，内容的写入路径只有一条：客户端改 Y.Doc → 同步到服务端 →
-   * 落库（见 `server/collab/persistence.ts`）。
-   *
-   * 这里不返回 `update` 本身：它是二进制，塞进 JSON 只会把响应撑大，
-   * 而列表页要的只是「谁在什么时候动过」。真要回放就按 seq 顺序取出来
-   * `Y.applyUpdate` 到一个空文档。
-   */
-  async listOperations(
-    flowId: string,
-    options: { page: number; pageSize: number; sinceSeq?: number },
-  ) {
-    const where = {
-      flowId,
-      ...(options.sinceSeq !== undefined ? { seq: { gt: options.sinceSeq } } : {}),
-    }
-
-    const [total, rows] = await Promise.all([
-      prisma.flowOperation.count({ where }),
-      prisma.flowOperation.findMany({
-        where,
-        orderBy: { seq: 'asc' },
-        skip: (options.page - 1) * options.pageSize,
-        take: options.pageSize,
-        select: { id: true, seq: true, actorId: true, serverTs: true, update: true },
-      }),
-    ])
-
-    const items: FlowOperationView[] = rows.map((row) => ({
-      id: row.id,
-      seq: row.seq,
-      actorId: row.actorId,
-      // 库里是 BigInt，出口转成 number：epoch ms 远在 2^53 以内，JSON 也认
-      serverTs: Number(row.serverTs),
-      /** 这次更新有多大（字节），给「改了多少」一个粗略的量感 */
-      size: row.update.length,
-    }))
-
-    return { items, total }
   },
 }

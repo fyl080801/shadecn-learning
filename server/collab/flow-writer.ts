@@ -8,7 +8,6 @@ import {
   roomOf,
   sameBytes,
   stateFromRow,
-  takeSeq,
 } from './persistence.ts'
 import { COLLAB_LIMITS } from './quota.ts'
 
@@ -17,8 +16,8 @@ import { COLLAB_LIMITS } from './quota.ts'
  *
  * 个人画布没有房间、没有 WebSocket、没有第二个人，但**内容模型和项目画布一模一样** ——
  * 事实源都是 Y.Doc，库里都是 `Flow.ydoc` 字节。分叉只发生在传输这一层，
- * 所以这里做的事和协同那条路是同一套：合并 → 落库 → 记审计 → 派生投影，
- * 用的也是同一批部件（`persistence.ts` 的写队列、号码机、投影，`quota.ts` 的上限）。
+ * 所以这里做的事和协同那条路是同一套：合并 → 落库 → 派生投影，
+ * 用的也是同一批部件（`persistence.ts` 的写队列、投影，`quota.ts` 的上限）。
  *
  * 和协同那条路的三点不同，都是「只有一个人」带来的：
  *
@@ -64,22 +63,11 @@ export interface FlowUpdateRejected {
 
 export type FlowUpdateResult = FlowUpdateAccepted | FlowUpdateRejected
 
-/**
- * 合并一段客户端推上来的 Yjs 增量，并落库。
- *
- * @param actorId 服务端认定的作者（审计用）；没启用登录时为 null
- */
+/** 合并一段客户端推上来的 Yjs 增量，并落库 */
 export async function applyFlowUpdate(
   flowId: string,
   update: Uint8Array,
-  actorId: string | null,
 ): Promise<FlowUpdateResult> {
-  /*
-   * 时间戳在**收到的这一刻**打，不是等排到队列里再打 —— 队列前面可能压着别的写，
-   * 多副本下取号还夹着一次 Redis 往返。理由同 `recordUpdate`，排序请始终用 seq。
-   */
-  const serverTs = BigInt(Date.now())
-
   if (update.byteLength > COLLAB_LIMITS.message) {
     return {
       ok: false,
@@ -101,7 +89,7 @@ export async function applyFlowUpdate(
 
   await enqueueFlowWrite(room, async () => {
     try {
-      box.outcome = { value: await merge(flowId, room, update, actorId, serverTs) }
+      box.outcome = { value: await merge(flowId, room, update) }
     } catch (error) {
       box.outcome = { error }
     }
@@ -118,8 +106,6 @@ async function merge(
   flowId: string,
   room: string,
   update: Uint8Array,
-  actorId: string | null,
-  serverTs: bigint,
 ): Promise<FlowUpdateResult> {
   for (let attempt = 1; attempt <= MAX_WRITE_ATTEMPTS; attempt += 1) {
     const row = await prisma.flow.findFirst({
@@ -181,16 +167,6 @@ async function merge(
         continue
       }
 
-      await prisma.flowOperation.create({
-        data: {
-          flowId,
-          seq: await takeSeq(flowId),
-          // 存客户端发来的原始增量：审计记的是「谁改了什么」，服务端的 gc 不算某个人的操作
-          update: Buffer.from(update),
-          actorId,
-          serverTs,
-        },
-      })
       await rememberStoredVersion(room, doc)
 
       return { ok: true, stateVector: after, revision: row.revision + 1, noop: false }

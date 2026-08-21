@@ -8,12 +8,11 @@ import {
 } from "@vue-flow/core"
 import { Background } from "@vue-flow/background"
 import { MiniMap } from "@vue-flow/minimap"
-import { markRaw } from "vue"
 
 import FlowPresenceCursors from "@/components/flow/FlowPresenceCursors.vue"
 import FlowSnapGuides from "@/components/flow/FlowSnapGuides.vue"
 import FlowViewControls from "@/components/flow/FlowViewControls.vue"
-import ProcessNode from "@/components/flow/ProcessNode.vue"
+import { flowNodeComponents } from "@/components/flow/node-types"
 import {
   FLOW_EDGE_TYPE,
   FLOW_GRID_GAP,
@@ -23,20 +22,14 @@ import {
 /**
  * 画布本体：只负责渲染 Vue Flow 和转发交互，不含任何业务动作。
  *
- * 数据与事件处理都来自 `useFlowEditor()` 的 canvas / selection ——
- * 这个组件里没有一处直接改 store。
- */
-const { canvas, selection } = useFlowEditor()
-
-/**
- * 节点类型表要在模板外面定义并 markRaw。
+ * 数据与事件处理都来自 `useFlowEditor()` 的 canvas —— 这个组件里没有一处直接改 store。
  *
- * 写成 `:node-types="{ process: ProcessNode }"` 的话，这个对象每次渲染都新建一个，
- * Vue Flow 又会把它存进自己的响应式 state —— 组件定义被 reactive() 包一层，
- * Vue 会警告 "received a Component that was made a reactive object"，
- * 而且每次渲染换新对象也会让节点类型白白重新解析。
+ * 这里**不接 `node-click` / `pane-click` 去维护选中态**：点选、框选、拖动选中、
+ * 点空白清空全由 Vue Flow 自己完成，我们那份「现在轮到哪个节点」是它的投影
+ * （`useFlowCanvas` 里的 `onSelectionChange`）。各接各的会漏掉拖动那一路 ——
+ * 拖动之后的 click 会被 d3-drag 吞掉。
  */
-const nodeTypes = markRaw({ process: ProcessNode })
+const { canvas } = useFlowEditor()
 
 /**
  * 边的默认样式：只定类型，**不带箭头**。
@@ -66,7 +59,7 @@ const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
     <VueFlow
       :nodes="canvas.nodes.value"
       :edges="canvas.edges.value"
-      :node-types="nodeTypes"
+      :node-types="flowNodeComponents"
       :connection-mode="ConnectionMode.Strict"
       :default-edge-options="defaultEdgeOptions"
       :connection-line-type="ConnectionLineType.Bezier"
@@ -81,8 +74,6 @@ const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
       :delete-key-code="null"
       class="h-full w-full"
       @nodes-change="canvas.onNodesChange"
-      @node-click="selection.select($event.node.id)"
-      @pane-click="selection.clearSelection()"
       @move-end="canvas.syncViewport"
     >
       <!--

@@ -27,7 +27,7 @@ import {
   announceRevocation,
   createRevocationWatcher,
 } from './revocation.ts'
-import { flowIdOf, forgetFlow, loadFlowState, recordUpdate, roomOf, storeFlowState } from './persistence.ts'
+import { flowIdOf, forgetFlow, loadFlowState, roomOf, storeFlowState } from './persistence.ts'
 import { checkQuota, forgetQuota, quotaLocked, COLLAB_LIMITS } from './quota.ts'
 import { scopedSocketId } from './socket-id.ts'
 
@@ -62,24 +62,6 @@ export interface CollabOptions {
    * dev 下必须是 false —— Vite 的 HMR 走同一个事件，掐了就没有热更新了。
    */
   destroyUnmatchedUpgrades?: boolean
-}
-
-/**
- * 这条更新该不该记一行审计。
- *
- * Hocuspocus 的 `transactionOrigin` 说明这条更新是打哪儿来的：
- * `connection`（这个实例上的客户端发来的）、`redis`（别的实例经 pub/sub 转发过来的）、
- * `local`（服务端自己改的，比如 DirectConnection）。
- *
- * **`redis` 的不记**：多副本下同一条更新会转发到每个持有这个房间的实例，
- * 每个都触发一次 `onChange`。照单全收的话审计表就成了实例数的倍数
- * （两个实例、11 次改动，实测写出 22 行），而且转发来的那条手里没有作者的
- * `context`，`actorId` 只能是 null —— 记下来也没有信息量。
- * 谁收到客户端的消息，谁负责记这一笔。
- */
-export function shouldRecordUpdate(transactionOrigin: unknown): boolean {
-  const source = (transactionOrigin as { source?: string } | undefined)?.source
-  return source !== 'redis'
 }
 
 /** 这个 upgrade 请求是冲协同来的吗 */
@@ -382,16 +364,7 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
       await storeFlowState(data.documentName, data.document, { projection: true })
     },
 
-    /**
-     * 审计：每次客户端改动记一条（Yjs 增量 + 是谁改的）。
-     * `context` 就是 `onConnect` 返回的那份，所以 actorId 是服务端认定的，伪造不了。
-     * 别的实例转发过来的更新不重复记，判据见 {@link shouldRecordUpdate}。
-     */
     async onChange(data) {
-      if (shouldRecordUpdate(data.transactionOrigin)) {
-        const context = data.context as CollabContext | undefined
-        recordUpdate(data.documentName, data.update, context?.identity?.id ?? null)
-      }
       // 量一下规模。超软限只是标记（写入照常，删回去自动解除）；
       // 顶到硬限就把整个房间的连接锁成只读，新加入的由 beforeHandleMessage 锁
       if (checkQuota(data.documentName, data.document, data.update.byteLength)) {

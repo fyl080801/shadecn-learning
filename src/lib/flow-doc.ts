@@ -1,5 +1,13 @@
 import * as Y from "yjs"
-import type { FlowEdge, FlowNode, FlowViewport } from "@/types/flow"
+import type {
+  FlowEdge,
+  FlowEdgeData,
+  FlowHandlePosition,
+  FlowNode,
+  FlowNodeData,
+  FlowNodeStatus,
+  FlowViewport
+} from "@/types/flow"
 
 /**
  * 画布内容在 Yjs 文档里长什么样 —— **这是内容的唯一事实源**。
@@ -14,7 +22,10 @@ import type { FlowEdge, FlowNode, FlowViewport } from "@/types/flow"
  * **为什么节点是 Y.Map 而不是整块 JSON**：Y.Map 的合并粒度是 key。
  * 甲改标题、乙同时拖位置，两人改的是不同的 key，CRDT 会各自保留；
  * 存成一整块 JSON 的话后到的那份会把先到的整个盖掉。
- * `data` 再套一层同理 —— 属性面板上 label / description / config 是分开改的。
+ * `data` 再套一层同理 —— 标题、说明、各个业务字段是分开改的。
+ *
+ * **v2 起 `data` 上的业务字段是平铺的**，正是为了这一条：v1 把它们裹在
+ * `config` 一个键里，甲改 config.prompt、乙改 config.model 会互相整块覆盖。
  *
  * ⚠️ 服务端有一份等价实现（`server/collab/flow-doc.ts`）—— server 和 src 是两个
  * TS 工程，互相 import 不了。**两边的键名和嵌套结构必须完全一致**，
@@ -56,15 +67,15 @@ export function toYNode(node: FlowNode): Y.Map<unknown> {
   if (node.zIndex !== undefined) target.set("zIndex", node.zIndex)
   if (node.parentNode !== undefined) target.set("parentNode", node.parentNode)
   if (node.extent !== undefined) target.set("extent", node.extent)
+  if (node.sourcePosition !== undefined) target.set("sourcePosition", node.sourcePosition)
+  if (node.targetPosition !== undefined) target.set("targetPosition", node.targetPosition)
 
+  // data 是开放的（业务字段平铺），按**实际有的键**逐个写 ——
+  // 照固定清单写的话，清单外的业务字段会被静默丢掉
   const data = new Y.Map<unknown>()
-  data.set("label", node.data.label)
-  data.set("kind", node.data.kind)
-  data.set("config", node.data.config)
-  data.set("ports", node.data.ports)
-  if (node.data.description !== undefined) data.set("description", node.data.description)
-  if (node.data.icon !== undefined) data.set("icon", node.data.icon)
-  if (node.data.ui !== undefined) data.set("ui", node.data.ui)
+  for (const [key, value] of Object.entries(node.data)) {
+    if (value !== undefined) data.set(key, value)
+  }
   target.set("data", data)
 
   return target
@@ -83,6 +94,86 @@ export function toYEdge(edge: FlowEdge): Y.Map<unknown> {
   return target
 }
 
+// —— v1 → v2 的就地升级 ——
+
+/**
+ * 这份 `data` 是 v1 写进去的吗？
+ *
+ * Y.Doc 里没有版本号可查，只能看形状：**同时**有字符串 `kind` 和对象 `config` ——
+ * 这正是 v1 必写的两个键，v2 一个都不写。要求两个同时命中，是为了不误伤
+ * 某个真的叫 `config` 的业务字段。
+ *
+ * 升级只发生在**读**这一侧，纯函数、幂等，**不回写文档**：投影里写文档会凭空
+ * 产生一次 Yjs 事务 —— 进撤销栈、广播给所有人。残留的 `kind` / `config` 键无害。
+ *
+ * ⚠️ 服务端有等价实现（`server/store/flow-types.ts` 的 `upgradeNodeData`）。
+ */
+function isLegacyNodeData(data: Record<string, unknown>): boolean {
+  return typeof data.kind === "string" && isRecord(data.config)
+}
+
+/** v1 的节点 data → v2：`config` 拆平、`kind` 丢掉、补上 `status` */
+function upgradeNodeData(raw: Record<string, unknown>): FlowNodeData {
+  const config = isRecord(raw.config) ? raw.config : {}
+
+  // 先铺 v1 的 config，再铺 raw 其余的键 —— 包括已经平铺着的未知字段，别升丢了
+  const data: FlowNodeData = { ...config, label: "", status: "idle" }
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === "kind" || key === "config" || key === "ports") continue
+    if (value !== undefined) data[key] = value
+  }
+
+  // 框架字段最后规范化，压在业务字段之上
+  data.label = typeof raw.label === "string" ? raw.label : ""
+  data.status = isNodeStatus(raw.status) ? raw.status : "idle"
+  if (typeof data.createdAt !== "number") delete data.createdAt
+  if (typeof data.description !== "string") delete data.description
+  if (typeof data.icon !== "string") delete data.icon
+  if (!isRecord(data.ui)) delete data.ui
+
+  // 空壳端口不留：v1 给每个节点都塞了 `{inputs:[],outputs:[]}`，那是噪声不是信息
+  const ports = raw.ports
+  if (isRecord(ports) && (asArray(ports.inputs).length > 0 || asArray(ports.outputs).length > 0)) {
+    data.ports = ports as FlowNodeData["ports"]
+  }
+
+  return data
+}
+
+/** v2 的 data：原样收下，只保证框架字段的形状对 */
+function normalizeNodeData(raw: Record<string, unknown>): FlowNodeData {
+  const data: FlowNodeData = { ...raw, label: "", status: "idle" }
+  data.label = typeof raw.label === "string" ? raw.label : ""
+  data.status = isNodeStatus(raw.status) ? raw.status : "idle"
+  return data
+}
+
+/**
+ * v1 的边 data 是 `{kind?, condition?, config}` —— `config` 在就当它是老的。
+ * `kind` / `condition` 是边自己的业务语义，没有别的字段与之重复，保留平铺，不丢。
+ */
+function upgradeEdgeData(raw: Record<string, unknown>): FlowEdgeData {
+  const config = isRecord(raw.config) ? raw.config : {}
+  const data: FlowEdgeData = { ...config }
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === "config") continue
+    if (value !== undefined) data[key] = value
+  }
+  return data
+}
+
+function isNodeStatus(value: unknown): value is FlowNodeStatus {
+  return value === "idle" || value === "processing" || value === "completed" || value === "error"
+}
+
+function isHandlePosition(value: unknown): value is FlowHandlePosition {
+  return value === "left" || value === "right" || value === "top" || value === "bottom"
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
+}
+
 /** 取某个节点 data 那层 Y.Map；节点不存在或结构不对返回 null */
 export function nodeData(doc: Y.Doc, nodeId: string): Y.Map<unknown> | null {
   const data = nodesMap(doc).get(nodeId)?.get("data")
@@ -98,7 +189,8 @@ export function fromYNode(id: string, source: Y.Map<unknown>): FlowNode | null {
   }
 
   const rawData = source.get("data")
-  const data = rawData instanceof Y.Map ? (rawData.toJSON() as Record<string, unknown>) : {}
+  const raw = rawData instanceof Y.Map ? (rawData.toJSON() as Record<string, unknown>) : {}
+  const data = isLegacyNodeData(raw) ? upgradeNodeData(raw) : normalizeNodeData(raw)
 
   const width = source.get("width")
   const height = source.get("height")
@@ -107,6 +199,8 @@ export function fromYNode(id: string, source: Y.Map<unknown>): FlowNode | null {
   const zIndex = source.get("zIndex")
   const parentNode = source.get("parentNode")
   const extent = source.get("extent")
+  const sourcePosition = source.get("sourcePosition")
+  const targetPosition = source.get("targetPosition")
 
   return {
     id,
@@ -117,17 +211,9 @@ export function fromYNode(id: string, source: Y.Map<unknown>): FlowNode | null {
     ...(typeof zIndex === "number" ? { zIndex } : {}),
     ...(typeof parentNode === "string" ? { parentNode } : {}),
     ...(extent === "parent" || extent === null ? { extent } : {}),
-    data: {
-      label: typeof data.label === "string" ? data.label : "",
-      kind: typeof data.kind === "string" ? data.kind : "process",
-      config: isRecord(data.config) ? data.config : {},
-      ports: isRecord(data.ports)
-        ? (data.ports as FlowNode["data"]["ports"])
-        : { inputs: [], outputs: [] },
-      ...(typeof data.description === "string" ? { description: data.description } : {}),
-      ...(typeof data.icon === "string" ? { icon: data.icon } : {}),
-      ...(isRecord(data.ui) ? { ui: data.ui } : {})
-    }
+    ...(isHandlePosition(sourcePosition) ? { sourcePosition } : {}),
+    ...(isHandlePosition(targetPosition) ? { targetPosition } : {}),
+    data
   }
 }
 
@@ -136,7 +222,8 @@ export function fromYEdge(id: string, source: Y.Map<unknown>): FlowEdge | null {
   const targetId = source.get("target")
   if (typeof sourceId !== "string" || typeof targetId !== "string") return null
 
-  const data = source.get("data")
+  const rawData = source.get("data")
+  const raw = isRecord(rawData) ? rawData : {}
   const type = source.get("type")
   const animated = source.get("animated")
   const label = source.get("label")
@@ -150,7 +237,7 @@ export function fromYEdge(id: string, source: Y.Map<unknown>): FlowEdge | null {
     ...(typeof type === "string" ? { type } : {}),
     ...(typeof animated === "boolean" ? { animated } : {}),
     ...(typeof label === "string" ? { label } : {}),
-    data: isRecord(data) ? (data as FlowEdge["data"]) : { config: {} }
+    data: isRecord(raw.config) ? upgradeEdgeData(raw) : (raw as FlowEdgeData)
   }
 }
 

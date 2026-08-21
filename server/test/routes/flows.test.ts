@@ -3,7 +3,7 @@ import * as Y from 'yjs'
 import { app } from '../../app.ts'
 import { nodesMap } from '../../collab/flow-doc.ts'
 import { emptyGraph, type FlowGraph } from '../../store/flow-types.ts'
-import { closeRoom, editLabel, openRoom, resetRooms, writeGraph } from '../helpers/collab.ts'
+import { closeRoom, openRoom, resetRooms, writeGraph } from '../helpers/collab.ts'
 import { prisma, resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject, joinViaInvite, type Actor } from '../helpers/project.ts'
 
@@ -30,14 +30,14 @@ function graphWith(nodeCount: number): FlowGraph {
       id: `n${i}`,
       type: 'process',
       position: { x: i * 100, y: 0 },
-      data: { label: `节点 ${i}`, kind: 'process', config: {}, ports: { inputs: [], outputs: [] } },
+      data: { label: `节点 ${i}`, status: 'idle' },
     })
     if (i > 0) {
       graph.edges.push({
         id: `e${i}`,
         source: `n${i - 1}`,
         target: `n${i}`,
-        data: { config: {} },
+        data: {},
       })
     }
   }
@@ -190,21 +190,21 @@ describe('画布内容的写入路径（Yjs）', () => {
     expect((await prisma.flow.findUniqueOrThrow({ where: { id: flowId } })).ydoc).not.toBeNull()
   })
 
-  it('节点 data.config 里的任意结构原样存取', async () => {
+  it('节点 data 上平铺的任意业务字段原样存取', async () => {
     const alice = await actor()
     const projectId = await createProject(alice)
     const flowId = await createFlow(alice, projectId)
 
-    const config = { 嵌套: { 数组: [1, '二', null], 布尔: true }, 空对象: {} }
+    const business = { 嵌套: { 数组: [1, '二', null], 布尔: true }, 空对象: {}, prompt: '一只猫' }
     const graph = graphWith(1)
-    graph.nodes[0]!.data.config = config
+    Object.assign(graph.nodes[0]!.data, business)
 
     await writeGraph(flowId, graph)
 
     const detail = (await (await alice.request(`/api/flows/${flowId}`)).json()) as {
       graph: FlowGraph
     }
-    expect(detail.graph.nodes[0]!.data.config).toEqual(config)
+    expect(detail.graph.nodes[0]!.data).toMatchObject(business)
   })
 
   it('两个客户端并发改同一个节点的不同字段，两边的改动都留下', async () => {
@@ -247,7 +247,6 @@ describe('POST /api/flows/:id/duplicate', () => {
     expect(copy.name).toBe('原始画布 副本')
     expect(copy.revision).toBe(0)
     expect(copy.graph.nodes).toHaveLength(2)
-    expect(await prisma.flowOperation.count({ where: { flowId: copy.id } })).toBe(0)
   })
 })
 
@@ -298,7 +297,7 @@ describe('PATCH /api/flows/:id/user-state', () => {
     expect(await prisma.flowUserState.count({ where: { flowId } })).toBe(1)
   })
 
-  it('视图操作不动画布数据：revision 不涨，也不写操作日志', async () => {
+  it('视图操作不动画布数据：revision 不涨', async () => {
     const alice = await actor()
     const projectId = await createProject(alice)
     const flowId = await createFlow(alice, projectId)
@@ -314,7 +313,6 @@ describe('PATCH /api/flows/:id/user-state', () => {
     expect(detail.revision).toBe(0)
     // 快照里那份兜底视口没被个人视口改写
     expect(detail.graph.viewport).toEqual({ x: 0, y: 0, zoom: 1 })
-    expect(await prisma.flowOperation.count({ where: { flowId } })).toBe(0)
   })
 
   it('校验：未知分区、坏视口、空 body → 400', async () => {
@@ -356,34 +354,5 @@ describe('PATCH /api/flows/:id/user-state', () => {
     await prisma.flow.delete({ where: { id: flowId } })
 
     expect(await prisma.flowUserState.count({ where: { flowId } })).toBe(0)
-  })
-})
-
-describe('GET /api/flows/:id/operations', () => {
-  it('按 seq 升序分页，支持 sinceSeq，并记下是谁改的', async () => {
-    const alice = await actor()
-    const projectId = await createProject(alice)
-    const flowId = await createFlow(alice, projectId)
-    await writeGraph(flowId, graphWith(1))
-
-    // 每条日志 = 客户端的一次 Y 事务，带上服务端认出来的 actorId
-    for (const label of ['一', '二', '三']) {
-      await editLabel(flowId, 'n0', label, alice.userId)
-    }
-    await closeRoom(flowId)
-
-    const all = await alice.request(`/api/flows/${flowId}/operations`)
-    const body = (await all.json()) as {
-      items: { seq: number; actorId: string | null; serverTs: number; size: number }[]
-      total: number
-    }
-    expect(body.total).toBe(3)
-    expect(body.items.map((item) => item.seq)).toEqual([1, 2, 3])
-    // 谁改的由服务端在握手时认定，客户端伪造不了
-    expect(body.items.every((item) => item.actorId === alice.userId)).toBe(true)
-    expect(body.items.every((item) => item.size > 0)).toBe(true)
-
-    const since = await alice.request(`/api/flows/${flowId}/operations?sinceSeq=2`)
-    await expect(since.json()).resolves.toMatchObject({ total: 1 })
   })
 })

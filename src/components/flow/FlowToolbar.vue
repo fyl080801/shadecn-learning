@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { Hand, MousePointer2, Plus } from "lucide-vue-next"
+import { Hand, MousePointer2 } from "lucide-vue-next"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import { FLOW_NODE_TYPES } from "@/components/flow/node-types"
 import { useFlowEditor } from "@/composables/flow"
 
 /**
@@ -9,8 +10,13 @@ import { useFlowEditor } from "@/composables/flow"
  *
  * 加按钮就在这里加：拿 `useFlowEditor()` 里已有的动作接上即可，
  * 不用往编辑器根组件传 props。
+ *
+ * **新增节点那几个按钮是从注册表生成的**，不是一个个写死的：
+ * 注册一种新节点，这里自动多一个按钮（`src/components/flow/node-types.ts`）。
  */
 const { canvas } = useFlowEditor()
+
+const nodeTypes = Object.values(FLOW_NODE_TYPES)
 </script>
 
 <template>
@@ -43,13 +49,15 @@ const { canvas } = useFlowEditor()
 
     <!-- 吸附（网格 + 辅助线）没有开关：始终生效，见 useFlowSnapping -->
     <Button
+      v-for="type in nodeTypes"
+      :key="type.type"
       variant="ghost"
       size="icon"
       class="size-8 rounded-full"
-      title="添加节点"
-      @click="canvas.addNode()"
+      :title="`添加${type.label}`"
+      @click="canvas.addNode(type.type)"
     >
-      <Plus />
+      <component :is="type.icon" />
     </Button>
   </div>
 </template>

@@ -301,6 +301,28 @@ export const useFlowStore = defineStore("flow", () => {
     }, label)
   }
 
+  /**
+   * 改一个节点的尺寸，顺带改位置。
+   *
+   * 从左上角往外拉时 Vue Flow 给的 `x`/`y` 会变（锚点在对角），所以位置得跟着一起写，
+   * 而且必须在**同一个事务**里 —— 分两次写，别人会先看到一个位置变了但尺寸没变的中间态。
+   */
+  function resizeNode(
+    nodeId: string,
+    size: { width: number; height: number; x?: number; y?: number },
+    label = "调整大小"
+  ) {
+    mutate(({ nodes: map }) => {
+      const target = map.get(nodeId)
+      if (!target) return
+      target.set("width", size.width)
+      target.set("height", size.height)
+      if (size.x !== undefined && size.y !== undefined) {
+        target.set("position", { x: size.x, y: size.y })
+      }
+    }, label)
+  }
+
   function updateNodeData(nodeId: string, patch: Partial<FlowNodeData>, label = "修改节点") {
     mutate(({ doc: target }) => {
       const data = nodeData(target, nodeId)
@@ -324,8 +346,30 @@ export const useFlowStore = defineStore("flow", () => {
     }
     if (doomedNodes.size === 0 && doomedEdges.size === 0) return
 
+    // 删掉一个分组，组里的节点要**留在原地**而不是跟着陪葬 —— 所以只解除归属。
+    // 不解除的话它们的 parentNode 指向一个不存在的节点，位置会被当成相对坐标
+    // 去加一个不存在的父节点，整组节点瞬间跳到画布原点附近。
+    const orphaned = nodes.value.filter(
+      (node) => node.parentNode !== undefined && doomedNodes.has(node.parentNode)
+    )
+
     mutate(({ nodes: nodeMap, edges: edgeMap }) => {
       for (const id of doomedEdges) edgeMap.delete(id)
+      for (const node of orphaned) {
+        const target = nodeMap.get(node.id)
+        if (!target) continue
+        target.delete("parentNode")
+        target.delete("extent")
+        // parentNode 下的 position 是相对父节点的，脱离分组之后得换算回画布坐标，
+        // 否则节点会跳到画布原点那一带
+        const parent = nodes.value.find((item) => item.id === node.parentNode)
+        if (parent) {
+          target.set("position", {
+            x: parent.position.x + node.position.x,
+            y: parent.position.y + node.position.y
+          })
+        }
+      }
       for (const id of doomedNodes) nodeMap.delete(id)
     }, "删除")
   }
@@ -497,6 +541,7 @@ export const useFlowStore = defineStore("flow", () => {
     addEdge,
     addElements,
     moveNodes,
+    resizeNode,
     updateNodeData,
     removeElements,
     // 视图状态

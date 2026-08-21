@@ -15,7 +15,6 @@ import {
   forgetClaims,
   releaseSocket,
 } from '../../collab/awareness.ts'
-import { shouldRecordUpdate } from '../../collab/hocuspocus.ts'
 
 /**
  * 二期补上的三道防线。前两道靠的是 Hocuspocus 的 hook，这里测的是它们背后的纯逻辑；
@@ -299,29 +298,5 @@ describe('awareness 身份防伪', () => {
 
     expect(enforceIdentity(incoming, null)).toBe(0)
     expect(incoming.get(1)!.user).toEqual({ id: 'dev', name: '本地' })
-  })
-})
-
-/**
- * 多副本下，同一条更新会经 Redis 转发到每个持有该房间的实例，
- * 每个实例都会触发 onChange —— 审计只该由「收到客户端消息」的那个实例记。
- */
-describe('审计去重（多副本）', () => {
-  it('本实例客户端发来的：记', () => {
-    expect(shouldRecordUpdate({ source: 'connection', connection: {} })).toBe(true)
-  })
-
-  it('服务端自己改的（DirectConnection 之类）：记', () => {
-    expect(shouldRecordUpdate({ source: 'local' })).toBe(true)
-  })
-
-  it('别的实例经 Redis 转发过来的：**不记**，否则审计表变成实例数的倍数', () => {
-    expect(shouldRecordUpdate({ source: 'redis' })).toBe(false)
-  })
-
-  it('形状认不出来时按「记」处理 —— 宁可多一条，不能把作者的那条丢了', () => {
-    expect(shouldRecordUpdate(undefined)).toBe(true)
-    expect(shouldRecordUpdate(null)).toBe(true)
-    expect(shouldRecordUpdate('whatever')).toBe(true)
   })
 })

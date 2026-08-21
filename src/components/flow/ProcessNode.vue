@@ -28,14 +28,13 @@ const TOOLBAR_OFFSET = LABEL_OFFSET + 20 + 6
 const { canvas, presence, selection, store } = useFlowEditor()
 
 /**
- * 节点工具栏什么时候露出来。
+ * 节点工具栏什么时候露出来：**当前单独选中的就是它**。
  *
- * 两个选中态都认：Vue Flow 自己的 `selected`（框选、点选都会置上），
- * 以及我们自己那份给属性面板用的 `selection` —— 免得某一路没同步上时按钮不出现。
+ * 判 `selection` 而不是 props.selected：前者是「现在轮到哪个节点」（Vue Flow 选中态的
+ * 投影，只在恰好选中一个时有值），后者框选一片时每个都为真 —— 那会同时冒出一排工具栏，
+ * 而上面的按钮都是对单个节点说的。
  */
-const showToolbar = computed(
-  () => props.selected || selection.selectedNodeId.value === props.id
-)
+const showToolbar = computed(() => selection.selectedNodeId.value === props.id)
 
 /**
  * 谁正在动这个节点（远端）。
@@ -56,11 +55,12 @@ const inputRef = ref<HTMLInputElement | null>(null)
 /**
  * 双击标题就地改名。
  *
- * 先 `select(id)`：一来属性面板要跟着走，二来选中会上报到 awareness，
- * 别人就能看到「有人在动这个节点」。
+ * 先把选中态切到它身上：名字那一行是 teleport 出节点 DOM 的（NodeToolbar），
+ * 点它不会冒泡成 `node-click`，所以得自己切；切了才会上报到 awareness，
+ * 别人也就看得到「有人在动这个节点」。
  */
 async function startEdit() {
-  selection.select(props.id)
+  canvas.selectOnly(props.id)
   draft.value = props.data.label
   editing.value = true
   await nextTick()

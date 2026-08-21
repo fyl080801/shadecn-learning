@@ -229,21 +229,75 @@ export function readPeer(
 }
 
 /**
- * 把 `awareness.getStates()` 整个解析成列表。
+ * 没登录时大家的 id 都是这一个（本地裸跑、没配 Keycloak）。
+ * 它辨认不出「是谁」，所以**不参与下面的按人折叠** —— 否则一屋子人会被并成一个。
+ * 服务端的单连接互斥出于同样的理由在这种情况下也不生效（`server/collab/exclusive.ts`）。
+ */
+export const ANONYMOUS_USER_ID = "anonymous"
+
+/**
+ * 同一个人的两条状态，留哪一条。
+ *
+ * **自己那条永远留下**：它就是本地状态，一定是活的。其余比「最后一次更新是什么时候」——
+ * 幽灵按定义就是不再更新的那条。拿不到时间信息时保留先到的，至少结论是确定的。
+ */
+function fresher(
+  candidate: PresencePeer,
+  incumbent: PresencePeer,
+  lastUpdatedOf?: (clientId: number) => number
+): boolean {
+  if (candidate.isSelf) return true
+  if (incumbent.isSelf) return false
+  if (!lastUpdatedOf) return false
+  return lastUpdatedOf(candidate.clientId) > lastUpdatedOf(incumbent.clientId)
+}
+
+/**
+ * 把 `awareness.getStates()` 整个解析成列表，**一个人只留一条**。
  *
  * 自己永远排第一（头像堆叠里「我」在最前），其余按 clientId 排 ——
  * 需要一个**稳定**顺序，否则每次 awareness 变动头像都会重排。
+ *
+ * ── 为什么要按人折叠 ──
+ *
+ * 在场展示的是**人**，不是连接。正常情况下一个人在一张画布上也只有一条连接
+ * （服务端的单连接互斥保证），所以多出来的那条一定是**过渡态**：刷新页面时，
+ * 新连接已经建好、旧连接的 awareness 条目还留在房间里，服务端把当前 awareness
+ * 全量推给新页面，于是在场栏冒出两个同名头像，画布上还多一个停住不动的光标。
+ *
+ * 那条旧的**不会立刻消失**：provider 在 `pagehide` 时发的「把我删掉」被
+ * Hocuspocus 4.6.0 吞掉了（它把入站 awareness 先灌进一个空的 scratch Awareness
+ * 再重新编码，而移除条目的 state 是 `null`，灌进空 Awareness 后不会出现在
+ * `getStates()` 里，重编码时就整条丢了），只能等旧 socket 真的关闭、服务端
+ * `removeConnection()` 才清掉。同一个原因也让客户端那套「30 秒没更新就清掉」
+ * 的兜底同步不回服务端，所以这里不能指望上游把重复消掉。
+ *
+ * @param lastUpdatedOf 取某个 clientId 最后一次更新的时刻（`awareness.meta`）；
+ *   同一个人有两条时用它挑活的那条
  */
 export function readPeers(
   states: Map<number, unknown>,
-  localClientId: number
+  localClientId: number,
+  lastUpdatedOf?: (clientId: number) => number
 ): PresencePeer[] {
   const peers: PresencePeer[] = []
+  /** user.id → 这个人目前留下的那一条 */
+  const byUser = new Map<string, PresencePeer>()
+
   for (const [clientId, state] of states) {
     const peer = readPeer(clientId, state, clientId === localClientId)
-    if (peer) peers.push(peer)
+    if (!peer) continue
+
+    if (peer.user.id === ANONYMOUS_USER_ID) {
+      peers.push(peer)
+      continue
+    }
+
+    const incumbent = byUser.get(peer.user.id)
+    if (!incumbent || fresher(peer, incumbent, lastUpdatedOf)) byUser.set(peer.user.id, peer)
   }
 
+  peers.push(...byUser.values())
   peers.sort((a, b) => {
     if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1
     return a.clientId - b.clientId

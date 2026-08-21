@@ -98,13 +98,12 @@ interface ProjectSummary {
 |---|---|---|
 | 内容事实源 | `Flow.ydoc`（Yjs 状态字节） | 同左 |
 | `Flow.graph` | 服务端派生的只读投影 | 同左 |
-| `FlowOperation` | 写，`actorId` = 本人 | 写，`actorId` = 握手时认定的用户 |
 | `FlowUserState`（视口） | 照旧，一人一行 | 照旧 |
 | `revision` | 服务端写状态的计数 | 同左 |
 
-只有一处粒度差别：个人画布的推送是**防抖后的一段合并增量**（一串编辑一条），
-项目画布是**每次 Y 事务一条**。所以个人画布的 `FlowOperation` 行数更少、每行更大。
-回放语义不变 —— 按 `seq` 顺序 apply 到空文档，结果一样。
+只有一处粒度差别：个人画布的推送是**防抖后的一段合并增量**（一串编辑一次），
+项目画布是**每次 Y 事务一次**。落库结果一样 —— `applyUpdate` 是合并语义，
+顺序无关、幂等，合成一段推还是拆开推收敛到同一个文档。
 
 ## 4. 功能需求
 
@@ -114,19 +113,18 @@ interface ProjectSummary {
 把它抽成一个函数（`server/collab/flow-writer.ts`）：
 
 ```ts
-applyFlowUpdate(flowId, update: Uint8Array, actorId: string | null, opts?: { projection?: boolean })
-  → { stateVector: Uint8Array } | { denied: 'too-large' }
+applyFlowUpdate(flowId, update: Uint8Array) → { stateVector: Uint8Array } | { denied: 'too-large' }
 ```
 
-内部顺序和今天一致：配额检查（同一套 `COLLAB_LIMITS` / `GRAPH_LIMITS`）→ 合并进库里的 ydoc →
-写 `FlowOperation`（`seq` 走同一个 `sharedCounter`）→ 按时机派生 `graph` 投影。
-协同路径由 hooks 调它，个人路径由 REST 调它 —— **审计、配额、投影因此只有一份实现**。
+内部顺序：配额检查（同一套 `COLLAB_LIMITS` / `GRAPH_LIMITS`）→ 合并进库里的 ydoc →
+按时机派生 `graph` 投影。协同路径由 hooks 调它，个人路径由 REST 调它 ——
+**配额与投影因此只有一份实现**。
 
 三个必须做对的点：
 
 - **服务端是 `applyUpdate` 合并，不是覆盖。** 读 `ydoc` → 新建 Y.Doc → apply 旧 → apply 新 →
   `encodeStateAsUpdate` 写回，整段跑在 `persistence.ts` 现成的 per-flow 队列里
-  （和协同的落库排**同一条**队 —— 写的是同一行、同一张审计表，各排各的等于没排）。
+  （和协同的落库排**同一条**队 —— 写的是同一行，各排各的等于没排）。
   覆盖语义会让同一个人的两个标签页互相抹掉对方。
 - **跨实例的并发写靠 `revision` 做 CAS，不靠锁。** 队列只在进程内有效；多副本下两个实例
   各自「读-合并-写回」，后写的会盖掉先写的。所以写回时把读到的 `revision` 带进 `where`，
@@ -157,7 +155,7 @@ POST /api/flows/:id/doc                 ← application/octet-stream（Yjs updat
      → { stateVector: <base64url>, revision: number, noop: boolean }
 ```
 
-- `noop: true` = 这次推送什么也没带来（重发、或客户端只动了视口）：没写库、没记审计、
+- `noop: true` = 这次推送什么也没带来（重发、或客户端只动了视口）：没写库、
   `revision` 也没涨。**幂等就落在这里** —— 同一段 update 推一百次也只有第一次留下痕迹。
 - **`?sv=` 必须真的解一次**（`Y.decodeStateVector`）才算校验过。`Buffer.from(x, 'base64url')`
   对任何输入都能凑出一段字节，垃圾会一路传到 lib0 的解码器里才炸成
@@ -321,7 +319,7 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
 
 1. solo 画布连 `/ws/collaboration` 被拒，reason 为 `forbidden`；客户端不重连。
 2. collab 画布 `POST /doc` 返回 409。
-3. `POST /doc` 幂等：同一段 update 推两次，画布里的节点不重复、`FlowOperation` 允许多一行但内容收敛。
+3. `POST /doc` 幂等：同一段 update 推两次，画布里的节点不重复，第二次是 `noop`。
 4. 并发合并：两个「标签页」各自基于同一 `lastAckSV` 推不同的改动，两边的改动都在，谁都没被抹掉。
 5. 超过配额的推送返回 413，且**没有**写进 `ydoc`。
 6. 一次成功的推送同时更新了 `graph` / `nodeCount` / `edgeCount`（§4.3）。
@@ -329,7 +327,7 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
 8. 个人空间不出现在 `GET /api/projects` 里；对它调分享 / 成员 / 删除接口得到 403。
 9. 他人访问个人画布得到 404（不是 403）。
 10. 个人空间新建第 501 张画布成功（不受 `PROJECT_LIMITS.flows` 限制）。
-15. **写回被别的实例抢先 → 重读重来，两边的改动都在**，审计不重复记，`revision` 对得上；
+15. **写回被别的实例抢先 → 重读重来，两边的改动都在**，`revision` 对得上；
     一直抢不到就**抛错**而不是假装写成功（客户端据此保持「未保存」并稍后重试）。
     单进程内撞不上这一支（写队列已经把并发排开了），所以测试**人为制造**那个瞬间：
     spy `findFirst`，在它返回之后、写回之前从旁边直接写一次库。
@@ -364,14 +362,12 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
   这就是「个人画布不带协同」的定义本身 —— 不是缺陷，不要当 bug 修。
 - 个人画布的在场、独占、权限复验、只读分享 —— 没有第二个人，全部不适用。
 - 个人空间的重命名 / 多个人空间 / 空间级设置。
-- 个人画布的历史版本与回放界面（数据齐了，缺界面，和项目画布同一个缺口）。
+- 个人画布的历史版本（和项目画布同一个缺口，见 [REQ-COLLAB §9](04-realtime-collab.md)）。
 
 ## 7. 待确认事项
 
-1. **`FlowOperation` 对个人画布是否值得写。** 现在的方案是写（复用同一套审计与回放）。
-   反方意见：个人画布没有「是谁改的」这个问题，而这张表只增不减
-   （[REQ-DATA §6](05-data-persistence.md) 的已知缺口），个人草稿箱会白白撑大它。
-   备选是只写 `ydoc` 不写日志，等做回放界面时再补。
+1. ~~**`FlowOperation` 对个人画布是否值得写。**~~ —— 已定：不写。操作日志整体移除了，
+   两条通道都只写 `ydoc` + 投影（[REQ-DATA §5](05-data-persistence.md)）。
 2. **侧栏是否要给个人画布一个独立入口。** 当前设计是只在 `/projects` 页用 Tab 区分，
    侧栏仍然只有「画布项目」一项。如果个人画布成为主要用法，
    再考虑把它提到侧栏一级（那时 Tab 与侧栏入口的关系要重新想）。

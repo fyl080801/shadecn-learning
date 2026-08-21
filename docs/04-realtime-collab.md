@@ -26,7 +26,6 @@
 |---|---|
 | 握手鉴权（我们用 cookie，不是 token） | `onConnect`（payload 带 `requestHeaders`） |
 | 持久化 + **自带防抖**、散场与退出时保证落库 | `onLoadDocument` / `onStoreDocument` |
-| 审计「谁改了什么」 | `onChange`（带 `update` 和 `context`） |
 | 房间生命周期、心跳、重连 | 上游负责，我们不写 |
 | 未来：消息拦截 / awareness 防伪 / 只读 / 多实例 | `beforeHandleMessage` / `beforeHandleAwareness` / `readOnly` / redis extension |
 
@@ -60,7 +59,7 @@
 - 握手是普通 HTTP 请求，同源会自动带上 `sid` Cookie。
 - 用与 HTTP 相同的会话校验逻辑（`server/auth/ws.ts` 的 `authorizeCollab`），挂在 `onConnect` 上 ——
   它对**每条**连接都跑；`onAuthenticate` 是 token 模型（"only if required"），我们用 cookie，不走它。
-  抛异常即拒绝；返回值成为 `context`，后面的 hook（审计的 actorId）都读它。
+  抛异常即拒绝；返回值成为 `context`，后面的 hook 都读它。
 - **房间即资源**：房间名形如 `flow:<flowId>` 的，还要再判一次「请求者是不是该画布所属项目的成员」，
   规则与 `requireFlowMember` 一致（画布不存在、非成员一律拒绝，不区分两者）。
   其余房间（演示用）保持「登录即可」。
@@ -150,7 +149,6 @@ Hocuspocus 之后就不存在了。）
 | 改动后 2s（`debounce`），持续编辑最长 10s（`maxDebounce`） | 只写 `ydoc`；**状态向量和上次一样就整个跳过** |
 | 卸载前（`beforeUnloadDocument`） | 写 `ydoc` + **派生投影**（`graph` / 计数） |
 | 进程退出 | `closeConnections()` + 逐房间直接落库（`flushAllRoomsToDatabase`）+ 等写队列排空 |
-| 每条客户端更新（`onChange`） | 追加一行 `FlowOperation`（Yjs 增量 + actorId + serverTs） |
 
 **为什么投影要挂在 `beforeUnloadDocument` 而不是 `onStoreDocument` 的 `clientsCount === 0`**：
 最后一个人离开时，Hocuspocus 只在「还挂着防抖 store」的情况下才补一次 `onStoreDocument`，
@@ -245,7 +243,7 @@ collab ──┬──┴─→ canvas      canvas 是唯一同时认识三者�
 - **没有保存、没有 revision、没有 409。** 改动即刻同步，服务端订阅同一条流落库。
   CRDT 天然收敛，不需要乐观锁，也就没有冲突态可言。
 - **拖动的中间态不进 Y.Doc**：一次拖动会派发几十次位置变化，全写进去等于几十条更新 +
-  几十条审计。中间态给别人看走反馈层，落定的位置在 `onNodeDragStop` 一次性提交。
+  几十次更新。中间态给别人看走反馈层，落定的位置在 `onNodeDragStop` 一次性提交。
 - **Vue Flow 的默认行为会绕过 store**（`applyDefault: true` 下的 `deleteKeyCode` 就是：
   它直接改自己内部的 nodes/edges），必须关掉后自己接管，否则本地看着生效了，
   实际不进撤销栈、不落库、也不同步。
@@ -306,6 +304,15 @@ Vue Flow 靠 `:nodes` 的**数组引用**判断要不要重新同步节点。一
   头像尺寸就是工具栏圆按钮的 `size-8`。**只展示在线的人**，不带连接状态指示（断线由标题胶囊的
   同步状态文字提示，两处都说是重复的）。头像堆叠展示，最多 5 个、多余收成 `+N`；
   靠左的压在靠右的上面，「我」永远排第一。
+  **一个人只占一个头像** —— 展示的是人不是连接，同一个账号的多条 awareness 状态
+  在 `readPeers` 里折叠成一条（留最后更新的那条，自己那条永远留下；没登录时大家
+  都是 `anonymous`，辨认不出人，不折叠）。会有多条是因为**刷新页面的那一瞬间**：
+  新连接已经建好，旧连接的条目还留在房间里 —— provider 在 `pagehide` 时发的
+  「把我删掉」被 Hocuspocus 4.6.0 丢掉了（它把入站 awareness 先灌进一个空的
+  scratch `Awareness` 再重新编码，而移除条目的 state 是 `null`，灌进去后不会
+  出现在 `getStates()` 里，重编码时整条消失），只能等旧 socket 真的关闭、服务端
+  `removeConnection()` 才清。同一个原因也让客户端「30 秒没更新就清掉」的兜底
+  同步不回服务端，所以重复只能在读的这一头收掉。
 - **他人光标** —— 画布上画出箭头 + 头像 + 用户名，颜色即该用户的身份色。
   鼠标移出画布就收起来，不在别人屏幕上留一个不动的箭头。
 - **「谁在动它」标识** —— 有人选中 / 拖动 / 从它拉线时，节点名称边上贴上那个人的头像 + 名字。
@@ -360,8 +367,8 @@ awareness 的内容本来完全由客户端自己写、服务端只转发 ——
 轮询的窗口期在这个场景里是实打实的风险，不只是「晚一点生效」：被移出项目的人在那段时间里
 仍然能写，改动经 CRDT 合并、落库，而**留下的人撤销不回来** —— `Y.UndoManager` 的
 `trackedOrigins` 只收自己的 `LOCAL_ORIGIN`，别人同步过来的改动一律不进撤销栈（§4.0）。
-一次 `deleteSelection()` 就能清空整张画布，而审计日志虽然全在（`FlowOperation` 按 `seq`
-有序，重放可重建任意时刻），**产品里没有任何恢复入口**（`GET …/operations` 只出元信息）。
+一次 `deleteSelection()` 就能清空整张画布，而**产品里没有任何历史或恢复入口** ——
+操作日志已经移除，`Flow.ydoc` 是收敛快照，被删掉的内容不会留在任何地方。
 
 所以正确的形状是事件驱动：**谁改了权限，谁当场把人踢下去**（`revokeCollabAccess()`），
 三个路由调它 —— 移除成员、删项目、删画布。它做两件事：
@@ -539,7 +546,6 @@ socket 继续开着；provider 收到后 `emit('authenticationFailed')` 就完�
 - **最多丢一个防抖窗口**：全量状态按 2s / 10s 上限防抖写，进程被 `kill -9` 会丢掉窗口内的改动
   （正常退出有 SIGTERM 兜底：`closeConnections` 后逐房间直接落库再等写队列排空 ——
   不走 `flushPendingStores`，它触发的落库要过一段微任务链才入队，同步采样会扑空）。
-  审计日志是每次更新即写的，不受影响。
 - **断网时刷新打不开页面**：数据有 IndexedDB 兜底，但应用本体要从服务器加载。
   要做到「断网刷新照样用」得再加 Service Worker，那是另一件事。
 - 富文本编辑器（REQ-PROMPT）尚未接入。
@@ -562,7 +568,6 @@ socket 继续开着；provider 收到后 `emit('authenticationFailed')` 就完�
 - [x] 所有人离开后房间被销毁（`/api/collab/rooms` 归零），内容已落进 `Flow.ydoc`。
 - [x] 重新打开画布，内容从 `ydoc` 恢复。
 - [x] 老画布（只有 `graph` JSON、没有 `ydoc`）第一次打开时自动迁移，内容不丢。
-- [x] 操作日志记下了每次更新的 `actorId`（服务端认定，客户端伪造不了）。
 - [x] **一方伪造 awareness 身份，另一方看到的仍是服务端认定的真身**；同时光标位置原样保留。
 - [x] 节点 / 连线数超限后，房间被标记为拒绝写入；散场后重新判定。
 - [x] 并发「删节点 + 连线」留下的悬空边在落库前被清掉，且不进任何人的撤销栈。
@@ -581,12 +586,14 @@ socket 继续开着；provider 收到后 `emit('authenticationFailed')` 就完�
   updates 经 redis 流转、可持久化到 Postgres / S3），而不是自己再造一层广播。
 - **离线编辑**：接 `y-indexeddb` 就能让改动跨刷新存活、重连自动补发。协议这边已经支持，
   只差前端挂一个 provider。
-- 历史版本 / 时间机器。`FlowOperation` 里已经是可回放的增量序列，材料齐了，缺的是界面。
+- 历史版本 / 时间机器。现在**什么材料都没有**（操作日志已移除）。真要做，形态是画布版本快照：
+  存 **ydoc 二进制**而不是 JSON 投影 —— 从 JSON 重建文档会分配全新的 clientID，
+  和客户端本地状态（内存 doc / IndexedDB）撞车，实测会随机丢掉一半离线编辑；
+  「恢复到某版本」也要走当前文档上的一次事务，而不是重建文档。
 - 服务端改写 awareness 中的用户身份（杜绝同房间内的冒名）。
 - 富文本编辑器（REQ-PROMPT）接入 Yjs。
 
 ## 8. 待确认事项
 
-- `FlowOperation` 的保留策略：现在只追加不清理，一张活跃画布会一直长。
   按条数 / 天数裁剪，还是定期合并成一个「基线 + 增量」？
 - 要不要给 `Y.Doc` 关掉 GC（`YWS_GC=false`）以支持历史版本回溯 —— 代价是文档体积一直涨。
