@@ -5,7 +5,6 @@ export { prisma }
 
 /** 每个用例前清库。都有外键，先删子表 */
 export async function resetDb() {
-  await prisma.flowOperation.deleteMany()
   await prisma.flow.deleteMany()
   await prisma.projectInvite.deleteMany()
   await prisma.projectMember.deleteMany()

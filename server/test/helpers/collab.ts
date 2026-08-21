@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { applyGraphToDoc, nodesMap } from '../../collab/flow-doc.ts'
+import { applyGraphToDoc } from '../../collab/flow-doc.ts'
 import {
   flushCollabWrites,
   forgetFlow,
@@ -62,30 +62,4 @@ export async function writeGraph(flowId: string, graph: FlowGraph): Promise<void
   const doc = await openRoom(flowId)
   applyGraphToDoc(doc, graph)
   await closeRoom(flowId)
-}
-
-/**
- * 「有人改了一个节点的标题」——顺便把这次更新记进审计日志。
- *
- * 审计在生产里由 Hocuspocus 的 `onChange` 触发，那里能拿到服务端认定的 actorId；
- * 这里手动调同一个函数，传的也是同一种 actorId。
- */
-export async function editLabel(
-  flowId: string,
-  nodeId: string,
-  label: string,
-  actorId: string,
-): Promise<Y.Doc> {
-  const doc = await openRoom(flowId)
-  const { recordUpdate } = await import('../../collab/persistence.ts')
-
-  const before = Y.encodeStateVector(doc)
-  doc.transact(() => {
-    const data = nodesMap(doc).get(nodeId)?.get('data')
-    if (data instanceof Y.Map) data.set('label', label)
-  }, 'test')
-
-  recordUpdate(roomOf(flowId), Y.encodeStateAsUpdate(doc, before), actorId)
-  await flushCollabWrites()
-  return doc
 }

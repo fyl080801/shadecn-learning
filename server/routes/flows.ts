@@ -8,7 +8,7 @@ import { parseUserStatePatch } from '../store/flow-types.ts'
 import { flowUserState } from '../store/flow-user-state.ts'
 import { FLOW_STATUSES, flows as store, type FlowStatus } from '../store/flows.ts'
 import type { ProjectKind } from '../store/projects.ts'
-import { INVALID_JSON, parseDescription, parseName, parsePagination, readJson } from './params.ts'
+import { INVALID_JSON, parseDescription, parseName, readJson } from './params.ts'
 
 type Env = { Variables: AuthVariables & ProjectVariables }
 
@@ -172,7 +172,7 @@ export const flows = new Hono<Env>()
     const body = new Uint8Array(await c.req.arrayBuffer())
     if (body.byteLength === 0) return c.json({ error: '请求体不能为空' }, 400)
 
-    const result = await applyFlowUpdate(c.req.param('flowId'), body, userId)
+    const result = await applyFlowUpdate(c.req.param('flowId'), body)
     if (!result.ok) {
       if (result.reason === 'not-found') return c.json(NOT_FOUND, 404)
       // 超配额是 413：请求本身合法，只是这张画布装不下了
@@ -203,31 +203,4 @@ export const flows = new Hono<Env>()
     const copy = await store.duplicate(flowId, userId)
     if (!copy) return c.json(NOT_FOUND, 404)
     return c.json(copy, 201)
-  })
-
-  .get('/:flowId/operations', async (c) => {
-    const paged = parsePagination(c.req.query(), 50)
-    if (!paged.ok) return c.json({ error: paged.error }, 400)
-
-    const rawSince = c.req.query('sinceSeq')
-    let sinceSeq: number | undefined
-    if (rawSince !== undefined && rawSince !== '') {
-      const value = Number(rawSince)
-      if (!Number.isInteger(value) || value < 0) {
-        return c.json({ error: 'sinceSeq 必须是非负整数' }, 400)
-      }
-      sinceSeq = value
-    }
-
-    const { items, total } = await store.listOperations(c.req.param('flowId'), {
-      ...paged.value,
-      sinceSeq,
-    })
-
-    return c.json({
-      items,
-      ...paged.value,
-      total,
-      totalPages: Math.ceil(total / paged.value.pageSize),
-    })
   })

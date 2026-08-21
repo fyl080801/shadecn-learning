@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import { refDebounced } from "@vueuse/core"
-import { FolderPlus, Search, Users } from "lucide-vue-next"
+import { Plus, Search, Users } from "lucide-vue-next"
 import { toast } from "vue-sonner"
 
 import { Button } from "@/components/ui/button"
@@ -156,17 +156,11 @@ watch(tab, (value) => {
 
 <template>
   <div class="mx-auto flex h-full w-full max-w-6xl flex-col gap-6 p-6">
-    <header class="flex items-center justify-between gap-4">
-      <div>
-        <h1 class="text-2xl font-semibold tracking-tight">画布</h1>
-        <p class="text-sm text-muted-foreground">
-          项目里的画布多人实时协作；个人画布只有你自己看得到，也不走协同。
-        </p>
-      </div>
-      <Button v-if="tab === 'projects'" @click="openCreate">
-        <FolderPlus />
-        新建项目
-      </Button>
+    <header>
+      <h1 class="text-2xl font-semibold tracking-tight">画布</h1>
+      <p class="text-sm text-muted-foreground">
+        项目里的画布多人实时协作；个人画布只有你自己看得到，也不走协同。
+      </p>
     </header>
 
     <!-- 同页 Tab，不改路由：两边各自维护自己的分页，互不干扰 -->
@@ -178,9 +172,19 @@ watch(tab, (value) => {
 
       <TabsContent value="projects" class="flex min-h-0 flex-1 flex-col gap-4">
 
-    <div class="relative max-w-sm">
-      <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-      <Input v-model="keyword" placeholder="搜索项目名称" class="pl-9" />
+    <!-- 搜索和新建同一行：新建按钮跟着列表走，而不是挂在页头上 -->
+    <div class="flex items-center gap-2">
+      <div class="relative max-w-sm flex-1">
+        <Search
+          class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input v-model="keyword" placeholder="搜索项目名称" class="pl-9" />
+      </div>
+
+      <Button class="ml-auto" @click="openCreate">
+        <Plus />
+        新建项目
+      </Button>
     </div>
 
     <div v-if="loading" class="space-y-2">

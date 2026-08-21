@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { bytesCodec, sharedCounter, sharedMap } from '../cluster/index.ts'
+import { bytesCodec, sharedMap } from '../cluster/index.ts'
 import { prisma } from '../db.ts'
 import { GRAPH_LIMITS, readGraph } from '../store/flow-types.ts'
 import { applyGraphToDoc, readGraphFromDoc } from './flow-doc.ts'
@@ -33,8 +33,8 @@ export function roomOf(flowId: string): string {
 /**
  * 按房间串行化写库。
  *
- * 审计日志的 seq 是「查最大值 +1」，并发跑会撞 `@@unique([flowId, seq])`；
- * 全量写和审计写也得排在同一条队上，不然「散场落库」可能先于最后一条审计完成。
+ * 同一张画布的两次「读-合并-写回」并发跑，后写的会把先写的整段盖掉；
+ * 排成一条队之后，进程内就只剩一个写者（跨副本那道是 `flow-writer.ts` 里的 CAS）。
  */
 const queues = new Map<string, Promise<unknown>>()
 
@@ -42,7 +42,7 @@ const queues = new Map<string, Promise<unknown>>()
  * 排到某张画布的写队列后面。
  *
  * 个人画布的 REST 写入（`flow-writer.ts`）和协同的落库共用这一条队列 ——
- * 两者写的是同一行、同一张审计表，各排各的队等于没排。
+ * 两者写的是同一行，各排各的队等于没排。
  */
 export function enqueueFlowWrite(key: string, task: () => Promise<void>): Promise<void> {
   return enqueue(key, task)
@@ -58,26 +58,6 @@ function enqueue(key: string, task: () => Promise<void>): Promise<void> {
     if (queues.get(key) === next) queues.delete(key)
   })
   return next
-}
-
-/**
- * flowId → 审计日志的号码机，避免每条审计都查一次最大值。
- *
- * 单副本下它就是个进程内计数器（和以前的 `Map` 一模一样）；多副本下走 Redis `INCR` ——
- * 两个实例各自 +1 会撞 `@@unique([flowId, seq])`，这是必须共享的一份状态。
- * 播种（第一次用到时查库里的 `max(seq)`）写在 `next()` 里，Redis 被清空也能重新对齐。
- */
-const seqCounter = sharedCounter('flow-seq')
-
-export function takeSeq(flowId: string): Promise<number> {
-  return seqCounter.next(flowId, async () => {
-    const last = await prisma.flowOperation.findFirst({
-      where: { flowId },
-      orderBy: { seq: 'desc' },
-      select: { seq: true },
-    })
-    return last?.seq ?? 0
-  })
 }
 
 /**
@@ -233,41 +213,11 @@ export function rememberStoredVersion(documentName: string, doc: Y.Doc): Promise
   return storedVersions.set(documentName, Y.encodeStateVector(doc))
 }
 
-/** 追加一条审计：这次改了什么（Yjs 增量）、是谁改的 */
-export function recordUpdate(
-  documentName: string,
-  update: Uint8Array,
-  actorId: string | null,
-): void {
-  const flowId = flowIdOf(documentName)
-  if (!flowId) return
-
-  // 存 update 的副本：Yjs 给的这块 buffer 之后可能被复用
-  const bytes = Buffer.from(update)
-
-  /**
-   * 时间戳在**收到更新的这一刻**就打，不是等排到队列里、取完号再打。
-   *
-   * 队列前面可能压着几次写，多副本下取号还夹着一次 Redis 往返 —— 那之后
-   * 再读时钟，记下来的就不是「这条改动什么时候到的」，而是「什么时候轮到它写」了。
-   * 实测过：两个实例并发时会出现 seq 更大、serverTs 反而更小的行。
-   *
-   * （跨实例的时钟偏差没法在这里解决，排序请始终用 seq —— 那个是全局单调的。）
-   */
-  const serverTs = BigInt(Date.now())
-
-  void enqueue(documentName, async () => {
-    await prisma.flowOperation.create({
-      data: { flowId, seq: await takeSeq(flowId), update: bytes, actorId, serverTs },
-    })
-  })
-}
-
 /**
  * 等所有房间的写库排空 —— 退出前用。
  *
- * 写是排队跑的，进程直接退会把最后一次落库和审计截断。队列执行过程中还可能追加
- * （落库和审计各是一次入队），所以循环等到真的空为止。
+ * 写是排队跑的，进程直接退会把最后一次落库截断。队列执行过程中还可能追加，
+ * 所以循环等到真的空为止。
  *
  * 每轮先让出一拍再采样：触发方（Hocuspocus 的 store 链路）到真正 `enqueue` 之间
  * 隔着一段微任务链，同步读 `queues.size` 会在它入队**之前**看到空队列然后直接放行 ——
@@ -284,15 +234,12 @@ export async function flushCollabWrites(): Promise<void> {
 /**
  * 房间彻底散场后清掉缓存，下次开重新对齐。
  *
- * 两样都要清：审计的 seq，以及上次落库的状态向量 —— 后者不清的话，
- * 下一轮开房间时会误判「和上次一样」而跳过第一次落库。
+ * 清的是上次落库的状态向量 —— 不清的话，下一轮开房间时会误判
+ * 「和上次一样」而跳过第一次落库。
  *
- * 多副本下这会清掉**共享**的那两个键，而别的实例可能还开着同一个房间。
- * 那样也没问题，两者都是纯缓存：seq 下次会从库里的 `max(seq)` 重新播种，
- * 状态向量没了最多多写一次库 —— 代价是一次多余的查询，不会错号也不会丢内容。
+ * 多副本下这会清掉**共享**的那个键，而别的实例可能还开着同一个房间。
+ * 那样也没问题，它是纯缓存：没了最多多写一次库，不会丢内容。
  */
 export async function forgetFlow(documentName: string): Promise<void> {
-  const flowId = flowIdOf(documentName)
-  if (flowId) await seqCounter.forget(flowId)
   await storedVersions.delete(documentName)
 }

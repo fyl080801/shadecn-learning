@@ -8,12 +8,11 @@ import {
 } from "@vue-flow/core"
 import { Background } from "@vue-flow/background"
 import { MiniMap } from "@vue-flow/minimap"
-import { markRaw } from "vue"
 
 import FlowPresenceCursors from "@/components/flow/FlowPresenceCursors.vue"
 import FlowSnapGuides from "@/components/flow/FlowSnapGuides.vue"
 import FlowViewControls from "@/components/flow/FlowViewControls.vue"
-import ProcessNode from "@/components/flow/ProcessNode.vue"
+import { flowNodeComponents } from "@/components/flow/node-types"
 import {
   FLOW_EDGE_TYPE,
   FLOW_GRID_GAP,
@@ -31,16 +30,6 @@ import {
  * 拖动之后的 click 会被 d3-drag 吞掉。
  */
 const { canvas } = useFlowEditor()
-
-/**
- * 节点类型表要在模板外面定义并 markRaw。
- *
- * 写成 `:node-types="{ process: ProcessNode }"` 的话，这个对象每次渲染都新建一个，
- * Vue Flow 又会把它存进自己的响应式 state —— 组件定义被 reactive() 包一层，
- * Vue 会警告 "received a Component that was made a reactive object"，
- * 而且每次渲染换新对象也会让节点类型白白重新解析。
- */
-const nodeTypes = markRaw({ process: ProcessNode })
 
 /**
  * 边的默认样式：只定类型，**不带箭头**。
@@ -70,7 +59,7 @@ const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
     <VueFlow
       :nodes="canvas.nodes.value"
       :edges="canvas.edges.value"
-      :node-types="nodeTypes"
+      :node-types="flowNodeComponents"
       :connection-mode="ConnectionMode.Strict"
       :default-edge-options="defaultEdgeOptions"
       :connection-line-type="ConnectionLineType.Bezier"

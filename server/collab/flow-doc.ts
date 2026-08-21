@@ -2,9 +2,14 @@ import * as Y from 'yjs'
 import {
   GRAPH_SCHEMA_VERSION,
   emptyGraph,
+  upgradeEdgeData,
+  upgradeNodeData,
   type FlowEdge,
   type FlowGraph,
+  type FlowHandlePosition,
   type FlowNode,
+  type FlowNodeData,
+  type FlowNodeStatus,
   type FlowViewport,
 } from '../store/flow-types.ts'
 
@@ -21,10 +26,13 @@ import {
  * **为什么节点是 Y.Map 而不是整块 JSON**：Y.Map 的合并粒度是 key。
  * 甲改标题、乙同时拖位置，两人改的是不同的 key，CRDT 会各自保留；
  * 存成一整块 JSON 的话后到的那份会把先到的整个盖掉。
- * `data` 再套一层同理 —— 属性面板上 label / description / config 是分开改的。
+ * `data` 再套一层同理 —— 标题、说明、各个业务字段是分开改的。
+ *
+ * **v2 起 `data` 上的业务字段是平铺的**，正是为了这一条：v1 把它们裹在
+ * `config` 一个键里，甲改 config.prompt、乙改 config.model 会互相整块覆盖。
  *
  * **哪些不套 Y.Map**：`position`（x/y 永远一起变，拆开没意义）、
- * `config` / `ports` / 边的 `data`（整块替换的语义，且没有并发编辑入口）。
+ * 边的 `data`（整块替换的语义，且没有并发编辑入口）。
  *
  * ⚠️ 前端有一份等价实现（`src/lib/flow-doc.ts`）—— server 和 src 是两个 TS 工程，
  * 互相 import 不了。**两边的键名和嵌套结构必须完全一致**，改一处记得改另一处，
@@ -47,17 +55,8 @@ const NODE_FIELDS = [
   'zIndex',
   'parentNode',
   'extent',
-] as const
-
-/** 节点 data 里的字段，逐个存进嵌套的 Y.Map，好让并发编辑按字段合并 */
-const NODE_DATA_FIELDS = [
-  'label',
-  'kind',
-  'description',
-  'icon',
-  'config',
-  'ports',
-  'ui',
+  'sourcePosition',
+  'targetPosition',
 ] as const
 
 /** 连线的字段。边没有属性面板，不存在按字段并发编辑，整条平铺就够了 */
@@ -99,10 +98,11 @@ export function writeNode(target: Y.Map<unknown>, node: FlowNode) {
     data = new Y.Map<unknown>()
     target.set('data', data)
   }
+  // v2 的 data 是开放的（业务字段平铺），所以按**实际有的键**逐个写，
+  // 不能再照着一份固定清单来 —— 清单之外的业务字段会被静默丢掉
   const dataSource = (node.data ?? {}) as unknown as Record<string, unknown>
-  for (const field of NODE_DATA_FIELDS) {
-    const value = dataSource[field]
-    if (value !== undefined) (data as Y.Map<unknown>).set(field, value)
+  for (const [key, value] of Object.entries(dataSource)) {
+    if (value !== undefined) (data as Y.Map<unknown>).set(key, value)
   }
 }
 
@@ -145,6 +145,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/**
+ * 这份 `data` 是 v1 写进去的吗？
+ *
+ * Y.Doc 里没有版本号可查（它存的是内容，不是快照），所以只能看形状：
+ * **同时**有字符串 `kind` 和对象 `config` —— 这正是 v1 `writeNode` 必写的两个键，
+ * 而 v2 一个都不写。要求两个同时命中是为了不误伤某个真的叫 `config` 的业务字段。
+ *
+ * 升级只发生在**读**的这一侧，是纯函数、幂等，不回写文档：
+ * 投影函数里写文档会凭空产生一次 Yjs 事务 —— 进别人的撤销栈、广播给所有人。
+ * 文档里残留的 `kind` / `config` 键无害（Yjs 本来就只增不减），下次读再拆一遍，结果一样。
+ */
+function isLegacyNodeData(data: Record<string, unknown>): boolean {
+  return typeof data.kind === 'string' && isRecord(data.config)
+}
+
 function readNode(id: string, source: Y.Map<unknown>): FlowNode | null {
   const position = source.get('position')
   if (!isRecord(position) || typeof position.x !== 'number' || typeof position.y !== 'number') {
@@ -152,13 +167,16 @@ function readNode(id: string, source: Y.Map<unknown>): FlowNode | null {
   }
 
   const rawData = source.get('data')
-  const data = rawData instanceof Y.Map ? (rawData.toJSON() as Record<string, unknown>) : {}
+  const raw = rawData instanceof Y.Map ? (rawData.toJSON() as Record<string, unknown>) : {}
+  const data = isLegacyNodeData(raw) ? upgradeNodeData(raw) : normalizeNodeData(raw)
 
   // 分组 / 层级三兄弟：writeNode 会写进文档（legacy 迁移就靠它），读的时候不认的话，
   // 这些字段会在下一次投影重写时从 graph 里永久消失
   const zIndex = source.get('zIndex')
   const parentNode = source.get('parentNode')
   const extent = source.get('extent')
+  const sourcePosition = source.get('sourcePosition')
+  const targetPosition = source.get('targetPosition')
 
   return {
     id,
@@ -169,18 +187,31 @@ function readNode(id: string, source: Y.Map<unknown>): FlowNode | null {
     ...(typeof zIndex === 'number' ? { zIndex } : {}),
     ...(typeof parentNode === 'string' ? { parentNode } : {}),
     ...(extent === 'parent' || extent === null ? { extent } : {}),
-    data: {
-      label: typeof data.label === 'string' ? data.label : '',
-      kind: typeof data.kind === 'string' ? data.kind : 'process',
-      config: isRecord(data.config) ? data.config : {},
-      ports: isRecord(data.ports)
-        ? (data.ports as FlowNode['data']['ports'])
-        : { inputs: [], outputs: [] },
-      ...(typeof data.description === 'string' ? { description: data.description } : {}),
-      ...(typeof data.icon === 'string' ? { icon: data.icon } : {}),
-      ...(isRecord(data.ui) ? { ui: data.ui } : {}),
-    },
+    ...(isHandlePosition(sourcePosition) ? { sourcePosition } : {}),
+    ...(isHandlePosition(targetPosition) ? { targetPosition } : {}),
+    data,
   }
+}
+
+/** v2 的 data：原样收下，只保证框架字段的形状对 */
+function normalizeNodeData(raw: Record<string, unknown>): FlowNodeData {
+  const data: FlowNodeData = { ...raw, label: '', status: 'idle' }
+  data.label = typeof raw.label === 'string' ? raw.label : ''
+  data.status = isNodeStatus(raw.status) ? raw.status : 'idle'
+  return data
+}
+
+function isNodeStatus(value: unknown): value is FlowNodeStatus {
+  return value === 'idle' || value === 'processing' || value === 'completed' || value === 'error'
+}
+
+function isHandlePosition(value: unknown): value is FlowHandlePosition {
+  return value === 'left' || value === 'right' || value === 'top' || value === 'bottom'
+}
+
+/** v1 的边 data 是 `{kind?, condition?, config}`，`config` 在就当它是老的 */
+function isLegacyEdgeData(data: Record<string, unknown>): boolean {
+  return isRecord(data.config)
 }
 
 function readEdge(id: string, source: Y.Map<unknown>): FlowEdge | null {
@@ -188,7 +219,9 @@ function readEdge(id: string, source: Y.Map<unknown>): FlowEdge | null {
   const targetId = source.get('target')
   if (typeof sourceId !== 'string' || typeof targetId !== 'string') return null
 
-  const data = source.get('data')
+  const rawData = source.get('data')
+  const raw = isRecord(rawData) ? rawData : {}
+
   return {
     id,
     source: sourceId,
@@ -200,7 +233,7 @@ function readEdge(id: string, source: Y.Map<unknown>): FlowEdge | null {
       ? { animated: source.get('animated') as boolean }
       : {}),
     ...(typeof source.get('label') === 'string' ? { label: source.get('label') as string } : {}),
-    data: isRecord(data) ? (data as FlowEdge['data']) : { config: {} },
+    data: isLegacyEdgeData(raw) ? upgradeEdgeData(raw) : (raw as FlowEdge['data']),
   }
 }
 

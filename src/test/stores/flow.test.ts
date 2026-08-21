@@ -8,19 +8,25 @@ import {
   useFlowStore
 } from "@/stores/flow"
 import { metaMap, nodesMap, toYNode } from "@/lib/flow-doc"
-import { defaultNodeData, type FlowDetail, type FlowEdge, type FlowNode } from "@/types/flow"
+import {
+  defaultNodeData,
+  GRAPH_SCHEMA_VERSION,
+  type FlowDetail,
+  type FlowEdge,
+  type FlowNode
+} from "@/types/flow"
 
 /**
  * store 是 Y.Doc 的响应式投影 —— 这一组用例盯的就是这层契约：
  * 改动进得去、别人的改动看得到、撤销只撤自己的、视口不进内容。
  */
 
-function node(id: string, x = 0, y = 0): FlowNode {
-  return { id, type: "process", position: { x, y }, data: defaultNodeData(`节点 ${id}`) }
+function node(id: string, x = 0, y = 0, business?: Record<string, unknown>): FlowNode {
+  return { id, type: "process", position: { x, y }, data: defaultNodeData(`节点 ${id}`, business) }
 }
 
 function edge(id: string, source: string, target: string): FlowEdge {
-  return { id, source, target, sourceHandle: null, targetHandle: null, data: { config: {} } }
+  return { id, source, target, sourceHandle: null, targetHandle: null, data: {} }
 }
 
 function detail(overrides: Partial<FlowDetail> = {}): FlowDetail {
@@ -40,7 +46,7 @@ function detail(overrides: Partial<FlowDetail> = {}): FlowDetail {
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     graph: {
-      schemaVersion: 1,
+      schemaVersion: GRAPH_SCHEMA_VERSION,
       viewport: { x: 0, y: 0, zoom: 1 },
       nodes: [],
       edges: [],
@@ -107,12 +113,32 @@ describe("内容读写", () => {
 
   it("改节点数据是按 key 合并，没提到的字段保持原样", () => {
     const { store } = setup()
-    store.addNode(node("n1"))
+    store.addNode(node("n1", 0, 0, { prompt: "一只猫", steps: 30 }))
     store.updateNodeData("n1", { label: "改过的" })
 
     expect(store.nodes[0]!.data.label).toBe("改过的")
-    expect(store.nodes[0]!.data.kind).toBe("process")
-    expect(store.nodes[0]!.data.config).toEqual({})
+    expect(store.nodes[0]!.data.status).toBe("idle")
+    // 平铺的业务字段各占一个 key，改标题碰不到它们 —— v1 那个整块 config 做不到这点
+    expect(store.nodes[0]!.data.prompt).toBe("一只猫")
+    expect(store.nodes[0]!.data.steps).toBe(30)
+  })
+
+  it("两个人同时改同一个节点的不同业务字段，两边都留下", () => {
+    const { store, doc } = setup()
+    store.addNode(node("n1", 0, 0, { prompt: "一只猫", model: "v1" }))
+
+    // 拿另一个 Y.Doc 当远端同伴：两边各改一个字段，再互相同步
+    const peer = new Y.Doc()
+    Y.applyUpdate(peer, Y.encodeStateAsUpdate(doc))
+
+    store.updateNodeData("n1", { prompt: "一只狗" })
+    const peerData = peer.getMap<Y.Map<unknown>>("nodes").get("n1")!.get("data") as Y.Map<unknown>
+    peer.transact(() => peerData.set("model", "v2"))
+
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(peer))
+
+    expect(store.nodes[0]!.data.prompt).toBe("一只狗")
+    expect(store.nodes[0]!.data.model).toBe("v2")
   })
 
   it("删节点时连着的边一起删，不留悬空的边", () => {

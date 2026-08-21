@@ -10,12 +10,18 @@ import {
 } from "@vue-flow/core"
 import { createId } from "@/lib/id"
 import { elementKey, type PresencePoint } from "@/lib/presence"
+import {
+  buildNodeData,
+  buildNodeDefaults,
+  DEFAULT_NODE_TYPE,
+  flowNodeTypeOf
+} from "@/components/flow/node-types"
 import { isEditableTarget } from "./editable"
 import type { FlowPresence } from "./useFlowPresence"
 import type { FlowSelection } from "./useFlowSelection"
 import { useFlowSnapping } from "./useFlowSnapping"
 import type { useFlowStore } from "@/stores/flow"
-import { defaultNodeData, type FlowEdge, type FlowNode } from "@/types/flow"
+import { defaultEdgeData, type FlowEdge, type FlowNode } from "@/types/flow"
 
 type FlowStore = ReturnType<typeof useFlowStore>
 
@@ -340,7 +346,7 @@ export function useFlowCanvas(
       targetHandle: connection.targetHandle ?? null,
       type: FLOW_EDGE_TYPE,
       animated: false,
-      data: { config: {} }
+      data: defaultEdgeData()
     }
     store.addEdge(edge)
   })
@@ -511,8 +517,13 @@ export function useFlowCanvas(
 
   let cascadeIndex = 0
 
-  /** 在画布中心加一个节点，返回它的 id（画布还没挂载好时返回 null） */
-  async function addNode(): Promise<string | null> {
+  /**
+   * 在画布中心加一个节点，返回它的 id（画布还没挂载好时返回 null）。
+   *
+   * 长什么样由**节点类型注册表**说了算（`src/components/flow/node-types.ts`）——
+   * 这里不认识任何具体类型，加一种节点不用改这个函数。
+   */
+  async function addNode(type: string = DEFAULT_NODE_TYPE): Promise<string | null> {
     const bounds = vueFlowRef.value?.getBoundingClientRect()
     if (!bounds) return null
 
@@ -525,9 +536,10 @@ export function useFlowCanvas(
 
     const node: FlowNode = {
       id,
-      type: "process",
+      type,
       position: center,
-      data: defaultNodeData(`节点 ${store.nodes.length + 1}`)
+      ...buildNodeDefaults(type),
+      data: buildNodeData(type, `${flowNodeTypeOf(type).label} ${store.nodes.length + 1}`)
     }
     // 连点两次「添加节点」应该是两条撤销，不是一条
     store.separateUndo()

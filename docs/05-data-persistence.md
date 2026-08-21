@@ -194,7 +194,10 @@ pnpm db:push        # = prisma db push（schema 目录由 prisma.config.ts 按 p
 ## 5. 本期不做
 
 - 把 notes 从内存迁到 Prisma（等真正需要持久化的业务出现再做）。
-- ~~软删除、审计日志~~ —— 都做了（`deletedAt` 过滤；`FlowOperation` 存 Yjs 更新流 + `actorId`）。
+- ~~软删除~~ —— 做了（`deletedAt` 过滤）。
+- **审计日志 / 操作历史 / 回滚** —— 曾经有（`FlowOperation` 存每次 Yjs 更新的二进制 + 服务端认定的
+  `actorId`），**已整体移除**：产品里没有任何回放或恢复入口，而这张表只增不减，是全库唯一随编辑次数
+  线性增长的东西（`Flow.ydoc` 有 Yjs 的 GC 收敛，它没有）。要恢复审计，先想清楚它服务于哪个界面。
 - **乐观锁** —— 曾经有（`Flow.revision` + `baseRevision`），换 CRDT 之后**主动去掉了**：
   Yjs 的更新可交换、可结合、幂等，冲突由算法收敛，再加乐观锁只会把并发编辑挡在门外。
   `revision` 字段留着，语义变成「服务端写过多少次全量状态」的计数，没有人拿它做冲突判断。
@@ -206,11 +209,10 @@ pnpm db:push        # = prisma db push（schema 目录由 prisma.config.ts 按 p
 ## 6. 待确认事项
 
 - `notes` 是继续当纯样板，还是作为第一个真实持久化业务落库。
-- SQLite 单写入者模型在协同场景下是否够用。协同**已经在落盘**了（`Flow.ydoc` + `FlowOperation`），
+- SQLite 单写入者模型在协同场景下是否够用。协同**已经在落盘**了（`Flow.ydoc`），
   目前靠 `server/collab/persistence.ts` 里的按房间串行队列避开并发写，单进程下够用；
   多副本就是切 PG 的时候（Yjs 的跨进程问题已经解掉了，见 [REQ-CLUSTER](14-clustering.md)）。
-- ~~`FlowOperation.seq` 是「查最大值 +1」+ 进程内缓存~~ —— 已改成共享号码机（`SharedCounter`）：
-  单副本下还是进程内计数，多副本下走 Redis `INCR`，键不存在时按库里的 `max(seq)` 播种，
-  所以 Redis 被清空也能重新对齐。`@@unique([flowId, seq])` 仍然是最后一道兜底。
-- **更新流只存不清，会无限增长**（`FlowOperation` 每次客户端更新一行）。文档本身有 Yjs 的 GC 兜底，
-  这张表没有。按条数 / 天数裁剪，还是定期合并成「基线 + 增量」？量级真成问题时再定。
+- **没有任何历史了**。移除操作日志之后，误删、被移出项目的人清空画布、协作者的破坏性编辑，
+  都无法恢复 —— `Y.UndoManager` 只跟踪本地来源，别人的改动进不了你的撤销栈。
+  要补，正确的形态是**画布版本快照**（存 ydoc 二进制而非 JSON 投影，见 [README 的优化项](README.md)），
+  不是把逐条更新流加回来。

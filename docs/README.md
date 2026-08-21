@@ -19,7 +19,7 @@
 | REQ-DEMO | 演示页与小游戏 | [10-demo-pages.md](10-demo-pages.md) | 已实现 |
 | REQ-QA | 质量保障：测试、类型、Lint | [11-quality-testing.md](11-quality-testing.md) | 已实现 |
 | REQ-DEPLOY | 构建与部署 | [12-deployment.md](12-deployment.md) | 已实现 |
-| REQ-CANVAS | 项目、画布管理与操作历史 | [13-flow-canvas-management.md](13-flow-canvas-management.md) | 已实现 |
+| REQ-CANVAS | 项目与画布管理 | [13-flow-canvas-management.md](13-flow-canvas-management.md) | 已实现 |
 | REQ-CLUSTER | 单副本 / 多副本双模式 | [14-clustering.md](14-clustering.md) | 已实现 |
 | — | 协同方案案例研究：竞品与横向对比 | [15-collab-case-study.md](15-collab-case-study.md) | 调研 |
 | REQ-SOLO | 个人画布（不走协同的画布） | [16-personal-flow.md](16-personal-flow.md) | 已实现 |
@@ -43,8 +43,8 @@
 |---|---|---|
 | 同一字段并发写只有一个赢 | 两人同时拖同一个节点，有一方的操作被静默丢弃；不会数据损坏也不会分叉 | [REQ-COLLAB §5](04-realtime-collab.md) |
 | ~~只能单副本~~ | **已解决**：`CLUSTER_MODE=redis` 打开多副本（内容与 awareness 经 Redis 同步、落库加分布式锁）；默认仍是单副本 | [REQ-CLUSTER](14-clustering.md) |
-| `kill -9` 丢一个防抖窗口 | 最多丢 2–10s 的画布改动（正常退出有 SIGTERM 兜底；更新流是即时写的，不受影响） | [REQ-COLLAB §3.7](04-realtime-collab.md) |
-| `FlowOperation` 只增不减 | 活跃画布的更新流会一直长；文档本身有 Yjs GC，这张表没有 | [REQ-DATA §6](05-data-persistence.md) |
+| `kill -9` 丢一个防抖窗口 | 最多丢 2–10s 的画布改动（正常退出有 SIGTERM 兜底） | [REQ-COLLAB §3.7](04-realtime-collab.md) |
+| 没有历史，误删无法恢复 | 操作日志已移除；`Flow.ydoc` 是收敛快照，不保留任何中间状态。清空画布再离开，内容就没了 | [REQ-DATA §6](05-data-persistence.md) |
 | 断网时刷新打不开页面 | 数据有 IndexedDB 兜底，但应用本体要从服务器加载 —— 没有 Service Worker 就刷不出来 | [REQ-COLLAB §7](04-realtime-collab.md) |
 | 侧栏导航与路由表各写一份 | 容易漏配；`Example.vue` / `Emu3DView.vue` 已无对应路由 | [REQ-SHELL §3](01-app-shell.md) |
 | schema 变更可能让容器起不来 | 启动时的 `prisma db push` 不带 `--accept-data-loss`（有意为之），遇到删列、改类型、**新增 unique** 一律拒绝执行 → CrashLoopBackOff。上线前先 `migrate diff` 看 DDL，被拦了按文档处置 | [REQ-DEPLOY §3.6](12-deployment.md) |
@@ -57,12 +57,13 @@
    其余复用同一个对象引用（Vue Flow 靠引用判断要不要重新同步）。
 3. ~~**增量落库**~~ —— **部分做了**：状态向量没变就整个跳过；派生投影从「每次都写」降到「卸载前写一次」，
    省掉平时那一半序列化。**真正的基线 + 增量链没做** —— 那要引入 `ydocSeq`、加载时合并、基线压缩，
-   还要处理 `FlowOperation` 写失败时的一致性，收益不值这个复杂度。
-4. **`FlowOperation` 保留策略** —— 见上表。
-5. **历史版本 / 回放界面** —— 数据齐了（按 seq 排列的更新流可重建任意时刻），只差界面。
-6. ~~**多副本**~~ —— **已做**。`@hocuspocus/extension-redis` + 一层共享状态抽象（内存 / Redis 两套实现），
+   收益不值这个复杂度。
+4. **画布版本快照** —— 现在没有任何历史。真要做，快照存 **ydoc 二进制**（JSON 投影只能给人看，
+   从它重建文档会产生全新的 clientID，和客户端手里的本地状态撞车、随机丢编辑）；
+   「恢复到某版本」也要走当前文档上的一次事务，而不是重建文档。
+5. ~~**多副本**~~ —— **已做**。`@hocuspocus/extension-redis` + 一层共享状态抽象（内存 / Redis 两套实现），
    由 `CLUSTER_MODE` 切换，默认仍是单副本（见 [REQ-CLUSTER](14-clustering.md)）。
-7. **Service Worker** —— 现在断网**刷新**打不开页面（应用本身要从服务器加载）。
+6. **Service Worker** —— 现在断网**刷新**打不开页面（应用本身要从服务器加载）。
    y-indexeddb 只管数据，要做到「断网刷新照样用」得再加 PWA 那一层。
 
 ### 实现了但没启用

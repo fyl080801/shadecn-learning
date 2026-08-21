@@ -88,8 +88,9 @@ export abstract class SharedMap<V> {
 /**
  * 单调递增的号码机。
  *
- * 只有一个用户：`FlowOperation.seq`。它原本是「查一次库里的最大值，之后在内存里 +1」，
- * 多副本下两个进程各自 +1 就会撞唯一键。
+ * **目前没有生产用户**（原先的用户是画布的操作日志 `FlowOperation.seq`，已经去掉）。
+ * 抽象连同两份实现和契约测试一起留着：跨副本发号是个反复出现的需求
+ * （「进程内 +1」在多副本下必然撞号），需要时直接 `sharedCounter(namespace)` 就能用。
  */
 export abstract class SharedCounter {
   protected readonly namespace: string

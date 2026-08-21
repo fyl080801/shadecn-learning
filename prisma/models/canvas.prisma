@@ -64,7 +64,7 @@ model ProjectInvite {
 }
 
 /// 一张画布。内容的事实源是 ydoc（Yjs 状态），
-/// graph 是服务端从它派生出来的只读投影，操作日志在 FlowOperation 里。
+/// graph 是服务端从它派生出来的只读投影。
 model Flow {
   id          String    @id @default(cuid())
   projectId   String
@@ -93,7 +93,6 @@ model Flow {
   deletedAt   DateTime?
 
   project    Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  operations FlowOperation[]
   userStates FlowUserState[]
 
   @@index([projectId, deletedAt, updatedAt])
@@ -101,7 +100,7 @@ model Flow {
 
 /// 画布上**属于某个人**的状态：视口（看哪儿、放多大）、以及以后的面板开合、
 /// 个人偏好…… 这些是「我怎么看这张画布」，不是画布内容 ——
-/// 所以既不进 ydoc，也不进操作日志，一人一份，互不影响。
+/// 所以不进 ydoc，一人一份，互不影响。
 ///
 /// 按 key 分区存 JSON 字符串：**加一种要存的东西 = 加一个 key，不用改表**。
 /// key 的合法集合与各自的校验在 server/store/flow-types.ts 的
@@ -121,32 +120,4 @@ model FlowUserState {
 
   @@unique([flowId, userId, key])
   @@index([userId])
-}
-
-/// 操作日志，只追加、不修改、不删除（删画布时级联）。
-///
-/// 存的是**Yjs 的增量更新**（`update` 二进制），一条对应客户端的一次 Y 事务。
-/// 它是「谁在什么时候改了画布」的唯一来源 —— Yjs 文档内部只有 clientID，
-/// 不知道那是哪个登录用户，只有服务端在握手时认得出人。
-/// 按 seq 顺序 applyUpdate 到一个空 Y.Doc 就能回放出任意时刻的画布。
-///
-/// 时间是 UTC epoch 毫秒的整数（BigInt），不是 DateTime：协同要把不同客户端的
-/// 操作排到同一条时间轴上，数值可以直接比大小，不受时区、格式、序列化精度影响。
-/// 排序用 seq（全局单调），serverTs 只是「什么时候到的」，多副本下来自不同实例的钟。
-model FlowOperation {
-  id       String @id @default(cuid())
-  flowId   String
-  /// 画布内自增序号，从 1 开始
-  seq      Int
-  /// Yjs 增量更新的二进制（`Y.encodeStateAsUpdate` 的 diff）
-  update   Bytes
-  /// 发出这次更新的登录用户；服务端在 WebSocket 握手时认的，客户端伪造不了
-  actorId  String?
-  /// 服务端收到的时刻（UTC epoch ms）
-  serverTs BigInt
-
-  flow Flow @relation(fields: [flowId], references: [id], onDelete: Cascade)
-
-  @@unique([flowId, seq])
-  @@index([flowId, seq])
 }

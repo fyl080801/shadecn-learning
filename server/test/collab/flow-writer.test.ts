@@ -15,11 +15,8 @@ import { actor, createFlow, createProject } from '../helpers/project.ts'
  * 两个标签页的改动都得在、超限的整段要拒掉而不是写一半。
  */
 
-let ownerId = ''
-
 async function newFlow() {
   const alice = await actor()
-  ownerId = alice.userId
   const projectId = await createProject(alice)
   return createFlow(alice, projectId)
 }
@@ -65,10 +62,10 @@ describe('个人画布的写入通道', () => {
     await resetDb()
   })
 
-  it('推一段增量 → 内容落库、投影跟着更新、审计记下作者', async () => {
+  it('推一段增量 → 内容落库、投影跟着更新', async () => {
     const flowId = await newFlow()
 
-    const result = await applyFlowUpdate(flowId, addNodes('n1', 'n2'), ownerId)
+    const result = await applyFlowUpdate(flowId, addNodes('n1', 'n2'))
 
     expect(result.ok).toBe(true)
     expect(await nodeIds(flowId)).toEqual(['n1', 'n2'])
@@ -82,30 +79,24 @@ describe('个人画布的写入通道', () => {
     expect(JSON.parse(row.graph).nodes).toHaveLength(2)
     expect(row.revision).toBe(1)
 
-    const ops = await prisma.flowOperation.findMany({ where: { flowId } })
-    expect(ops).toHaveLength(1)
-    expect(ops[0].actorId).toBe(ownerId)
-    expect(ops[0].seq).toBe(1)
-
     await forgetFlow(roomOf(flowId))
   })
 
-  it('同一段增量推两次 → 第二次是 noop，不写库也不记审计', async () => {
+  it('同一段增量推两次 → 第二次是 noop，不写库', async () => {
     const flowId = await newFlow()
     const update = addNodes('n1')
 
-    await applyFlowUpdate(flowId, update, ownerId)
-    const again = await applyFlowUpdate(flowId, update, ownerId)
+    await applyFlowUpdate(flowId, update)
+    const again = await applyFlowUpdate(flowId, update)
 
     expect(again.ok && again.noop).toBe(true)
     expect(await nodeIds(flowId)).toEqual(['n1'])
-    // revision 没涨、审计没多一行：重发是真的什么都没发生
+    // revision 没涨：重发是真的什么都没发生
     const row = await prisma.flow.findUniqueOrThrow({
       where: { id: flowId },
       select: { revision: true },
     })
     expect(row.revision).toBe(1)
-    expect(await prisma.flowOperation.count({ where: { flowId } })).toBe(1)
 
     await forgetFlow(roomOf(flowId))
   })
@@ -115,12 +106,11 @@ describe('个人画布的写入通道', () => {
 
     // 两边都从空画布出发，互不知道对方 —— 覆盖式写回会丢掉先到的那个
     await Promise.all([
-      applyFlowUpdate(flowId, addNodes('from-tab-a'), ownerId),
-      applyFlowUpdate(flowId, addNodes('from-tab-b'), ownerId),
+      applyFlowUpdate(flowId, addNodes('from-tab-a')),
+      applyFlowUpdate(flowId, addNodes('from-tab-b')),
     ])
 
     expect(await nodeIds(flowId)).toEqual(['from-tab-a', 'from-tab-b'])
-    expect(await prisma.flowOperation.count({ where: { flowId } })).toBe(2)
 
     await forgetFlow(roomOf(flowId))
   })
@@ -128,7 +118,7 @@ describe('个人画布的写入通道', () => {
   it('增量基于服务端返回的状态向量算 → 只发差量也能合并对', async () => {
     const flowId = await newFlow()
 
-    const first = await applyFlowUpdate(flowId, addNodes('n1'), ownerId)
+    const first = await applyFlowUpdate(flowId, addNodes('n1'))
     expect(first.ok).toBe(true)
     if (!first.ok) return
 
@@ -142,7 +132,7 @@ describe('个人画布的写入通道', () => {
     const diff = Y.encodeStateAsUpdate(local, first.stateVector)
     local.destroy()
 
-    await applyFlowUpdate(flowId, diff, ownerId)
+    await applyFlowUpdate(flowId, diff)
 
     expect(await nodeIds(flowId)).toEqual(['n1', 'n2'])
     await forgetFlow(roomOf(flowId))
@@ -150,7 +140,7 @@ describe('个人画布的写入通道', () => {
 
   it('端点已经不在的连线被清掉，且不进审计', async () => {
     const flowId = await newFlow()
-    await applyFlowUpdate(flowId, addNodes('n1'), ownerId)
+    await applyFlowUpdate(flowId, addNodes('n1'))
 
     // 连一条指向不存在节点的边 —— 一个人开两个标签页也造得出来
     const doc = new Y.Doc()
@@ -160,7 +150,7 @@ describe('个人画布的写入通道', () => {
       edge.set('target', 'ghost')
       edgesMap(doc).set('e1', edge)
     })
-    await applyFlowUpdate(flowId, Y.encodeStateAsUpdate(doc), ownerId)
+    await applyFlowUpdate(flowId, Y.encodeStateAsUpdate(doc))
     doc.destroy()
 
     const stored = await docInDb(flowId)
@@ -172,18 +162,17 @@ describe('个人画布的写入通道', () => {
 
   it('超过节点上限 → 整段拒掉，库里一个节点都没多', async () => {
     const flowId = await newFlow()
-    await applyFlowUpdate(flowId, addNodes('keep'), ownerId)
+    await applyFlowUpdate(flowId, addNodes('keep'))
 
     const tooMany = addNodes(
       ...Array.from({ length: COLLAB_LIMITS.nodes + 1 }, (_, i) => `n${i}`),
     )
-    const result = await applyFlowUpdate(flowId, tooMany, ownerId)
+    const result = await applyFlowUpdate(flowId, tooMany)
 
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toBe('too-large')
-    // 拒绝就是拒绝：没有写一半，也没有留下审计
+    // 拒绝就是拒绝：没有写一半
     expect(await nodeIds(flowId)).toEqual(['keep'])
-    expect(await prisma.flowOperation.count({ where: { flowId } })).toBe(1)
 
     await forgetFlow(roomOf(flowId))
   })
@@ -192,7 +181,7 @@ describe('个人画布的写入通道', () => {
     const flowId = await newFlow()
 
     const huge = new Uint8Array(COLLAB_LIMITS.message + 1)
-    const result = await applyFlowUpdate(flowId, huge, ownerId)
+    const result = await applyFlowUpdate(flowId, huge)
 
     expect(result.ok === false && result.reason).toBe('too-large')
     await forgetFlow(roomOf(flowId))
@@ -202,16 +191,16 @@ describe('个人画布的写入通道', () => {
     const flowId = await newFlow()
     await prisma.flow.update({ where: { id: flowId }, data: { deletedAt: new Date() } })
 
-    const deleted = await applyFlowUpdate(flowId, addNodes('n1'), ownerId)
+    const deleted = await applyFlowUpdate(flowId, addNodes('n1'))
     expect(deleted.ok === false && deleted.reason).toBe('not-found')
 
-    const missing = await applyFlowUpdate('no-such-flow', addNodes('n1'), ownerId)
+    const missing = await applyFlowUpdate('no-such-flow', addNodes('n1'))
     expect(missing.ok === false && missing.reason).toBe('not-found')
   })
 
   it('读回来的差量只带没见过的部分', async () => {
     const flowId = await newFlow()
-    const first = await applyFlowUpdate(flowId, addNodes('n1'), ownerId)
+    const first = await applyFlowUpdate(flowId, addNodes('n1'))
     if (!first.ok) throw new Error('第一次推送就失败了')
 
     const full = await readFlowUpdate(flowId)
@@ -293,10 +282,10 @@ describe('写回撞车时的重试', () => {
 
   it('被抢先一次 → 重读重来，两边的改动都在', async () => {
     const flowId = await newFlow()
-    await applyFlowUpdate(flowId, addNodes('base'), ownerId)
+    await applyFlowUpdate(flowId, addNodes('base'))
 
     const spy = raceOnRead(flowId, addNodes('from-other-instance'), 1)
-    const result = await applyFlowUpdate(flowId, addNodes('mine'), ownerId)
+    const result = await applyFlowUpdate(flowId, addNodes('mine'))
 
     // 第一次写回扑空（CAS 没命中），重读之后才成功 —— 两次读就是这条分支的证据
     expect(spy).toHaveBeenCalledTimes(2)
@@ -305,9 +294,6 @@ describe('写回撞车时的重试', () => {
 
     // 谁的都没丢：抢先那位的节点在，我的也在
     expect(await nodeIds(flowId)).toEqual(['base', 'from-other-instance', 'mine'].sort())
-
-    // 重试不该重复记审计：base 一条 + mine 一条（别的实例那次是手写的，本来就不记）
-    expect(await prisma.flowOperation.count({ where: { flowId } })).toBe(2)
 
     const row = await prisma.flow.findUniqueOrThrow({
       where: { id: flowId },
@@ -322,7 +308,7 @@ describe('写回撞车时的重试', () => {
 
   it('一直被抢先 → 抛错，而不是假装写成功', async () => {
     const flowId = await newFlow()
-    await applyFlowUpdate(flowId, addNodes('base'), ownerId)
+    await applyFlowUpdate(flowId, addNodes('base'))
 
     raceOnRead(flowId, addNodes('always-losing'), Number.POSITIVE_INFINITY)
 
@@ -331,11 +317,10 @@ describe('写回撞车时的重试', () => {
      * 改动还在本地 IndexedDB 里。要是这里改成返回 ok，客户端会把 ack 往前推 ——
      * 那段内容就再也补不回来了，而界面一直显示「已保存」。
      */
-    await expect(applyFlowUpdate(flowId, addNodes('mine'), ownerId)).rejects.toThrow(/抢先写入/)
+    await expect(applyFlowUpdate(flowId, addNodes('mine'))).rejects.toThrow(/抢先写入/)
 
-    // 我的那段确实没进库，也没留下审计
+    // 我的那段确实没进库
     expect(await nodeIds(flowId)).not.toContain('mine')
-    expect(await prisma.flowOperation.count({ where: { flowId } })).toBe(1)
 
     await forgetFlow(roomOf(flowId))
   })
