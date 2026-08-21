@@ -271,6 +271,25 @@ Application 的 `source.directory.exclude` 还留着一条 `argo-workflow.yaml` 
 留着无害，但**别拿这条 exclude 当护栏**：想在 `k8s/` 下放不该被同步的东西，靠的是它精确匹配
 文件名，一改名就失效。
 
+### 4.5 流水线用到的镜像**全部**走 Harbor 代理，包括 Argo 自己的 executor
+
+集群到 `quay.io` 的直连不稳（`failed to do request: Head https://quay.io/v2/…: EOF`），
+而 argo 的 controller configmap 里 executor 是 **`imagePullPolicy: Always`** ——
+节点上缓存过也没用，quay.io 一不通，**每个步骤的 Pod 都卡在 `Init:ImagePullBackOff`**，
+流水线一步都跑不动。注意 `workflow-proxy-config` 救不了这个：它是注入到容器里的
+env，而拉镜像的是 kubelet。
+
+所以模板里三类镜像都指到 Harbor 的代理缓存：
+
+| 镜像 | 写法 |
+|---|---|
+| 步骤容器（git / buildah） | `192.168.68.95:31443/docker.io/alpine/git`、`192.168.68.95:31443/quay.io/buildah/stable` |
+| **argo executor**（每个 Pod 的 `init` + `wait` 容器） | `spec.podSpecPatch` 覆盖成 `192.168.68.95:31443/quay.io/argoproj/argoexec:<版本>` |
+
+executor 的 tag **必须和集群里 argo 的版本对上**（`kubectl -n argo get deploy` 看
+workflow-controller 的 tag），argo 升级之后要跟着改这里 —— 这是把它写进 Workflow 而不是
+改 argo 全局 configmap 的代价，换来的是改动留在仓库里、只影响这条流水线。
+
 ## 5. 验收标准
 
 - [ ] `pnpm build` 后 `output/` 里同时有 `server/index.js` 和 `public/index.html`，`pnpm start` 能直接起服务。
