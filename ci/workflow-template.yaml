@@ -157,18 +157,26 @@ spec:
 
             echo "=== Creating manifest ==="
             buildah manifest create ${INTERNAL_IMAGE}
-            echo "=== Building amd64 ==="
-            buildah bud --platform linux/amd64 --format docker \
-              --file /workspace/Dockerfile \
-              --manifest ${INTERNAL_IMAGE} \
-              $PROXY_ARGS \
-              /workspace
-            echo "=== Building arm64 ==="
-            buildah bud --platform linux/arm64 --format docker \
-              --file /workspace/Dockerfile \
-              --manifest ${INTERNAL_IMAGE} \
-              $PROXY_ARGS \
-              /workspace
+            # ⚠️ --pull=always / --no-cache 不是保险起见，是修过的事故：
+            # 两轮 bud 共用同一个本地存储，buildah 遇到**同名**的本地镜像会直接拿来用，
+            # 不管它是哪个架构的（platform 不匹配最多给个 warning）。结果推上 Harbor 的
+            # amd64 镜像里混进了 aarch64 编译的 better_sqlite3.node —— 容器起得来、
+            # /api/health 一路 200，直到第一次查库才 500：
+            # 「Error relocating ...: unsupported relocation type 1026」。
+            # 每轮都重新按 platform 拉基础镜像、不复用任何层，两轮之间才互不污染。
+            # 另一道防线在 Dockerfile 里（运行时阶段逐个 dlopen 原生模块）。
+            for PLATFORM in linux/amd64 linux/arm64; do
+              echo "=== Building ${PLATFORM} ==="
+              buildah bud --platform ${PLATFORM} --format docker \
+                --pull=always --no-cache --layers=false \
+                --file /workspace/Dockerfile \
+                --manifest ${INTERNAL_IMAGE} \
+                $PROXY_ARGS \
+                /workspace
+            done
+            echo "=== Manifest contents ==="
+            # 脚本开头是 set -euo pipefail，grep 没命中会让整步失败 —— 这只是打日志，兜住
+            buildah manifest inspect ${INTERNAL_IMAGE} | grep -E '"(architecture|os|digest)"' || true
             echo "=== Logging in to Harbor ==="
             echo "${PASS}" | buildah login --username="${USER}" --password-stdin ${INTERNAL_REGISTRY} || true
             echo "=== Pushing manifest to Harbor ==="
