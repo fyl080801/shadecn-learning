@@ -120,17 +120,40 @@ CI 里想一条命令从源码出镜像就用它，三个阶段：
 > ⚠️ 跨架构构建：build 阶段带了 `--platform=$BUILDPLATFORM`（构建产物与架构无关，随构建机跑最快）；
 > deps 阶段**故意不带**，跑在目标平台上，这样 better-sqlite3 编译出来的才是目标架构的 `.node`。
 > 在 amd64 上构 arm64 镜像需要 QEMU/binfmt 支持。
-> 三个阶段的基础镜像要写成**同一个引用**（都是 `harbor-core.harbor.svc/library/node:22-alpine`）：
-> 名字不同在 buildah 的本地存储里就是两条独立记录，多架构构建两轮之间更容易串。
 
-> ⚠️ **运行时阶段最后那句 `find … -name '*.node'` + `process.dlopen` 是事故留下的护栏，别删。**
-> 原生模块的架构错了，容器**照样能起**：Node 只在第一次 `require` 那个 `.node` 时才 dlopen，
-> 而 `/api/health` 不查库，于是 readiness 一路 200，Pod 显示 Healthy，
-> 只有真实请求会 500：`Invalid prisma.session.findUnique() invocation: Error relocating
-> /app/node_modules/better-sqlite3/build/Release/better_sqlite3.node: unsupported relocation type 1026`
-> （`1026` = `R_AARCH64_JUMP_SLOT`，即 musl 的 x86_64 动态链接器在加载一个 **aarch64** 的 `.node`）。
-> 这一行让这种镜像在构建期就失败。逐个 dlopen 而不是 `require('better-sqlite3')`，
-> 是因为 postgresql 构建的产物里没有这个包（provider 绑构建，见 §1）。
+#### 2.5.1 三道架构护栏，全都是事故留下的
+
+线上出过这么一档事：`/api/health` 一路 200、Pod `1/1 Available`，但每个真实请求都 500 ——
+
+```
+Invalid prisma.session.findUnique() invocation:
+Error relocating /app/node_modules/better-sqlite3/build/Release/better_sqlite3.node:
+unsupported relocation type 1026
+```
+
+`1026` 是 `R_AARCH64_JUMP_SLOT`：musl 的 **x86_64** 动态链接器在加载一个 **aarch64** 的 `.node`。
+一个 amd64 的镜像里装着 arm64 编译的原生模块。
+
+**怎么来的**：Harbor 的 `library` 项目里那个 `node:22-alpine` 是**只有 arm64 的单架构镜像**
+（手动推上去的，不是代理缓存），而 build / deps 阶段当时正是从它拉的。
+`buildah bud --platform linux/amd64` 遇到没有 amd64 manifest 的 tag，只能退而拉 arm64；
+构建机装了 QEMU binfmt，于是 **`RUN` 全都跑得起来、一步不报错** —— 那一轮容器里
+`uname -m` 其实是 `aarch64`，装出来的 `.node` 自然也是 aarch64 的，最后被打进标着 amd64
+的镜像。运行时阶段当时用的是另一个引用（`docker.io` 代理，多架构正常），所以最终镜像是
+「x86_64 的系统层 + aarch64 的原生模块」这种嵌合体。
+
+**别只靠「构建成功」判断架构对不对** —— 装了 binfmt 的机器上，拉错架构是完全静默的。
+所以有三道互相独立的护栏，缺一不可：
+
+| 护栏 | 位置 | 挡住的是 |
+|---|---|---|
+| 三个阶段同一个**多架构**引用（`192.168.68.95:31443/docker.io/library/node:22-alpine`） | `FROM` 行 | 不同阶段拉到不同架构，拼成嵌合体 |
+| `ARG TARGETARCH` + 比对 `process.arch`（deps、运行时各一处） | 每个阶段开头 | 基础镜像的 tag 没有目标架构，被 QEMU 静默糊弄过去 |
+| `find … -name '*.node'` 逐个 `process.dlopen` | 运行时阶段末尾 | 前两道漏掉的任何组合 —— 最终镜像里的原生模块能不能真的加载 |
+
+第三道用 dlopen 遍历而不是 `require('better-sqlite3')`，是因为 postgresql 构建的产物里
+没有这个包（provider 绑构建，见 §2.3）。**换基础镜像的 tag 或仓库之前先验一遍**：在 amd64
+节点上跑一次 `uname -m`，必须是 `x86_64`。
 
 ## 3. Kubernetes 部署需求
 
@@ -271,11 +294,12 @@ kubectl apply -f ci/workflow-template.yaml
 
 1. `git-clone` —— 用 `gitea-deploy-key` clone，checkout `gitRevision`（默认 `master`），输出短/全 hash；整个工作区作为 artifact（走 minio）传给后两步
 2. `buildah-build-push` —— 用仓库根 `Dockerfile` 构建 **amd64 + arm64 manifest**，推到 Harbor 的 `apps/shadecn-learning:<short-sha>`（走集群内地址 `harbor-core.harbor.svc`）。**整条流水线的时间几乎全在这里，约 45 分钟** —— 两个架构各跑一遍完整构建，其中一个还靠 QEMU 模拟。
-   两轮 `bud` 都带 **`--pull=always --no-cache --layers=false`**，这是修过的事故：两轮共用同一个
-   本地存储，而 buildah 碰到**同名**的本地镜像会直接拿来用，platform 不匹配最多给个 warning ——
-   于是 amd64 那份镜像里混进了 arm64 那轮装出来的 `node_modules`（aarch64 的
-   `better_sqlite3.node`），推上线之后每个查库请求 500，见 §2 的护栏说明。
-   构建完会 `buildah manifest inspect` 打一遍每个条目的 `architecture`，日志里能直接对
+   两轮 `bud` 都带 **`--pull=always --no-cache --layers=false`**：两轮共用一个本地存储，
+   这几个开关保证每轮都按各自的 platform 重新拉基础镜像、不复用上一轮的层。
+   构建完会 `buildah manifest inspect` 打一遍每个条目的 `architecture`，日志里能直接对。
+   **但架构错乱的真凶不在这里，在基础镜像的 tag 上，见 [§2.5.1](#251-三道架构护栏全都是事故留下的)** ——
+   日志里那句 `native modules ok: N on <arch>` 才是每轮真实跑在什么架构上的证据，
+   `linux/amd64` 那轮打出 `aarch64` 就是出事了
 3. `git-update-image-tag` —— `sed` 改 `k8s/deployment.yaml` 的 tag，提交 `ci: update image tag to <sha>`，push 回同一分支。到这里 CI 就结束了，部署是 ArgoCD 的事
 
 流水线依赖的资源都在集群里带外维护，**缺一个就跑不起来**：Secret `gitea-deploy-key`

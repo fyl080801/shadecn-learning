@@ -175,14 +175,13 @@ spec:
 
             echo "=== Creating manifest ==="
             buildah manifest create ${INTERNAL_IMAGE}
-            # ⚠️ --pull=always / --no-cache 不是保险起见，是修过的事故：
-            # 两轮 bud 共用同一个本地存储，buildah 遇到**同名**的本地镜像会直接拿来用，
-            # 不管它是哪个架构的（platform 不匹配最多给个 warning）。结果推上 Harbor 的
-            # amd64 镜像里混进了 aarch64 编译的 better_sqlite3.node —— 容器起得来、
-            # /api/health 一路 200，直到第一次查库才 500：
-            # 「Error relocating ...: unsupported relocation type 1026」。
-            # 每轮都重新按 platform 拉基础镜像、不复用任何层，两轮之间才互不污染。
-            # 另一道防线在 Dockerfile 里（运行时阶段逐个 dlopen 原生模块）。
+            # 两轮共用一个本地存储，--pull=always / --no-cache 保证每轮都按各自的 platform
+            # 重新拉基础镜像、不复用上一轮的层。真正咬人的那个坑不在这里，在 Dockerfile：
+            # 基础镜像的 tag 只要是单架构的，--platform 就只能退而拉它有的那个架构，
+            # 而构建机装了 QEMU binfmt，于是整轮构建「跑得起来」、一步不报错，
+            # 最后把 aarch64 的 better_sqlite3.node 打进标着 amd64 的镜像推上线。
+            # 三道防线都在 Dockerfile 里：同一个多架构引用 + 两处 TARGETARCH 校验 +
+            # 运行时阶段逐个 dlopen 原生模块。详见 docs/12 §2.5。
             for PLATFORM in linux/amd64 linux/arm64; do
               echo "=== Building ${PLATFORM} ==="
               buildah bud --platform ${PLATFORM} --format docker \
