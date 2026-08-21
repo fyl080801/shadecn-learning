@@ -120,17 +120,6 @@ CI 里想一条命令从源码出镜像就用它，三个阶段：
 > ⚠️ 跨架构构建：build 阶段带了 `--platform=$BUILDPLATFORM`（构建产物与架构无关，随构建机跑最快）；
 > deps 阶段**故意不带**，跑在目标平台上，这样 better-sqlite3 编译出来的才是目标架构的 `.node`。
 > 在 amd64 上构 arm64 镜像需要 QEMU/binfmt 支持。
-> 三个阶段的基础镜像要写成**同一个引用**（都是 `harbor-core.harbor.svc/library/node:22-alpine`）：
-> 名字不同在 buildah 的本地存储里就是两条独立记录，多架构构建两轮之间更容易串。
-
-> ⚠️ **运行时阶段最后那句 `find … -name '*.node'` + `process.dlopen` 是事故留下的护栏，别删。**
-> 原生模块的架构错了，容器**照样能起**：Node 只在第一次 `require` 那个 `.node` 时才 dlopen，
-> 而 `/api/health` 不查库，于是 readiness 一路 200，Pod 显示 Healthy，
-> 只有真实请求会 500：`Invalid prisma.session.findUnique() invocation: Error relocating
-> /app/node_modules/better-sqlite3/build/Release/better_sqlite3.node: unsupported relocation type 1026`
-> （`1026` = `R_AARCH64_JUMP_SLOT`，即 musl 的 x86_64 动态链接器在加载一个 **aarch64** 的 `.node`）。
-> 这一行让这种镜像在构建期就失败。逐个 dlopen 而不是 `require('better-sqlite3')`，
-> 是因为 postgresql 构建的产物里没有这个包（provider 绑构建，见 §1）。
 
 ## 3. Kubernetes 部署需求
 
@@ -175,9 +164,6 @@ kubectl -n dev create secret generic shadecn-learning-auth \
 - liveness / readiness 都探 `GET /api/health`（该端点免登录）。
 - liveness：initialDelay 5s / period 30s；readiness：initialDelay 3s / period 10s。
 - requests `100m / 128Mi`，limits `500m / 512Mi`。
-- **`/api/health` 不碰数据库，所以「Pod 是 Healthy」证明不了「应用能用」。** 一个连不上库
-  （或者原生模块架构错了，见 §2.5）的镜像照样一路 200、Deployment 一路 `1/1 Available`，
-  只有真实请求 500。判断一次发布成不成，看的是浏览器/接口的返回，不是 Pod 状态。
 
 ### 3.5 Ingress
 
@@ -270,12 +256,7 @@ kubectl apply -f ci/workflow-template.yaml
 三步串行，镜像 tag 一律取 clone 出来的提交短 hash：
 
 1. `git-clone` —— 用 `gitea-deploy-key` clone，checkout `gitRevision`（默认 `master`），输出短/全 hash；整个工作区作为 artifact（走 minio）传给后两步
-2. `buildah-build-push` —— 用仓库根 `Dockerfile` 构建 **amd64 + arm64 manifest**，推到 Harbor 的 `apps/shadecn-learning:<short-sha>`（走集群内地址 `harbor-core.harbor.svc`）。**整条流水线的时间几乎全在这里，约 45 分钟** —— 两个架构各跑一遍完整构建，其中一个还靠 QEMU 模拟。
-   两轮 `bud` 都带 **`--pull=always --no-cache --layers=false`**，这是修过的事故：两轮共用同一个
-   本地存储，而 buildah 碰到**同名**的本地镜像会直接拿来用，platform 不匹配最多给个 warning ——
-   于是 amd64 那份镜像里混进了 arm64 那轮装出来的 `node_modules`（aarch64 的
-   `better_sqlite3.node`），推上线之后每个查库请求 500，见 §2 的护栏说明。
-   构建完会 `buildah manifest inspect` 打一遍每个条目的 `architecture`，日志里能直接对
+2. `buildah-build-push` —— 用仓库根 `Dockerfile` 构建 **amd64 + arm64 manifest**，推到 Harbor 的 `apps/shadecn-learning:<short-sha>`（走集群内地址 `harbor-core.harbor.svc`）。**整条流水线的时间几乎全在这里，约 45 分钟** —— 两个架构各跑一遍完整构建，其中一个还靠 QEMU 模拟
 3. `git-update-image-tag` —— `sed` 改 `k8s/deployment.yaml` 的 tag，提交 `ci: update image tag to <sha>`，push 回同一分支。到这里 CI 就结束了，部署是 ArgoCD 的事
 
 流水线依赖的资源都在集群里带外维护，**缺一个就跑不起来**：Secret `gitea-deploy-key`

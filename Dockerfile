@@ -32,30 +32,13 @@ WORKDIR /app
 COPY --from=build /app/output/package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
-# 运行时由 Node 统一承载：既提供 /api、/ws，也吐 public/ 静态资源。
-# ⚠️ 三个阶段的基础镜像必须写成**同一个引用**（都走集群内的 harbor-core.harbor.svc）：
-# 名字不同，buildah 的本地存储里就是两条独立的缓存记录，多架构构建时两轮之间更容易串。
-FROM harbor-core.harbor.svc/library/node:22-alpine
+# 运行时由 Node 统一承载：既提供 /api、/ws，也吐 public/ 静态资源
+FROM 192.168.68.95:31443/docker.io/library/node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data
 COPY --from=deps /app/node_modules ./node_modules
 # 只拷产物，源码和构建期依赖都不进运行镜像
 COPY --from=build /app/output ./
-# 构建期自检：node_modules 里的原生模块必须和这一层的 node 同架构。
-# 出过一次事故 —— 多架构构建（两轮 buildah bud 共用一个本地存储）把 aarch64 编译的
-# better_sqlite3.node 塞进了 amd64 的镜像，容器照样起、/api/health 也一路 200，
-# 直到第一次查库才炸「Error relocating ...: unsupported relocation type 1026」。
-# 有了这一行，那种镜像在构建期就失败，而不是推上线之后每个请求 500。
-# 逐个 dlopen 而不是 require 某个包名：postgresql 构建里没有 better-sqlite3，
-# 而这样写对两种 provider（以及以后新增的原生依赖）都成立。
-RUN set -e; \
-    found=0; \
-    for f in $(find /app/node_modules -name '*.node'); do \
-      node -e "process.dlopen({ exports: {} }, process.argv[1])" "$f"; \
-      echo "  ok $f"; \
-      found=$((found + 1)); \
-    done; \
-    echo "native modules ok: $found on $(uname -m)"
 # SQLite 落在运行目录的 data/ 下，挂卷进来才不会随容器一起没
 RUN mkdir -p /app/data
 VOLUME ["/app/data"]

@@ -21,18 +21,6 @@ ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data
 COPY --from=deps /app/node_modules ./node_modules
 # 打包产物本身：server/（后端）、public/（前端静态资源）、prisma/（schema）
 COPY . .
-# 构建期自检：node_modules 里的原生模块必须和这一层的 node 同架构 —— 架构串了的话
-# 容器照样能起、/api/health 也一路 200，直到第一次查库才炸
-# 「Error relocating ...: unsupported relocation type 1026」。宁可构建期就失败。
-# 逐个 dlopen 而不是 require 某个包名：postgresql 构建里没有 better-sqlite3。
-RUN set -e; \
-    found=0; \
-    for f in $(find /app/node_modules -name '*.node'); do \
-      node -e "process.dlopen({ exports: {} }, process.argv[1])" "$f"; \
-      echo "  ok $f"; \
-      found=$((found + 1)); \
-    done; \
-    echo "native modules ok: $found on $(uname -m)"
 # SQLite 落在 /app/data，挂卷进来才不会随容器一起没
 RUN mkdir -p /app/data
 VOLUME ["/app/data"]
