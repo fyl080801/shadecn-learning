@@ -6,16 +6,31 @@
 # 后端已经打包成 server/index.js，Prisma client 也内联进去了，
 # 这里只装 output/package.json 里那几个运行时依赖。
 #
-# 基础镜像走内网镜像源（和仓库根 Dockerfile 的运行时阶段一致）；
+# 基础镜像走构建参数，不写死地址（和仓库根 Dockerfile 一致）；
 # 在外网环境构建就把它换回官方的 node:22-alpine。
-FROM 192.168.68.95:31443/docker.io/library/node:22-alpine AS deps
+#
+# 默认值是 Harbor 上 docker.io 的**代理缓存**。它有一个已知的别扭之处：多架构镜像的
+# index 是边拉边填的，缓存还没填全时它会把一份**缺架构的 index** 发给客户端，
+# buildah 当场报 `no image found in image index for architecture "amd64"` ——
+# 一条流水线里前两个 stage 拉得好好的、第三个 stage 就挂了，就是这么回事。
+# 缓存热了之后自己就好了，所以**碰上先重试**（Harbor 侧不用动：core / jobservice /
+# registry 都已经配了出网代理，实测直连 docker.io 超时、走代理正常）。
+#
+# 留成参数是为了在重试也不灵的时候有别的路可走：指到一份不经代理缓存的引用
+# （Harbor 里自己存的多架构副本，或按 index digest 固定），而 `docker build ./output`
+# 保持开箱即用。
+#   docker build --build-arg NODE_IMAGE=<引用> ...
+ARG NODE_IMAGE=192.168.68.95:31443/docker.io/library/node:22-alpine
+
+FROM ${NODE_IMAGE} AS deps
 # better-sqlite3 在 musl 上没有预编译包，得现场编译
 RUN apk add --no-cache python3 make g++
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
-FROM 192.168.68.95:31443/docker.io/library/node:22-alpine
+ARG NODE_IMAGE
+FROM ${NODE_IMAGE}
 WORKDIR /app
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data
 COPY --from=deps /app/node_modules ./node_modules

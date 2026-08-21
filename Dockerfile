@@ -10,7 +10,22 @@
 # amd64 那一轮的容器里 `uname -m` 其实是 aarch64，装出来的 better_sqlite3.node 自然也是
 # aarch64 的，最后被打包进标着 amd64 的镜像推上线（见 docs/12 §2.5 的护栏说明）。
 # 换 tag / 换仓库之前先验一下：在 amd64 节点上跑一次 `uname -m`，必须是 x86_64。
-FROM --platform=$BUILDPLATFORM 192.168.68.95:31443/docker.io/library/node:22-alpine AS build
+# 基础镜像走构建参数，不写死地址。
+#
+# 默认值是 Harbor 上 docker.io 的**代理缓存**。它有一个已知的别扭之处：多架构镜像的
+# index 是边拉边填的，缓存还没填全时它会把一份**缺架构的 index** 发给客户端，
+# buildah 当场报 `no image found in image index for architecture "amd64"` ——
+# 一条流水线里前两个 stage 拉得好好的、第三个 stage 就挂了，就是这么回事。
+# 缓存热了之后自己就好了，所以**碰上先重试**（Harbor 侧不用动：core / jobservice /
+# registry 都已经配了出网代理，实测直连 docker.io 超时、走代理正常）。
+#
+# 留成参数是为了在重试也不灵的时候有别的路可走：指到一份不经代理缓存的引用
+# （Harbor 里自己存的多架构副本，或按 index digest 固定），而 `docker build ./output`
+# 保持开箱即用。
+#   docker build --build-arg NODE_IMAGE=<引用> ...
+ARG NODE_IMAGE=192.168.68.95:31443/docker.io/library/node:22-alpine
+
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
 # better-sqlite3 在 musl 上没有预编译包，得现场编译
 RUN apk add --no-cache python3 make g++
 RUN npm install -g pnpm@9.15.9
@@ -35,7 +50,8 @@ RUN pnpm build
 
 # 运行时依赖只从 output/package.json 装（就 hono / prisma / yjs 那几个）。
 # 这个阶段不带 --platform，跑在目标平台上，better-sqlite3 编译出来的就是目标架构。
-FROM 192.168.68.95:31443/docker.io/library/node:22-alpine AS deps
+ARG NODE_IMAGE
+FROM ${NODE_IMAGE} AS deps
 # 拿到的基础镜像必须真的是目标架构 —— 单架构 tag + QEMU 会让「拉错架构」完全不报错，
 # 而这个阶段装的是原生模块，错了就一路混进最终镜像。TARGETARCH 由 --platform 推导；
 # 万一构建器不提供它（值为空），这里就跳过，不误伤。
@@ -53,7 +69,8 @@ COPY --from=build /app/output/package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
 # 运行时由 Node 统一承载：既提供 /api、/ws，也吐 public/ 静态资源
-FROM 192.168.68.95:31443/docker.io/library/node:22-alpine
+ARG NODE_IMAGE
+FROM ${NODE_IMAGE}
 # 和 deps 阶段同一道检查：这一层的 node 决定了最终镜像的架构
 ARG TARGETARCH
 RUN set -e; \
