@@ -21,6 +21,33 @@ import type { FatalClose, FlowTransport, TransportContext } from "./types"
 /** WebSocket 挂载点，和后端 `COLLAB_PATH` 一致。房间名不在路径里 */
 const COLLAB_PATH = "/ws/collaboration"
 
+/**
+ * 服务端广播「我存不进库了 / 又能存了」用的 stateless 消息类型。
+ *
+ * **和 `server/collab/hocuspocus.ts` 里的同名常量是一对**，改一处就要改另一处 ——
+ * `server/` 和 `src/` 是两个 TS 项目，共享不了这个字符串（和 `flow-doc.ts`、
+ * `flow-types.ts` 那几对是同一个情况）。
+ */
+const STORE_STATE_MESSAGE = "flow:store-state"
+
+/**
+ * 解析一条 stateless 消息里的落库状态；不是这类消息就返回 `null`。
+ *
+ * 防御着写：stateless 是个通用旁路通道，将来可能驮别的东西，
+ * 而一条读不懂的消息**绝不能**变成一次异常 —— 那会打断整条连接的消息处理。
+ */
+export function parseStoreState(payload: string): boolean | null {
+  try {
+    const parsed: unknown = JSON.parse(payload)
+    if (!parsed || typeof parsed !== "object") return null
+    const message = parsed as { type?: unknown; ok?: unknown }
+    if (message.type !== STORE_STATE_MESSAGE || typeof message.ok !== "boolean") return null
+    return message.ok
+  } catch {
+    return null
+  }
+}
+
 /** 房间名前缀；服务端靠它认出「这是某张画布的房间」并去查项目成员身份 */
 const FLOW_ROOM_PREFIX = "flow:"
 
@@ -72,6 +99,8 @@ export function createCollabTransport(context: TransportContext): FlowTransport 
   const linked = ref(false)
   /** 协同没有「未保存」这回事：改动一进 Y.Doc 就顺着连接走了 */
   const pending = ref(false)
+  /** 服务端说它写库失败了（见 `onStateless`）。连接是好的，内容悬在服务器内存里 */
+  const saveFailed = ref(false)
 
   let provider: HocuspocusProvider | null = null
 
@@ -112,6 +141,20 @@ export function createCollabTransport(context: TransportContext): FlowTransport 
       // 断线重连会再同步一次，此时不能退回未同步状态：那之后到达的都是我真的漏掉的
       synced.value = true
     },
+    /**
+     * 服务端的旁路通知。目前只有一种：**它到底存没存进库**。
+     *
+     * 这条消息补上的正是「同步」和「保存」之间那个缺口 —— 内容进了服务端内存、
+     * 也广播给了同房间的人，连接层面毫无异常，但字节可能只是悬在那儿
+     * （服务端的写队列失败了）。没有它，界面会一直写着「已同步」。
+     *
+     * 服务端只在状态**翻转**时广播，另外在新连接接入时补发一次，
+     * 所以后进房间的人也拿得到当前状态。
+     */
+    onStateless: ({ payload }) => {
+      const ok = parseStoreState(payload)
+      if (ok !== null) saveFailed.value = !ok
+    },
     /** 连接建起来之后被服务端关掉：顶下线、复验没过。普通断线在这里被 `classifyClose` 滤掉 */
     onClose: ({ event }) => {
       const reason = classifyClose(event)
@@ -139,6 +182,7 @@ export function createCollabTransport(context: TransportContext): FlowTransport 
     synced,
     linked,
     pending,
+    saveFailed,
     awareness,
     // 内容一直是同步的，没有「攒着没发」的东西可以 flush
     flush: () => Promise.resolve(),

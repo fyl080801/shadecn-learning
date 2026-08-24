@@ -207,6 +207,16 @@ export async function createRedisBackend(options: RedisBackendOptions): Promise<
       new RedisMap<V>(redis, options.prefix, namespace, codec),
     createCounter: (namespace: string) => new RedisCounter(redis, options.prefix, namespace),
     createLock: (namespace: string) => new RedisLock(redis, options.prefix, namespace),
+    /*
+     * 读 ioredis 自己维护的连接状态，**不发 PING**：健康检查不能因为
+     * Redis 慢就跟着卡住。`ready` 才算好使 —— `connecting` / `reconnecting`
+     * 期间命令会进离线队列（`enableOfflineQueue`），看着没报错，实际没落地。
+     */
+    health: () => ({
+      ok: redis.status === 'ready',
+      backend: 'redis',
+      status: redis.status,
+    }),
     close: async () => {
       await redis.quit().catch(() => undefined)
     },

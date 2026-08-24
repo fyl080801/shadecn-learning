@@ -1,12 +1,12 @@
 import type { HttpBindings } from '@hono/node-server'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { logger } from 'hono/logger'
 import type { AuthVariables } from './auth/middleware.ts'
 import { requireAuth, withSession } from './auth/middleware.ts'
 import type { ProjectVariables } from './auth/project.ts'
 import { appOrigin, isApiPath } from './config.ts'
 import { attachPageGuard } from './frontend/guard.ts'
+import { httpLogger } from './logger/index.ts'
 import { auth } from './routes/auth.ts'
 import { avatars } from './routes/avatars.ts'
 import { collab } from './routes/collab.ts'
@@ -23,7 +23,10 @@ export type ServerApp = Hono<ServerEnv>
 
 const app: ServerApp = new Hono<ServerEnv>()
 
-app.use('*', logger())
+// 请求日志 + 请求上下文（requestId / userId）。顶掉 hono/logger：
+// 那个只往 console 打两行文本，这个带状态码、耗时，并且是 AsyncLocalStorage 的入口，
+// 让链路上任何深度的日志都自动带上 requestId（见 server/logger/）
+app.use('*', httpLogger())
 // 前后端同源，CORS 只放开自己的 origin —— 带 cookie 的接口不能对任意站点开
 app.use('/api/*', cors({ origin: appOrigin, credentials: true }))
 

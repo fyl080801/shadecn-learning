@@ -35,6 +35,11 @@ export function createSoloTransport(context: TransportContext): FlowTransport {
   const synced = ref(false)
   const linked = ref(false)
   const pending = ref(false)
+  /**
+   * 个人画布没有这个状态：一次推送**就是**一次写库，成没成 `pending` 已经说清楚了
+   * （协同那边内容进内存和落库是两件事，才需要分开报，见 `types.ts`）。
+   */
+  const saveFailed = ref(false)
 
   /** 服务端已经确认收到哪儿了。差量以它为基线算 */
   let acked: Uint8Array | undefined
@@ -137,6 +142,7 @@ export function createSoloTransport(context: TransportContext): FlowTransport {
     synced,
     linked,
     pending,
+    saveFailed,
     // 个人画布没有在场这一层 —— 房间里只有一个人，没人可看
     awareness: null,
     flush: async () => {
