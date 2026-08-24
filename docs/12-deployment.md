@@ -262,10 +262,13 @@ Workflows 负责构建镜像并把新 tag 写回 git，ArgoCD 负责把 git 里�
 两边不直接通信，git 就是它们之间唯一的接口。
 
 ```
-本地 commit → push gitea → 手动提交 Argo Workflow
+本地 commit → push gitea master → Gitea Actions 起 Argo Workflow（.gitea/workflows/cicd.yaml）
   → clone → buildah 构建 amd64+arm64 推 Harbor → sed 改 tag、提交、push 回同一分支
   → ArgoCD 轮询发现 diff（≤3min）→ Deployment 更新（Recreate，单副本，有短暂中断）
 ```
+
+触发那一环是后加的（原来必须手动 `kubectl create -f ci/run.yaml`），见 [§4.3](#43-自动触发push-master-由-gitea-actions-起构建)。
+手动那条路**没有废弃**，它仍然是 Actions 或 runner 出问题时的兜底入口。
 
 ### 4.1 CI 只认 gitea
 
@@ -281,7 +284,8 @@ Workflows 负责构建镜像并把新 tag 写回 git，ArgoCD 负责把 git 里�
 ### 4.2 流水线定义在仓库里，但不由 ArgoCD 纳管
 
 `ci/workflow-template.yaml` 是 `WorkflowTemplate dev/shadecn-learning-cicd` 的清单，
-`ci/run.yaml` 是提交一次运行用的 `Workflow`。
+`ci/run.yaml` 是提交一次运行用的 `Workflow`，`ci/gitea-actions-runner.yaml` 是跑
+Gitea Actions 的 act_runner（[§4.3](#43-自动触发push-master-由-gitea-actions-起构建)）。
 
 它们**故意不放在 `k8s/` 下**：ArgoCD 的 Application 只同步 `k8s/` 且开了 `prune`，流水线定义
 进去就会被纳管，以后误删文件会连集群里的模板一起删掉。代价是这份清单**要手动 apply**，
@@ -307,20 +311,77 @@ kubectl apply -f ci/workflow-template.yaml
 （必须是**有写权限**的 deploy key，最后一步要 push）、`harbor-auth`、`harbor-ca-cert`，
 以及 optional 的 ConfigMap `workflow-proxy-config`（构建要拉墙外的包，没有它多半超时）。
 
-### 4.3 没有自动触发
+### 4.3 自动触发：push master 由 Gitea Actions 起构建
 
-集群里没装 argo-events（没有 Sensor CRD），也没有 CronWorkflow 或 WorkflowEventBinding。
-**push 之后必须手动起一次 Workflow**，之后的部署才是自动的：
+`.gitea/workflows/cicd.yaml`，触发条件是 `push` 到 `master`（外加一个可手动触发的
+`workflow_dispatch`，能指定任意分支）。它**不自己构建** —— 只起一条 Argo Workflow（内容等价于
+`ci/run.yaml`，`gitRevision` 换成这次 push 的分支），然后守着它跑完，所以 Gitea 里这个 job 的
+红/绿就是构建的红/绿，失败时还会把出错那步的 Pod 日志打进 job 日志。
+
+**为什么不干脆把构建搬进 Actions**：那条 buildah 流水线里全是事故换来的东西 —— 多架构
+manifest、两处 `TARGETARCH` 校验、运行时 dlopen 自检（[§2.5.1](#251-三道架构护栏全都是事故留下的)）、
+基础镜像的自建多架构副本、单 platform 级别的重试、Harbor 自签 CA、出网代理。重写一遍等于
+把这些护栏重新踩一次，而现在缺的只有「谁按下开始」这一下。
+
+选 argo-events 的替代路线也是同一个判断：Actions 已经在 Gitea 里（1.21+ 默认开启），
+不用装 CRD、不用配 Sensor，还顺带白拿了日志、重跑按钮和 job 历史。
+
+#### 防自触发循环：两道独立护栏
+
+流水线最后一步会把新 tag **push 回 master**，这个提交自己又是一次 push 事件。两道护栏
+必须同时失效才会打转：
+
+1. **`paths-ignore`（主力）** —— 写回的提交只动 `k8s/deployment.yaml`，命中即整轮跳过。
+   这份名单遵循一条规则：**不进镜像的东西不触发构建**（一轮 45 分钟），所以还包含
+   `docs/**`、`**.md`，以及 CI 自己的定义 `.gitea/**` 和 `ci/**` —— 后两者不在镜像里，
+   而 `ci/` 下的清单本来就要人工 apply 才生效。只要提交里还有一个文件不在名单里，构建照起；
+   要强制构建就用手动触发。顺带一个好处：**引入这个 workflow 的那次 push 自己不会触发构建**，
+   可以先用一次 `workflow_dispatch` + `dryRun` 验通链路，再决定什么时候真起一轮。
+2. **job 级 `if`** —— 认提交标题前缀 `ci: update image tag`。它依赖 push payload 里有
+   `head_commit`，所以是备份而不是主力。
+
+**并发**靠 runner 的 `capacity: 1`：Gitea 1.23 还不支持 workflow 级 `concurrency`，两次 push
+撞在一起时后一条排队，而不是并发起两轮 45 分钟的构建。
+
+#### runner 是带外资源，而且必须有
+
+Gitea 自己不执行任何 job。集群里原本**一个 runner 都没有**（`action_runner` 表 0 行），
+workflow 文件单独存在只会永远停在「等待 runner」。清单是 `ci/gitea-actions-runner.yaml`，
+和 `ci/workflow-template.yaml` 一样人工 apply（同样是为了躲开 ArgoCD 的 prune）：
 
 ```bash
-git push gitea master
+# 注册令牌：Gitea → 站点管理 → Actions → Runners → 创建注册令牌
+kubectl -n dev create secret generic gitea-act-runner --from-literal=token='<注册令牌>'
+kubectl apply -f ci/gitea-actions-runner.yaml
+kubectl -n dev logs deploy/gitea-act-runner --tail=20   # 看到 runner 注册成功
+```
+
+令牌只在首次注册时用，注册结果落在 PVC 上的 `/data/.runner`，重启不会重复注册。
+
+**host 模式，不是 docker/dind**，理由是省掉三样东西：job 步骤直接跑在 runner 容器里，于是能
+直接用 Pod 的 ServiceAccount 调 k8s API（dind 里的工作容器拿不到 Pod 的 SA token，就得把
+kubeconfig 塞进 Gitea 的 secret）；不需要 privileged 的 dind sidecar；不用在 dind 里再配一遍
+Harbor 的自签 CA。代价是**镜像里没有的工具得自己备** —— act_runner 镜像只有 sh/bash/git，
+没有 kubectl，**也没有 node**，所以 initContainer 从 `alpine/k8s` 拷一个 kubectl 到
+`/opt/ci-tools`，而 workflow 里一个 JS action 都不能用（`actions/checkout` 也不行）。
+这不碍事：那个 job 只需要提交一条 Workflow，源码是 Argo 那边 clone 的，压根不用 checkout。
+
+runner 的 ServiceAccount `gitea-ci-runner` 权限就三样：`workflows` 的
+get/list/watch/create/delete、`workflowtemplates` 的 get/list、`pods` + `pods/log` 的 get/list。
+它**碰不到 Deployment 和 Secret** —— 部署是 ArgoCD 的事，runner 只负责按下开始。
+
+#### 手动入口仍然保留
+
+Actions 或 runner 出问题时（也包括构建别的分支）：
+
+```bash
 kubectl -n dev create -f ci/run.yaml   # 改 gitRevision 可构建任意分支
 kubectl -n dev get wf -l workflows.argoproj.io/workflow-template=shadecn-learning-cicd \
   --sort-by=.metadata.creationTimestamp
 ```
 
-提交时要带 `nodeSelector: kubernetes.io/arch=amd64`（`ci/run.yaml` 里已经写好）——
-arm64 那半是 QEMU 模拟出来的，反过来跑不动。
+不管从哪个入口起，都要带 `nodeSelector: kubernetes.io/arch=amd64`（`ci/run.yaml` 和
+`cicd.yaml` 里都写好了）—— arm64 那半是 QEMU 模拟出来的，反过来跑不动。改其中一处记得看另一处。
 
 ### 4.4 ArgoCD Application
 
@@ -378,12 +439,19 @@ workflow-controller 的 tag），argo 升级之后要跟着改这里 —— 这�
 - [ ] client 和构建目标 provider 不一致时，`pnpm build:server` 失败并指出该跑哪条命令。
 - [ ] `kubectl create -f ci/run.yaml` 跑完之后：Harbor 里有 `apps/shadecn-learning:<short-sha>` 的**双架构** manifest，gitea 上多出一条 `ci: update image tag to <short-sha>`，且 ArgoCD 在 3 分钟内把 Application 同步回 `Synced` / `Healthy`。
 - [ ] `ci/workflow-template.yaml` 与集群里那份一致：`kubectl diff -f ci/workflow-template.yaml` 无输出。
+- [ ] `git push gitea master` 之后无需任何手工操作：Gitea 的 Actions 页出现一条 `cicd` 运行，`dev` 命名空间里多出一条 `shadecn-learning-cicd-*`，job 一直守到构建结束（成功则绿、失败则红且日志里有出错那步的 Pod 日志）。
+- [ ] 流水线写回的 `ci: update image tag to <sha>` 提交**不会**再触发一轮构建（Actions 页没有新运行）。
+- [ ] 只改 `docs/**`、`*.md`、`.gitea/**`、`ci/**` 的提交同样不触发构建；用 `workflow_dispatch` 仍能强制构建任意分支。
+- [ ] runner 的 SA 越权检查：`kubectl -n dev auth can-i --as=system:serviceaccount:dev:gitea-ci-runner delete deployments` 与 `… get secrets` 都是 `no`。
 - [ ] 手动 `kubectl -n dev set image deploy/shadecn-learning …` 后，ArgoCD 的 `selfHeal` 把它刷回仓库里的 tag。
 - [ ] `ci/` 下的文件改动不会让 ArgoCD 变成 `OutOfSync`（它只看 `k8s/`）。
 
 ## 6. 本期不做
 
-- **自动触发流水线**（argo-events / webhook）—— 构建要手动起，见 §4.3。
+- **argo-events / WorkflowEventBinding** —— 自动触发这件事由 Gitea Actions 做了（§4.3），
+  不再为它单独装一套 CRD。
+- **构建别的分支自动触发** —— 只有 `master` 会自动起构建；其余分支走 `workflow_dispatch`
+  或手动那条命令。（分支多起来时再谈按 PR 触发。）
 - 蓝绿 / 金丝雀发布（单副本形态是 `Recreate`，每次发布都有几十秒中断；多副本形态是
   `RollingUpdate`，没有中断，但也没做金丝雀）。
 - 流水线里的自动化测试门禁（`pnpm test` 目前不在 CI 里跑）。
@@ -392,7 +460,11 @@ workflow-controller 的 tag），argo 升级之后要跟着改这里 —— 这�
 
 ## 7. 待确认事项
 
-- 要不要给 gitea 配 webhook + argo-events，让 push 直接触发构建。
+- ~~要不要给 gitea 配 webhook + argo-events，让 push 直接触发构建~~ —— 已落地，但走的是
+  Gitea Actions 而不是 argo-events，见 §4.3。
+- Actions 里要不要加测试门禁（`pnpm test` / `pnpm lint`）。加了就是 45 分钟之外再排一段，
+  而且得先解决 runner 是 host 模式、镜像里没有 node 这件事（要么给 runner 加一个
+  `node:22:docker://…` 的 label 走容器模式，要么把 node 也拷进 `/opt/ci-tools`）。
 - 构建 45 分钟太久：是给 buildah 加缓存（`--layers` + Harbor 上的 cache 镜像），还是干脆只构 amd64。
 - ~~需要多副本时的演进路线~~ —— 已落地，见 [REQ-CLUSTER](14-clustering.md)：
   `@hocuspocus/extension-redis` + 一层共享状态抽象，由 `CLUSTER_MODE` 切换。

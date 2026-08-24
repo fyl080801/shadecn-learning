@@ -1,0 +1,158 @@
+# push 到 master 就自动起一条 Argo Workflow，并守着它跑完 —— 这个 job 的红/绿就是构建的红/绿。
+#
+# 它**不自己构建**。构建仍然是 ci/workflow-template.yaml 里那条流水线（buildah 双架构 +
+# 三道架构护栏 + 基础镜像重试，约 45 分钟），这里只是替掉原来那句「push 完必须手动
+# kubectl create -f ci/run.yaml」。整条链路见 docs/12-deployment.md §4。
+#
+# 跑这个 job 需要集群里的 act_runner（host 模式，label `k8s`），清单在
+# ci/gitea-actions-runner.yaml —— 那是带外资源，不在 ArgoCD 的同步范围里。
+#
+# ⚠️ 只有 gitea 那个 remote 会触发它。push 到 github(origin) 什么都不会发生（docs/12 §4.1）。
+name: cicd
+
+on:
+  push:
+    branches:
+      - master
+    # 一条规则：**不进镜像的东西不触发构建**（一轮 45 分钟，不值得）。想强制构建
+    # 就用下面的手动触发；只要提交里还有一个文件不在这份名单里，构建照起。
+    #
+    # 其中 `k8s/deployment.yaml` 那条同时是防自触发循环的**第一道**护栏：流水线最后一步
+    # 会把新 tag 写回 master（`ci: update image tag to <sha>`），而那个提交只动这一个文件。
+    # `.gitea/**` 和 `ci/**` 是 CI 自己的定义 —— 它们不在镜像里，而且 ci/ 下那两份清单
+    # 本来就得人工 apply 才生效，push 它们从来也不该意味着重新构建一次。
+    paths-ignore:
+      - 'k8s/deployment.yaml'
+      - '.gitea/**'
+      - 'ci/**'
+      - 'docs/**'
+      - '**.md'
+  # 手动触发：可以构建任意分支，也可以只做一次连通性自检
+  workflow_dispatch:
+    inputs:
+      gitRevision:
+        description: '要构建的分支 / tag（留空 = 当前分支）'
+        required: false
+        default: ''
+      dryRun:
+        description: '只自检 runner 与权限，不真的起构建'
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    # 这个 label 由集群里的 act_runner 提供（host 模式，见 ci/gitea-actions-runner.yaml）。
+    # runner 的 capacity 是 1，所以两次 push 撞在一起时后一条排队而不是并发构建
+    # —— Gitea 1.23 还不支持 workflow 级 `concurrency`，靠的是 runner 容量。
+    runs-on: k8s
+    # Argo 那条流水线本身约 45 分钟，留足余量（act_runner 侧的 timeout 是 3h）
+    timeout-minutes: 150
+    # 防自触发循环的**第二道**护栏，和 paths-ignore 相互独立：认流水线写回那个提交的标题。
+    # 两道都失效才会打转，而 paths-ignore 才是主力（这条依赖 push payload 里有 head_commit）。
+    # 整条得加引号：表达式里的 'ci: update image tag' 含 ": "，YAML 纯标量会当成映射解析
+    if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'ci: update image tag') }}"
+
+    steps:
+      - name: 起 Argo Workflow 并等它跑完
+        env:
+          NAMESPACE: dev
+          WF_TEMPLATE: shadecn-learning-cicd
+          # 手动触发时用输入的分支，push 时用被 push 的那个分支
+          INPUT_REVISION: ${{ github.event.inputs.gitRevision }}
+          DEFAULT_REVISION: ${{ github.ref_name }}
+          DRY_RUN: ${{ github.event.inputs.dryRun }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # host 模式下步骤直接跑在 runner 容器里，kubectl 是 initContainer 拷进来的
+          export PATH="/opt/ci-tools:${PATH}"
+          command -v kubectl >/dev/null 2>&1 || {
+            echo "runner 里找不到 kubectl —— 检查 ci/gitea-actions-runner.yaml 的 initContainer"
+            exit 1
+          }
+
+          REVISION="${INPUT_REVISION:-}"
+          [ -n "$REVISION" ] || REVISION="$DEFAULT_REVISION"
+          echo "构建 revision : $REVISION"
+          echo "触发提交      : $COMMIT"
+
+          # 自检：模板在不在（它是人工 apply 的，仓库里的那份改了不 apply 就不生效）、
+          # ServiceAccount 有没有权限。dryRun 到此为止，不占用 45 分钟
+          kubectl -n "$NAMESPACE" get workflowtemplate "$WF_TEMPLATE" -o name
+          kubectl -n "$NAMESPACE" auth can-i create workflows.argoproj.io
+
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "dryRun=true —— 只自检，不起构建"
+            exit 0
+          fi
+
+          # 等价于 `kubectl -n dev create -f ci/run.yaml`，只是 gitRevision 跟着这次 push 走。
+          # nodeSelector 必须留着：buildah 那步只能落在 amd64 节点上（arm64 那半靠 QEMU
+          # 模拟，反过来跑不动）。改这里记得同步 ci/run.yaml，那是手动跑的入口。
+          MANIFEST="${RUNNER_TEMP:-/tmp}/argo-run.yaml"
+          cat >"$MANIFEST" <<EOF
+          apiVersion: argoproj.io/v1alpha1
+          kind: Workflow
+          metadata:
+            generateName: shadecn-learning-cicd-
+            labels:
+              triggered-by: gitea-actions
+              gitea-run-number: "${GITHUB_RUN_NUMBER:-0}"
+          spec:
+            workflowTemplateRef:
+              name: ${WF_TEMPLATE}
+            nodeSelector:
+              kubernetes.io/arch: amd64
+            arguments:
+              parameters:
+                - name: gitRevision
+                  value: "${REVISION}"
+          EOF
+
+          NAME=$(kubectl -n "$NAMESPACE" create -f "$MANIFEST" -o name | cut -d/ -f2)
+          echo "已提交 Workflow：$NAME"
+
+          # 这个 job 被取消 / 超时的时候顺手把 Workflow 也删掉，否则它会自己跑完并部署上去，
+          # 而 Gitea 这边显示的是「已取消」
+          trap 'echo "步骤被中断，删除 $NAME"; kubectl -n "$NAMESPACE" delete wf "$NAME" --ignore-not-found; exit 130' INT TERM
+
+          dump_failure() {
+            echo "--- Workflow 状态 ---"
+            kubectl -n "$NAMESPACE" get wf "$NAME" -o wide 2>&1 || true
+            echo "--- 各步骤的 Pod ---"
+            kubectl -n "$NAMESPACE" get pods -l "workflows.argoproj.io/workflow=$NAME" 2>&1 || true
+            for pod in $(kubectl -n "$NAMESPACE" get pods -l "workflows.argoproj.io/workflow=$NAME" \
+                --field-selector=status.phase=Failed -o name 2>/dev/null); do
+              echo "--- ${pod} 最后 150 行 ---"
+              kubectl -n "$NAMESPACE" logs "$pod" -c main --tail=150 2>&1 || true
+            done
+          }
+
+          START=$(date +%s)
+          TICK=0
+          while true; do
+            PHASE=$(kubectl -n "$NAMESPACE" get wf "$NAME" -o jsonpath='{.status.phase}' 2>/dev/null || echo '')
+            MINUTES=$(( ($(date +%s) - START) / 60 ))
+            case "$PHASE" in
+              Succeeded)
+                echo "构建成功（${MINUTES} 分钟）。tag 已写回 ${DEFAULT_REVISION}，剩下的交给 ArgoCD（≤3 分钟）"
+                break
+                ;;
+              Failed|Error)
+                echo "构建失败（${MINUTES} 分钟）：$(kubectl -n "$NAMESPACE" get wf "$NAME" -o jsonpath='{.status.message}' 2>/dev/null)"
+                dump_failure
+                exit 1
+                ;;
+              *)
+                # 45 分钟里每 30s 打一行会把日志冲掉，所以 5 分钟报一次进度
+                if [ $(( TICK % 10 )) -eq 0 ]; then
+                  STEPS=$(kubectl -n "$NAMESPACE" get pods -l "workflows.argoproj.io/workflow=$NAME" \
+                    --no-headers 2>/dev/null | awk '{printf "%s(%s) ", $1, $3}')
+                  echo "[${MINUTES}m] ${PHASE:-Pending} ${STEPS}"
+                fi
+                TICK=$(( TICK + 1 ))
+                sleep 30
+                ;;
+            esac
+          done

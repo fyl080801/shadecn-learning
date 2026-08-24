@@ -1,0 +1,187 @@
+# 集群里的 Gitea Actions runner（act_runner，host 模式）。没有它，.gitea/workflows/cicd.yaml
+# 只会永远停在「等待 runner」—— Gitea 自己不执行任何 job，全靠外挂 runner。
+#
+# 和 ci/workflow-template.yaml 同理，**故意不放 k8s/**：ArgoCD 的 Application 只同步 k8s/
+# 且开了 prune，流水线设施放进去就会被它纳管。代价是这份清单要人工 apply：
+#
+#   kubectl apply -f ci/gitea-actions-runner.yaml
+#
+# 还依赖一个不进仓库的 Secret（注册令牌，Gitea → 站点管理 → Actions → Runners → 创建注册令牌）：
+#
+#   kubectl -n dev create secret generic gitea-act-runner --from-literal=token='<注册令牌>'
+#
+# 令牌只在**首次注册**时用；注册结果写进 /data/.runner（PVC 上），之后重启不会重新注册。
+# 令牌轮换后要 `kubectl delete secret` 重建并删掉 Pod 让它重新注册。
+#
+# ── 为什么是 host 模式，不是 docker / dind ──────────────────────────────────
+# host 模式下 job 的每个步骤直接跑在下面这个 runner 容器里，于是：
+#   - 直接用 Pod 自己的 ServiceAccount 访问 k8s API，不用把 kubeconfig 或 SA token
+#     塞进 Gitea 的 secret 里（dind 里的工作容器拿不到 Pod 的 SA token）
+#   - 不需要 privileged 的 dind sidecar
+#   - 不用在 dind 里额外配 Harbor 的自签 CA / insecure-registries 才能拉工作容器镜像
+# 代价有两条，都是明知故犯：步骤之间没有隔离（单人自用的 runner，可接受）；
+# 镜像里没有的工具得自己备 —— act_runner 镜像只有 sh/bash/git，没有 kubectl、
+# 也**没有 node**，所以下面用 initContainer 拷一个 kubectl 进来，而 workflow 里
+# 不能用任何 JS action（`actions/checkout` 也不行，它要 node）。cicd.yaml 因此
+# 完全不 checkout 代码 —— 它只需要提交一条 Argo Workflow，源码是 Argo 那边 clone 的。
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitea-ci-runner
+  namespace: dev
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitea-ci-runner
+  namespace: dev
+rules:
+  # 起构建 / 查状态 / job 被取消时删掉它
+  - apiGroups: ['argoproj.io']
+    resources: ['workflows']
+    verbs: ['get', 'list', 'watch', 'create', 'delete']
+  # 自检用：模板是人工 apply 的，先确认它在
+  - apiGroups: ['argoproj.io']
+    resources: ['workflowtemplates']
+    verbs: ['get', 'list']
+  # 构建失败时把出错那步的 Pod 日志直接打到 Gitea 的 job 日志里，省得再去翻 argo
+  - apiGroups: ['']
+    resources: ['pods', 'pods/log']
+    verbs: ['get', 'list']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitea-ci-runner
+  namespace: dev
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gitea-ci-runner
+subjects:
+  - kind: ServiceAccount
+    name: gitea-ci-runner
+    namespace: dev
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitea-act-runner-config
+  namespace: dev
+data:
+  config.yaml: |
+    log:
+      level: info
+    runner:
+      file: /data/.runner
+      # 一次只跑一个 job。Gitea 1.23 还不支持 workflow 级 `concurrency`，
+      # 两次 push 撞一起时靠这个容量让后一条排队，而不是并发起两轮 45 分钟的构建
+      capacity: 1
+      # Gitea 侧的 job 超时默认也是 3h，两边保持一致
+      timeout: 3h
+      fetch_interval: 5s
+      # `<label>:host` = host 模式（不带 docker:// 镜像）。workflow 里写 `runs-on: k8s`
+      labels:
+        - 'k8s:host'
+    # actions/cache 没在用，缓存代理会多监听一个端口，关掉少一件事
+    cache:
+      enabled: false
+    host:
+      # 默认是 $HOME/.cache/act，显式放到 PVC 上
+      workdir_parent: /data/act
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitea-act-runner-data
+  namespace: dev
+spec:
+  accessModes: ['ReadWriteOnce']
+  # 集群里有两个 SC 都标着 default，必须显式写，否则绑到哪个由 apiserver 心情决定
+  storageClassName: nfs-homenas
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea-act-runner
+  namespace: dev
+  labels:
+    app: gitea-act-runner
+spec:
+  replicas: 1
+  # 单个 RWO PVC，滚动更新时两个 Pod 会抢同一卷；而且 .runner 也只该有一个持有者
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gitea-act-runner
+  template:
+    metadata:
+      labels:
+        app: gitea-act-runner
+    spec:
+      serviceAccountName: gitea-ci-runner
+      # 固定在 amd64：拷 kubectl 的那个镜像要和 runner 容器同架构（同 Pod 必然同节点），
+      # 而集群里 4 个节点有 1 个是 arm64。PVC 走 nfs，跟节点无关，钉住没有副作用
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      initContainers:
+        # act_runner 镜像里没有 kubectl，从这个镜像里拷一个出来（不联网、不装包）
+        - name: install-kubectl
+          image: 192.168.68.95:31443/docker.io/alpine/k8s:1.31.2
+          command: ['sh', '-c', 'cp -v "$(command -v kubectl)" /opt/ci-tools/kubectl']
+          volumeMounts:
+            - name: ci-tools
+              mountPath: /opt/ci-tools
+      containers:
+        - name: runner
+          image: 192.168.68.95:31443/docker.io/gitea/act_runner:0.2.11
+          env:
+            - name: CONFIG_FILE
+              value: /config/config.yaml
+            # 走集群内地址，不绕 ingress。runner 只用它调 API 和上报日志
+            - name: GITEA_INSTANCE_URL
+              value: http://gitea.dev.svc:3000
+            - name: GITEA_RUNNER_REGISTRATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gitea-act-runner
+                  key: token
+            - name: GITEA_RUNNER_NAME
+              value: k8s-dev
+            # host 模式下步骤就在这个容器里跑，PATH 得能找到 initContainer 拷进来的 kubectl。
+            # cicd.yaml 里也显式 `export PATH=/opt/ci-tools:$PATH`，两边任意一头生效就行
+            - name: PATH
+              value: /opt/ci-tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            - name: HOME
+              value: /data
+            - name: TZ
+              value: Asia/Shanghai
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: ci-tools
+              mountPath: /opt/ci-tools
+      volumes:
+        - name: config
+          configMap:
+            name: gitea-act-runner-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: gitea-act-runner-data
+        - name: ci-tools
+          emptyDir: {}
