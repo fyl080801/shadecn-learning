@@ -165,7 +165,8 @@ unsupported relocation type 1026
   原因有两条，任一条都足够：SQLite 是单文件（ReadWriteOnce 的卷不允许两个 Pod 同时挂载）；
   Yjs 文档全在进程内存里（多副本之间无法同步，两个 Pod 会各写各的 `ydoc`，后写覆盖先写）。
   滚动更新会短暂存在两个 Pod，因此必须用 `Recreate`。
-- **要多副本用 `k8s/deployment.cluster.yaml`**（与上面那份二选一）：`CLUSTER_MODE=redis` +
+- **要多副本用 `k8s/variants/deployment.cluster.yaml`**（与上面那份是同一个 Deployment 的两种形态，
+  它放在 `variants/` 而不是 `k8s/` 下是必须的，理由见 [§4.4](#44-argocd-application)）：`CLUSTER_MODE=redis` +
   PostgreSQL，两条原因都解掉了，于是 `replicas: 3` + `RollingUpdate`，不再有发布中断。
   镜像是同一个 —— 副本模式只由环境变量决定，**唯一绑构建的仍是数据库 provider**。
   Service 不需要 `sessionAffinity`，Ingress 也不需要 sticky session：任意实例都能服务任意房间。
@@ -305,7 +306,12 @@ kubectl apply -f ci/workflow-template.yaml
    **但架构错乱的真凶不在这里，在基础镜像的 tag 上，见 [§2.5.1](#251-三道架构护栏全都是事故留下的)** ——
    日志里那句 `native modules ok: N on <arch>` 才是每轮真实跑在什么架构上的证据，
    `linux/amd64` 那轮打出 `aarch64` 就是出事了
-3. `git-update-image-tag` —— `sed` 改 `k8s/deployment.yaml` 的 tag，提交 `ci: update image tag to <sha>`，push 回同一分支。到这里 CI 就结束了，部署是 ArgoCD 的事
+3. `git-update-image-tag` —— `sed` 改 `k8s/deployment.yaml` 的 tag，提交 `ci: update image tag to <sha>`，push 回同一分支。到这里 CI 就结束了，部署是 ArgoCD 的事。
+   **push 被拒会 fetch + rebase 重试**（最多 5 次）：clone 停在构建开始那个提交，而构建要 45 分钟，
+   这期间分支上有了新提交，这一 push 就是 non-fast-forward —— 镜像明明已经在 Harbor 里，
+   只差一行 tag 没写回，却要整轮重来。自动触发上线后这个窗口撞得更频繁（每次 push 都起一轮），
+   所以补了重试。**冲突不硬盖**（不用 `-X ours`）：那意味着有人手工改过 image 行（比如回滚），
+   悄悄盖掉比失败糟得多，让它红在这一步由人来看
 
 流水线依赖的资源都在集群里带外维护，**缺一个就跑不起来**：Secret `gitea-deploy-key`
 （必须是**有写权限**的 deploy key，最后一步要 push）、`harbor-auth`、`harbor-ca-cert`，
@@ -332,9 +338,11 @@ manifest、两处 `TARGETARCH` 校验、运行时 dlopen 自检（[§2.5.1](#251
 必须同时失效才会打转：
 
 1. **`paths-ignore`（主力）** —— 写回的提交只动 `k8s/deployment.yaml`，命中即整轮跳过。
-   这份名单遵循一条规则：**不进镜像的东西不触发构建**（一轮 45 分钟），所以还包含
-   `docs/**`、`**.md`，以及 CI 自己的定义 `.gitea/**` 和 `ci/**` —— 后两者不在镜像里，
-   而 `ci/` 下的清单本来就要人工 apply 才生效。只要提交里还有一个文件不在名单里，构建照起；
+   这份名单遵循一条规则：**不进镜像的东西不触发构建**（一轮 45 分钟），所以是
+   `k8s/**`、`docs/**`、`**.md`，加上 CI 自己的定义 `.gitea/**` 和 `ci/**`。
+   `k8s/**` 不只是为了盖住写回提交：改副本数、探针、Ingress 都不需要新镜像，
+   ArgoCD 会直接同步清单；`ci/` 下的那两份更是本来就要人工 apply 才生效。
+   只要提交里还有一个文件不在名单里，构建照起；
    要强制构建就用手动触发。顺带一个好处：**引入这个 workflow 的那次 push 自己不会触发构建**，
    可以先用一次 `workflow_dispatch` + `dryRun` 验通链路，再决定什么时候真起一轮。
 2. **job 级 `if`** —— 认提交标题前缀 `ci: update image tag`。它依赖 push payload 里有
@@ -404,6 +412,26 @@ Application 的 `source.directory.exclude` 还留着一条 `argo-workflow.yaml` 
 留着无害，但**别拿这条 exclude 当护栏**：想在 `k8s/` 下放不该被同步的东西，靠的是它精确匹配
 文件名，一改名就失效。
 
+#### 同一目录里不能有两份同名资源
+
+ArgoCD 同步的是**目录**（`path: k8s`，没开 `recurse`，所以只读这一层的文件），不是「你 apply 了哪一份」。
+所以 `k8s/deployment.yaml` 和多副本变体一度同时躺在 `k8s/` 下时，同一个资源身份出现了两次，
+Application 上挂着：
+
+```
+RepeatedResourceWarning: Resource apps/Deployment/dev/shadecn-learning appeared 2 times among application resources.
+```
+
+**哪一份生效没有保证**。实测一直是单副本那份赢（`kubectl get rs` 的 revision 历史是干净的单调序列，
+从没出现过 3 副本），所以没造成事故；但真翻过去就是 `replicas: 3` + 无 PVC + 一个几个月前的旧 tag
+（CI 的 `sed` 只改 `k8s/deployment.yaml`，从不碰变体），SQLite 的卷会跟着掉。
+
+修法是把变体挪出同步目录：`k8s/variants/deployment.cluster.yaml`。**不要靠 `exclude`** —— 理由同上一段。
+
+顺带纠正一句本文档早先的说法：「两份清单，apply 哪一份来选形态」对 Deployment 是**不成立**的。
+它由 ArgoCD 纳管且开了 `selfHeal`，带外 apply 几十秒就被刷回去（和 `kubectl set image` 改不动线上
+是同一件事）。切形态只能走 git：把变体的内容覆盖到 `k8s/deployment.yaml` 再提交。
+
 ### 4.5 流水线用到的镜像**全部**走 Harbor 代理，包括 Argo 自己的 executor
 
 集群到 `quay.io` 的直连不稳（`failed to do request: Head https://quay.io/v2/…: EOF`），
@@ -441,7 +469,8 @@ workflow-controller 的 tag），argo 升级之后要跟着改这里 —— 这�
 - [ ] `ci/workflow-template.yaml` 与集群里那份一致：`kubectl diff -f ci/workflow-template.yaml` 无输出。
 - [ ] `git push gitea master` 之后无需任何手工操作：Gitea 的 Actions 页出现一条 `cicd` 运行，`dev` 命名空间里多出一条 `shadecn-learning-cicd-*`，job 一直守到构建结束（成功则绿、失败则红且日志里有出错那步的 Pod 日志）。
 - [ ] 流水线写回的 `ci: update image tag to <sha>` 提交**不会**再触发一轮构建（Actions 页没有新运行）。
-- [ ] 只改 `docs/**`、`*.md`、`.gitea/**`、`ci/**` 的提交同样不触发构建；用 `workflow_dispatch` 仍能强制构建任意分支。
+- [ ] 只改 `k8s/**`、`docs/**`、`*.md`、`.gitea/**`、`ci/**` 的提交同样不触发构建（但 `k8s/**` 的改动仍会被 ArgoCD 同步上去）；用 `workflow_dispatch` 仍能强制构建任意分支。
+- [ ] 构建进行中往同一分支再推一个提交，最后一步仍能写回（日志里出现「fetch + rebase 后重试」），不会因为 non-fast-forward 让整轮 45 分钟白跑。
 - [ ] runner 的 SA 越权检查：`kubectl -n dev auth can-i --as=system:serviceaccount:dev:gitea-ci-runner delete deployments` 与 `… get secrets` 都是 `no`。
 - [ ] 手动 `kubectl -n dev set image deploy/shadecn-learning …` 后，ArgoCD 的 `selfHeal` 把它刷回仓库里的 tag。
 - [ ] `ci/` 下的文件改动不会让 ArgoCD 变成 `OutOfSync`（它只看 `k8s/`）。

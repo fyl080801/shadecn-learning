@@ -17,12 +17,13 @@ on:
     # 一条规则：**不进镜像的东西不触发构建**（一轮 45 分钟，不值得）。想强制构建
     # 就用下面的手动触发；只要提交里还有一个文件不在这份名单里，构建照起。
     #
-    # 其中 `k8s/deployment.yaml` 那条同时是防自触发循环的**第一道**护栏：流水线最后一步
-    # 会把新 tag 写回 master（`ci: update image tag to <sha>`），而那个提交只动这一个文件。
-    # `.gitea/**` 和 `ci/**` 是 CI 自己的定义 —— 它们不在镜像里，而且 ci/ 下那两份清单
-    # 本来就得人工 apply 才生效，push 它们从来也不该意味着重新构建一次。
+    # `k8s/**` 是部署清单：改副本数、探针、Ingress 都不需要新镜像，ArgoCD 3 分钟内自己就同步了。
+    # 它同时是防自触发循环的**第一道**护栏 —— 流水线最后一步会把新 tag 写回 master
+    # （`ci: update image tag to <sha>`），而那个提交只动 `k8s/deployment.yaml`，落在这个前缀里。
+    # `.gitea/**` 和 `ci/**` 是 CI 自己的定义，同样不在镜像里，而且 ci/ 下那两份清单本来
+    # 就得人工 apply 才生效，push 它们从来也不该意味着重新构建一次。
     paths-ignore:
-      - 'k8s/deployment.yaml'
+      - 'k8s/**'
       - '.gitea/**'
       - 'ci/**'
       - 'docs/**'

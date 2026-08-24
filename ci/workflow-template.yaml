@@ -302,6 +302,10 @@ spec:
             set -e
             IMAGE_TAG="{{inputs.parameters.imageTag}}"
             IMAGE_NAME="{{workflow.parameters.imageName}}"
+            BRANCH="{{workflow.parameters.gitRevision}}"
+            # push 被拒之后最多再试几次、每次之间等多久（见下面循环体的注释）
+            PUSH_ATTEMPTS=5
+            PUSH_RETRY_DELAY=5
             echo "=== Updating image tag to ${IMAGE_TAG} ==="
             cd /workspace
             sed -i "s|image: ${IMAGE_NAME}:.*|image: ${IMAGE_NAME}:${IMAGE_TAG}|" k8s/deployment.yaml
@@ -313,7 +317,40 @@ spec:
             cp /ssh-key/id_ed25519 /root/.ssh/id_ed25519
             chmod 600 /root/.ssh/id_ed25519
             ssh-keyscan -p 30222 git.fyl080801.uk >> /root/.ssh/known_hosts 2>/dev/null
-            GIT_SSH_COMMAND="ssh -i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts" git push origin HEAD:{{workflow.parameters.gitRevision}}
+            # fetch / rebase 也要走这把 key，所以 export，而不是只挂在 push 那一条命令前面
+            export GIT_SSH_COMMAND="ssh -i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts"
+
+            # clone 停在构建开始的那个提交，而一轮构建要 45 分钟 —— 这期间有人往同一分支
+            # 推了新提交的话，这里就是 non-fast-forward，push 直接被拒。镜像其实已经推到
+            # Harbor 了，只差这一行 tag 没写回，却要整条流水线重跑 45 分钟。
+            # push 到 gitea 的自动触发上线之后，这个窗口撞得更频繁（每次 push 都会起一轮）。
+            # 所以被拒就 fetch + rebase 重来：我们只动了 k8s/deployment.yaml 里的一行 tag，
+            # 除非对方也改了同一行，否则不冲突。
+            # 冲突**不要**用 -X ours 之类硬盖过去 —— 那意味着有人手工改过 image tag（比如回滚），
+            # 悄悄盖掉比失败糟得多，所以让它红在这里、由人来看。
+            attempt=1
+            while true; do
+              if git push origin HEAD:${BRANCH}; then
+                break
+              fi
+              if [ ${attempt} -ge ${PUSH_ATTEMPTS} ]; then
+                echo "!!! push 连续 ${PUSH_ATTEMPTS} 次被拒，放弃（镜像已在 Harbor，只是 tag 没写回；"
+                echo "    重跑一次流水线即可，不必重新构建镜像之外的东西）"
+                exit 1
+              fi
+              echo "--- 第 ${attempt} 次 push 被拒，多半是构建期间分支上有了新提交；fetch + rebase 后重试 ---"
+              # gitRevision 传的是 tag 或 commit 时根本没有可 rebase 的分支，别在这兜圈子
+              git fetch origin "${BRANCH}" || {
+                echo "!!! 取不到 origin/${BRANCH}（gitRevision 可能不是分支），不重试"
+                exit 1
+              }
+              git rebase FETCH_HEAD || {
+                echo "!!! rebase 冲突：有人手工改过 k8s/deployment.yaml 的 image 行，需要人工处理"
+                exit 1
+              }
+              attempt=$((attempt + 1))
+              sleep ${PUSH_RETRY_DELAY}
+            done
             echo "=== Image tag updated to ${IMAGE_TAG} ==="
         volumeMounts:
           - name: ssh-key

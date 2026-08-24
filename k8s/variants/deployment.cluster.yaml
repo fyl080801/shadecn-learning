@@ -1,4 +1,16 @@
-# 多副本部署 —— 和 deployment.yaml **二选一**，别同时 apply（同名 Deployment/Service）。
+# 多副本部署 —— 和 k8s/deployment.yaml 是同一个 Deployment（`dev/shadecn-learning`）的两种形态。
+#
+# ⚠️ 它在 `variants/` 而不是 `k8s/` 下，是**必须**的：ArgoCD 的 Application 同步的是 `k8s/`
+# 这个目录（`path: k8s`，且没开 `recurse`，所以不会看子目录）。两份清单同时躺在 `k8s/` 里，
+# 对 ArgoCD 就是同一个资源身份出现了两次 —— 它报
+# `RepeatedResourceWarning: Resource apps/Deployment/dev/shadecn-learning appeared 2 times`，
+# 而哪一份生效并没有保证。移进子目录之后 ArgoCD 只看得见单副本那份。
+#
+# ⚠️ 「apply 这一份来切多副本」是行不通的：这个 Deployment 由 ArgoCD 纳管，且开了 selfHeal，
+# 带外 apply 几十秒内就会被刷回仓库里的样子（和 `kubectl set image` 改不动线上是同一回事）。
+# 真要切多副本，只有走 git：把这份的内容覆盖到 `k8s/deployment.yaml` 再提交，
+# 或者把 Application 的 `path` 指到另一个目录（那个目录得同时带上 service / ingress，
+# 否则它们会被 prune 掉）。
 #
 # 和单副本那份的区别只有配置，镜像是同一个：副本模式由 CLUSTER_MODE 决定，
 # 不是构建时绑死的。唯一绑构建的是数据库 provider（Prisma 生成的 client 里
