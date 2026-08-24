@@ -36,6 +36,8 @@ import {
   Video,
   Workflow,
   UserRoundPen,
+  BookOpen,
+  SlidersHorizontal,
   ChevronsUpDown,
   LogIn,
   LogOut,
@@ -49,20 +51,49 @@ interface NavItem {
   label: string
   to: string
   icon: Component
+  /**
+   * 高亮判据。缺省是路径**全等** —— 详情页（`/galstory/stories/:id`）也要让它所属的
+   * 那一项亮着，否则点进去侧栏就整个失去当前位置，所以那类入口写 `prefix`。
+   */
+  match?: "exact" | "prefix"
 }
 
-/** 「关于」不在这条列表里 —— 它和「设置」「退出」一起挂在底部的用户菜单下（关于是个模态窗，不是页面） */
-const navItems: NavItem[] = [
-  { label: "Home", to: "/", icon: Home },
-  { label: "贪吃蛇", to: "/snake", icon: Gamepad2 },
-  { label: "2048", to: "/2048", icon: Grid3X3 },
-  { label: "canvas3d", to: "/canvas3d", icon: Layers },
-  { label: "lightscene", to: "/lightscene", icon: Sun },
-  { label: "richeditor", to: "/richeditor", icon: Sun },
-  { label: "Three Editor", to: "/three-editor", icon: Boxes },
-  { label: "3D导演台", to: "/3d-scene", icon: Video },
-  { label: "画布项目", to: "/projects", icon: Workflow },
-  { label: "个人画布", to: "/personal", icon: UserRoundPen }
+/**
+ * 侧栏分组。`label` 为空的那一组不带标题（就是原来那条平铺的列表）。
+ *
+ * **为什么要分组**：GalStory 是一整块功能（故事 + 配置，将来还有对局），
+ * 平铺进这串演示页里，「这两项是一起的」就只能靠位置猜。
+ *
+ * 「关于」不在任何一组里 —— 它和「设置」「退出」一起挂在底部的用户菜单下
+ * （关于是个模态窗，不是页面）。
+ */
+interface NavGroup {
+  label?: string
+  items: NavItem[]
+}
+
+const navGroups: NavGroup[] = [
+  {
+    items: [
+      { label: "Home", to: "/", icon: Home },
+      { label: "贪吃蛇", to: "/snake", icon: Gamepad2 },
+      { label: "2048", to: "/2048", icon: Grid3X3 },
+      { label: "canvas3d", to: "/canvas3d", icon: Layers },
+      { label: "lightscene", to: "/lightscene", icon: Sun },
+      { label: "richeditor", to: "/richeditor", icon: Sun },
+      { label: "Three Editor", to: "/three-editor", icon: Boxes },
+      { label: "3D导演台", to: "/3d-scene", icon: Video },
+      { label: "画布项目", to: "/projects", icon: Workflow },
+      { label: "个人画布", to: "/personal", icon: UserRoundPen }
+    ]
+  },
+  {
+    label: "GalStory",
+    items: [
+      { label: "故事库", to: "/galstory/stories", icon: BookOpen, match: "prefix" },
+      { label: "模型配置", to: "/galstory/config", icon: SlidersHorizontal }
+    ]
+  }
 ]
 
 const { user, displayName, isAuthenticated, authEnabled, startLogin, startLogout } =
@@ -80,6 +111,11 @@ const { isMobile, collapsed, toggleSidebar, mobileNavOpen, closeMobileNav } =
 const accountLabel = computed(() =>
   isAuthenticated.value ? displayName.value : authEnabled.value ? "未登录" : "本地模式"
 )
+
+/** 当前路由算不算落在这一项上；详情页要让它所属的入口继续亮着（见 NavItem.match） */
+function isActive(item: NavItem) {
+  return item.match === "prefix" ? route.path.startsWith(item.to) : route.path === item.to
+}
 
 /** 菜单项里的跳转：吞掉 router.push 的 promise，免得守卫拦下时留个未处理的 rejection */
 function go(path: string) {
@@ -175,25 +211,36 @@ watch(
     </div>
 
     <!-- Navigation -->
-    <nav class="flex-1 overflow-y-auto px-2 py-2">
-      <ul class="flex flex-col gap-1">
-        <li v-for="item in navItems" :key="item.to">
-          <RouterLink
-            :to="item.to"
-            :title="collapsed ? item.label : undefined"
-            :class="[
-              'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-              route.path === item.to
-                ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                : 'text-sidebar-foreground/70',
-              collapsed ? 'justify-center' : ''
-            ]"
-          >
-            <component :is="item.icon" class="h-4 w-4 shrink-0" />
-            <span v-if="!collapsed">{{ item.label }}</span>
-          </RouterLink>
-        </li>
-      </ul>
+    <nav class="flex flex-1 flex-col gap-1 overflow-y-auto px-2 py-2">
+      <template v-for="(group, index) in navGroups" :key="group.label ?? index">
+        <!-- 收起时没地方写标题，换成一条分隔线：分组关系还在，只是不占宽度 -->
+        <div
+          v-if="group.label && !collapsed"
+          class="px-3 pt-3 pb-1 text-xs font-medium text-sidebar-foreground/50"
+        >
+          {{ group.label }}
+        </div>
+        <div v-else-if="group.label" class="mx-2 my-2 border-t" />
+
+        <ul class="flex flex-col gap-1">
+          <li v-for="item in group.items" :key="item.to">
+            <RouterLink
+              :to="item.to"
+              :title="collapsed ? item.label : undefined"
+              :class="[
+                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                isActive(item)
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'text-sidebar-foreground/70',
+                collapsed ? 'justify-center' : ''
+              ]"
+            >
+              <component :is="item.icon" class="h-4 w-4 shrink-0" />
+              <span v-if="!collapsed">{{ item.label }}</span>
+            </RouterLink>
+          </li>
+        </ul>
+      </template>
     </nav>
 
     <!-- 底部用户区：设置、关于、登录/退出都收在这个菜单里 -->

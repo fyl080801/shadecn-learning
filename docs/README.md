@@ -24,6 +24,7 @@
 | — | 协同方案案例研究：竞品与横向对比 | [15-collab-case-study.md](15-collab-case-study.md) | 调研 |
 | REQ-SOLO | 个人画布（不走协同的画布） | [16-personal-flow.md](16-personal-flow.md) | 已实现 |
 | REQ-BACKEND | 数据访问下沉：Node 不再直连数据库与存储 | [17-backend-extraction.md](17-backend-extraction.md) | 规划中 |
+| REQ-GALSTORY | GalStory 控制台：故事管理与模型配置 | [18-galstory-console.md](18-galstory-console.md) | 部分实现 |
 
 ## 状态口径
 

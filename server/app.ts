@@ -11,6 +11,7 @@ import { auth } from './routes/auth.ts'
 import { avatars } from './routes/avatars.ts'
 import { collab } from './routes/collab.ts'
 import { flows } from './routes/flows.ts'
+import { galstory } from './routes/galstory.ts'
 import { health } from './routes/health.ts'
 import { invites } from './routes/invites.ts'
 import { notes } from './routes/notes.ts'
@@ -47,6 +48,8 @@ const routes = app
   .route('/api/invites', invites)
   .route('/api/flows', flows)
   .route('/api/collab', collab)
+  // GalStory 引擎的反代（只转发 GET，见该模块）；地址由 GAL_STORY_API_URL 给
+  .route('/api/galstory', galstory)
 
 // 页面侧的闸门：/login 由服务端渲染，其余非 /api 的请求未登录一律不下发
 attachPageGuard(app)

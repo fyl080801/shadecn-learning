@@ -42,6 +42,26 @@ export function isApiPath(pathname: string) {
  */
 export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
 
+/**
+ * GalStory 引擎（`gal-story serve`）的地址，例如 `http://127.0.0.1:8000`。
+ *
+ * **空 = 这块功能没开**（不是配错了）：前端会显示「未配置」并说明该设哪个变量，
+ * 而不是把一个连不上的后端渲染成一屏错误 —— 这个仓库里绝大多数人不会跑那个引擎。
+ * 末尾的斜杠一律去掉，好让拼路径的地方只有一种写法。
+ */
+export const galStoryApiUrl = (process.env.GAL_STORY_API_URL ?? '').trim().replace(/\/+$/, '')
+
+/**
+ * 代理请求的超时（毫秒）。**必须自己给** —— fetch 默认没有上界，一个卡住的上游会把请求
+ * 永远挂着，浏览器那边只看到一个转圈的页面。
+ *
+ * 缺省 30s 是按**只读口**给的（故事详情、模型配置、存档列表都在百毫秒级）。
+ * ⚠️ 将来接对局：`POST /api/saves/{id}/open` 首次要跑建档（归一化 + 公开人物志 + 按 observer
+ * 分调的初次印象 + 泄密判定），实测**几十秒到几分钟**，那时这个数要跟着调大，
+ * 或者给那一条单独的上界。
+ */
+export const galStoryTimeoutMs = Number(process.env.GAL_STORY_API_TIMEOUT_MS ?? 30_000)
+
 /** 支持的两种库，名字就是 prisma datasource 的 provider 值 */
 export type DbProvider = 'sqlite' | 'postgresql'
 

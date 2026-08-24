@@ -125,6 +125,31 @@ const router = createRouter({
           props: true,
           meta: { title: "项目" }
         },
+        // GalStory 控制台。`/galstory` 本身不是页面，重定向到故事库 ——
+        // 侧栏两个入口各自指向自己的路径，这一条只兜住手输 `/galstory` 的情况。
+        {
+          path: "galstory",
+          redirect: "/galstory/stories"
+        },
+        {
+          path: "galstory/stories",
+          name: "GalStories",
+          component: () => import("@/views/galstory/Stories.vue"),
+          meta: { title: "故事库" }
+        },
+        {
+          path: "galstory/stories/:storyId",
+          name: "GalStoryDetail",
+          component: () => import("@/views/galstory/StoryDetail.vue"),
+          props: true,
+          meta: { title: "故事" }
+        },
+        {
+          path: "galstory/config",
+          name: "GalStoryConfig",
+          component: () => import("@/views/galstory/ModelConfig.vue"),
+          meta: { title: "模型配置" }
+        },
         {
           path: "invite/:token",
           name: "InviteAccept",
