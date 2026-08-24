@@ -128,5 +128,7 @@ export function createMemoryBackend(): ClusterBackend {
     createCounter: (namespace: string) => new MemoryCounter(namespace),
     createLock: (namespace: string) => new MemoryLock(namespace),
     close: () => Promise.resolve(),
+    // 单副本下「共享层」就是这个进程的内存：它挂了，进程也就挂了
+    health: () => ({ ok: true, backend: 'memory', status: 'ready' }),
   }
 }

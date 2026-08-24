@@ -1,4 +1,5 @@
 import { databaseUrl, dbProvider, ensureDatabaseDir } from './config.ts'
+import { instrumentAdapter } from './logger/db.ts'
 import { PrismaClient } from './generated/prisma/client.ts'
 
 /**
@@ -33,7 +34,7 @@ async function createAdapter() {
 }
 
 export const prisma: PrismaClient =
-  globalForPrisma.prisma ?? new PrismaClient({ adapter: await createAdapter() })
+  globalForPrisma.prisma ?? new PrismaClient({ adapter: instrumentAdapter(await createAdapter()) })
 
 globalForPrisma.prisma = prisma
 

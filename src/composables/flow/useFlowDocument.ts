@@ -6,6 +6,7 @@ import { usePageTitle } from "@/composables/usePageTitle"
 import { useAsyncAction } from "@/composables/useAsyncAction"
 import type { useFlowStore } from "@/stores/flow"
 import type { FlowSync } from "./sync"
+import { syncTextOf, syncWarningOf } from "./sync-text"
 
 type FlowStore = ReturnType<typeof useFlowStore>
 
@@ -48,46 +49,24 @@ export function useFlowDocument(
   // —— 同步状态 ——
 
   /**
-   * 画布上那行小字。
+   * 画布上那行小字，以及它要不要标成警告色。
    *
-   * **两种画布这里的说法不一样，而且不能混**（REQ-SOLO §4.6）：
-   * 项目画布是「同步」（改动进 Y.Doc 就走了，没有保存这一步），
-   * 个人画布是「保存」（推一次 HTTP 才算落地）。跟个人画布的用户说
-   * 「协作会话已过期」，他会去找那个根本不存在的协作者。
+   * 判断本身在 `./sync-text.ts`（纯函数，能被真的测到）；这里只负责把当前状态
+   * 收集成它要的形状。
    */
-  const syncText = computed(() => {
-    /*
-     * 终局失败要**先判、且分开判**。这些都不会自己好，套用下面那句
-     * 「恢复连接后自动同步」就是在骗人：用户会照着继续画，而那些改动进得了本地
-     * IndexedDB、永远发不出去。几种原因几条出路，所以文案也得分开写。
-     */
-    switch (sync.fatal.value) {
-      case "superseded":
-        return "协作会话已过期，请刷新页面"
-      case "unauthorized":
-        return "登录态已过期，请重新登录"
-      case "forbidden":
-        return "已失去访问权限，改动不再同步"
-      case "too-large":
-        return "画布太大，最近的改动没能保存"
-    }
+  const syncInput = computed(() => ({
+    fatal: sync.fatal.value,
+    mode: store.meta?.mode ?? null,
+    connected: sync.connected.value,
+    synced: sync.session.value?.synced.value ?? false,
+    pending: sync.pending.value,
+    saveFailed: sync.saveFailed.value,
+    cacheFailed: sync.cacheFailed.value
+  }))
 
-    if (store.meta?.mode === "solo") {
-      // 断网时改的东西存在本地 IndexedDB 里，刷新也不丢，恢复后自动补发
-      if (!sync.connected.value) {
-        return sync.session.value?.synced.value
-          ? "已离线，改动存在本地，恢复网络后自动保存"
-          : "连不上服务器，改动只存在本地"
-      }
-      return sync.pending.value ? "保存中…" : "已保存"
-    }
+  const syncText = computed(() => syncTextOf(syncInput.value))
+  const syncWarning = computed(() => syncWarningOf(syncInput.value))
 
-    if (!sync.connected.value) return "已离线，改动存在本地，恢复连接后自动同步"
-    return sync.session.value?.synced.value ? "已同步" : "同步中…"
-  })
-
-  /** 断线时给个视觉提醒，但不做成可点的动作 —— 用户没什么能做的，重试是自动的 */
-  const syncWarning = computed(() => !sync.connected.value || sync.fatal.value !== null)
 
   // —— 文档动作 ——
 

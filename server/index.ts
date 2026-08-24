@@ -1,4 +1,8 @@
 import './env.ts'
+// 必须排在这个位置（.env 之后、其余一切之前）：它接管 console，之后仓库里既有的
+// `console.log('[模块] …')` 就自动变成结构化日志。装晚了会漏掉启动阶段那些行，
+// 而写成副作用 import 而不是函数调用的理由见该文件
+import './logger/install.ts'
 import { createAdaptorServer } from '@hono/node-server'
 import { app } from './app.ts'
 import { sweepExpired } from './auth/session.ts'
@@ -67,6 +71,37 @@ server.listen(port, host, () => {
 
 const orphanTimer = watchForOrphan()
 
+/**
+ * 退出时留给落库的时间上限。
+ *
+ * **必须有个上限**：落库排的是一条队，`Promise.allSettled` 会一直等下去，
+ * 而数据库要是进了网络黑洞，这里就永远回不来 —— 然后 k8s 的
+ * `terminationGracePeriodSeconds` 到点直接 SIGKILL，**连后面的清理都没跑**。
+ * 卡死等来的是最糟的结局：既没落库，也没干净退出。
+ *
+ * 20 秒配 `terminationGracePeriodSeconds: 60`（见 k8s/），留足余量给 preStop
+ * 那 5 秒和后面的关连接、断库。超时就认了往下走 —— 再等也写不进去，
+ * 而内容还在客户端的 IndexedDB 里，下次打开会自己推上来。
+ */
+const SHUTDOWN_FLUSH_TIMEOUT = 20_000
+
+/** 给一段收尾工作加个上限；超时只记一笔，不阻断后面的步骤 */
+async function withDeadline(task: Promise<void>, ms: number, label: string): Promise<void> {
+  let timer: NodeJS.Timeout | undefined
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      console.error(`[shutdown] ${label}超过 ${ms}ms 仍未完成，不再等待`)
+      resolve()
+    }, ms)
+  })
+
+  try {
+    await Promise.race([task, deadline])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 let shuttingDown = false
 
 async function shutdown() {
@@ -80,11 +115,17 @@ async function shutdown() {
   // 退出前把还开着的房间落库：内容的事实源是内存里的 Y.Doc，直接退等于丢掉
   // 最后一个防抖窗口内的改动。不靠 flushPendingStores() —— 它触发的落库要过一段
   // 微任务链才入队，同步往下走会在入队前就采样到空队列（见 flushAllRoomsToDatabase）。
-  // 断连 → 逐房间直接落库并 await → 再把审计等剩余写库排空
+  // 断连 → 逐房间直接落库并 await → 再把剩余写库排空
   try {
     collab.closeConnections()
-    await flushAllRoomsToDatabase()
-    await flushCollabWrites()
+    await withDeadline(
+      (async () => {
+        await flushAllRoomsToDatabase()
+        await flushCollabWrites()
+      })(),
+      SHUTDOWN_FLUSH_TIMEOUT,
+      '退出前落库',
+    )
   } catch (err) {
     console.error('[collab] 退出前保存失败', err)
   }

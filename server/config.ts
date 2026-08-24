@@ -197,6 +197,46 @@ export function assertClusterConfig() {
   }
 }
 
+// ------------------------------------------------------------------ 日志
+
+/**
+ * 日志级别。`silent` 关掉全部输出。
+ *
+ * 默认 `info`（**开发环境也一样**）：`debug` 会把每条 SQL、每次落库、每帧协同事件都打出来，
+ * 那是排查时临时开的档位，不是日常。
+ */
+export const logLevel = process.env.LOG_LEVEL?.trim() || 'info'
+
+/**
+ * 输出形态。`json` 一行一个对象（给日志采集用），`pretty` 是给人看的带色彩单行。
+ *
+ * 默认按环境走：生产 json，开发 pretty。容器里如果接了 Loki / ELK，保持 json。
+ */
+export const logFormat = (process.env.LOG_FORMAT?.trim() || (isDev ? 'pretty' : 'json')) as
+  | 'pretty'
+  | 'json'
+
+/**
+ * 额外写文件的目录（相对路径按仓库根目录算）。**不设 = 只写 stdout**，这也是容器里该有的样子 ——
+ * k8s 收的是 stdout，往容器内写文件只会把日志留在一个随 Pod 一起消失的层里。
+ */
+export const logDir = process.env.LOG_DIR?.trim() ? resolveFromRoot(process.env.LOG_DIR) : ''
+
+/**
+ * 请求日志记到什么程度：
+ * - `api` —— **默认**。只记 `/api/*`，外加任何路径上的失败（4xx/5xx）和慢请求。
+ *   非 API 的成功请求就是静态资源：dev 下 Vite 每个模块一条，一次刷新几百行，纯噪音。
+ * - `all` —— 全记，排查静态资源 / 页面守卫时才需要。
+ * - `off` —— 一条不记（失败也不记，那时靠 `app.onError`）。
+ */
+export const logHttp = (process.env.LOG_HTTP?.trim() || 'api') as 'api' | 'all' | 'off'
+
+/** 超过这个毫秒数的请求单独记一条 warn，`api` 模式下即使不是 /api 也记 */
+export const logSlowRequestMs = Number(process.env.LOG_SLOW_MS ?? 1000)
+
+/** 超过这个毫秒数的数据库查询记一条 warn。0 = 不记 */
+export const logSlowQueryMs = Number(process.env.LOG_SLOW_QUERY_MS ?? 200)
+
 /** 应用对外地址：拼 redirect_uri / post_logout_redirect_uri 用 */
 export const appOrigin = (process.env.APP_ORIGIN ?? `http://${host}:${port}`).replace(/\/+$/, '')
 

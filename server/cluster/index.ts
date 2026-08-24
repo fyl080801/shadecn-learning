@@ -6,6 +6,7 @@ import {
   SharedMap,
   jsonCodec,
   type ClusterBackend,
+  type ClusterHealth,
   type Codec,
 } from './shared.ts'
 
@@ -43,6 +44,16 @@ export async function initCluster(): Promise<void> {
   const { createRedisBackend } = await import('./redis.ts')
   swapBackend(await createRedisBackend({ url: redisUrl, prefix: redisKeyPrefix }))
   console.log(`[cluster] 多副本模式，共享状态走 Redis（键前缀 ${redisKeyPrefix}:）`)
+}
+
+/**
+ * 共享层现在好使吗 —— 监控端点读它。
+ *
+ * 同步、不发网络请求（见 `ClusterBackend.health` 的说明）。
+ * 读的是**当前** backend，所以 `initCluster()` 之前问就是内存那份，正确。
+ */
+export function clusterHealth(): ClusterHealth {
+  return backend.health()
 }
 
 /** 进程退出时收连接。单副本下是空操作 */
@@ -157,6 +168,7 @@ export {
   numberCodec,
   stringCodec,
   type ClusterBackend,
+  type ClusterHealth,
   type Codec,
 } from './shared.ts'
 export { createMemoryBackend } from './memory.ts'

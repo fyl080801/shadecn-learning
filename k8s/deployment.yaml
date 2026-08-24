@@ -95,11 +95,30 @@ spec:
               path: /api/health
               port: 3000
             periodSeconds: 30
+          # readiness 走**深**探针：数据库或 Redis 不通就把这个 Pod 从 endpoints 摘掉，
+          # 别再往它送新请求。liveness 和 startup 仍用浅的 /api/health ——
+          # 重启治不了数据库故障，只会把一个还握着未落库内容的进程杀掉，
+          # 然后在 CrashLoopBackOff 里反复重启，把故障放大一圈（见 server/routes/health.ts）
           readinessProbe:
             httpGet:
-              path: /api/health
+              path: /api/health/ready
               port: 3000
             periodSeconds: 10
+            # 比服务端自己那道 2s 依赖探测超时宽一点，让**服务端先超时** ——
+            # 这样失败原因会落进日志（探针先超时的话只有一句 kubelet 的 timeout）
+            timeoutSeconds: 3
+          # preStop 先睡 5 秒再让 SIGTERM 进来。k8s 里**摘 endpoint 和发 SIGTERM 是并行的**，
+          # 不睡这一下，正在死的 Pod 还会接到新的 WebSocket 握手 ——
+          # 那些连接一建立就会被随后的 closeConnections() 掐掉。
+          lifecycle:
+            preStop:
+              exec:
+                command: ['sh', '-c', 'sleep 5']
+      # 退出要给足时间：SIGTERM 之后进程要断开所有协作连接、把每个房间的 Y.Doc
+      # 落库、再把写队列排空（内容的事实源是内存，见 server/index.ts 的 shutdown）。
+      # 默认的 30s 在房间多或数据库慢的时候不够，超时会被 SIGKILL —— 那比不落库还糟：
+      # 既没写进去，也没干净退出。落库那段自己还有 20s 的上限，两者要对得上。
+      terminationGracePeriodSeconds: 60
       volumes:
         - name: data
           persistentVolumeClaim:

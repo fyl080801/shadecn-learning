@@ -145,11 +145,30 @@ export abstract class SharedLock {
 }
 
 /** 一套实现的出厂口。`initCluster()` 按模式挑一个 */
+/** 共享层的健康快照 */
+export interface ClusterHealth {
+  /** 现在能用吗。单副本恒为 true —— 那时「共享层」就是进程内存 */
+  ok: boolean
+  /** 后端类型，`memory` / `redis` */
+  backend: 'memory' | 'redis'
+  /** 后端自己报的状态，排查时有用（ioredis 的 `ready` / `connecting` / `end` …） */
+  status: string
+}
+
 export interface ClusterBackend {
   createMap<V>(namespace: string, codec: Codec<V>): SharedMap<V>
   createCounter(namespace: string): SharedCounter
   createLock(namespace: string): SharedLock
   close(): Promise<void>
+  /**
+   * 共享层现在还好使吗 —— 给监控端点读。
+   *
+   * **必须是同步的、不发网络请求**：这是健康检查读的东西，而健康检查本身
+   * 不能因为依赖挂了就跟着卡住（那会把「Redis 慢」变成「健康检查超时」，
+   * 两件事的处置完全不同）。Redis 那头读连接对象自己的 `status` 就够了，
+   * ioredis 一直在维护它。
+   */
+  health(): ClusterHealth
   /**
    * 把这个前缀下的东西全删掉。
    *

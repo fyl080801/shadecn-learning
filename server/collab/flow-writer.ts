@@ -77,9 +77,12 @@ export async function applyFlowUpdate(
   }
 
   /*
-   * 和协同的落库排同一条队：写的是同一行、同一张审计表（seq 撞 `@@unique` 就是这么来的）。
-   * 队列吞异常（那是给后台落库设计的），所以这里自己接住再往外抛 —— REST 调用方
-   * 需要知道写失败了，不能把失败当成功回给客户端。
+   * 和协同的落库排同一条队：写的是同一行，各排各的队等于没排。
+   *
+   * 绕一个 box 是为了把 `merge()` 的**返回值**带出来 —— 队列的签名是
+   * `() => Promise<void>`，只传得回「成没成」。异常本身不用管：队列如今照实往外抛
+   * （以前它吞异常，那正是 docs/19 §4.1 那个 bug），这里 try/catch 只是为了让
+   * 成功和失败都能落进同一个 box，出了队列再决定怎么处理。
    */
   const room = roomOf(flowId)
   // 装在对象里：赋值发生在回调内，直接用 let 的话 TS 的控制流分析看不见，会把它收窄成 never
@@ -167,7 +170,14 @@ async function merge(
         continue
       }
 
-      await rememberStoredVersion(room, doc)
+      /*
+       * 状态向量写进的是**共享层缓存**，失败不影响上面那次真正的写入已经成功。
+       * 抛出去会让这次请求报 500，而库里其实已经写好了 —— 客户端于是重推一遍
+       * （幂等，无害），但界面上白闪一次「未保存」。咽掉，最多下次多写一次库。
+       */
+      await rememberStoredVersion(room, doc).catch((err: unknown) => {
+        console.warn(`[flow-writer] ${room} 的状态向量没记住，下一轮会多写一次库`, err)
+      })
 
       return { ok: true, stateVector: after, revision: row.revision + 1, noop: false }
     } finally {

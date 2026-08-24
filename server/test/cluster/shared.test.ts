@@ -50,6 +50,25 @@ for (const candidate of candidates) {
       await backend?.close()
     })
 
+    /**
+     * 健康读数。两套实现都要给得出，而且**必须是同步的、不发网络请求** ——
+     * 它服务于健康检查（`GET /api/collab/health`），而健康检查不能因为
+     * 依赖慢就跟着卡住：那会把「Redis 慢」变成「健康检查超时」，两件事的处置完全不同。
+     */
+    describe('health', () => {
+      it('连着的时候报 ok，并说明自己是哪种后端', () => {
+        const health = backend.health()
+        expect(health.ok).toBe(true)
+        expect(['memory', 'redis']).toContain(health.backend)
+        expect(health.status).toBeTruthy()
+      })
+
+      it('是同步返回，不是 Promise', () => {
+        // 返回 Promise 的话，探针就得 await 一个可能永远不回来的东西
+        expect(backend.health()).not.toBeInstanceOf(Promise)
+      })
+    })
+
     describe('SharedMap', () => {
       it('写进去读得出来，覆盖写以最后一次为准', async () => {
         const map = backend.createMap('m1', stringCodec)

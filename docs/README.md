@@ -25,6 +25,7 @@
 | REQ-SOLO | 个人画布（不走协同的画布） | [16-personal-flow.md](16-personal-flow.md) | 已实现 |
 | REQ-BACKEND | 数据访问下沉：Node 不再直连数据库与存储 | [17-backend-extraction.md](17-backend-extraction.md) | 规划中 |
 | REQ-GALSTORY | GalStory 控制台：故事管理与模型配置 | [18-galstory-console.md](18-galstory-console.md) | 部分实现 |
+| REQ-RESILIENCE | 协同服务端容灾 | [19-collab-resilience.md](19-collab-resilience.md) | 部分实现 |
 
 ## 状态口径
 
@@ -47,6 +48,9 @@
 | ~~只能单副本~~ | **已解决**：`CLUSTER_MODE=redis` 打开多副本（内容与 awareness 经 Redis 同步、落库加分布式锁）；默认仍是单副本 | [REQ-CLUSTER](14-clustering.md) |
 | `kill -9` 丢一个防抖窗口 | 最多丢 2–10s 的画布改动（正常退出有 SIGTERM 兜底） | [REQ-COLLAB §3.7](04-realtime-collab.md) |
 | 没有历史，误删无法恢复 | 操作日志已移除；`Flow.ydoc` 是收敛快照，不保留任何中间状态。清空画布再离开，内容就没了 | [REQ-DATA §6](05-data-persistence.md) |
+| 没有数据库备份 | 规则已定下来并实测（**备份必须存 `ydoc` 二进制**，存 `graph` JSON 恢复会随机丢编辑，实测 200 次里丢 47%），但定时备份和恢复演练都还没做 | [REQ-RESILIENCE §4.7](19-collab-resilience.md) |
+| ~~服务端落库失败是静默的~~ | **已修复**：写库失败照实抛出（Hocuspocus 据此保住文档）、登记欠账、30 秒一轮自动补写，状态栏会显示「服务器暂时无法保存」，`GET /api/collab/health` 的 `owed` 报出还欠着几张。**残留**：多副本下 Redis 不可用时上游 redlock 仍会让落库**滞后**（不再丢内容，§4.3 的 CAS 兜住了） | [REQ-RESILIENCE §4.1 / §4.2 b](19-collab-resilience.md) |
+| ~~协同落库无 CAS，跨副本可能覆盖~~ | **已修复**：落库改成读→合并→CAS 写回（光加 CAS 不够 —— 那只保证没人插队，不保证手里的内容是超集），redlock 从正确性依赖降级为优化 | [REQ-RESILIENCE §4.3](19-collab-resilience.md) |
 | 断网时刷新打不开页面 | 数据有 IndexedDB 兜底，但应用本体要从服务器加载 —— 没有 Service Worker 就刷不出来 | [REQ-COLLAB §7](04-realtime-collab.md) |
 | 侧栏导航与路由表各写一份 | 容易漏配；`Example.vue` / `Emu3DView.vue` 已无对应路由 | [REQ-SHELL §3](01-app-shell.md) |
 | schema 变更可能让容器起不来 | 启动时的 `prisma db push` 不带 `--accept-data-loss`（有意为之），遇到删列、改类型、**新增 unique** 一律拒绝执行 → CrashLoopBackOff。上线前先 `migrate diff` 看 DDL，被拦了按文档处置 | [REQ-DEPLOY §3.6](12-deployment.md) |
@@ -63,10 +67,17 @@
 4. **画布版本快照** —— 现在没有任何历史。真要做，快照存 **ydoc 二进制**（JSON 投影只能给人看，
    从它重建文档会产生全新的 clientID，和客户端手里的本地状态撞车、随机丢编辑）；
    「恢复到某版本」也要走当前文档上的一次事务，而不是重建文档。
+   这条现在有实测数据了，见 [REQ-RESILIENCE §4.7.1](19-collab-resilience.md)：
+   从 JSON 重建后合并客户端那份，200 次里有 105 次客户端的编辑活下来 —— 胜负由随机的 clientID 决出。
 5. ~~**多副本**~~ —— **已做**。`@hocuspocus/extension-redis` + 一层共享状态抽象（内存 / Redis 两套实现），
    由 `CLUSTER_MODE` 切换，默认仍是单副本（见 [REQ-CLUSTER](14-clustering.md)）。
 6. **Service Worker** —— 现在断网**刷新**打不开页面（应用本身要从服务器加载）。
    y-indexeddb 只管数据，要做到「断网刷新照样用」得再加 PWA 那一层。
+
+> **服务端容灾**单独成篇：[REQ-RESILIENCE](19-collab-resilience.md)。
+> 客户端离线那一层已经完整，缺的是「服务器收到之后到字节落库」这一段 ——
+> 落库失败静默、Redis 故障停摆、跨副本覆盖写、无备份无告警。
+> 其中前三项都是几十行以内的改动，优先级见该文 §5。
 
 ### 实现了但没启用
 

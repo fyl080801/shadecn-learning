@@ -1,5 +1,6 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch, watchEffect, type Ref } from "vue"
 import { useOnline } from "@vueuse/core"
+import { toast } from "vue-sonner"
 import * as Y from "yjs"
 import { IndexeddbPersistence } from "y-indexeddb"
 import type { Awareness } from "y-protocols/awareness"
@@ -10,7 +11,7 @@ import { createCollabTransport } from "./collab"
 import { createSoloTransport } from "./solo"
 import type { FatalClose, FlowTransport } from "./types"
 
-export { classifyClose } from "./collab"
+export { classifyClose, parseStoreState } from "./collab"
 export type { FatalClose, FlowTransport } from "./types"
 
 /**
@@ -72,9 +73,12 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
   const synced = ref(false)
   const linked = ref(false)
   const pending = ref(false)
+  const saveFailed = ref(false)
 
   const cached = ref(false)
   const hasContent = ref(false)
+  /** 本地缓存（IndexedDB）用不了 —— 「断网不丢」这个承诺在这台浏览器上不成立 */
+  const cacheFailed = ref(false)
 
   /**
    * 这条通道被**终局**掐掉了，以及为什么（`null` = 没有）。
@@ -97,6 +101,25 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
   const connected = computed(() => linked.value && online.value)
   const session = shallowRef<FlowSyncSession | null>(null)
 
+  /**
+   * 本地缓存（IndexedDB）用不了。
+   *
+   * 无痕模式、浏览器策略禁用、配额写满都会走到这里。**在线时它不影响任何事** ——
+   * 内容照样同步给服务器和协作者；它拿掉的是**断网那一档**的兜底，
+   * 以及「关掉页面再打开，没发出去的改动还在」这个保证。
+   *
+   * 所以处理方式也分两档：进场时 toast 一次（否则一个从不断网的人永远不知道
+   * 自己少了这层保护），断网时状态栏换一句更重的话（见 `useFlowDocument`）。
+   */
+  function noteCacheFailure(error: unknown) {
+    if (cacheFailed.value) return
+    cacheFailed.value = true
+    console.warn("[flow] 本地缓存不可用，断网期间的改动将无法保留", error)
+    toast.warning("本地缓存不可用", {
+      description: "这台浏览器存不下离线草稿：断网或关闭页面时，还没同步出去的改动会丢失。"
+    })
+  }
+
   function dropTransport() {
     stopMirror?.()
     stopMirror = null
@@ -105,6 +128,12 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
     synced.value = false
     linked.value = false
     pending.value = false
+    /*
+     * 换传输就把这个状态清掉：它说的是「**那台**服务器存不进去」，
+     * 而重连之后是一次全新的判断 —— 服务端会在新连接接入时补发当前状态。
+     * 留着旧值的话，一次普通重连就能让界面永久停在「无法保存」。
+     */
+    saveFailed.value = false
   }
 
   function teardown() {
@@ -112,12 +141,18 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
     // 顺序要紧：先拆传输、再摘本地缓存、最后才销毁文档 ——
     // 反过来的话缓存那边还挂着已销毁文档的 update 监听
     // 只 destroy 不 clearData：缓存留着，下次打开还能离线用
-    void offline?.destroy()
+    void offline?.destroy().catch(() => undefined)
     offline = null
     doc?.destroy()
     doc = null
     cached.value = false
     hasContent.value = false
+    /*
+     * 换画布时重置：缓存能不能用是**这台浏览器**的属性，理论上换一张画布也一样坏。
+     * 但重置掉才能让下一张画布重新判一次、也重新提示一次 —— 与其记住一个可能
+     * 已经变了的结论（用户退出了无痕模式、清理出了空间），不如每张画布各判各的。
+     */
+    cacheFailed.value = false
     session.value = null
   }
 
@@ -147,13 +182,33 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
       hasContent.value = nodesMap(target).size > 0
     }
 
-    // 本地缓存：构造即开始加载，加载完把内容合进同一个文档
-    offline = new IndexeddbPersistence(`flow:${id}`, doc)
-    void offline.whenSynced.then(() => {
-      if (doc !== target) return
-      refreshHasContent()
-      cached.value = true
-    })
+    /*
+     * 本地缓存：构造即开始加载，加载完把内容合进同一个文档。
+     *
+     * **两处都要接住异常**，而且这不是防御性编程的客套 —— 这一层是整个「断网不丢」
+     * 承诺的地基：无痕模式、浏览器禁用 IndexedDB、存储配额写满时它会失败，
+     * 而失败一旦静默，用户就会在一个**没有本地兜底**的画布上照常编辑，
+     * 断网时以为「改动存在本地」，刷新之后才发现什么都没有。
+     *
+     * 构造函数本身可能同步抛（没有 `indexedDB` 这个全局），`whenSynced` 也可能 reject，
+     * 所以 try/catch 和 `.catch()` 缺一不可。
+     */
+    try {
+      const cache = new IndexeddbPersistence(`flow:${id}`, doc)
+      offline = cache
+      void cache.whenSynced
+        .then(() => {
+          if (doc !== target) return
+          refreshHasContent()
+          cached.value = true
+        })
+        .catch((error: unknown) => {
+          if (doc === target) noteCacheFailure(error)
+        })
+    } catch (error) {
+      offline = null
+      noteCacheFailure(error)
+    }
     target.on("update", refreshHasContent)
 
     session.value = {
@@ -189,6 +244,7 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
       synced.value = current.synced.value
       linked.value = current.linked.value
       pending.value = current.pending.value
+      saveFailed.value = current.saveFailed.value
     })
 
     // 协同才有 awareness，而在场层是靠 session 的变化重挂钩子的，所以换一个新对象
@@ -242,6 +298,19 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
     fatal,
     /** 有没有还没送出去的本地改动（只有个人画布会为真） */
     pending,
+    /**
+     * 服务端收到了但**存不进库**（只有协同画布会为真）。
+     *
+     * 不是断线、也不是终局失败：连接好好的、改动也同步给了同房间的人，
+     * 只是服务器写库失败、字节悬在它的内存里。服务器恢复后会再广播一次，自己变回 false。
+     */
+    saveFailed,
+    /**
+     * 本地缓存用不上（无痕模式、禁用 IndexedDB、配额写满）。
+     *
+     * 在线时无影响；它拿掉的是**断网那一档**的兜底 —— 所以只在断线时才改变状态栏文案。
+     */
+    cacheFailed,
     /** 离开前把攒着的送走；协同一直是同步的，这是个空动作 */
     flush: () => transport?.flush() ?? Promise.resolve(),
     /** 删这张画布之前打个招呼：接下来那次断开是自己招来的，别弹框（见上面 `leaving`） */

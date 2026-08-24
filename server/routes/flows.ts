@@ -192,6 +192,10 @@ export const flows = new Hono<Env>()
    *
    * 复制的是库里那份 ydoc，所以要先把**还开着的房间**落库 ——
    * 内容的事实源是内存里的 Y.Doc，不落一次的话副本会停在上一次防抖写入的样子。
+   *
+   * 这一步失败就让它抛（→ 500），**不要吞掉继续复制**：吞掉的结果是默默复制出一份
+   * 旧内容，而用户拿到的是一张「看着复制成功、内容却少了一截」的画布。
+   * 落库失败本来就意味着数据库有问题，紧接着的 `duplicate` 也成不了。
    */
   .post('/:flowId/duplicate', async (c) => {
     const userId = await currentUserId(c)

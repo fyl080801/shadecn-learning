@@ -33,7 +33,17 @@ import {
   announceRevocation,
   createRevocationWatcher,
 } from './revocation.ts'
-import { flowIdOf, forgetFlow, loadFlowState, roomOf, storeFlowState } from './persistence.ts'
+import { collabLogging } from '../logger/collab.ts'
+import {
+  flowIdOf,
+  forgetFlow,
+  isStoreFailing,
+  loadFlowState,
+  onStoreStateChange,
+  retryFailedStores,
+  roomOf,
+  storeFlowState,
+} from './persistence.ts'
 import { checkQuota, forgetQuota, quotaLocked, COLLAB_LIMITS } from './quota.ts'
 import { scopedSocketId } from './socket-id.ts'
 import { collabWriteAuthorize, createWriteGate, isWriteSync } from './write-gate.ts'
@@ -97,6 +107,34 @@ let instance: Hocuspocus | null = null
  * 想要「立刻」得换成登出时主动广播踢线，那是另一套机制，不是把这个数调小能得到的。
  */
 const REAUTH_INTERVAL = 20_000
+
+/**
+ * 欠账重试的间隔 —— 也就是「数据库恢复之后，最晚多久把没落库的内容补上」。
+ *
+ * 取 30 秒：数据库抖动通常是秒级到分钟级，这个节奏既不会在故障期间把已经
+ * 起不来的库反复砸醒（重试还是串行的），恢复之后也不用等太久。
+ * 平时它一次数据库都不碰 —— 欠账表空着，函数第一行就返回了。
+ */
+const STORE_RETRY_INTERVAL = 30_000
+
+/**
+ * 「服务器现在存不进去」的房间广播。
+ *
+ * **为什么非得说一声**：内容进了服务端内存、也广播给了同房间的人，从连接的角度看
+ * 一切正常 —— 界面于是一直写着「已同步」，而字节其实只在内存里悬着（docs/19 §4.4）。
+ * 这条消息就是把「同步」和「保存」这两件事的差别摊开给用户看。
+ *
+ * 走 Hocuspocus 的 **stateless** 通道：它是一次性的旁路消息，不进 Y.Doc、
+ * 不进撤销栈、不落库 —— 正是「这是个通知，不是内容」该有的形状。
+ *
+ * `broadcastStateless` 只发给**本实例**的连接。多副本下别的实例上的客户端收不到这一条，
+ * 但那没关系：落库是各实例各自防抖触发的，那边存不进去时会广播它自己那一份。
+ */
+const STORE_STATE_MESSAGE = 'flow:store-state'
+
+function storeStatePayload(ok: boolean): string {
+  return JSON.stringify({ type: STORE_STATE_MESSAGE, ok })
+}
 
 /** 这一条消息超限、临时被置为 readOnly 的连接 —— `afterHandleMessage` 里恢复 */
 const oversizedFrame = new WeakSet<Connection>()
@@ -274,12 +312,21 @@ export async function revokeCollabAccess(): Promise<void> {
  * **动态 import**：单副本进程里这个包连加载都不会发生，构建产物也不带它。
  */
 async function collabExtensions(): Promise<Extension[]> {
-  if (!isClustered) return []
+  /*
+   * 日志是一个**只做日志的 extension**，不是散在下面各个 hook 里的打印语句 ——
+   * 那些 hook 写的是配额、鉴权、互斥这些规则，掺进日志就读不出规则本身了。
+   * 它带 `priority`，所以永远第一个跑；而业务 hook（`new Hocuspocus({...})` 里的那些）
+   * 被 Hocuspocus 固定排在最后。一头一尾正好夹住落库，于是「开始」和「完成」两个
+   * 计数的差就是失败次数 —— 详见 server/logger/collab.ts。
+   */
+  const extensions: Extension[] = [collabLogging()]
+  if (!isClustered) return extensions
 
   const { Redis } = await import('@hocuspocus/extension-redis')
   const url = new URL(redisUrl)
 
   return [
+    ...extensions,
     new Redis({
       host: url.hostname,
       port: Number(url.port || 6379),
@@ -290,6 +337,16 @@ async function collabExtensions(): Promise<Extension[]> {
       // 实例名要真的唯一 —— 它是「这条消息是不是我自己发的」的判据
       identifier: instanceId,
       prefix: `${redisKeyPrefix}:hp`,
+      /*
+       * 落库那把 redlock 的持有时长。**默认只有 1 秒**，而一次落库要读一遍
+       * 现有 `ydoc`、合并、再写回去 —— 文档大一点、库慢一点就超过一秒，
+       * 锁于是提前过期，另一个实例拿到锁同时写同一行。
+       *
+       * 10 秒和写队列是同一个量级。注意这只是**减少**撞车，不是正确性的依赖：
+       * 真撞上了由 `persistence.ts` 的读-合并-CAS 兜底（那才是不丢内容的保证，
+       * 它连 Redis 整个挂掉的情况也覆盖）。
+       */
+      lockTimeout: 10_000,
     }),
   ]
 }
@@ -334,6 +391,17 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
       await claimExclusive(data.documentName, data.connection)
       // 本实例的那半当场生效；别的实例上的旧连接由巡检收敛
       await enforceExclusive([document])
+
+      /*
+       * 这个房间正欠着落库的话，补一次通知。
+       *
+       * 状态广播只在**翻转**时发（好→坏、坏→好），所以后进来的人错过了那一次 ——
+       * 不补发的话他会对着一张写着「已同步」的画布继续画，而服务器其实存不进去。
+       * 重复收到同一状态是幂等的，前端就是个赋值。
+       */
+      if (isStoreFailing(data.documentName)) {
+        data.connection.document.broadcastStateless(storeStatePayload(false))
+      }
     },
 
     /**
@@ -615,6 +683,37 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
    * 它管的是**跨实例**那半：写权限的那个实例当场就把本地的踢了（`revokeCollabAccess`），
    * 人挂在别的 Pod 上时就靠这里，延迟一个轮询周期。
    */
+  /*
+   * 落库状态一翻转就告诉房间里的人。
+   *
+   * 这是「同步」和「保存」两件事的分界线唯一能被用户看见的地方：内容进了内存、
+   * 也广播给了同房间的人，从连接的角度看毫无异常 —— 不说一声的话界面会一直写着
+   * 「已同步」，而字节其实悬着（docs/19 §4.4）。
+   *
+   * 挂在这里而不是让 `persistence.ts` 自己去拿 Hocuspocus 实例：持久化不该知道
+   * 上面坐着什么传输层。
+   */
+  onStoreStateChange((documentName, ok) => {
+    const document = hocuspocus.documents.get(documentName)
+    if (!document) return
+    console.warn(`[collab] ${documentName} 落库${ok ? '恢复' : '失败'}，已通知房间`)
+    document.broadcastStateless(storeStatePayload(ok))
+  })
+
+  /*
+   * 欠账重试。落库失败之后文档会留在内存（异常抛给 Hocuspocus 换来的），但**没有任何东西
+   * 会主动再试一次** —— `onStoreDocument` 靠防抖触发，而那会儿房间里往往已经没人编辑了。
+   * 不重试的话内容就一直悬着，直到进程退出；要是那次退出是 SIGKILL，就全没了。
+   *
+   * 平时这个定时器什么也不做（欠账表是空的，一次 `size === 0` 判断就返回）。
+   */
+  const retryTimer = setInterval(() => {
+    void retryFailedStores().catch((err: unknown) =>
+      console.error('[collab] 落库重试失败', err),
+    )
+  }, STORE_RETRY_INTERVAL)
+  retryTimer.unref()
+
   const watcher = createRevocationWatcher()
   const revocationTimer = setInterval(() => {
     void watcher
@@ -669,9 +768,22 @@ export async function flushRoomToDatabase(flowId: string): Promise<void> {
  */
 export async function flushAllRoomsToDatabase(): Promise<void> {
   if (!instance) return
-  await Promise.all(
+
+  /*
+   * **`allSettled` 而不是 `all`**：落库失败现在是会往外抛的（见 `persistence.ts`），
+   * 用 `all` 的话第一个失败就会把这个函数整个 reject，而调用方
+   * （`server/index.ts` 的 shutdown）是在一个 try 块里连着调它和 `flushCollabWrites()` 的 ——
+   * 一抛，后面那句排空队列就被跳过了，等于为了一个失败的房间放弃了其余所有房间的收尾。
+   * 退出路径上宁可挨个试完再报告。
+   */
+  const results = await Promise.allSettled(
     [...instance.documents.values()].map((document) =>
       storeFlowState(document.name, document, { projection: true }),
     ),
   )
+
+  const failed = results.filter((result) => result.status === 'rejected')
+  if (failed.length > 0) {
+    console.error(`[collab] 退出前有 ${failed.length}/${results.length} 张画布没能落库`)
+  }
 }
