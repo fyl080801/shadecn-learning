@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 import { ListboxFilter } from "reka-ui"
-import { Check, ChevronsUpDown, Search } from "lucide-vue-next"
+import { Check, ChevronsUpDown, Search } from "@lucide/vue"
 
 import { Button } from "@/components/ui/button"
 import {

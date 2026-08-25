@@ -1,2 +1,11 @@
 @import "./styles/tailwind.css";
 @import "./styles/vue-flow.css";
+
+/*
+  vue-sonner 从 2.0 起把样式拆成了单独的一份，包本体（`lib/index.js`）里对它零引用 ——
+  也就是说不在这儿写一行，`toast()` 弹出来的就是一个**没有任何样式的普通元素**：
+  它不是 fixed 定位，会直接排进文档流把页面顶长、顶出滚动条。
+  shadcn-vue 的 `sonner` 组件（`components/ui/sonner`）就是 vue-sonner 的封装，
+  这份样式是它的一部分，不是额外引进来的东西。
+*/
+@import "vue-sonner/style.css";

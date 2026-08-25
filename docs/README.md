@@ -8,7 +8,7 @@
 |---|---|---|---|
 | — | 项目总体定位与共性约束 | [00-project-overview.md](00-project-overview.md) | 持续 |
 | REQ-SHELL | 应用外壳：布局、导航、路由 | [01-app-shell.md](01-app-shell.md) | 已实现 |
-| REQ-AUTH | Keycloak 单点登录与会话（BFF） | [02-auth-keycloak.md](02-auth-keycloak.md) | 已实现 |
+| REQ-AUTH | 单点登录、多登录方式与会话（BFF：Keycloak + GitHub） | [02-auth-keycloak.md](02-auth-keycloak.md) | 已实现 |
 | REQ-SERVER | 单进程单端口服务端 | [03-server-runtime.md](03-server-runtime.md) | 已实现 |
 | REQ-COLLAB | Yjs 实时协同 | [04-realtime-collab.md](04-realtime-collab.md) | 已实现 |
 | REQ-DATA | 数据存储与业务 API | [05-data-persistence.md](05-data-persistence.md) | 部分实现 |
@@ -49,6 +49,7 @@
 | 没有历史，误删无法恢复 | 操作日志已移除；`Flow.ydoc` 是收敛快照，不保留任何中间状态。清空画布再离开，内容就没了 | [REQ-DATA §6](05-data-persistence.md) |
 | 断网时刷新打不开页面 | 数据有 IndexedDB 兜底，但应用本体要从服务器加载 —— 没有 Service Worker 就刷不出来 | [REQ-COLLAB §7](04-realtime-collab.md) |
 | 侧栏导航与路由表各写一份 | 容易漏配；`Example.vue` / `Emu3DView.vue` 已无对应路由 | [REQ-SHELL §3](01-app-shell.md) |
+| 同一个人可能有两个账号 | 先用 Keycloak、后用 GitHub 各登一次会得到两个互不相干的号，且**并不到一起去**。身份只认 `(provider, subject)`，不按邮箱推断（那是账号接管的经典入口）。正确姿势是先用主账号登录、再到设置页关联 | [REQ-AUTH §3.9](02-auth-keycloak.md) |
 | schema 变更可能让容器起不来 | 启动时的 `prisma db push` 不带 `--accept-data-loss`（有意为之），遇到删列、改类型、**新增 unique** 一律拒绝执行 → CrashLoopBackOff。上线前先 `migrate diff` 看 DDL，被拦了按文档处置 | [REQ-DEPLOY §3.6](12-deployment.md) |
 
 ### 值得做的优化（按性价比排序）

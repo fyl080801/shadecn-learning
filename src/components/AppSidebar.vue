@@ -43,7 +43,7 @@ import {
   LogOut,
   Settings,
   User as UserIcon
-} from "lucide-vue-next"
+} from "@lucide/vue"
 import { useAuth } from "@/lib/auth"
 import { useAppLayout } from "@/composables/useAppLayout"
 

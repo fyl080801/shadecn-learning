@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue"
-import { Pause, Play, Square } from "lucide-vue-next"
+import { Pause, Play, Square } from "@lucide/vue"
 
 import { AnimationPathHelper } from "three/addons/helpers/AnimationPathHelper.js"
 

@@ -222,14 +222,49 @@ export const authConfig = {
   secureCookie: appOrigin.startsWith('https://'),
 } as const
 
-/** 没配 Keycloak 就退化成「不鉴权」，方便本地只跑前端 demo；生产必须配齐 */
-export const authEnabled = Boolean(authConfig.issuer && authConfig.clientId)
+/**
+ * GitHub OAuth App 配置。
+ *
+ * GitHub 是 **OAuth2 而不是 OIDC**：没有 discovery、没有 JWKS、没有 id_token，
+ * 身份要再调一次 `/user` 才拿得到 —— 所以它不能复用 `auth/oidc.ts`，
+ * 单独一个 provider 实现（`auth/providers/github.ts`）。
+ *
+ * 回调地址和 Keycloak 是**同一个** `/api/auth/callback`，靠 `AuthRequest.provider`
+ * 分发。这样多接一个提供方不用改 Keycloak 那边已注册的 redirect_uri。
+ */
+export const githubConfig = {
+  clientId: process.env.GITHUB_CLIENT_ID ?? '',
+  clientSecret: process.env.GITHUB_CLIENT_SECRET ?? '',
+  /** 只要读身份：read:user 拿档案，user:email 拿主邮箱（GitHub 可能把邮箱设为私密） */
+  scope: process.env.GITHUB_SCOPE ?? 'read:user user:email',
+  redirectUri: `${appOrigin}/api/auth/callback`,
+  /** 落进 User.issuer / UserIdentity.issuer 的固定值 */
+  issuer: 'https://github.com',
+} as const
+
+export const keycloakEnabled = Boolean(authConfig.issuer && authConfig.clientId)
+/** OAuth App 一定是 confidential client，没有 secret 就换不了 token */
+export const githubEnabled = Boolean(githubConfig.clientId && githubConfig.clientSecret)
+
+/** 一个提供方都没配就退化成「不鉴权」，方便本地只跑前端 demo；生产必须至少配一个 */
+export const authEnabled = keycloakEnabled || githubEnabled
 
 /** 启动时校验一次，配置不全在生产直接拒绝启动 */
 export function assertAuthConfig() {
   const missing: string[] = []
-  if (!authConfig.issuer) missing.push('KEYCLOAK_ISSUER')
-  if (!authConfig.clientId) missing.push('KEYCLOAK_CLIENT_ID')
+  // Keycloak 配了一半（只有 issuer 或只有 client id）当成「想配但配漏了」，明确报出来；
+  // 两个都空则是「这次不用 Keycloak」，不算缺
+  if (authConfig.issuer || authConfig.clientId) {
+    if (!authConfig.issuer) missing.push('KEYCLOAK_ISSUER')
+    if (!authConfig.clientId) missing.push('KEYCLOAK_CLIENT_ID')
+  }
+  if (githubConfig.clientId || githubConfig.clientSecret) {
+    if (!githubConfig.clientId) missing.push('GITHUB_CLIENT_ID')
+    if (!githubConfig.clientSecret) missing.push('GITHUB_CLIENT_SECRET')
+  }
+  if (!authEnabled) {
+    missing.push('KEYCLOAK_ISSUER + KEYCLOAK_CLIENT_ID 或 GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET')
+  }
   if (!authConfig.secret) missing.push('SESSION_SECRET')
 
   if (missing.length === 0) return

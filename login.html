@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>登录</title>
+    <!--
+      和 index.html 里那段是同一份，原因也一样：主题必须在第一帧之前定下来，
+      等 bundle 下完再改类，深色偏好的用户会先被白底闪一下。
+      这两处**必须一起改** —— 它们读的是同一个键、同一种格式（裸字符串）。
+    -->
+    <script>
+      ;(function () {
+        try {
+          var stored = localStorage.getItem("app:theme")
+          var mode =
+            stored === "light" || stored === "dark"
+              ? stored
+              : matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light"
+          document.documentElement.classList.add(mode)
+        } catch (e) {
+          /* 隐私模式下 localStorage 会抛；主题不值得为它挡住页面 */
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="login"></div>
+    <script type="module" src="/src/login/main.ts"></script>
+  </body>
+</html>

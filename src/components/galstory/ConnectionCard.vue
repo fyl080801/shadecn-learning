@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue"
-import { Brain, BrainCircuit, Radio, Wrench } from "lucide-vue-next"
+import { Brain, BrainCircuit, Radio, Wrench } from "@lucide/vue"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"

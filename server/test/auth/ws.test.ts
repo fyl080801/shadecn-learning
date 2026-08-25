@@ -3,7 +3,7 @@ import { createSession } from '../../auth/session.ts'
 import { appOrigin } from '../../config.ts'
 import { authorizeCollab, isAllowedCollabOrigin } from '../../auth/ws.ts'
 import { createUser, resetDb } from '../helpers/db.ts'
-import { idTokenClaims, stubOidcFetch, tokenResponse } from '../helpers/oidc.ts'
+import { providerTokens, stubOidcFetch } from '../helpers/oidc.ts'
 import { actor, createFlow, createProject, joinViaInvite } from '../helpers/project.ts'
 
 /**
@@ -183,8 +183,8 @@ describe('复验模式（refresh: false）', () => {
     const token = await createSession({
       user,
       // refreshToken: null 就是「连 refresh token 都没有」，别在这里被 ?? 兜回默认值
-      tokens: tokenResponse({ expiresIn: 5, refreshToken: options.refreshToken }),
-      claims: idTokenClaims(),
+      provider: 'keycloak',
+      tokens: providerTokens({ expiresIn: 5, refreshToken: options.refreshToken }),
     })
     return { user, cookie: `sid=${token}` }
   }

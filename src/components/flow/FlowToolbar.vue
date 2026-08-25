@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Hand, MousePointer2, Plus } from "lucide-vue-next"
+import { Hand, MousePointer2, Plus } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { NEW_NODE_TYPE } from "@/components/flow/node-constants"

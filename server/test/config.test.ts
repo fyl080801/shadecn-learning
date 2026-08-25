@@ -218,6 +218,54 @@ describe('authEnabled / assertAuthConfig()', () => {
     expect(() => config.assertAuthConfig()).not.toThrow()
     expect(warn).not.toHaveBeenCalled()
   })
+
+  /**
+   * 多登录方式之后，`authEnabled` 的口径从「Keycloak 配了吗」变成
+   * 「**至少有一种**配齐了吗」，而「配了一半」要当成配错、明确报出来。
+   */
+  describe('多登录方式', () => {
+    /** 把 Keycloak 拆掉，只留 GitHub 那一组 */
+    function onlyGithub() {
+      vi.stubEnv('KEYCLOAK_ISSUER', '')
+      vi.stubEnv('KEYCLOAK_CLIENT_ID', '')
+      vi.stubEnv('GITHUB_CLIENT_ID', 'gh-client')
+      vi.stubEnv('GITHUB_CLIENT_SECRET', 'gh-secret')
+    }
+
+    it('只配 GitHub 也算开启登录', async () => {
+      onlyGithub()
+      const config = await loadConfig()
+      expect(config.authEnabled).toBe(true)
+      expect(config.keycloakEnabled).toBe(false)
+      expect(config.githubEnabled).toBe(true)
+    })
+
+    it('只配 GitHub 时生产环境照样能启动', async () => {
+      vi.stubEnv('NODE_ENV', 'production')
+      onlyGithub()
+      const config = await loadConfig()
+      expect(() => config.assertAuthConfig()).not.toThrow()
+    })
+
+    it('GitHub 只有 client id 没有 secret → 当成配错，不是「不用它」', async () => {
+      vi.stubEnv('NODE_ENV', 'production')
+      vi.stubEnv('GITHUB_CLIENT_ID', 'gh-client')
+      vi.stubEnv('GITHUB_CLIENT_SECRET', '')
+      const config = await loadConfig()
+      // Keycloak 是齐的，但 GitHub 配了一半 —— 静默把它关掉才是更坏的结果
+      expect(config.githubEnabled).toBe(false)
+      expect(() => config.assertAuthConfig()).toThrowError(/GITHUB_CLIENT_SECRET/)
+    })
+
+    it('两种都没配齐 → 生产拒绝启动，报的是「一个都没有」', async () => {
+      vi.stubEnv('NODE_ENV', 'production')
+      vi.stubEnv('KEYCLOAK_ISSUER', '')
+      vi.stubEnv('KEYCLOAK_CLIENT_ID', '')
+      const config = await loadConfig()
+      expect(config.authEnabled).toBe(false)
+      expect(() => config.assertAuthConfig()).toThrowError(/GITHUB_CLIENT_ID/)
+    })
+  })
 })
 
 describe('副本模式解析', () => {

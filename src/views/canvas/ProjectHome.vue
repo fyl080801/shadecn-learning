@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 import { useRouter } from "vue-router"
-import { ArrowLeft, Check, Copy, Link2, Trash2, UserMinus } from "lucide-vue-next"
+import { ArrowLeft, Check, Copy, Link2, Trash2, UserMinus } from "@lucide/vue"
 import { toast } from "vue-sonner"
 
 import { Badge } from "@/components/ui/badge"

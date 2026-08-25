@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import AppSidebar from "@/components/AppSidebar.vue"
 import { Button } from "@/components/ui/button"
-import { Menu } from "lucide-vue-next"
+import { Menu } from "@lucide/vue"
 import { useAppLayout } from "@/composables/useAppLayout"
 
 /**

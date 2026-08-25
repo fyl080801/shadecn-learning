@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue"
-import { Boxes, FolderCog, Settings } from "lucide-vue-next"
+import { Boxes, FolderCog, Settings } from "@lucide/vue"
 
 import SidebarScene from "./SidebarScene.vue"
 import SidebarProperties from "./SidebarProperties.vue"

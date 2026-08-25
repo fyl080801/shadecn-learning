@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue"
-import { PlugZap, ServerCrash } from "lucide-vue-next"
+import { PlugZap, ServerCrash } from "@lucide/vue"
 
 import { Button } from "@/components/ui/button"
 import { GalStoryError, NOT_CONFIGURED } from "@/lib/galstory"

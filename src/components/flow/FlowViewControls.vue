@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Controls, ControlButton } from "@vue-flow/controls"
-import { Redo2, Undo2 } from "lucide-vue-next"
+import { Redo2, Undo2 } from "@lucide/vue"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**

@@ -2,7 +2,7 @@
 import { computed, ref } from "vue"
 import { Position } from "@vue-flow/core"
 import { NodeToolbar } from "@vue-flow/node-toolbar"
-import { Copy, Trash2 } from "lucide-vue-next"
+import { Copy, Trash2 } from "@lucide/vue"
 
 import FlowPresenceAvatar from "@/components/flow/FlowPresenceAvatar.vue"
 import { Button } from "@/components/ui/button"

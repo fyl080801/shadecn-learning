@@ -8,7 +8,7 @@ import {
   Sun,
   TriangleAlert,
   User as UserIcon
-} from "lucide-vue-next"
+} from "@lucide/vue"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -27,6 +27,7 @@ import {
   SelectValue
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import LinkedAccounts from "@/components/settings/LinkedAccounts.vue"
 import TimeZonePicker from "@/components/settings/TimeZonePicker.vue"
 
 import { useAuth } from "@/lib/auth"
@@ -55,8 +56,9 @@ import {
 } from "@/lib/theme"
 
 /**
- * 设置页。三块内容：
+ * 设置页。四块内容：
  *   - 当前用户：只读，来自 /api/auth/me（前端没有 token，这里能看到的就是全部）
+ *   - 登录方式：关联 / 解绑第三方账号（`LinkedAccounts.vue`，唯一会写服务端的一块）
  *   - 外观：深色 / 浅色 / 跟随系统
  *   - 日期显示：时区 / 语言 / 格式，存在这台浏览器的 localStorage 里，默认跟随浏览器
  * 后两块都是本机偏好，改动即时生效 —— 偏好是响应式的（主题直接改 `<html>` 的类，
@@ -198,6 +200,12 @@ const userFields = computed(() => [
         </template>
       </CardContent>
     </Card>
+
+    <!--
+      登录方式。没启用鉴权时整块不渲染 —— 那种模式下压根没有会话，
+      接口一律 401，摆一张读不出内容的卡片只会让人以为坏了。
+    -->
+    <LinkedAccounts v-if="authEnabled && isAuthenticated" />
 
     <!-- 外观 -->
     <Card>

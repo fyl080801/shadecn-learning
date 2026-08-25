@@ -14,7 +14,7 @@ import {
 import { Background } from "@vue-flow/background"
 import { Controls } from "@vue-flow/controls"
 import { MiniMap } from "@vue-flow/minimap"
-import { Plus } from "lucide-vue-next"
+import { Plus } from "@lucide/vue"
 
 import { Button } from "@/components/ui/button"
 import ProcessNode from "@/components/flow/ProcessNode.vue"

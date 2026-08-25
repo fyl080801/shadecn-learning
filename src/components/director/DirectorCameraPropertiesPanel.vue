@@ -8,7 +8,7 @@ import {
   watch
 } from "vue"
 import * as THREE from "three"
-import { Video } from "lucide-vue-next"
+import { Video } from "@lucide/vue"
 
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"

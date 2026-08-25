@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import { refDebounced } from "@vueuse/core"
-import { MoreHorizontal, Plus, Search } from "lucide-vue-next"
+import { MoreHorizontal, Plus, Search } from "@lucide/vue"
 import { toast } from "vue-sonner"
 
 import { Button } from "@/components/ui/button"

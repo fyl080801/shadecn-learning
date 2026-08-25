@@ -8,8 +8,13 @@
 // 模型里不要出现任何 provider 专属的东西（`@db.*` 原生类型、数组、Json、
 // enum、citext…），两边生成出来的 client 类型必须一模一样，业务代码才不用分叉。
 
-/// 从 Keycloak 的 id_token / userinfo 落下来的用户档案。
-/// 用 (issuer, subject) 做唯一键：换了 realm 就是另一个人。
+/// 用户档案。档案字段来自**主身份**那个提供方（Keycloak 的 id_token / GitHub 的 /user）。
+///
+/// `(issuer, subject)` 仍然是唯一键，但它现在的含义是**主身份的冗余副本** ——
+/// 真正的绑定清单在 `UserIdentity` 里，一个人可以绑多条。留着这两列有三个理由：
+/// 默认头像的种子是按 (issuer, subject) 算的（换主身份不该换掉那张图）、
+/// 无 Keycloak 的本地开发用户还靠它 upsert、以及去掉列会让 `db push` 变成破坏性操作。
+/// 解绑主身份时会把另一条身份提升上来，一并改写这两列（见 server/store/identities.ts）。
 model User {
   id          String    @id @default(cuid())
   issuer      String
@@ -24,6 +29,9 @@ model User {
   updatedAt   DateTime  @updatedAt
   lastLoginAt DateTime?
 
+  identities      UserIdentity[]
+  /// 正在等这个人点「确认」的那条关联；同时最多一条
+  pendingLink     PendingLink?
   sessions        Session[]
   memberships     ProjectMember[]
   createdProjects Project[]       @relation("ProjectCreator")
@@ -34,11 +42,60 @@ model User {
   @@unique([issuer, subject])
 }
 
+/// 一条「登录方式」：某个身份提供方上的账号，绑在某个本地用户身上。
+///
+/// `(provider, subject)` 唯一 —— 同一个 GitHub 账号只能绑给一个人，
+/// 这条约束就是「关联账号」冲突检测的全部依据，不靠应用层先查后写。
+/// 一个人可以有多条（Keycloak + GitHub），至少要留一条，最后一条不许解绑。
+model UserIdentity {
+  id       String @id @default(cuid())
+  userId   String
+  /// 提供方 id：`keycloak` / `github`（对应 server/auth/providers 的注册表）
+  provider String
+  /// 提供方内部的用户标识：Keycloak 的 `sub`、GitHub 的数字 id
+  subject  String
+  /// 提供方的 issuer：Keycloak 是 realm 地址，GitHub 固定 https://github.com。
+  /// 和 User 上那两列配套，解绑主身份时要拿它改写
+  issuer   String
+
+  /// 这三个只用于设置页展示「这条绑的是哪个账号」，**不参与任何身份判断** ——
+  /// 判断只认 (provider, subject)。邮箱是属性不是身份：它会变、会被回收再分配，
+  /// Sign in with Apple 那类还会逐应用发不同的私有转发地址
+  username  String?
+  email     String?
+  avatarUrl String?
+
+  /// **没有任何代码读写它**，新行一律取默认值 false。
+  ///
+  /// 它是给「同邮箱自动合号」加的：登录时若两侧邮箱都被各自的提供方标为已验证，
+  /// 就把新身份直接绑到已有账号上。那个特性后来被整个撤掉了（见 docs/02 §3.9.1 ——
+  /// 身份只认 (provider, subject)，不按邮箱推断），这一列随之失去用途。
+  ///
+  /// 留着不删，是因为**删列在本仓库是一次破坏性变更**：`db push` 不带
+  /// `--accept-data-loss` 会直接拒绝，而两个 Dockerfile 和产物里的 db:push
+  /// 都刻意不带这个标志，于是删列会让容器起不来（docs/README 的已知问题表里那一条）。
+  /// 一个带默认值、没人读的布尔列不值得为它冒这个险。
+  ///
+  /// 真要清掉：本地跑一次 `pnpm db:push:force`，并确认线上是同一套处置。
+  emailVerified Boolean @default(false)
+
+  createdAt   DateTime  @default(now())
+  lastLoginAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, subject])
+  @@index([userId])
+}
+
 /// 服务端会话：浏览器只拿到一个随机 token（httpOnly cookie），
 /// 这里存的 id 是那个 token 的 sha256，token 本身不落库。
 model Session {
   id               String    @id
   userId           String
+  /// 这个会话是从哪个提供方登进来的。续期要按它挑 provider ——
+  /// GitHub 的 OAuth App token 不会过期也没有 refresh_token，走不了 Keycloak 那条路
+  provider         String    @default("keycloak")
   accessToken      String
   refreshToken     String?
   idToken          String?
@@ -57,6 +114,34 @@ model Session {
   @@index([userId])
 }
 
+/// 一条**等待用户确认**的账号关联（REQ-AUTH §3.9.3）。
+///
+/// 第三方授权回来之后**不直接**写 `UserIdentity`，先落在这里，把「你要关联的是
+/// @octocat」摆到用户眼前，点了确认才提交。
+///
+/// 存在的理由是那个无感的处境：提供方那边可能正登着别人的账号（共用电脑最典型），
+/// 而 OAuth App 一旦被授权过，之后连确认页都不会再弹 —— 点一下「关联」就直接跳回来了。
+/// 所以「这到底绑的是谁」这句话必须由我们自己问一次，没有别人会问。
+model PendingLink {
+  id     String @id @default(cuid())
+  /// 一个人同时只能有一条待确认的：再发起一次就把旧的顶掉
+  userId String @unique
+
+  provider String
+  subject  String
+  issuer   String
+
+  /// 确认页上显示的就是这几个 —— 用户要靠它们看清自己绑的是哪个账号
+  username  String?
+  email     String?
+  avatarUrl String?
+
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
 /// 一次授权请求的临时凭据（state / nonce / PKCE code_verifier）。
 /// 回调时一次性消费掉，防重放；过期的靠 sweep 清理。
 model AuthRequest {
@@ -64,6 +149,12 @@ model AuthRequest {
   state        String   @unique
   nonce        String
   codeVerifier String
+  /// 这一趟走的是哪个提供方。回调只有一个（/api/auth/callback），
+  /// 靠这里分发 —— 所以加一个提供方不需要去对方后台再注册一个回调地址
+  provider     String   @default("keycloak")
+  /// 有值 = 这不是登录，是**已登录用户**在关联一条新的登录方式，
+  /// 回调时把身份绑到这个 user 上而不是建号 / 换人
+  linkUserId   String?
   /// 登录成功后要跳回的前端地址（只允许站内路径）
   redirectTo   String   @default("/")
   createdAt    DateTime @default(now())

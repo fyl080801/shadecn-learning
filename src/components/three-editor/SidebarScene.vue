@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue"
 import * as THREE from "three"
-import { ChevronDown, ChevronRight } from "lucide-vue-next"
+import { ChevronDown, ChevronRight } from "@lucide/vue"
 
 import { useEditor } from "./composables/useEditorContext"
 import TextureField from "./TextureField.vue"

@@ -5,15 +5,15 @@ import {
   loadSession,
   sweepExpired,
   toSessionUser,
-  upsertUser,
 } from '../../auth/session.ts'
+import { identities } from '../../store/identities.ts'
 import type { User } from '../../generated/prisma/client.ts'
 import { createUser, prisma, resetDb } from '../helpers/db.ts'
 import {
   CLIENT_ID,
   ISSUER,
   accessTokenWith,
-  idTokenClaims,
+  providerTokens,
   stubOidcFetch,
   tokenResponse,
 } from '../helpers/oidc.ts'
@@ -72,61 +72,10 @@ describe('toSessionUser()', () => {
   })
 })
 
-describe('upsertUser()', () => {
-  it('第一次登录建档', async () => {
-    const user = await upsertUser(idTokenClaims(), ['admin'])
-
-    expect(user).toMatchObject({
-      issuer: ISSUER,
-      subject: 'user-1',
-      username: 'alice',
-      email: 'alice@example.com',
-      name: 'Alice',
-      roles: '["admin"]',
-    })
-    expect(user.lastLoginAt).toBeInstanceOf(Date)
-  })
-
-  it('(issuer, subject) 相同就是同一个人，只更新档案', async () => {
-    const first = await upsertUser(idTokenClaims(), ['user'])
-    const second = await upsertUser(
-      idTokenClaims({ preferred_username: 'alice2', email: 'a2@example.com' }),
-      ['admin'],
-    )
-
-    expect(second.id).toBe(first.id)
-    expect(second.username).toBe('alice2')
-    expect(second.roles).toBe('["admin"]')
-    expect(await prisma.user.count()).toBe(1)
-  })
-
-  it('换了 realm（issuer 不同）就是另一个人', async () => {
-    await upsertUser(idTokenClaims(), [])
-    await upsertUser(idTokenClaims({ iss: 'https://kc.test/realms/other' }), [])
-
-    expect(await prisma.user.count()).toBe(2)
-  })
-
-  it('没有 name 时退回 preferred_username', async () => {
-    const user = await upsertUser(idTokenClaims({ name: undefined }), [])
-    expect(user.name).toBe('alice')
-  })
-
-  it('picture 不是字符串就存 null', async () => {
-    const user = await upsertUser(idTokenClaims({ picture: { url: 'x' } }), [])
-    expect(user.avatarUrl).toBeNull()
-  })
-
-  it('picture 是字符串就存下来', async () => {
-    const user = await upsertUser(idTokenClaims({ picture: 'https://cdn/a.png' }), [])
-    expect(user.avatarUrl).toBe('https://cdn/a.png')
-  })
-})
-
 describe('createSession() / loadSession()', () => {
   it('cookie 里的 token 不等于库里的主键（库被拖走也伪造不出 cookie）', async () => {
     const user = await createUser()
-    const token = await createSession({ user, tokens: tokenResponse(), claims: idTokenClaims() })
+    const token = await createSession({ user, provider: 'keycloak', tokens: providerTokens() })
 
     const row = await prisma.session.findFirstOrThrow()
     expect(row.id).not.toBe(token)
@@ -137,8 +86,8 @@ describe('createSession() / loadSession()', () => {
     const user = await createUser({ roles: ['admin'] })
     const token = await createSession({
       user,
-      tokens: tokenResponse(),
-      claims: idTokenClaims(),
+      provider: 'keycloak',
+      tokens: providerTokens(),
       userAgent: 'vitest',
       ip: '10.0.0.1',
     })
@@ -155,8 +104,8 @@ describe('createSession() / loadSession()', () => {
     const before = Date.now()
     await createSession({
       user,
-      tokens: tokenResponse({ expiresIn: 300, refreshExpiresIn: 1800 }),
-      claims: idTokenClaims(),
+      provider: 'keycloak',
+      tokens: providerTokens({ expiresIn: 300, refreshExpiresIn: 1800 }),
     })
 
     const row = await prisma.session.findFirstOrThrow()
@@ -166,8 +115,8 @@ describe('createSession() / loadSession()', () => {
 
   it('没给 refresh_expires_in 时 refreshExpiresAt 为 null', async () => {
     const user = await createUser()
-    const tokens = { ...tokenResponse(), refresh_expires_in: undefined }
-    await createSession({ user, tokens, claims: idTokenClaims() })
+    const tokens = { ...providerTokens(), refreshExpiresAt: null }
+    await createSession({ user, provider: 'keycloak', tokens })
 
     expect((await prisma.session.findFirstOrThrow()).refreshExpiresAt).toBeNull()
   })
@@ -181,7 +130,7 @@ describe('createSession() / loadSession()', () => {
 
   it('会话活得超过 SESSION_TTL 就作废并删掉（不能无限续）', async () => {
     const user = await createUser()
-    const token = await createSession({ user, tokens: tokenResponse(), claims: idTokenClaims() })
+    const token = await createSession({ user, provider: 'keycloak', tokens: providerTokens() })
     await prisma.session.updateMany({ data: { createdAt: new Date(Date.now() - TTL_MS - 1000) } })
 
     await expect(loadSession(token)).resolves.toBeNull()
@@ -192,8 +141,8 @@ describe('createSession() / loadSession()', () => {
     const user = await createUser()
     const token = await createSession({
       user,
-      tokens: tokenResponse({ expiresIn: 300 }),
-      claims: idTokenClaims(),
+      provider: 'keycloak',
+      tokens: providerTokens({ expiresIn: 300 }),
     })
 
     await loadSession(token)
@@ -207,8 +156,8 @@ describe('loadSession() 自动续期', () => {
     const token = await createSession({
       user,
       // 只剩 10 秒 → 低于 30 秒阈值，取会话时应该顺手续一次
-      tokens: tokenResponse({ expiresIn: 10 }),
-      claims: idTokenClaims(),
+      provider: 'keycloak',
+      tokens: providerTokens({ expiresIn: 10 }),
     })
     return { user, token }
   }
@@ -305,8 +254,8 @@ describe('loadSession() 自动续期', () => {
     const user = await createUser()
     const token = await createSession({
       user,
-      tokens: tokenResponse({ expiresIn: 10, refreshToken: null }),
-      claims: idTokenClaims(),
+      provider: 'keycloak',
+      tokens: providerTokens({ expiresIn: 10, refreshToken: null }),
     })
 
     await expect(loadSession(token)).resolves.toBeNull()
@@ -318,8 +267,8 @@ describe('loadSession() 自动续期', () => {
     const user = await createUser()
     const token = await createSession({
       user,
-      tokens: tokenResponse({ expiresIn: 10 }),
-      claims: idTokenClaims(),
+      provider: 'keycloak',
+      tokens: providerTokens({ expiresIn: 10 }),
     })
     await prisma.session.updateMany({ data: { refreshExpiresAt: new Date(Date.now() - 1000) } })
 
@@ -342,7 +291,7 @@ describe('loadSession() 自动续期', () => {
 describe('deleteSessionByToken()', () => {
   it('删掉并返回被删的那条', async () => {
     const user = await createUser()
-    const token = await createSession({ user, tokens: tokenResponse(), claims: idTokenClaims() })
+    const token = await createSession({ user, provider: 'keycloak', tokens: providerTokens() })
 
     const deleted = await deleteSessionByToken(token)
 
@@ -355,7 +304,7 @@ describe('deleteSessionByToken()', () => {
     ['token 不存在', 'nope'],
   ])('%s → null，也不会误删别人的会话', async (_label, token) => {
     const user = await createUser()
-    await createSession({ user, tokens: tokenResponse(), claims: idTokenClaims() })
+    await createSession({ user, provider: 'keycloak', tokens: providerTokens() })
 
     await expect(deleteSessionByToken(token)).resolves.toBeNull()
     expect(await prisma.session.count()).toBe(1)
@@ -367,14 +316,14 @@ describe('sweepExpired()', () => {
     const user = await createUser()
     const liveToken = await createSession({
       user,
-      tokens: tokenResponse(),
-      claims: idTokenClaims(),
+      provider: 'keycloak',
+      tokens: providerTokens(),
     })
     // 再造一条「很久以前建的」会话
     const staleToken = await createSession({
       user,
-      tokens: tokenResponse(),
-      claims: idTokenClaims(),
+      provider: 'keycloak',
+      tokens: providerTokens(),
     })
     const staleId = (await prisma.session.findMany()).map((s) => s.id).filter((id) => id)[1]
     await prisma.session.update({
@@ -401,24 +350,35 @@ describe('sweepExpired()', () => {
 
     const result = await sweepExpired()
 
-    expect(result).toEqual({ sessions: 1, authRequests: 1 })
+    expect(result).toEqual({ sessions: 1, authRequests: 1, pendingLinks: 0 })
     await expect(loadSession(liveToken)).resolves.not.toBeNull()
     await expect(loadSession(staleToken)).resolves.toBeNull()
     expect(await prisma.authRequest.count()).toBe(1)
   })
 
   it('没东西可清时返回 0', async () => {
-    await expect(sweepExpired()).resolves.toEqual({ sessions: 0, authRequests: 0 })
+    await expect(sweepExpired()).resolves.toEqual({
+      sessions: 0,
+      authRequests: 0,
+      pendingLinks: 0,
+    })
   })
 })
 
 describe('access_token 的角色解析（与会话联动）', () => {
   it('登录时把 realm/client 角色一起落到 User.roles', async () => {
-    const claims = idTokenClaims()
     const { rolesFromAccessToken } = await import('../../auth/oidc.ts')
     const roles = rolesFromAccessToken(accessTokenWith({ realm: ['user'], client: ['editor'] }))
 
-    const user = await upsertUser(claims, roles)
+    const user = await identities.resolveLogin('keycloak', {
+      subject: 'user-1',
+      issuer: ISSUER,
+      username: 'alice',
+      email: 'alice@example.com',
+      name: 'Alice',
+      avatarUrl: null,
+      roles,
+    })
     expect(toSessionUser(user).roles).toEqual(['user', `${CLIENT_ID}:editor`])
   })
 })

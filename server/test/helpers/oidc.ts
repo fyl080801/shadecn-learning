@@ -116,6 +116,25 @@ export function tokenResponse(options: TokenResponseOptions = {}) {
   }
 }
 
+/**
+ * 同一份成功响应，换成 `createSession()` 收的那个形状。
+ *
+ * 会话层已经不认识 OIDC 的 snake_case 了（GitHub 那条路根本没有 id_token），
+ * 换算规则和 `auth/providers/keycloak.ts` 里的 `tokensFrom` 一致。
+ */
+export function providerTokens(options: TokenResponseOptions = {}) {
+  const raw = tokenResponse(options)
+  const now = Date.now()
+  return {
+    accessToken: raw.access_token,
+    refreshToken: raw.refresh_token ?? null,
+    idToken: raw.id_token ?? null,
+    expiresAt: new Date(now + raw.expires_in * 1000),
+    refreshExpiresAt: raw.refresh_expires_in ? new Date(now + raw.refresh_expires_in * 1000) : null,
+    sessionState: raw.session_state ?? null,
+  }
+}
+
 // ------------------------------------------------------------------ fetch 桩
 
 interface StubbedResponse {
