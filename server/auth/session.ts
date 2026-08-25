@@ -3,13 +3,8 @@ import { numberCodec, sharedLock, sharedMap } from '../cluster/index.ts'
 import { prisma } from '../db.ts'
 import { authConfig, isDev } from '../config.ts'
 import type { Session, User } from '../generated/prisma/client.ts'
-import {
-  type IdTokenClaims,
-  type TokenResponse,
-  OidcError,
-  refreshTokens,
-  rolesFromAccessToken,
-} from './oidc.ts'
+import { OidcError } from './oidc.ts'
+import { type ProviderId, type ProviderTokens, getProvider } from './providers/index.ts'
 
 /** 没配 SESSION_SECRET 时 dev 下临时生成一个：重启即所有人掉线 */
 const secret =
@@ -58,38 +53,11 @@ export function toSessionUser(user: User): SessionUser {
   }
 }
 
-/** 把 id_token 的 claims 落成本地 User（同一个 (issuer, subject) 就是同一个人） */
-export async function upsertUser(claims: IdTokenClaims, roles: string[]): Promise<User> {
-  const profile = {
-    username: claims.preferred_username ?? null,
-    email: claims.email ?? null,
-    name: claims.name ?? claims.preferred_username ?? null,
-    avatarUrl: typeof claims.picture === 'string' ? claims.picture : null,
-    roles: JSON.stringify(roles),
-    lastLoginAt: new Date(),
-  }
-
-  return prisma.user.upsert({
-    where: { issuer_subject: { issuer: claims.iss, subject: claims.sub } },
-    create: { issuer: claims.iss, subject: claims.sub, ...profile },
-    update: profile,
-  })
-}
-
-function expiryFrom(tokens: TokenResponse) {
-  const now = Date.now()
-  return {
-    expiresAt: new Date(now + (tokens.expires_in ?? 60) * 1000),
-    refreshExpiresAt: tokens.refresh_expires_in
-      ? new Date(now + tokens.refresh_expires_in * 1000)
-      : null,
-  }
-}
-
 export interface CreateSessionInput {
   user: User
-  tokens: TokenResponse
-  claims: IdTokenClaims
+  /** 这一次是从哪个提供方登进来的；续期时按它挑实现 */
+  provider: ProviderId
+  tokens: ProviderTokens
   userAgent?: string | null
   ip?: string | null
 }
@@ -97,18 +65,18 @@ export interface CreateSessionInput {
 /** 建会话，返回要写进 cookie 的原始 token */
 export async function createSession(input: CreateSessionInput): Promise<string> {
   const token = crypto.randomBytes(32).toString('base64url')
-  const { expiresAt, refreshExpiresAt } = expiryFrom(input.tokens)
 
   await prisma.session.create({
     data: {
       id: tokenId(token),
       userId: input.user.id,
-      accessToken: input.tokens.access_token,
-      refreshToken: input.tokens.refresh_token ?? null,
-      idToken: input.tokens.id_token ?? null,
-      expiresAt,
-      refreshExpiresAt,
-      sessionState: input.claims.sid ?? input.tokens.session_state ?? null,
+      provider: input.provider,
+      accessToken: input.tokens.accessToken,
+      refreshToken: input.tokens.refreshToken,
+      idToken: input.tokens.idToken,
+      expiresAt: input.tokens.expiresAt,
+      refreshExpiresAt: input.tokens.refreshExpiresAt,
+      sessionState: input.tokens.sessionState,
       userAgent: input.userAgent ?? null,
       ip: input.ip ?? null,
     },
@@ -136,9 +104,16 @@ const refreshLock = sharedLock('session-refresh')
 const refreshCooldown = sharedMap<number>('session-refresh-cooldown', numberCodec)
 const REFRESH_COOLDOWN_MS = 15_000
 
-/** 还有没有可用的 refresh token —— 这一条本地就能判，不用问 Keycloak */
+/**
+ * 还有没有可用的 refresh token —— 这一条本地就能判，不用问提供方。
+ *
+ * GitHub 的 OAuth App 压根不发 refresh_token（token 也不过期），所以它的会话
+ * 永远走不到续期这一步：建会话时 `expiresAt` 直接给的是 `SESSION_TTL`，
+ * 到那一刻会话本身也该没了。
+ */
 function canRefresh(session: Session) {
   if (!session.refreshToken) return false
+  if (!getProvider(session.provider)?.refresh) return false
   return !session.refreshExpiresAt || session.refreshExpiresAt.getTime() > Date.now()
 }
 
@@ -204,20 +179,25 @@ async function renew(session: LoadedSession): Promise<LoadedSession | null> {
     return null
   }
 
+  // canRefresh 已经确认过这个提供方支持续期；再判一次只是为了收窄类型
+  const refresh = getProvider(session.provider)?.refresh
+  if (!refresh) {
+    await deleteSessionById(session.id)
+    return null
+  }
+
   try {
-    const tokens = await refreshTokens(session.refreshToken as string)
-    const { expiresAt, refreshExpiresAt } = expiryFrom(tokens)
-    const roles = rolesFromAccessToken(tokens.access_token)
+    const { tokens, roles } = await refresh(session.refreshToken as string)
 
     const [updated] = await prisma.$transaction([
       prisma.session.update({
         where: { id: session.id },
         data: {
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token ?? session.refreshToken,
-          idToken: tokens.id_token ?? session.idToken,
-          expiresAt,
-          refreshExpiresAt,
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken ?? session.refreshToken,
+          idToken: tokens.idToken ?? session.idToken,
+          expiresAt: tokens.expiresAt,
+          refreshExpiresAt: tokens.refreshExpiresAt,
         },
         include: { user: true },
       }),
@@ -257,14 +237,20 @@ export async function deleteSessionByToken(token: string | undefined) {
   return session
 }
 
-/** 清掉过期会话和没用掉的授权请求；启动时跑一次，之后定时跑 */
+/** 清掉过期会话、没用掉的授权请求、没人确认的待关联；启动时跑一次，之后定时跑 */
 export async function sweepExpired() {
   const now = new Date()
-  const [sessions, requests] = await Promise.all([
+  const [sessions, requests, pendingLinks] = await Promise.all([
     prisma.session.deleteMany({
       where: { createdAt: { lt: new Date(now.getTime() - authConfig.ttl * 1000) } },
     }),
     prisma.authRequest.deleteMany({ where: { expiresAt: { lt: now } } }),
+    // 过期的待确认关联在读取时也会被顺手删掉，这里是「一直没人再打开设置页」的兜底
+    prisma.pendingLink.deleteMany({ where: { expiresAt: { lt: now } } }),
   ])
-  return { sessions: sessions.count, authRequests: requests.count }
+  return {
+    sessions: sessions.count,
+    authRequests: requests.count,
+    pendingLinks: pendingLinks.count,
+  }
 }

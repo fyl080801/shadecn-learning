@@ -2,7 +2,7 @@
 import { computed } from "vue"
 import { type NodeProps } from "@vue-flow/core"
 import { NodeResizer } from "@vue-flow/node-resizer"
-import { Ungroup } from "lucide-vue-next"
+import { Ungroup } from "@lucide/vue"
 
 import FlowNodeChrome from "@/components/flow/FlowNodeChrome.vue"
 import { GROUP_DEFAULT_BACKGROUND } from "@/components/flow/node-constants"

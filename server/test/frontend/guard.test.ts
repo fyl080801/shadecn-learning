@@ -26,17 +26,23 @@ describe('页面闸门', () => {
     )
   })
 
-  it('未登录时前端资源一律不下发（401，不是 302）', async () => {
-    // 这类请求 redirect 过去只会把 HTML 当成 js 塞给浏览器
-    const res = await app.request('/assets/index-abc123.js')
+  /**
+   * 闸门守的是「看不到界面」，不是「拿不到字节」：**登录页本身就是前端 bundle
+   * 的一个入口**，把静态资源一起挡掉，登录页自己就白屏了。
+   *
+   * 光有 bundle 渲染不出任何东西 —— 起 SPA 要 `index.html`，而那是一次整页导航，
+   * 上面那条已经把它挡在登录页外面了。
+   */
+  it.each([
+    ['构建产物', '/assets/index-abc123.js'],
+    ['dev 下的源码', '/src/main.ts'],
+    ['Vite 客户端', '/@vite/client'],
+    ['样式', '/assets/index-abc123.css'],
+  ])('未登录也能取到%s（放行，不是 401）', async (_label, path) => {
+    const res = await app.request(path)
 
-    expect(res.status).toBe(401)
-  })
-
-  it('dev 下的源码请求同样拿不到', async () => {
-    const res = await app.request('/src/main.ts')
-
-    expect(res.status).toBe(401)
+    // 这里没挂前端中间件，所以落到 404 —— 关键是**不是** 401/302
+    expect(res.status).toBe(404)
   })
 
   it('登录之后页面请求才放行（这里没挂前端中间件，落到 404）', async () => {
@@ -61,43 +67,18 @@ describe('页面闸门', () => {
   })
 })
 
+/**
+ * 登录页的**页面本体**已经不在服务端了 —— 它是 `login.html` 这个 Vite 入口，
+ * 由前端层（dev 的 Vite 中间件 / prod 的静态目录）发出来，内容归
+ * `src/test/login/LoginPage.test.ts` 管。
+ *
+ * 这里只剩服务端那两条职责：匿名放得进去、已登录的别停在这儿。
+ */
 describe('GET /login', () => {
-  it('匿名可访问，返回服务端渲染的 HTML，不含任何前端入口', async () => {
+  it('匿名放行，交给前端层发 HTML（这里没挂它，所以落到 404 而不是 302/401）', async () => {
     const res = await app.request('/login', { headers: NAVIGATION })
-    const html = await res.text()
 
-    expect(res.status).toBe(200)
-    expect(res.headers.get('content-type')).toContain('text/html')
-    expect(res.headers.get('cache-control')).toBe('no-store')
-    expect(html).toContain('使用 Keycloak 登录')
-    expect(html).not.toContain('/src/main.ts')
-    expect(html).not.toContain('<script')
-  })
-
-  it('登录按钮指向后端登录入口，并把 redirect 透传下去', async () => {
-    const res = await app.request('/login?redirect=%2F2048', { headers: NAVIGATION })
-
-    await expect(res.text()).resolves.toContain(
-      `href="/api/auth/login?redirect=${encodeURIComponent('/2048')}"`,
-    )
-  })
-
-  it('站外 redirect 回落到 /', async () => {
-    const res = await app.request('/login?redirect=https%3A%2F%2Fevil.example', {
-      headers: NAVIGATION,
-    })
-
-    await expect(res.text()).resolves.toContain('href="/api/auth/login?redirect=%2F"')
-  })
-
-  it('?error= 展示在页面上，且做了 HTML 转义', async () => {
-    const res = await app.request(`/login?error=${encodeURIComponent('<img src=x>失败')}`, {
-      headers: NAVIGATION,
-    })
-    const html = await res.text()
-
-    expect(html).toContain('&lt;img src=x&gt;失败')
-    expect(html).not.toContain('<img src=x>')
+    expect(res.status).toBe(404)
   })
 
   it('已经登录了就别停在登录页', async () => {
@@ -109,6 +90,16 @@ describe('GET /login', () => {
 
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/2048')
+  })
+
+  it('已登录时站外 redirect 同样回落到 /，别拿登录页做跳板', async () => {
+    const { cookie } = await signIn()
+
+    const res = await app.request('/login?redirect=%2F%2Fevil.example%2Fpwn', {
+      headers: { ...NAVIGATION, cookie },
+    })
+
+    expect(res.headers.get('location')).toBe('/')
   })
 })
 
@@ -127,7 +118,7 @@ describe('GET /auth/login-done', () => {
     expect(html).toContain('app-auth:login-done')
     // 消息只发给同源，别人监听不到
     expect(html).toContain('window.location.origin')
-    expect(html).not.toContain('/src/main.ts')
+    expect(html).not.toContain("/src/login/main.ts")
   })
 
   it('没登录成功就还是被闸门送回登录页（登录窗口里再登一次）', async () => {

@@ -138,4 +138,20 @@
     margin: 0;
     @apply bg-background text-foreground;
   }
+
+  /*
+    可点的东西要有手型。
+
+    Tailwind v4 的 Preflight **不再**给按钮设 `cursor: pointer` —— 它改成跟随
+    浏览器原生的 `default`（v3 是 pointer）。结果就是全站按钮 hover 上去没有任何
+    指针反馈，看起来像不能点。这是官方升级指南给的补法，放在 base 层，
+    一处覆盖所有按钮：shadcn 的 `Button`、以及 reka-ui 那些渲染成
+    `div[role=button]` 的触发器（下拉菜单、Tabs、Select…）都吃得到。
+
+    `:not(:disabled)` 是必要的：禁用态不该给「可以点」的暗示。
+  */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
 }

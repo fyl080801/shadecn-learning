@@ -2,7 +2,7 @@
 import { computed } from "vue"
 import { Position } from "@vue-flow/core"
 import { NodeToolbar } from "@vue-flow/node-toolbar"
-import { Group } from "lucide-vue-next"
+import { Group } from "@lucide/vue"
 
 import { Button } from "@/components/ui/button"
 import { useFlowEditor } from "@/composables/flow/editor-context"

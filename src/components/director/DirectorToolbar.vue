@@ -17,7 +17,7 @@ import {
   Undo2,
   Upload,
   UserPlus
-} from "lucide-vue-next"
+} from "@lucide/vue"
 import * as THREE from "three"
 
 import { Button } from "@/components/ui/button"

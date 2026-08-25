@@ -1,5 +1,5 @@
 import { markRaw, type Component } from "vue"
-import { Box, Frame, Type } from "lucide-vue-next"
+import { Box, Frame, Type } from "@lucide/vue"
 
 import GroupNode from "@/components/flow/GroupNode.vue"
 import ProcessNode from "@/components/flow/ProcessNode.vue"

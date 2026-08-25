@@ -5,6 +5,7 @@ import './env.ts'
 import './logger/install.ts'
 import { createAdaptorServer } from '@hono/node-server'
 import { app } from './app.ts'
+import { enabledProviders } from './auth/providers/index.ts'
 import { sweepExpired } from './auth/session.ts'
 import {
   attachCollabServer,
@@ -48,9 +49,11 @@ const disposeFrontend = await attachFrontend(app, server)
 // 过期会话和没用掉的授权请求：启动清一次，之后每小时清一次
 const sweep = () => {
   void sweepExpired()
-    .then(({ sessions, authRequests }) => {
-      if (sessions || authRequests) {
-        console.log(`[auth] 清理过期数据：会话 ${sessions} 条，授权请求 ${authRequests} 条`)
+    .then(({ sessions, authRequests, pendingLinks }) => {
+      if (sessions || authRequests || pendingLinks) {
+        console.log(
+          `[auth] 清理过期数据：会话 ${sessions} 条，授权请求 ${authRequests} 条，待确认关联 ${pendingLinks} 条`,
+        )
       }
     })
     .catch((err: unknown) => console.error('[auth] 清理过期数据失败', err))
@@ -63,7 +66,10 @@ server.listen(port, host, () => {
   const mode = isDev ? 'dev（Vite 中间件）' : `prod（静态资源 ${staticDir}）`
   console.log(`${mode} 服务已启动  http://${host}:${port}`)
   console.log(`Yjs websocket        ws://${host}:${port}${COLLAB_PATH}（房间名走消息）`)
-  console.log(`登录                 ${authEnabled ? 'Keycloak（/login）' : '未启用'}`)
+  const providers = enabledProviders()
+    .map((provider) => provider.label)
+    .join(' / ')
+  console.log(`登录                 ${authEnabled ? `${providers}（/login）` : '未启用'}`)
   console.log(
     `副本模式             ${clusterMode === 'redis' ? `多副本（Redis 共享，实例 ${instanceId}）` : '单副本（状态在进程内存）'}`,
   )

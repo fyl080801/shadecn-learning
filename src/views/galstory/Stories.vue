@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue"
 import { useRouter } from "vue-router"
-import { BookOpen, Search, Settings2 } from "lucide-vue-next"
+import { BookOpen, Search, Settings2 } from "@lucide/vue"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"

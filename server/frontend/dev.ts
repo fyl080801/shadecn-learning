@@ -6,6 +6,12 @@ import type { HttpServer, ViteDevServer } from 'vite'
 import { createServer as createViteServer } from 'vite'
 import type { ServerApp } from '../app.ts'
 import { isApiPath, rootDir } from '../config.ts'
+import { LOGIN_PATH } from './guard.ts'
+
+/** 请求 URL 只取路径部分（`/login?redirect=/x` → `/login`） */
+function pathnameOf(url: string | undefined) {
+  return (url ?? '/').split('?')[0]
+}
 
 /**
  * 开发模式：把 Vite 以中间件形式挂到后端上，前后端同一个端口（默认 3000）。
@@ -75,7 +81,10 @@ async function sendIndexHtml(
     return
   }
 
-  const raw = await fs.readFile(path.join(rootDir, 'index.html'), 'utf8')
+  // 两个入口：`/login` 是它自己那一份 HTML，其余走 SPA fallback。
+  // 只认精确路径 —— `/login` 底下没有子路由，`/loginXxx` 更不该命中
+  const entry = pathnameOf(incoming.url) === LOGIN_PATH ? 'login.html' : 'index.html'
+  const raw = await fs.readFile(path.join(rootDir, entry), 'utf8')
   const html = await vite.transformIndexHtml(incoming.url ?? '/', raw)
   outgoing.writeHead(200, {
     'content-type': 'text/html; charset=utf-8',

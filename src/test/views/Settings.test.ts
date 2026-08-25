@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { flushPromises, mount } from "@vue/test-utils"
+import { createMemoryHistory, createRouter } from "vue-router"
 
 import Settings from "@/views/Settings.vue"
 import { fetchSession } from "@/lib/auth"
@@ -9,7 +10,22 @@ import { THEME_AUTO, theme } from "@/lib/theme"
 /**
  * 设置页。用户信息是只读的一块，日期偏好那一块的关键在于「改完立刻反映到预览上」——
  * 预览走的就是全站同一个 `@/lib/format`，所以预览对了，列表页里的时间也对了。
+ *
+ * 「登录方式」那张卡片有自己的用例（components/LinkedAccounts.test.ts），
+ * 这里只把它的接口挡掉，免得每条用例都要陪着它打桩。
  */
+
+vi.mock("@/lib/api", () => ({
+  authApi: {
+    identities: () => Promise.resolve({ items: [], pending: null }),
+    config: () =>
+      Promise.resolve({ enabled: true, provider: "keycloak", providers: [] }),
+    unlinkIdentity: () => Promise.resolve(),
+    startLink: () => {},
+    confirmLink: () => Promise.resolve({ identity: null }),
+    cancelLink: () => Promise.resolve()
+  }
+}))
 
 const USER = {
   id: "u_1",
@@ -39,6 +55,20 @@ async function signIn() {
   await fetchSession(true)
 }
 
+/** 设置页里的「登录方式」卡片要用路由（读并洗掉关联结果的 query） */
+async function mountSettings() {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: "/settings", component: { template: "<div />" } }]
+  })
+  await router.push("/settings")
+  await router.isReady()
+
+  const wrapper = mount(Settings, { global: { plugins: [router] } })
+  await flushPromises()
+  return wrapper
+}
+
 afterEach(() => {
   resetDisplayPreferences()
   theme.value = THEME_AUTO
@@ -47,8 +77,7 @@ afterEach(() => {
 describe("设置页", () => {
   it("展示当前用户的名字和邮箱，用户 ID 跟在头像那一行", async () => {
     await signIn()
-    const wrapper = mount(Settings)
-    await flushPromises()
+    const wrapper = await mountSettings()
 
     const text = wrapper.text()
     expect(text).toContain("爱丽丝")
@@ -58,8 +87,7 @@ describe("设置页", () => {
 
   it("不展示 OIDC subject 和角色", async () => {
     await signIn()
-    const wrapper = mount(Settings)
-    await flushPromises()
+    const wrapper = await mountSettings()
 
     const text = wrapper.text()
     expect(text).not.toContain("sub-1")
@@ -68,8 +96,7 @@ describe("设置页", () => {
 
   it("点「深色」立刻切主题，<html> 上就是那个类", async () => {
     await signIn()
-    const wrapper = mount(Settings)
-    await flushPromises()
+    const wrapper = await mountSettings()
 
     // 默认「跟随系统」，并且写明此刻跟到了哪一档
     expect(wrapper.get('[data-testid="theme-system-hint"]').text()).toContain("浅色")
@@ -87,8 +114,7 @@ describe("设置页", () => {
     await signIn()
     displayPreferences.value.timeZone = "UTC"
     displayPreferences.value.locale = "zh-CN"
-    const wrapper = mount(Settings)
-    await flushPromises()
+    const wrapper = await mountSettings()
 
     const utc = wrapper.get('[data-testid="preview-time"]').text()
 
@@ -104,8 +130,7 @@ describe("设置页", () => {
     await signIn()
     displayPreferences.value.timeZone = "UTC"
     displayPreferences.value.locale = "zh-CN"
-    const wrapper = mount(Settings)
-    await flushPromises()
+    const wrapper = await mountSettings()
 
     expect(wrapper.get('[data-testid="preview-date"]').text()).not.toContain("星期")
 
@@ -118,8 +143,7 @@ describe("设置页", () => {
     await signIn()
     displayPreferences.value.timeZone = "Asia/Shanghai"
     displayPreferences.value.locale = "zh-CN"
-    const wrapper = mount(Settings)
-    await flushPromises()
+    const wrapper = await mountSettings()
 
     // 时间对不上时，得先能分清是「没生效」还是「本来就差这几小时」
     const basis = wrapper.get('[data-testid="preview-basis"]').text()
@@ -134,8 +158,7 @@ describe("设置页", () => {
 
   it("跟随浏览器时，注脚写的是浏览器自己的时区", async () => {
     await signIn()
-    const wrapper = mount(Settings)
-    await flushPromises()
+    const wrapper = await mountSettings()
 
     const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone
     expect(wrapper.get('[data-testid="preview-basis"]').text()).toContain(browserZone)
@@ -143,8 +166,7 @@ describe("设置页", () => {
 
   it("默认状态下「恢复默认」是禁用的，改过之后才能点", async () => {
     await signIn()
-    const wrapper = mount(Settings)
-    await flushPromises()
+    const wrapper = await mountSettings()
 
     const button = wrapper
       .findAll("button")

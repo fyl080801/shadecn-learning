@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CircleAlert, CircleCheck, Info, TriangleAlert } from "lucide-vue-next"
+import { CircleAlert, CircleCheck, Info, TriangleAlert } from "@lucide/vue"
 import type { LintLevel } from "@/types/galstory"
 
 /**

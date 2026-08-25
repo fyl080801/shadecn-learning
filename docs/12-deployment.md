@@ -190,6 +190,17 @@ kubectl -n dev create secret generic shadecn-learning-auth \
   --from-literal=SESSION_SECRET=$(openssl rand -hex 32)
 ```
 
+**要开 GitHub 登录**（[REQ-AUTH §3.2.2](02-auth-keycloak.md)）就往同一个 Secret 里再塞两个键：
+
+```bash
+  --from-literal=GITHUB_CLIENT_ID=xxx \
+  --from-literal=GITHUB_CLIENT_SECRET=xxx
+```
+
+`envFrom` 是**整份 Secret 注入**，所以键加进去就生效，**Deployment 清单不用动**。
+GitHub OAuth App 的 Authorization callback URL 填 `$APP_ORIGIN/api/auth/callback` ——
+和 Keycloak 共用同一个回调地址，不要另建。
+
 **真值不得提交进仓库** —— 仓库里的 Secret 清单只是占位模板。
 
 部署前必须按实际环境改：`APP_ORIGIN`、`KEYCLOAK_ISSUER`、镜像地址。`APP_ORIGIN` 必须与 Keycloak client 里配的 redirect URI 一致，否则登录回调失败。
@@ -461,7 +472,8 @@ workflow-controller 的 tag），argo 升级之后要跟着改这里 —— 这�
 - [ ] 删除 Pod 重建后，`/app/data` 中的数据仍在（用户和会话不丢）。
 - [ ] 通过 Ingress 完整走通 Keycloak 登录回跳。
 - [ ] 通过 Ingress 能建立 `/ws/collaboration` WebSocket 连接。
-- [ ] 缺少 `KEYCLOAK_ISSUER` 时容器启动失败并给出明确报错（不能静默放行）。
+- [ ] **一个登录方式都没配齐**（Keycloak 与 GitHub 的必填项都缺）时容器启动失败并给出明确报错（不能静默放行）；
+      只配了其中一个能正常启动，只配了半个（如有 `KEYCLOAK_ISSUER` 无 `KEYCLOAK_CLIENT_ID`）也要报错。
 - [ ] `/api/health` 返回 200，探针不误杀。
 - [ ] `DB_PROVIDER=postgresql` 构建出的产物里没有 `@prisma/adapter-better-sqlite3`，`prisma/schema.prisma` 是 PG 那份。
 - [ ] client 和构建目标 provider 不一致时，`pnpm build:server` 失败并指出该跑哪条命令。

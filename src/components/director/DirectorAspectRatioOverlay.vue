@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 
-import { Grid2x2 } from "lucide-vue-next"
+import { Grid2x2 } from "@lucide/vue"
 import { aspectRatio } from "./directorState"
 
 // 各画幅比例的宽高比（宽 / 高）。`auto` 不显示取景框。

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 import { useRouter } from "vue-router"
-import { ArrowLeft, CircleAlert, GitBranch, TriangleAlert, UserRound } from "lucide-vue-next"
+import { ArrowLeft, CircleAlert, GitBranch, TriangleAlert, UserRound } from "@lucide/vue"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"

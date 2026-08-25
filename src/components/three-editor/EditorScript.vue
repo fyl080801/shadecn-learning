@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue"
-import { X } from "lucide-vue-next"
+import { X } from "@lucide/vue"
 
 import { EditorView, basicSetup } from "codemirror"
 import { EditorState } from "@codemirror/state"

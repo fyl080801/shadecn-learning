@@ -3,7 +3,7 @@ import type { PrimitiveProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import type { ButtonVariants } from "."
 import { Primitive } from "reka-ui"
-import { Loader2 } from "lucide-vue-next"
+import { Loader2 } from "@lucide/vue"
 import { cn } from "@/lib/utils"
 import { buttonVariants } from "."
 

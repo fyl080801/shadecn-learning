@@ -61,6 +61,11 @@ export interface OidcErrorInit {
   cause?: unknown
 }
 
+/**
+ * 名字叫 Oidc，实际是**所有身份提供方共用**的错误类型（GitHub 那条路也抛它）：
+ * `auth/session.ts` 的重试逻辑只认 `retryable` 这一个字段，两家共用一个类型
+ * 才不用在那边分叉判断。
+ */
 export class OidcError extends Error {
   readonly code: string | undefined
   readonly retryable: boolean

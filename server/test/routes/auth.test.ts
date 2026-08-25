@@ -9,7 +9,6 @@ import {
   ISSUER,
   REDIRECT_URI,
   cookieValue,
-  discoveryDoc,
   signJwt,
   stubOidcFetch,
   tokenResponse,
@@ -59,6 +58,10 @@ describe('GET /api/auth/config', () => {
     await expect(res.json()).resolves.toEqual({
       enabled: true,
       provider: 'keycloak',
+      // 只配了 Keycloak，所以列表里只有它
+      providers: [
+        { id: 'keycloak', label: 'Keycloak', buttonLabel: '使用 Keycloak 登录' },
+      ],
       issuer: ISSUER,
       clientId: CLIENT_ID,
       loginUrl: '/api/auth/login',
@@ -176,7 +179,7 @@ describe('GET /api/auth/login', () => {
     const res = await (await freshApp()).request('/api/auth/login')
 
     expect(res.headers.get('location')).toContain('/login?error=')
-    expect(decodeURIComponent(res.headers.get('location') ?? '')).toContain('KEYCLOAK_ISSUER')
+    expect(decodeURIComponent(res.headers.get('location') ?? '')).toContain('连不上 Keycloak')
     expect(await prisma.authRequest.count()).toBe(0)
   })
 })
@@ -379,8 +382,13 @@ describe('GET /api/auth/callback', () => {
   })
 })
 
+/**
+ * 登出**只退本站**：清本地会话就结束，不碰 Keycloak。
+ * 这一组的每一条都在钉这件事 —— 一旦有人把 RP-initiated logout 加回来，
+ * 用户在同一个 SSO 下别的应用会被一起踢下线。
+ */
 describe('GET /api/auth/logout', () => {
-  it('清本地会话 + 清 cookie + 跳 Keycloak 的 end_session', async () => {
+  it('清本地会话 + 清 cookie，落在站内的登录页上', async () => {
     const { cookie } = await signIn()
 
     const res = await app.request('/api/auth/logout', { headers: { cookie } })
@@ -390,22 +398,17 @@ describe('GET /api/auth/logout', () => {
     expect(setCookie).toContain('sid=')
     expect(setCookie).toMatch(/Max-Age=0|Expires=Thu, 01 Jan 1970/)
 
-    const location = new URL(res.headers.get('location') ?? '')
-    expect(location.origin + location.pathname).toBe(END_SESSION_ENDPOINT)
-    expect(location.searchParams.get('post_logout_redirect_uri')).toBe(
-      'http://127.0.0.1:3000/login',
-    )
-    expect(location.searchParams.get('id_token_hint')).toBeTruthy()
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toBe('/login')
   })
 
-  it('顺手通知 Keycloak 作废 refresh_token', async () => {
+  it('不跳 Keycloak 的 end_session，也不撤销 refresh_token', async () => {
     const { cookie } = await signIn()
-    await app.request('/api/auth/logout', { headers: { cookie } })
+    const res = await app.request('/api/auth/logout', { headers: { cookie } })
 
-    const revoke = stub.calls.find(
-      (c) => c.url.startsWith(END_SESSION_ENDPOINT) && c.body?.includes('refresh_token'),
-    )
-    expect(new URLSearchParams(revoke?.body ?? '').get('refresh_token')).toBe('refresh-1')
+    expect(res.headers.get('location')).not.toContain(END_SESSION_ENDPOINT)
+    // 整个登出过程一个出站请求都不该有
+    expect(stub.calls.filter((call) => call.url.startsWith(ISSUER))).toEqual([])
   })
 
   it('没登录时也不报错，直接回登录页', async () => {
@@ -420,9 +423,8 @@ describe('GET /api/auth/logout', () => {
       headers: { cookie },
     })
 
-    const location = new URL(res.headers.get('location') ?? '')
-    expect(location.searchParams.get('post_logout_redirect_uri')).toBe(
-      `http://127.0.0.1:3000/login?redirect=${encodeURIComponent('/2048?a=1')}`,
+    expect(res.headers.get('location')).toBe(
+      `/login?redirect=${encodeURIComponent('/2048?a=1')}`,
     )
   })
 
@@ -433,13 +435,10 @@ describe('GET /api/auth/logout', () => {
       headers: { cookie },
     })
 
-    const location = new URL(res.headers.get('location') ?? '')
-    expect(location.searchParams.get('post_logout_redirect_uri')).toBe(
-      'http://127.0.0.1:3000/login?redirect=%2F',
-    )
+    expect(res.headers.get('location')).toBe('/login?redirect=%2F')
   })
 
-  it('Keycloak 连不上也不能卡住登出：本地会话照样清掉，不是 500', async () => {
+  it('Keycloak 整个连不上也照样退得掉（本来就不问它）', async () => {
     const { cookie } = await signIn()
     stub.discovery = { status: 500, body: null }
 
@@ -448,16 +447,5 @@ describe('GET /api/auth/logout', () => {
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/login')
     expect(await prisma.session.count()).toBe(0)
-  })
-
-  it('discovery 里没有 end_session_endpoint 就直接回 /login', async () => {
-    const { cookie } = await signIn()
-    stub.discovery = {
-      status: 200,
-      body: { ...discoveryDoc, end_session_endpoint: undefined },
-    }
-
-    const res = await (await freshApp()).request('/api/auth/logout', { headers: { cookie } })
-    expect(res.headers.get('location')).toBe('http://127.0.0.1:3000/login')
   })
 })

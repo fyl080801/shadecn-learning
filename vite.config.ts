@@ -41,6 +41,22 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       /**
+       * 两个 HTML 入口，不是一个 SPA。
+       *
+       * `login.html` 必须独立成一个入口，因为**未登录时后端不发 `index.html`**
+       * （页面闸门只放行 `/login` 这一次导航，见 server/frontend/guard.ts）——
+       * 登录页要是长在 SPA 里，就成了「要先进应用才能登录」。
+       *
+       * 共享部分（Vue、shadcn 组件、Tailwind 主题变量）由 rollup 提成公共 chunk，
+       * 两个入口共用，所以登录页复用配色和组件是**零重复**的 —— 这正是它从
+       * 服务端拼字符串搬到 src 下的理由。
+       */
+      input: {
+        index: path.resolve(__dirname, 'index.html'),
+        login: path.resolve(__dirname, 'login.html'),
+      },
+
+      /**
        * 跨 chunk 的循环 re-export **直接构建失败**，不要只是警告。
        *
        * rollup 原话是 "will likely lead to broken execution order" —— 落到浏览器里

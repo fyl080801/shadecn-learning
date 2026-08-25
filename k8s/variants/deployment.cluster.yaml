@@ -22,6 +22,8 @@
 #   kubectl -n dev create secret generic shadecn-learning-auth \
 #     --from-literal=KEYCLOAK_CLIENT_SECRET="$KEYCLOAK_CLIENT_SECRET" \
 #     --from-literal=SESSION_SECRET="$SESSION_SECRET" \
+# 要开 GitHub 登录就再加 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET 两个键 ——
+# 下面的 envFrom 是整份 Secret 注入，Deployment 本身不用改。回调地址和 Keycloak 共用。
 #     --from-literal=DATABASE_URL="postgresql://user:pass@postgres:5432/app?schema=public" \
 #     --from-literal=REDIS_URL="redis://redis:6379" \
 #     --dry-run=client -o yaml | kubectl apply -f -

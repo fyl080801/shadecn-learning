@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue"
-import { Copy, Menu, Plus, Trash2, UserRoundPen, Workflow } from "lucide-vue-next"
+import { Copy, Menu, Plus, Trash2, UserRoundPen, Workflow } from "@lucide/vue"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"

@@ -1,5 +1,11 @@
 import { apiFetch } from "@/lib/auth"
 import type {
+  AuthIdentity,
+  AuthProviderView,
+  PendingLink,
+  ProviderId
+} from "@/types/auth"
+import type {
   FlowDetail,
   FlowStatus,
   FlowSummary,
@@ -92,6 +98,56 @@ function query(params: Record<string, string | number | undefined>) {
   }
   const text = search.toString()
   return text ? `?${text}` : ""
+}
+
+// —— 账号（登录方式）——
+
+export const authApi = {
+  /** 后端启用了哪些登录方式 */
+  config() {
+    return request<{
+      enabled: boolean
+      provider: ProviderId | null
+      providers: AuthProviderView[]
+    }>("/api/auth/config")
+  },
+
+  /** 当前用户绑了哪些，外加有没有一条在等确认 */
+  identities() {
+    return request<{ items: AuthIdentity[]; pending: PendingLink | null }>(
+      "/api/auth/identities"
+    )
+  },
+
+  /** 确认那条待关联 —— 到这一步才真的写库 */
+  confirmLink() {
+    return request<{ identity: AuthIdentity }>("/api/auth/link/confirm", {
+      method: "POST"
+    })
+  },
+
+  /** 放弃那条待关联 */
+  cancelLink() {
+    return request<void>("/api/auth/link/pending", { method: "DELETE" })
+  },
+
+  /**
+   * 解绑。最后一条会被服务端挡下来（409）—— 前端也会把按钮禁掉，
+   * 但两边都要有：禁用只是提示，判定得在服务端。
+   */
+  unlinkIdentity(id: string) {
+    return request<void>(`/api/auth/identities/${id}`, { method: "DELETE" })
+  },
+
+  /**
+   * 关联一条新的登录方式：**整页跳走**，不是 XHR。
+   * 要经过第三方的授权页，SPA 内部跳没用（和登录、登出是同一个道理）。
+   *
+   * 没有「回哪儿去」这个参数：服务端一律送回设置页，因为确认框只长在那儿。
+   */
+  startLink(provider: ProviderId) {
+    window.location.assign(`/api/auth/link/${provider}`)
+  }
 }
 
 // —— 项目 ——
