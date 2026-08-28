@@ -10,7 +10,7 @@
 #
 # 跑一次（默认构建 master，见下面的 gitRevision）：
 #
-#   kubectl -n dev create -f ci/run.yaml
+#   kubectl -n devops create -f ci/run.yaml
 #
 # 依赖这些带外资源（都不在仓库里，缺一个流水线就跑不起来）：
 #   - Secret dev/gitea-deploy-key   —— key: id_ed25519，gitea 上要配成有写权限的 deploy key
@@ -23,9 +23,15 @@ apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
   name: shadecn-learning-cicd
-  namespace: dev
+  namespace: devops
 spec:
   entrypoint: main
+  # 各步之间传源码用的 artifact 落在 minio 上，Workflow 删掉时一并回收，
+  # 否则 bucket 里会一直积攒每轮构建的整份 workspace。
+  # （集群里早就是这个值了，只是一直没写回仓库 —— docs/12 §5 那条
+  #   `kubectl diff -f ci/workflow-template.yaml` 无输出的验收项因此一直不成立）
+  artifactGC:
+    strategy: OnWorkflowDeletion
   arguments:
     parameters:
       # CI 认的是 gitea，不是 github 上那个 origin

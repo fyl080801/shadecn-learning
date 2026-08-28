@@ -1,6 +1,6 @@
 # 跑一次流水线。用 create（不是 apply）—— 名字是 generateName 生成的，每次都是新的一条：
 #
-#   kubectl -n dev create -f ci/run.yaml
+#   kubectl -n devops create -f ci/run.yaml
 #
 # 构建别的分支就改下面的 gitRevision（不改则用模板里的默认值 master）。
 # 集群里还有 Argo Workflows 的 UI，Submit new workflow 选 shadecn-learning-cicd 是等价的。
@@ -13,7 +13,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
   generateName: shadecn-learning-cicd-
-  namespace: dev
+  namespace: devops
 spec:
   workflowTemplateRef:
     name: shadecn-learning-cicd

@@ -35,7 +35,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: gitea-ci-runner
-  namespace: dev
+  # 构建跑在 devops，权限就得发在 devops —— SA 本身仍留在 dev（runner Pod 在 dev），
+  # 靠下面 RoleBinding 的跨命名空间 subject 把两边接起来
+  namespace: devops
 rules:
   # 起构建 / 查状态 / job 被取消时删掉它
   - apiGroups: ['argoproj.io']
@@ -54,7 +56,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: gitea-ci-runner
-  namespace: dev
+  namespace: devops
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role

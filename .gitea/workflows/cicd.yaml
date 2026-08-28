@@ -56,7 +56,7 @@ jobs:
     steps:
       - name: 起 Argo Workflow 并等它跑完
         env:
-          NAMESPACE: dev
+          NAMESPACE: devops
           WF_TEMPLATE: shadecn-learning-cicd
           # 手动触发时用输入的分支，push 时用被 push 的那个分支
           INPUT_REVISION: ${{ github.event.inputs.gitRevision }}
@@ -88,7 +88,7 @@ jobs:
             exit 0
           fi
 
-          # 等价于 `kubectl -n dev create -f ci/run.yaml`，只是 gitRevision 跟着这次 push 走。
+          # 等价于 `kubectl -n devops create -f ci/run.yaml`，只是 gitRevision 跟着这次 push 走。
           # nodeSelector 必须留着：buildah 那步只能落在 amd64 节点上（arm64 那半靠 QEMU
           # 模拟，反过来跑不动）。改这里记得同步 ci/run.yaml，那是手动跑的入口。
           MANIFEST="${RUNNER_TEMP:-/tmp}/argo-run.yaml"

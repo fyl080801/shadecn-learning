@@ -389,13 +389,18 @@ runner 的 ServiceAccount `gitea-ci-runner` 权限就三样：`workflows` 的
 get/list/watch/create/delete、`workflowtemplates` 的 get/list、`pods` + `pods/log` 的 get/list。
 它**碰不到 Deployment 和 Secret** —— 部署是 ArgoCD 的事，runner 只负责按下开始。
 
+SA 本身住在 `dev`（runner Pod 和 gitea 一起在那儿），但这三样权限发在 `devops` ——
+流水线模板和构建 Pod 都搬过去了。靠 `ci/gitea-actions-runner.yaml` 里那条
+RoleBinding 的跨命名空间 subject（`namespace: dev` 的 SA + `namespace: devops`
+的 Role）接起来。应用本身没动，仍旧部署在 `dev`。
+
 #### 手动入口仍然保留
 
 Actions 或 runner 出问题时（也包括构建别的分支）：
 
 ```bash
-kubectl -n dev create -f ci/run.yaml   # 改 gitRevision 可构建任意分支
-kubectl -n dev get wf -l workflows.argoproj.io/workflow-template=shadecn-learning-cicd \
+kubectl -n devops create -f ci/run.yaml   # 改 gitRevision 可构建任意分支
+kubectl -n devops get wf -l workflows.argoproj.io/workflow-template=shadecn-learning-cicd \
   --sort-by=.metadata.creationTimestamp
 ```
 
@@ -479,11 +484,11 @@ workflow-controller 的 tag），argo 升级之后要跟着改这里 —— 这�
 - [ ] client 和构建目标 provider 不一致时，`pnpm build:server` 失败并指出该跑哪条命令。
 - [ ] `kubectl create -f ci/run.yaml` 跑完之后：Harbor 里有 `apps/shadecn-learning:<short-sha>` 的**双架构** manifest，gitea 上多出一条 `ci: update image tag to <short-sha>`，且 ArgoCD 在 3 分钟内把 Application 同步回 `Synced` / `Healthy`。
 - [ ] `ci/workflow-template.yaml` 与集群里那份一致：`kubectl diff -f ci/workflow-template.yaml` 无输出。
-- [ ] `git push gitea master` 之后无需任何手工操作：Gitea 的 Actions 页出现一条 `cicd` 运行，`dev` 命名空间里多出一条 `shadecn-learning-cicd-*`，job 一直守到构建结束（成功则绿、失败则红且日志里有出错那步的 Pod 日志）。
+- [ ] `git push gitea master` 之后无需任何手工操作：Gitea 的 Actions 页出现一条 `cicd` 运行，`devops` 命名空间里多出一条 `shadecn-learning-cicd-*`，job 一直守到构建结束（成功则绿、失败则红且日志里有出错那步的 Pod 日志）。
 - [ ] 流水线写回的 `ci: update image tag to <sha>` 提交**不会**再触发一轮构建（Actions 页没有新运行）。
 - [ ] 只改 `k8s/**`、`docs/**`、`*.md`、`.gitea/**`、`ci/**` 的提交同样不触发构建（但 `k8s/**` 的改动仍会被 ArgoCD 同步上去）；用 `workflow_dispatch` 仍能强制构建任意分支。
 - [ ] 构建进行中往同一分支再推一个提交，最后一步仍能写回（日志里出现「fetch + rebase 后重试」），不会因为 non-fast-forward 让整轮 45 分钟白跑。
-- [ ] runner 的 SA 越权检查：`kubectl -n dev auth can-i --as=system:serviceaccount:dev:gitea-ci-runner delete deployments` 与 `… get secrets` 都是 `no`。
+- [ ] runner 的 SA 越权检查：`kubectl -n devops auth can-i --as=system:serviceaccount:dev:gitea-ci-runner delete deployments` 与 `… get secrets` 都是 `no`。
 - [ ] 手动 `kubectl -n dev set image deploy/shadecn-learning …` 后，ArgoCD 的 `selfHeal` 把它刷回仓库里的 tag。
 - [ ] `ci/` 下的文件改动不会让 ArgoCD 变成 `OutOfSync`（它只看 `k8s/`）。
 
