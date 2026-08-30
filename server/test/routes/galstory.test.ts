@@ -220,6 +220,56 @@ describe('写口逐条放行，其余的非 GET 仍然拦住', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('我的故事那一族放行了，公共故事的写口靠引擎自己挡', async () => {
+    // ⚠️ **这一层只管「哪个方法哪条路放行」，不判「这是不是我的故事」**：那条判据在引擎
+    // 那一侧且是**结构性**的（写口的 base 目录里根本没有公共故事，拿不到 Path 就改不了）。
+    // 在这里再判一遍就是同一个判据两处声明，而漂了不报错。
+    const fetchMock = okEachTime()
+    const { galstory } = await load({ GAL_STORY_API_URL: 'http://engine:8000' })
+
+    for (const [method, path] of [
+      ['POST', '/stories'],
+      ['PATCH', '/stories/s2026-abc'],
+      ['DELETE', '/stories/s2026-abc'],
+      ['PUT', '/stories/s2026-abc/files/story.yaml'],
+      ['PUT', '/stories/s2026-abc/files/knowledge/characters/lin.yaml'],
+      ['DELETE', '/stories/s2026-abc/files/characters/lin.yaml'],
+    ] as const) {
+      const res = await mount(galstory).request(path, { method, body: '{}' })
+      expect(res.status, `${method} ${path} 该被放行`).toBe(200)
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(6)
+  })
+
+  it('⚠️ 文件那两条要能带层级 —— 可编辑路径本来就是 characters/xx.yaml 这种', async () => {
+    // 上面那条「一段 id 用 `[^/]+`」的约定在文件这一路用不了。**放宽的前提**是引擎那侧
+    // 才是白名单的唯一声明处（目录 + 只认 .yaml + 解析后必须仍在故事根内）——
+    // 这里少认一条只是「这个字段改不了」，多认一条则等于绕过那道门，故这一层不重判。
+    const fetchMock = okEachTime()
+    const { galstory } = await load({ GAL_STORY_API_URL: 'http://engine:8000' })
+
+    await mount(galstory).request('/stories/s1/files/knowledge/stories/lin.yaml', {
+      method: 'PUT',
+      body: '{"text":"- uid: a\\n  text: b\\n"}',
+      headers: { 'content-type': 'application/json' },
+    })
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'http://engine:8000/api/stories/s1/files/knowledge/stories/lin.yaml',
+    )
+  })
+
+  it('故事那几条同样只放行登记过的方法：GET 之外的都要逐条来', async () => {
+    const fetchMock = okEachTime()
+    const { galstory } = await load({ GAL_STORY_API_URL: 'http://engine:8000' })
+
+    // 没登记过的方法（引擎那侧压根没有这条口）不该被顺手带进来
+    const res = await mount(galstory).request('/stories/s1', { method: 'POST', body: '{}' })
+
+    expect(res.status).toBe(405)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('放行的正则两端都锚定：再往下钻一层就不认了', async () => {
     okEachTime()
     const { galstory } = await load({ GAL_STORY_API_URL: 'http://engine:8000' })

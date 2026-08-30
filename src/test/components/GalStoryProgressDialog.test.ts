@@ -31,6 +31,11 @@ const STORY: StorySummary = {
   name: "rainy_inn",
   title: "雨夜客栈",
   cover: "",
+  // 公共库那一份：`owner` 空、故不可编辑（判据在引擎那一侧，这两格只是展示）
+  owner: "",
+  scope: "public",
+  writable: false,
+  playable: true,
   characters: 3,
   scenes: 2,
   saves: 2

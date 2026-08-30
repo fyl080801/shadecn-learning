@@ -145,6 +145,15 @@ const router = createRouter({
           meta: { title: "故事" }
         },
         {
+          // 编辑一个故事的定义。⚠️ **放在 `:storyId` 之后**——`stories/:storyId` 会把
+          // 任何一段都当成 id，两条的相对顺序在这里是判据（vue-router 按注册序匹配）。
+          path: "galstory/stories/:storyId/edit",
+          name: "GalStoryEdit",
+          component: () => import("@/views/galstory/StoryEdit.vue"),
+          props: true,
+          meta: { title: "编辑故事" }
+        },
+        {
           // 对局界面。**仍挂在 SidebarLayout 下**：它的 main 是 `h-0 flex-1`，故这一页
           // 用 `h-full` 就拿得到确定高度，聊天区自己滚 —— 不需要换成 BlankLayout。
           path: "galstory/play/:saveId",

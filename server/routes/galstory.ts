@@ -70,6 +70,22 @@ const WRITE_ALLOW: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   // `POST /saves/{id}/open` 首次会跑建档（几十次模型调用）、`POST .../turns` 演一轮，
   // `DELETE /saves/{id}` 删掉玩家几十轮的实录与知识。放行它们的前提是**属主隔离**：
   // 下面每条请求都带上 `X-Gal-Owner`，引擎按属主分目录，拿不到别人的 Path 就越不了权。
+  // ── 我的故事（作者面，2026-08-30）──
+  // 这一族**不花钱、不碰任何存档**（删故事也不级联删存档——存档自带整份模板副本），
+  // 与 `saves` 那族的分界与 `config` 那族相同。属主隔离仍由 `X-Gal-Owner` 那一行给：
+  // 引擎的写口 base 只有 `<authoring>/<owner>/`，拿不到别人的 `Path` 就改不了。
+  { method: 'POST', pattern: /^\/stories$/ },
+  { method: 'PATCH', pattern: /^\/stories\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/stories\/[^/]+$/ },
+  // ⚠️ **文件那两条只能用 `.+`，上面那条「一段 id 用 `[^/]+`」的约定在这里用不了**：
+  // 可编辑路径本来就带层级（`characters/npc.yaml`、`knowledge/stories/npc.yaml`）。
+  // 放宽的**前提是引擎那一侧才是判据的唯一声明处**（`gal_story.authoring.editable_path`：
+  // 白名单目录 + 只认 `.yaml` + 解析后必须仍在故事根内，`..` 与绝对路径一律不认）——
+  // 在这里再判一遍就是**同一个判据两处声明**，而漂了不报错：这边少认一条只是「这个字段
+  // 改不了」，多认一条则等于绕过那道白名单。故这一层只管「哪个方法哪条路放行」。
+  { method: 'PUT', pattern: /^\/stories\/[^/]+\/files\/.+$/ },
+  { method: 'DELETE', pattern: /^\/stories\/[^/]+\/files\/.+$/ },
+
   { method: 'POST', pattern: /^\/saves$/ },
   { method: 'DELETE', pattern: /^\/saves\/[^/]+$/ },
   { method: 'POST', pattern: /^\/saves\/[^/]+\/open$/ },

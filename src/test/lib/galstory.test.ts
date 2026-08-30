@@ -34,7 +34,33 @@ describe("请求走反代，不直连引擎", () => {
 
     await storyApi.list()
 
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/galstory/stories")
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/galstory/stories?scope=all")
+  })
+
+  it("scope 是同一条口上的过滤器，不是第二条路由", async () => {
+    // ⚠️ 「我能玩哪些故事」只该有一个答案 —— 分成两条口就是同一个问题两处声明。
+    // 缺省 `all`（我的在前 + 公共），这一条钉住那个缺省不会悄悄变。
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]))
+
+    await storyApi.list("mine")
+    await storyApi.list("public")
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/galstory/stories?scope=mine",
+      "/api/galstory/stories?scope=public"
+    ])
+  })
+
+  it("文件路径逐段转义，但 `/` 要留着 —— 那是引擎那条口的一个 {path:path} 参数", async () => {
+    // ⚠️ 整串 `encodeURIComponent` 会把分隔符变成 `%2F`，那样路由根本匹配不上；
+    // 而不转义则「带空格的 id」这种会当场坏掉。故是**逐段**转义。
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({}))
+
+    await storyApi.readFile("s2026-abc", "knowledge/characters/a b.yaml")
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/galstory/stories/s2026-abc/files/knowledge/characters/a%20b.yaml"
+    )
   })
 
   it("故事名进路径要转义 —— 目录名不保证是 URL 安全的", async () => {

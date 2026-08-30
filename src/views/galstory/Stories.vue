@@ -1,20 +1,45 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue"
 import { useRouter } from "vue-router"
-import { BookOpen, History, Image as ImageIcon, Loader2, Play, Search, Settings2 } from "@lucide/vue"
+import {
+  BookOpen,
+  Copy,
+  History,
+  Image as ImageIcon,
+  Loader2,
+  Pencil,
+  Play,
+  Plus,
+  Search,
+  Settings2,
+  Trash2,
+  TriangleAlert
+} from "@lucide/vue"
 import { toast } from "vue-sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from "@/components/ui/alert-dialog"
 import BackendNotice from "@/components/galstory/BackendNotice.vue"
 import ProgressDialog from "@/components/galstory/ProgressDialog.vue"
+import NewStoryDialog from "@/components/galstory/NewStoryDialog.vue"
 
 import { useAsyncAction } from "@/composables/useAsyncAction"
 
 import { GalStoryError, runApi, saveApi, storyApi, structureLabel } from "@/lib/galstory"
-import type { Quota, StorySummary } from "@/types/galstory"
+import type { Quota, StoryScope, StorySummary } from "@/types/galstory"
 
 /**
  * 故事库 —— GalStory 的入口页。
@@ -29,6 +54,18 @@ import type { Quota, StorySummary } from "@/types/galstory"
  *
  * 搜索也在本地做：故事是几个到几十个的量级，一个 `?keyword=` 参数换来的是引擎那一侧多一条
  * 要维护的判据，而它对结果没有任何影响。
+ *
+ * ## 公共库与「我的故事」是同一张表的两个作用域
+ *
+ * ⚠️ **不开第二个页面**：`scope` 是这条口上的一个过滤器（`all|public|mine`），
+ * 而「我能玩哪些故事」只该有一个答案——同一个问题两处声明正是这两个仓库反复栽过的形态。
+ *
+ * ⚠️ **「只有我看得到我的故事」不是这里过滤出来的**：属主隔离在服务端那一层就成立了
+ * （每条转发带 `X-Gal-Owner`，引擎按属主分目录、写口的 base 里根本没有别人的东西）。
+ * 这里的 tab 只是让人分栏看；`writable` 那一格也只是把按钮画灰，**不是判据**。
+ *
+ * ⚠️ **`playable` 是引擎现算的**，不是一个存储字段（存 `status: draft|ready` 就是存一个会漂的
+ * 判据——作者在磁盘上改一行、字段还写着 ready）。故这里只如实显示，不缓存、不自己推。
  *
  * ## 每行两个动作
  *
@@ -56,11 +93,18 @@ const error = ref<unknown>(null)
 
 const keyword = ref("")
 
+/**
+ * 看哪一档。⚠️ **它是同一条口上的过滤器**（`GET /stories?scope=`），不是第二个页面；
+ * 计数在本地按 `scope` 字段算，故切 tab 不重新发请求。
+ */
+const scope = ref<"all" | StoryScope>("all")
+
 async function load() {
   loading.value = true
   error.value = null
   try {
-    items.value = await storyApi.list()
+    // 恒取 `all`：三档的内容是同一份数据的子集，分三次请求只会让计数与列表可能不同步
+    items.value = await storyApi.list("all")
   } catch (err) {
     error.value = err
   } finally {
@@ -69,6 +113,49 @@ async function load() {
 }
 
 void load()
+
+const mineCount = computed(() => items.value.filter((s) => s.scope === "mine").length)
+const publicCount = computed(() => items.value.length - mineCount.value)
+
+// ── 我的故事：新建 / 改名 / 删除 ──────────────────────────────────────────────
+
+/** 新建弹窗开着没有；`from` 非空 = 「复制这个故事」那条路 */
+const creating = ref<{ open: boolean; from: StorySummary | null }>({ open: false, from: null })
+
+/**
+ * 待删的那个故事，以及引擎那句「有几个存档基于它」。
+ *
+ * ⚠️ **那句话要引擎来说，前端不自己数**：`saves` 那一格是选单里的计数，而删除口拒绝时
+ * 回的是它当场算的那个数 —— 让界面自己拼一句，就是同一个事实两处声明。故这里先发一次
+ * **不带 confirm** 的删除，把它的 400 原样显示出来，人确认之后再发真正的那一发。
+ */
+const removing = ref<{ story: StorySummary; detail: string } | null>(null)
+
+const { run: askRemove, isPending: asking } = useAsyncAction(
+  async (story: StorySummary) => {
+    const hint = await storyApi.confirmHint(story.name)
+    if (!hint) {
+      // 引擎不再要求确认时它就真删了 —— 如实刷新，别再弹一个确认框
+      toast.success(`已删除《${story.title}》`)
+      await load()
+      return
+    }
+    removing.value = { story, detail: hint }
+  },
+  { key: (story: StorySummary) => story.name, errorMessage: "删除失败" }
+)
+
+const { run: confirmRemove, pending: removingNow } = useAsyncAction(
+  async () => {
+    const target = removing.value
+    if (!target) return
+    await storyApi.remove(target.story.name)
+    toast.success(`已删除《${target.story.title}》`)
+    removing.value = null
+    await load()
+  },
+  { errorMessage: "删除失败" }
+)
 
 /** 封面地址给了却加载不出来的那些（外链会挂、会改）—— 落回占位，别留一个碎图标 */
 const broken = ref<Record<string, boolean>>({})
@@ -137,10 +224,11 @@ const { run: startNew, isPending: starting } = useAsyncAction(
 
 const shown = computed(() => {
   const word = keyword.value.trim().toLowerCase()
-  if (!word) return items.value
-  return items.value.filter(
-    (s) => s.name.toLowerCase().includes(word) || s.title.toLowerCase().includes(word)
-  )
+  return items.value.filter((s) => {
+    if (scope.value !== "all" && s.scope !== scope.value) return false
+    if (!word) return true
+    return s.name.toLowerCase().includes(word) || s.title.toLowerCase().includes(word)
+  })
 })
 </script>
 
@@ -162,6 +250,10 @@ const shown = computed(() => {
           <Settings2 />
           模型配置
         </Button>
+        <Button @click="creating = { open: true, from: null }">
+          <Plus />
+          新建故事
+        </Button>
       </div>
     </header>
 
@@ -172,11 +264,21 @@ const shown = computed(() => {
     <BackendNotice v-else-if="error" :error="error" @retry="load()" />
 
     <template v-else>
-      <div class="relative max-w-sm">
-        <Search
-          class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-        />
-        <Input v-model="keyword" placeholder="搜索故事名称或 id" class="pl-9" />
+      <div class="flex flex-wrap items-center gap-3">
+        <!-- ⚠️ **一个口一个答案**：这是 `GET /stories?scope=` 的过滤器，不是三个页面 -->
+        <Tabs v-model="scope">
+          <TabsList>
+            <TabsTrigger value="all">全部 {{ items.length }}</TabsTrigger>
+            <TabsTrigger value="mine">我的 {{ mineCount }}</TabsTrigger>
+            <TabsTrigger value="public">公共 {{ publicCount }}</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <div class="relative max-w-sm flex-1">
+          <Search
+            class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input v-model="keyword" placeholder="搜索故事名称或 id" class="pl-9" />
+        </div>
       </div>
 
       <div
@@ -185,8 +287,19 @@ const shown = computed(() => {
       >
         <BookOpen class="size-8 text-muted-foreground" />
         <p class="text-sm text-muted-foreground">
-          {{ keyword ? "没有匹配的故事" : "故事目录里还没有故事" }}
+          <!-- ⚠️ 「搜不到」「我还没写过」「一个故事都没有」是三件事，修法完全不同 -->
+          {{
+            keyword
+              ? "没有匹配的故事"
+              : scope === "mine"
+                ? "你还没写过故事——新建一个，或者从公共故事复制一份来改"
+                : "故事目录里还没有故事"
+          }}
         </p>
+        <Button v-if="!keyword && scope === 'mine'" @click="creating = { open: true, from: null }">
+          <Plus />
+          新建故事
+        </Button>
       </div>
 
       <!-- ⚠️ **列表不是表格**：一个故事是一件「作品」，封面 + 标题 + 一行元信息比一行单元格
@@ -223,6 +336,19 @@ const shown = computed(() => {
             <div class="flex flex-wrap items-center gap-2">
               <span class="truncate font-medium">{{ story.title }}</span>
               <code class="font-mono text-xs text-muted-foreground">{{ story.name }}</code>
+              <Badge v-if="story.scope === 'mine'" variant="outline">我的</Badge>
+              <!-- ⚠️ **不可开局是现算的**（引擎那侧 `playable_blockers`），不是一个状态字段。
+                   点进去看「哪几条挡着」——那正是编辑页顶上那块。 -->
+              <Badge
+                v-if="!story.playable"
+                variant="destructive"
+                class="cursor-pointer gap-1"
+                title="这个故事现在开不了局，点击查看是哪几条挡着"
+                @click.stop="router.push(`/galstory/stories/${story.name}/edit`)"
+              >
+                <TriangleAlert class="size-3" />
+                不可开局
+              </Badge>
               <Badge
                 v-if="runningByStory.get(story.name)"
                 variant="secondary"
@@ -253,8 +379,14 @@ const shown = computed(() => {
               v-else
               size="sm"
               :loading="starting(story.name)"
-              :disabled="atLimit"
-              :title="atLimit ? `最多同时开 ${quota.limit} 局` : ''"
+              :disabled="atLimit || !story.playable"
+              :title="
+                !story.playable
+                  ? '这个故事还开不了局——先去编辑页看挡着的是哪几条'
+                  : atLimit
+                    ? `最多同时开 ${quota.limit} 局`
+                    : ''
+              "
               @click.stop="startNew(story)"
             >
               <Play class="size-3.5" />
@@ -263,6 +395,38 @@ const shown = computed(() => {
             <Button variant="outline" size="sm" @click.stop="progressFor = story">
               <History class="size-3.5" />
               读进度
+            </Button>
+
+            <!-- ⚠️ **公共故事只给「复制一份」，不给编辑**：那不是这里判出来的——引擎的写口
+                 base 里根本没有公共故事，这两个按钮只是别让人点了才吃 404。 -->
+            <Button
+              v-if="story.writable"
+              variant="outline"
+              size="sm"
+              title="编辑这个故事的定义"
+              @click.stop="router.push(`/galstory/stories/${story.name}/edit`)"
+            >
+              <Pencil class="size-3.5" />
+            </Button>
+            <Button
+              v-else
+              variant="outline"
+              size="sm"
+              title="复制一份到「我的故事」再改（不影响原来那份）"
+              @click.stop="creating = { open: true, from: story }"
+            >
+              <Copy class="size-3.5" />
+            </Button>
+            <Button
+              v-if="story.writable"
+              variant="ghost"
+              size="sm"
+              class="text-destructive hover:text-destructive"
+              :loading="asking(story.name)"
+              title="删除这个故事"
+              @click.stop="askRemove(story)"
+            >
+              <Trash2 class="size-3.5" />
             </Button>
           </div>
         </li>
@@ -274,5 +438,38 @@ const shown = computed(() => {
       @close="progressFor = null"
       @play="(saveId) => router.push(`/galstory/play/${saveId}`)"
     />
+
+    <NewStoryDialog
+      :open="creating.open"
+      :from="creating.from"
+      @close="creating = { open: false, from: null }"
+      @created="
+        (story) => {
+          creating = { open: false, from: null }
+          void load()
+          router.push(`/galstory/stories/${story.name}/edit`)
+        }
+      "
+    />
+
+    <!-- 删故事。⚠️ **那句「有几个存档基于它」是引擎说的**，界面不自己拼 -->
+    <AlertDialog :open="removing !== null" @update:open="(v) => !v && (removing = null)">
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>删除《{{ removing?.story.title }}》？</AlertDialogTitle>
+          <AlertDialogDescription>{{ removing?.detail }}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel @click="removing = null">取消</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            :loading="removingNow"
+            @click.prevent="confirmRemove()"
+          >
+            删除
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </div>
 </template>

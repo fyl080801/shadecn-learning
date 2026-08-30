@@ -16,7 +16,9 @@ import type {
   SaveSummary,
   ThreadMessage,
   TurnAccepted,
+  StoryCheck,
   StoryDetail,
+  StoryFile,
   StorySummary
 } from "@/types/galstory"
 
@@ -126,15 +128,130 @@ export const storyApi = {
   /**
    * 故事选单。**它只有那么几个字段**，不是接口没做完 —— 引擎刻意不在这条口上给
    * `core_conflict`/`ending`/开场白（见 `types/galstory.ts` 模块头第 2 条）。
+   *
+   * `scope` 是**过滤器**，不是第二条路由：「我能玩哪些故事」只有这一个口——同一个问题
+   * 两个答案正是这两个仓库反复栽过的形态。缺省 `all` = 我的（在前）+ 公共。
+   *
+   * ⚠️ **「只有我看得到我的故事」不靠这个参数**：属主隔离在服务端那一层就成立了
+   * （每条转发带 `X-Gal-Owner`，引擎按属主分目录），`scope=public` 只是让人分栏看。
    */
-  list(): Promise<StorySummary[]> {
-    return request<StorySummary[]>("/stories")
+  list(scope: "all" | "public" | "mine" = "all"): Promise<StorySummary[]> {
+    return request<StorySummary[]>(`/stories?scope=${scope}`)
   },
 
-  /** 作者面详情：角色、编制、知识计数、节拍旋钮、作者态体检 */
+  /**
+   * 作者面详情：角色、编制、知识计数、节拍旋钮、作者态体检。
+   *
+   * ⚠️ **多用户部署下它只对「我的」故事开**（引擎那侧判据在部署形态上：打开了属主信任
+   * 就收紧）——公共故事的 `goal`/`endWhen`/私有条目数对玩家全是剧透。故这条口对公共故事
+   * 拿到 404 是**正常**的，不是加载失败，调用方要据 `status === 404` 降级。
+   */
   get(name: string): Promise<StoryDetail> {
     return request<StoryDetail>(`/stories/${encodeURIComponent(name)}`)
+  },
+
+  /**
+   * 新建**我的**故事：不给 `fromStory` 就是一份能直接跑的最小骨架，给了就是从那个故事整份复制。
+   *
+   * ⚠️ **「复制成我的」与「开始玩一局」是两个动作**：那个产出**存档**（`saveApi.create`），
+   * 这个产出**模板**。合成一个入口之后「我想改改这个故事」就没地方去了。
+   */
+  create(title: string, fromStory = ""): Promise<StorySummary> {
+    return request<StorySummary>("/stories", {
+      method: "POST",
+      body: fromStory ? { title, fromStory } : { title }
+    })
+  },
+
+  /**
+   * 改标题。引擎那边走 **round-trip 就地改这一个键** —— 一份从公共故事复制来的 `story.yaml`
+   * 带着几十行注释，整份 dump 回去就全没了，而**抹掉之后没有任何东西会失败**。
+   */
+  rename(name: string, title: string): Promise<StorySummary> {
+    return request<StorySummary>(`/stories/${encodeURIComponent(name)}`, {
+      method: "PATCH",
+      body: { title }
+    })
+  },
+
+  /**
+   * **问一句**「删掉它会怎么样」：发一发**不带 confirm** 的删除，把引擎拒绝时那句话拿回来
+   * （里面有「基于它的存档有几个」）。
+   *
+   * ⚠️ **那个数要引擎来说，前端不自己拼**：选单里的 `saves` 是另一时刻的计数，界面自己
+   * 拼一句就是同一个事实两处声明。返回值就是那句话；引擎哪天不再要求确认（真删了）则返回空串
+   * ——调用方据此知道**已经删掉了**。
+   */
+  async confirmHint(name: string): Promise<string> {
+    try {
+      await request<void>(`/stories/${encodeURIComponent(name)}`, { method: "DELETE" })
+      return ""
+    } catch (err) {
+      if (err instanceof GalStoryError && err.status === 400) return err.message
+      throw err
+    }
+  },
+
+  /**
+   * 真删掉我的一个故事。
+   *
+   * ⚠️ **不级联删存档**：存档自带整份模板副本，删了模板照样续得下去，只是列表里点不到
+   * 「再开一局」——那也是引擎那侧刻意的（`SaveEntry.story` 从此指不到任何模板**是对的**，
+   * 它记的是「当初从哪儿来的」这个历史事实）。
+   */
+  remove(name: string): Promise<void> {
+    return request<void>(`/stories/${encodeURIComponent(name)}?confirm=true`, { method: "DELETE" })
+  },
+
+  /**
+   * 这个故事现在跑不跑得起来（零 LLM、零成本，公共故事也能问）。
+   *
+   * ⚠️ `blockers` 与 `issues` 是两件事，别在界面上合成一列（见 `types` 里那条）。
+   */
+  check(name: string): Promise<StoryCheck> {
+    return request<StoryCheck>(`/stories/${encodeURIComponent(name)}/check`)
+  },
+
+  /** 这个故事里**可编辑**的文件（相对路径）。公共故事也能列——看得见不等于改得了 */
+  files(name: string): Promise<string[]> {
+    return request<string[]>(`/stories/${encodeURIComponent(name)}/files`)
+  },
+
+  /** 读一个文件的原文 */
+  readFile(name: string, path: string): Promise<StoryFile> {
+    return request<StoryFile>(`/stories/${encodeURIComponent(name)}/files/${encodePath(path)}`)
+  },
+
+  /**
+   * 写一个文件。引擎那边**先在临时副本上把整个故事装载一遍，通过了才换入**。
+   *
+   * 两档失败，**按状态码分流**：
+   * - **403** = 这条路径不可写（`plugins/`、`skills/` 里是会被 exec 的代码，只能随
+   *   「复制一个现成故事」带进来）——那是能力边界，说清楚就行；
+   * - **422** = 改完之后这个故事跑不起来，`GalStoryError.payload.check` 里带着 blockers，
+   *   **原文件一个字节没动**。要把那几条逐条显示给作者，而不是一句「保存失败」。
+   */
+  writeFile(name: string, path: string, text: string): Promise<StoryCheck> {
+    return request<StoryCheck>(`/stories/${encodeURIComponent(name)}/files/${encodePath(path)}`, {
+      method: "PUT",
+      body: { text }
+    })
+  },
+
+  /** 删一个文件（判据与写入逐字相同：先验后删） */
+  deleteFile(name: string, path: string): Promise<StoryCheck> {
+    return request<StoryCheck>(`/stories/${encodeURIComponent(name)}/files/${encodePath(path)}`, {
+      method: "DELETE"
+    })
   }
+}
+
+/**
+ * 相对路径进 URL。**逐段编码、保住 `/`**：`characters/npc.yaml` 是引擎那条口的一个
+ * `{path:path}` 参数，整串 `encodeURIComponent` 会把分隔符变成 `%2F` —— 那样路由根本匹配不上。
+ */
+function encodePath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/")
 }
 
 // ── 存档 ────────────────────────────────────────────────────────────────────

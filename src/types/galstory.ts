@@ -36,11 +36,34 @@ export interface LintIssue {
 
 // ── 故事 ────────────────────────────────────────────────────────────────────
 
+/**
+ * 故事的**作用域**：`public` = 公共库（人人可见、只读、进 git）· `mine` = 我自己写的。
+ *
+ * ⚠️ 它由 `owner` 派生，**只是给前端分栏用的**——「能不能编辑」的判据不在这一格上，
+ * 而在引擎那一侧「写口的 base 目录里有没有这个故事」（拿不到 `Path` 就改不了）。
+ */
+export type StoryScope = "public" | "mine"
+
 /** 故事选单里的一项。**刻意只有这么几个字段**，见模块头第 2 条。 */
 export interface StorySummary {
-  /** 目录名，也是 `gal-story play --story <name>` 里的那个名字 */
+  /** 目录名（公共库）或引擎发的 id（我的故事）；`play --story <name>` 里的那个名字 */
   name: string
   title: string
+  /** 属主。空 = 公共库。**与 `name` 合起来才是这个故事的完整坐标** */
+  owner: string
+  scope: StoryScope
+  /**
+   * 前端把「编辑」按钮画灰用。⚠️ **不是判据**：真正拦住写入的是引擎那一侧的目录边界，
+   * 前端再判一次既是两处声明、也挡不住谁（有人直接发请求）。
+   */
+  writable: boolean
+  /**
+   * 现在就能开局吗。引擎**现算**（有角色 · 有人在场 · `present` 里的 id 都有卡 · 有开场）。
+   *
+   * ⚠️ **它刻意不是一个存储字段**：存 `status: draft|ready` 就是存一个会漂的判据——
+   * 作者在磁盘上改一行、字段还写着 ready。
+   */
+  playable: boolean
   /**
    * 封面图**地址**（作者在 `story.yaml` 写的 `cover:`）。空 = 没给，展示层用占位。
    *
@@ -133,6 +156,25 @@ export interface StoryDetail {
   policies: StoryPolicies
   saves: number
   issues: LintIssue[]
+}
+
+/**
+ * 一个故事**现在**是什么状态（`GET /stories/{name}/check`，零 LLM、零成本）。
+ *
+ * ⚠️ **`blockers` 与 `issues` 是两件事，别在界面上合成一列**：前者答「跑不跑得起来」
+ * （结构问题，挡着开局），后者答「写得对不对」（作者纪律，不挡）。混在一起的话，
+ * 一条「建议改改称呼」的 info 看起来就和「这个故事开不了局」一样重。
+ */
+export interface StoryCheck {
+  playable: boolean
+  blockers: LintIssue[]
+  issues: LintIssue[]
+}
+
+/** 一个可编辑文件的原文。**故事目录里只有 yaml 可编辑**，见 `storyApi.writeFile` */
+export interface StoryFile {
+  path: string
+  text: string
 }
 
 // ── 存档 ────────────────────────────────────────────────────────────────────
