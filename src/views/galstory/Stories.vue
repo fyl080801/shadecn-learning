@@ -66,13 +66,22 @@ import type { Quota, StoryScope, StorySummary } from "@/types/galstory"
  * ⚠️ **`playable` 是引擎现算的**，不是一个存储字段（存 `status: draft|ready` 就是存一个会漂的
  * 判据——作者在磁盘上改一行、字段还写着 ready）。故这里只如实显示，不缓存、不自己推。
  *
- * ## 每行两个动作
+ * ## 版式：3:4 竖版封面的卡片栅格
+ *
+ * 手机一列、往上逐档加列（`GRID_CLASS`，判据写在它上面）。⚠️ **改版前是「一行一条」的横条**，
+ * 而那条横条在窄屏下会**静默地叠起来**：中间是 `min-w-0 flex-1` 的标题块、右边是 `shrink-0` 的
+ * 四个按钮，宽度不够时按钮一个像素都不让，直接压在标题与 id 上（id 被切成三截），最右那颗删除
+ * 还溢出卡片边界被裁掉一半。**它不会报错、桌面上也看不出来** —— 这类版式错只能靠真的把窗口
+ * 拖窄看一眼。故这一版的四个动作**分两处放**：主动作（新开始 / 读进度）在卡片底边等分一行，
+ * 次要动作（编辑或复制 / 删除）压在封面右上角，两边都不必跟对方抢宽度。
+ *
+ * ## 每张卡两个主动作
  *
  * **新开始** = 建一个新存档再进对局；**读进度** = 弹出这个故事下**我**玩过的实例。
  * 「我的」这件事在服务端那一层就成立了（每条转发带 `X-Gal-Owner: <登录用户 id>`，引擎按属主
  * 分存档目录），故这一页没有任何按用户过滤的代码 —— 在前端再滤一次既是两处声明，也挡不住谁。
  *
- * ⚠️ 整行是可点的（进详情页），故行内每个按钮都要 `@click.stop`，否则点「新开始」会顺带跳走。
+ * ⚠️ 整张卡是可点的（进详情页），故卡内每个按钮都要 `@click.stop`，否则点「新开始」会顺带跳走。
  *
  * ## 「进行中」怎么来的
  *
@@ -83,6 +92,22 @@ import type { Quota, StoryScope, StorySummary } from "@/types/galstory"
  * 同一个判据两处声明，改了部署配置这边不会有任何东西提醒。满了就把「新开始」禁掉并说清楚 ——
  * 让人点下去再吃一个 429，比不让点更糟。
  */
+
+/**
+ * 故事卡的栅格。**手机一列，往上逐档加列**。
+ *
+ * ⚠️ **用 grid 不用 `flex-wrap`**：卡片是 3:4 竖版封面 + 定高的按钮行，同一行里必须**等宽等高**
+ * ——`flex-wrap` 给不了这个（每张各按内容定宽，要等宽就得手算 `basis` 与 `gap` 的那笔账，
+ * 而最后一行还会被拉伸或留下参差的尾巴）。grid 的列宽是容器算的，加一档断点只改这一个字符串。
+ *
+ * ⚠️ **列数的判据是「卡片别窄过 ~200px」**，不是「屏幕大就多塞几张」：3:4 的封面再窄下去
+ * 标题就只剩两三个字，而底下那行「新开始 + 读进度」在 200px 以下会开始互相挤。按侧栏展开
+ * （256px）算，最窄的一档是 xl 四列 ≈ 220px、lg 三列 ≈ 229px，都刚好在线上。
+ *
+ * ⚠️ **它是个常量而不是写在模板里**：骨架屏必须与真列表**逐字**同一串类，否则加载完那一瞬间
+ * 版式会跳一次；抄两份就是同一个判据两处声明，而漂了不报错、只是骨架屏对不上列表。
+ */
+const GRID_CLASS = "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
 
 const router = useRouter()
 
@@ -232,15 +257,17 @@ const shown = computed(() => {
 </script>
 
 <template>
-  <div class="mx-auto flex h-full w-full max-w-6xl flex-col gap-6 p-6">
-    <header class="flex items-start gap-4">
-      <div class="flex-1">
+  <div class="mx-auto flex h-full w-full max-w-6xl flex-col gap-6 p-4 sm:p-6">
+    <!-- ⚠️ 窄屏**先竖过来**再谈对齐：说明文字与两个按钮抢同一行时，让位的一定是文字
+         （按钮 `whitespace-nowrap`），于是一句话被压成六行窄条而按钮只挪了几个像素。 -->
+    <header class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+      <div class="min-w-0">
         <h1 class="text-2xl font-semibold tracking-tight">故事库</h1>
         <p class="text-sm text-muted-foreground">
           作者态的故事模板。开一局会把模板整份复制进存档，此后改模板不影响进行中的那一局。
         </p>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-2 sm:shrink-0 sm:gap-3">
         <!-- 满了要在**点之前**就说清楚。上限由引擎给，这里不写死 -->
         <span v-if="quota.running.length" class="text-xs text-muted-foreground">
           {{ quota.running.length }} / {{ quota.limit }} 局在跑
@@ -256,8 +283,13 @@ const shown = computed(() => {
       </div>
     </header>
 
-    <div v-if="loading" class="flex flex-col gap-2">
-      <Skeleton v-for="i in 4" :key="i" class="h-14 w-full" />
+    <!-- 骨架屏与真列表**共用同一串栅格类**：换成几条通栏横条的话，加载完那一瞬间整版会跳一次 -->
+    <div v-if="loading" :class="GRID_CLASS">
+      <div v-for="i in 8" :key="i" class="flex flex-col gap-2">
+        <Skeleton class="aspect-[3/4] w-full rounded-lg" />
+        <Skeleton class="h-4 w-2/3" />
+        <Skeleton class="h-3 w-1/2" />
+      </div>
     </div>
 
     <BackendNotice v-else-if="error" :error="error" @retry="load()" />
@@ -272,7 +304,9 @@ const shown = computed(() => {
             <TabsTrigger value="public">公共 {{ publicCount }}</TabsTrigger>
           </TabsList>
         </Tabs>
-        <div class="relative max-w-sm flex-1">
+        <!-- ⚠️ `flex-1` 的 basis 是 0，光靠它这个框会被 Tabs 挤到只剩几十像素还赖在同一行上
+             （占位文字被切成「搜索故事名称」）。给一条最小宽度，摆不下就整个换行。 -->
+        <div class="relative min-w-48 max-w-sm flex-1">
           <Search
             class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
           />
@@ -303,17 +337,17 @@ const shown = computed(() => {
 
       <!-- ⚠️ **列表不是表格**：一个故事是一件「作品」，封面 + 标题 + 一行元信息比一行单元格
            更接近它本来的样子；而「角色几个、几场」这种数字塞进表头只会把注意力从作品上引开。 -->
-      <ul v-else class="flex flex-col gap-3">
+      <ul v-else :class="GRID_CLASS">
         <li
           v-for="story in shown"
           :key="story.name"
-          class="flex cursor-pointer items-center gap-4 rounded-lg border p-3 hover:bg-muted/50"
+          class="flex cursor-pointer flex-col overflow-hidden rounded-lg border transition-colors hover:bg-muted/50"
           @click="router.push(`/galstory/stories/${story.name}`)"
         >
-          <!-- 封面。作者没给地址就用占位 —— **占位在这一层生成**，引擎只如实说「给没给」 -->
-          <div
-            class="relative size-20 shrink-0 overflow-hidden rounded-md border bg-muted"
-          >
+          <!-- 封面。作者没给地址就用占位 —— **占位在这一层生成**，引擎只如实说「给没给」。
+               ⚠️ 比例写死 3:4（竖版），不随图走：图是外链、尺寸各式各样，让它自己撑高度的话
+               同一行的卡片会各长各的，栅格立刻变成参差不齐的瀑布流。`object-cover` 裁掉多余的。 -->
+          <div class="relative aspect-[3/4] w-full overflow-hidden bg-muted">
             <img
               v-if="story.cover"
               :src="story.cover"
@@ -327,15 +361,51 @@ const shown = computed(() => {
               v-if="!story.cover || broken[story.name]"
               class="flex size-full items-center justify-center"
             >
-              <ImageIcon class="size-6 text-muted-foreground/40" />
+              <ImageIcon class="size-10 text-muted-foreground/40" />
             </div>
-          </div>
 
-          <div class="min-w-0 flex-1">
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="truncate font-medium">{{ story.title }}</span>
-              <code class="font-mono text-xs text-muted-foreground">{{ story.name }}</code>
-              <Badge v-if="story.scope === 'mine'" variant="outline">我的</Badge>
+            <!-- ⚠️ **次要动作压在封面右上角，不跟主动作抢那一行**：卡片最窄的一档只有约 220px
+                 （xl 四列），「新开始 + 读进度 + 编辑 + 删除」四个并排要 250px 以上——挤不下时
+                 `whitespace-nowrap` 的按钮不会让位，只会把文字盖掉，那正是改版前那一版的病根。
+                 也**不藏在 hover 里**：手机上没有 hover，藏起来等于在手机上删掉这两个功能。 -->
+            <div class="absolute right-2 top-2 flex gap-1">
+              <!-- ⚠️ **公共故事只给「复制一份」，不给编辑**：那不是这里判出来的——引擎的写口
+                   base 里根本没有公共故事，这两个按钮只是别让人点了才吃 404。 -->
+              <Button
+                v-if="story.writable"
+                variant="secondary"
+                size="icon-sm"
+                class="bg-background/85 backdrop-blur-sm hover:bg-background"
+                title="编辑这个故事的定义"
+                @click.stop="router.push(`/galstory/stories/${story.name}/edit`)"
+              >
+                <Pencil class="size-3.5" />
+              </Button>
+              <Button
+                v-else
+                variant="secondary"
+                size="icon-sm"
+                class="bg-background/85 backdrop-blur-sm hover:bg-background"
+                title="复制一份到「我的故事」再改（不影响原来那份）"
+                @click.stop="creating = { open: true, from: story }"
+              >
+                <Copy class="size-3.5" />
+              </Button>
+              <Button
+                v-if="story.writable"
+                variant="secondary"
+                size="icon-sm"
+                class="bg-background/85 text-destructive backdrop-blur-sm hover:bg-background hover:text-destructive"
+                :loading="asking(story.name)"
+                title="删除这个故事"
+                @click.stop="askRemove(story)"
+              >
+                <Trash2 class="size-3.5" />
+              </Button>
+            </div>
+
+            <!-- 状态徽章压在封面左下：扫一排封面时要一眼看见的就是这两条 -->
+            <div class="absolute inset-x-2 bottom-2 flex flex-wrap gap-1">
               <!-- ⚠️ **不可开局是现算的**（引擎那侧 `playable_blockers`），不是一个状态字段。
                    点进去看「哪几条挡着」——那正是编辑页顶上那块。 -->
               <Badge
@@ -350,7 +420,6 @@ const shown = computed(() => {
               </Badge>
               <Badge
                 v-if="runningByStory.get(story.name)"
-                variant="secondary"
                 class="cursor-pointer gap-1"
                 :title="`已经跑了 ${Math.round(runningByStory.get(story.name)!.elapsed)} 秒，点击回到这一局`"
                 @click.stop="router.push(`/galstory/play/${runningByStory.get(story.name)!.saveId}`)"
@@ -359,17 +428,32 @@ const shown = computed(() => {
                 进行中
               </Badge>
             </div>
-            <p class="mt-1 truncate text-xs text-muted-foreground">
+          </div>
+
+          <!-- `flex-1` 让文字块吃掉高度差：同一行里标题占一行与占两行的卡片，按钮仍对齐在底边 -->
+          <div class="flex flex-1 flex-col gap-1 p-3">
+            <div class="flex items-center gap-2">
+              <span class="min-w-0 flex-1 truncate font-medium" :title="story.title">
+                {{ story.title }}
+              </span>
+              <Badge v-if="story.scope === 'mine'" variant="outline" class="shrink-0">我的</Badge>
+            </div>
+            <!-- id 是「play --story <name>」里的那个名字，长到放不下就截断，但整串留在 title 上 -->
+            <code class="truncate font-mono text-xs text-muted-foreground" :title="story.name">
+              {{ story.name }}
+            </code>
+            <p class="mt-auto pt-1 text-xs text-muted-foreground">
               {{ structureLabel(null, story.scenes) }} · {{ story.characters }} 个角色 ·
               {{ story.saves }} 份存档
             </p>
           </div>
 
-          <!-- ⚠️ 整行可点（进详情），故这两个都要 @click.stop -->
-          <div class="flex shrink-0 gap-2">
+          <!-- ⚠️ 整张卡是可点的（进详情），故卡里每个按钮都要 @click.stop -->
+          <div class="flex gap-2 p-3 pt-0">
             <Button
               v-if="runningByStory.get(story.name)"
               size="sm"
+              class="min-w-0 flex-1"
               @click.stop="router.push(`/galstory/play/${runningByStory.get(story.name)!.saveId}`)"
             >
               回到这一局
@@ -377,6 +461,7 @@ const shown = computed(() => {
             <Button
               v-else
               size="sm"
+              class="min-w-0 flex-1"
               :loading="starting(story.name)"
               :disabled="atLimit || !story.playable"
               :title="
@@ -391,41 +476,14 @@ const shown = computed(() => {
               <Play class="size-3.5" />
               新开始
             </Button>
-            <Button variant="outline" size="sm" @click.stop="progressFor = story">
+            <Button
+              variant="outline"
+              size="sm"
+              class="min-w-0 flex-1"
+              @click.stop="progressFor = story"
+            >
               <History class="size-3.5" />
               读进度
-            </Button>
-
-            <!-- ⚠️ **公共故事只给「复制一份」，不给编辑**：那不是这里判出来的——引擎的写口
-                 base 里根本没有公共故事，这两个按钮只是别让人点了才吃 404。 -->
-            <Button
-              v-if="story.writable"
-              variant="outline"
-              size="sm"
-              title="编辑这个故事的定义"
-              @click.stop="router.push(`/galstory/stories/${story.name}/edit`)"
-            >
-              <Pencil class="size-3.5" />
-            </Button>
-            <Button
-              v-else
-              variant="outline"
-              size="sm"
-              title="复制一份到「我的故事」再改（不影响原来那份）"
-              @click.stop="creating = { open: true, from: story }"
-            >
-              <Copy class="size-3.5" />
-            </Button>
-            <Button
-              v-if="story.writable"
-              variant="ghost"
-              size="sm"
-              class="text-destructive hover:text-destructive"
-              :loading="asking(story.name)"
-              title="删除这个故事"
-              @click.stop="askRemove(story)"
-            >
-              <Trash2 class="size-3.5" />
             </Button>
           </div>
         </li>
