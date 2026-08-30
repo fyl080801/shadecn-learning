@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import type { AuthVariables } from '../auth/middleware.ts'
 import {
   currentUserId,
@@ -8,7 +9,7 @@ import {
   type ProjectVariables,
 } from '../auth/project.ts'
 import { revokeCollabAccess } from '../collab/index.ts'
-import { appOrigin } from '../config.ts'
+import { originOf } from '../auth/origin.ts'
 import {
   DEFAULT_INVITE_EXPIRY_DAYS,
   INVITE_EXPIRY_DAYS,
@@ -42,9 +43,15 @@ interface FlowPayload {
   description?: unknown
 }
 
-/** 把分享链接拼成前端能直接复制的完整 URL */
-function withUrl<T extends { token: string }>(invite: T) {
-  return { ...invite, url: `${appOrigin}/invite/${invite.token}` }
+/**
+ * 把分享链接拼成前端能直接复制的完整 URL。
+ *
+ * 域名跟着**当前这次请求**走（白名单收口，见 `auth/origin.ts`）：管理员从哪个
+ * 域名打开的分享框，复制出去的链接就是那个域名 —— 否则内网域名下复制出来的是
+ * 一条外网地址，对面还不一定打得开。
+ */
+function withUrl<T extends { token: string }>(c: Context, invite: T) {
+  return { ...invite, url: `${originOf(c)}/invite/${invite.token}` }
 }
 
 function parseExpiry(
@@ -194,7 +201,7 @@ export const projects = new Hono<Env>()
       projectId: c.req.param('projectId'),
       createdById: userId,
     })
-    return c.json(withUrl(invite))
+    return c.json(withUrl(c, invite))
   })
 
   // 改有效期：token 不变，已经发出去的链接继续可用
@@ -213,7 +220,7 @@ export const projects = new Hono<Env>()
       createdById: userId,
       expiresInDays: days.value,
     })
-    return c.json(withUrl(invite))
+    return c.json(withUrl(c, invite))
   })
 
   // 重置：换一个 token，旧链接立刻失效
@@ -231,7 +238,7 @@ export const projects = new Hono<Env>()
       createdById: userId,
       expiresInDays: days.value,
     })
-    return c.json(withUrl(invite))
+    return c.json(withUrl(c, invite))
   })
 
   // —— 项目内的画布 ——

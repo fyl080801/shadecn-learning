@@ -145,6 +145,15 @@ const router = createRouter({
           meta: { title: "故事" }
         },
         {
+          // 对局界面。**仍挂在 SidebarLayout 下**：它的 main 是 `h-0 flex-1`，故这一页
+          // 用 `h-full` 就拿得到确定高度，聊天区自己滚 —— 不需要换成 BlankLayout。
+          path: "galstory/play/:saveId",
+          name: "GalStoryPlay",
+          component: () => import("@/views/galstory/Play.vue"),
+          props: true,
+          meta: { title: "对局" }
+        },
+        {
           path: "galstory/config",
           name: "GalStoryConfig",
           component: () => import("@/views/galstory/ModelConfig.vue"),

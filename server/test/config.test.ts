@@ -137,7 +137,9 @@ describe('appOrigin / cookie', () => {
     vi.stubEnv('APP_ORIGIN', 'https://app.example.com///')
     const config = await loadConfig()
     expect(config.appOrigin).toBe('https://app.example.com')
-    expect(config.authConfig.redirectUri).toBe('https://app.example.com/api/auth/callback')
+    expect(config.callbackUriFor(config.appOrigin)).toBe(
+      'https://app.example.com/api/auth/callback',
+    )
     expect(config.authConfig.postLogoutRedirectUri).toBe('https://app.example.com/login')
   })
 
@@ -159,6 +161,121 @@ describe('appOrigin / cookie', () => {
     vi.stubEnv('PORT', '8080')
     const config = await loadConfig()
     expect(config.appOrigin).toBe('http://0.0.0.0:8080')
+  })
+})
+
+/**
+ * 多域名白名单（`APP_ORIGINS`）。
+ *
+ * 一套部署常常挂在好几个域名下，而 OAuth 的 `redirect_uri`、CORS、WebSocket 的
+ * `Origin` 校验都是绝对地址 —— 写死一个 `APP_ORIGIN` 的话，从别的域名进来的人
+ * 会在另一个域名上完成回调，cookie 也就种到了那边，回来还是未登录。
+ *
+ * 但也**不能无脑跟着 `Host` 走**：反代后面 `Host` / `X-Forwarded-Host` 是外部
+ * 可控的输入，跟着它拼 `redirect_uri` 等于把授权码送去攻击者的域名。名单就是那道闸。
+ */
+describe('APP_ORIGINS 白名单 / resolveOrigin()', () => {
+  it('APP_ORIGIN 永远在名单里 —— 它是兜底目标，自己不在名单里说不通', async () => {
+    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('APP_ORIGINS', undefined)
+    const config = await loadConfig()
+    expect(config.appOrigins).toEqual(['https://a.example.com'])
+    expect(config.isAllowedOrigin('https://a.example.com')).toBe(true)
+  })
+
+  it('逗号或空白分隔都认，顺带去重、归一化', async () => {
+    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('APP_ORIGINS', 'https://B.example.com/,  https://a.example.com , https://c.io:443')
+    const config = await loadConfig()
+    // 大小写、尾斜杠、默认端口都被抹平；重复的只留一份
+    expect(config.appOrigins).toEqual([
+      'https://a.example.com',
+      'https://b.example.com',
+      'https://c.io',
+    ])
+  })
+
+  it('不是 http/https 的、拼不成 URL 的一律丢掉', async () => {
+    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('APP_ORIGINS', 'ftp://x.example.com,不是个URL,javascript:alert(1)')
+    const config = await loadConfig()
+    expect(config.appOrigins).toEqual(['https://a.example.com'])
+    expect(config.isAllowedOrigin('ftp://x.example.com')).toBe(false)
+  })
+
+  it('X-Forwarded-Host 在名单里 → 就用它，回调回到人真正访问的那个域名', async () => {
+    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+    const config = await loadConfig()
+
+    expect(
+      config.resolveOrigin({
+        forwardedProto: 'https',
+        forwardedHost: 'b.example.com',
+        host: 'internal.svc',
+      }),
+    ).toBe('https://b.example.com')
+  })
+
+  it('多级反代的 X-Forwarded-* 是逗号列表，取第一个（最外层那个）', async () => {
+    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+    const config = await loadConfig()
+
+    expect(
+      config.resolveOrigin({
+        forwardedProto: 'https, http',
+        forwardedHost: 'b.example.com, internal.svc',
+      }),
+    ).toBe('https://b.example.com')
+  })
+
+  it('没有转发头就看 Host', async () => {
+    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('APP_ORIGINS', 'http://b.example.com')
+    const config = await loadConfig()
+
+    expect(config.resolveOrigin({ host: 'b.example.com', protocol: 'http' })).toBe(
+      'http://b.example.com',
+    )
+  })
+
+  it('反代终止了 https 却没给 X-Forwarded-Proto：https 那条也要试', async () => {
+    vi.stubEnv('APP_ORIGIN', 'http://127.0.0.1:3000')
+    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+    const config = await loadConfig()
+
+    // 直连是 http，Host 是 b.example.com；名单里只有 https 版本
+    expect(config.resolveOrigin({ host: 'b.example.com', protocol: 'http' })).toBe(
+      'https://b.example.com',
+    )
+  })
+
+  it('Host 头是伪造的（不在名单里）→ 回落 APP_ORIGIN，绝不跟着它走', async () => {
+    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+    const config = await loadConfig()
+
+    expect(config.resolveOrigin({ host: 'evil.example', protocol: 'https' })).toBe(
+      'https://a.example.com',
+    )
+    expect(config.resolveOrigin({ origin: 'https://evil.example' })).toBe('https://a.example.com')
+  })
+
+  it('Host 被反代改成了内网名字时，Origin 兜底', async () => {
+    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+    const config = await loadConfig()
+
+    expect(
+      config.resolveOrigin({ host: 'internal.svc', origin: 'https://b.example.com' }),
+    ).toBe('https://b.example.com')
+  })
+
+  it('secureCookieFor 按这次的域名算 —— 名单里 http/https 混着的时候必须分开判', async () => {
+    const config = await loadConfig()
+    expect(config.secureCookieFor('https://b.example.com')).toBe(true)
+    expect(config.secureCookieFor('http://b.example.com')).toBe(false)
   })
 })
 

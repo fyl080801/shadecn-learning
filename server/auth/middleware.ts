@@ -1,6 +1,7 @@
 import type { Context, MiddlewareHandler } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import { authConfig, authEnabled } from '../config.ts'
+import { authConfig, authEnabled, secureCookieFor } from '../config.ts'
+import { originOf } from './origin.ts'
 import { type LoadedSession, type SessionUser, loadSession, toSessionUser } from './session.ts'
 
 /** 挂在 Hono context 上的登录态，路由里用 c.get('user') 取 */
@@ -9,11 +10,19 @@ export type AuthVariables = {
   user: SessionUser | null
 }
 
+/**
+ * Secure 按**这次请求的域名**算，不是按 `APP_ORIGIN` 一刀切。
+ *
+ * 白名单里可以同时有 https 和 http 的域名（外网 https、内网直连 http）。
+ * 一刀切的两种错法都很难查：https 那边漏了 Secure，是白丢一层保护；
+ * http 那边多了 Secure，浏览器**直接不存这个 cookie**，表现成「登录一路成功、
+ * 跳回来还是未登录」，而且服务端日志里一切正常。
+ */
 export function setSessionCookie(c: Context, token: string) {
   setCookie(c, authConfig.cookieName, token, {
     httpOnly: true,
     sameSite: 'Lax',
-    secure: authConfig.secureCookie,
+    secure: secureCookieFor(originOf(c)),
     path: '/',
     maxAge: authConfig.ttl,
   })
@@ -22,7 +31,7 @@ export function setSessionCookie(c: Context, token: string) {
 export function clearSessionCookie(c: Context) {
   deleteCookie(c, authConfig.cookieName, {
     path: '/',
-    secure: authConfig.secureCookie,
+    secure: secureCookieFor(originOf(c)),
   })
 }
 

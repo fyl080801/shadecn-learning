@@ -134,7 +134,12 @@ describe('buildAuthorizationUrl()', () => {
   it('带齐 code flow + PKCE 需要的参数', async () => {
     const { buildAuthorizationUrl } = await loadOidc()
     const url = new URL(
-      await buildAuthorizationUrl({ state: 's', nonce: 'n', codeChallenge: 'cc' }),
+      await buildAuthorizationUrl({
+        state: 's',
+        nonce: 'n',
+        codeChallenge: 'cc',
+        redirectUri: REDIRECT_URI,
+      }),
     )
 
     expect(url.origin + url.pathname).toBe(discoveryDoc.authorization_endpoint)
@@ -152,7 +157,7 @@ describe('buildAuthorizationUrl()', () => {
 
   it('prompt 只有传了才出现在地址里', async () => {
     const { buildAuthorizationUrl } = await loadOidc()
-    const base = { state: 's', nonce: 'n', codeChallenge: 'cc' } as const
+    const base = { state: 's', nonce: 'n', codeChallenge: 'cc', redirectUri: REDIRECT_URI } as const
 
     expect(new URL(await buildAuthorizationUrl(base)).searchParams.has('prompt')).toBe(false)
     expect(
@@ -164,7 +169,7 @@ describe('buildAuthorizationUrl()', () => {
 describe('exchangeCode() / refreshTokens()', () => {
   it('用 authorization_code + code_verifier 换 token', async () => {
     const { exchangeCode } = await loadOidc()
-    await exchangeCode('the-code', 'the-verifier')
+    await exchangeCode('the-code', 'the-verifier', REDIRECT_URI)
 
     const call = stub.calls.find((c) => c.url === TOKEN_ENDPOINT)
     const body = new URLSearchParams(call?.body ?? '')
@@ -179,7 +184,7 @@ describe('exchangeCode() / refreshTokens()', () => {
 
   it('public client（没 secret）不带 client_secret 字段', async () => {
     const { exchangeCode } = await loadOidc()
-    await exchangeCode('c', 'v')
+    await exchangeCode('c', 'v', REDIRECT_URI)
 
     const body = new URLSearchParams(stub.calls.find((c) => c.url === TOKEN_ENDPOINT)?.body ?? '')
     expect(body.has('client_secret')).toBe(false)
@@ -188,7 +193,7 @@ describe('exchangeCode() / refreshTokens()', () => {
   it('配了 secret 就用 client_secret_post', async () => {
     vi.stubEnv('KEYCLOAK_CLIENT_SECRET', 's3cret')
     const { exchangeCode } = await loadOidc()
-    await exchangeCode('c', 'v')
+    await exchangeCode('c', 'v', REDIRECT_URI)
 
     const body = new URLSearchParams(stub.calls.find((c) => c.url === TOKEN_ENDPOINT)?.body ?? '')
     expect(body.get('client_secret')).toBe('s3cret')
@@ -210,14 +215,14 @@ describe('exchangeCode() / refreshTokens()', () => {
     }
     const { exchangeCode, OidcError } = await loadOidc()
 
-    await expect(exchangeCode('c', 'v')).rejects.toBeInstanceOf(OidcError)
-    await expect(exchangeCode('c', 'v')).rejects.toThrowError(/Code not valid/)
+    await expect(exchangeCode('c', 'v', REDIRECT_URI)).rejects.toBeInstanceOf(OidcError)
+    await expect(exchangeCode('c', 'v', REDIRECT_URI)).rejects.toThrowError(/Code not valid/)
   })
 
   it('200 但没有 access_token 也算失败', async () => {
     stub.token = { status: 200, body: { token_type: 'Bearer' } }
     const { exchangeCode } = await loadOidc()
-    await expect(exchangeCode('c', 'v')).rejects.toThrowError(/token 端点返回失败/)
+    await expect(exchangeCode('c', 'v', REDIRECT_URI)).rejects.toThrowError(/token 端点返回失败/)
   })
 })
 

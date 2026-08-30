@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue"
-import { Check, FileCog, Minus } from "@lucide/vue"
+import { Check, FileCog, Lock, Minus, Plus } from "@lucide/vue"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -26,7 +26,21 @@ import {
 } from "@/components/ui/table"
 import { TooltipProvider } from "@/components/ui/tooltip"
 
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from "@/components/ui/alert-dialog"
+
 import AgentBindingMatrix from "@/components/galstory/AgentBindingMatrix.vue"
+import AgentOverrideForm from "@/components/galstory/AgentOverrideForm.vue"
+import ConnectionForm from "@/components/galstory/ConnectionForm.vue"
+import GeneralForm from "@/components/galstory/GeneralForm.vue"
+import PresetForm from "@/components/galstory/PresetForm.vue"
 import BackendNotice from "@/components/galstory/BackendNotice.vue"
 import ConnectionCard from "@/components/galstory/ConnectionCard.vue"
 import LintCounts from "@/components/galstory/LintCounts.vue"
@@ -40,8 +54,17 @@ import {
   agentLabel,
   agentPurpose
 } from "@/lib/galstory-agents"
-import { configApi, countLevels } from "@/lib/galstory"
-import type { Binding, Connection, LintIssue, ModelConfig } from "@/types/galstory"
+import { GalStoryError, configApi, countLevels } from "@/lib/galstory"
+import { useAsyncAction } from "@/composables/useAsyncAction"
+import { toast } from "vue-sonner"
+import type {
+  AgentOverride,
+  Binding,
+  Connection,
+  LintIssue,
+  ModelConfig,
+  Preset
+} from "@/types/galstory"
 
 /**
  * 模型配置（`GET /api/config`）。
@@ -50,9 +73,22 @@ import type { Binding, Connection, LintIssue, ModelConfig } from "@/types/galsto
  * 「哪一步指到哪条连接、够不够用」，而不是「这些连接各自长什么样」。连接与预设是那张矩阵的
  * **词表**，所以排在它后面。
  *
- * ⚠️ **整页只读，而且引擎那一侧也只有读口**。反代刻意只转发 GET（引擎把「要花钱 / 会写」
- * 都放在非 GET 上），所以这里不放「保存」按钮 —— 一个点了却什么都没发生的按钮比没有更糟。
- * 改配置是改 `config.yaml`，页头把那个文件的路径直接给出来。
+ * ## 可写了，但「能不能写」由引擎说了算
+ *
+ * 这一页曾经整页只读（引擎那时只有读口、反代只转发 GET）。现在引擎有了写回那一族，反代也在
+ * `WRITE_ALLOW` 里逐条放行了它们 —— 但**判据仍然不在前端**：`config.writable` 是引擎给的
+ * （文件在不在、有没有写权限），`writable` 为 false 时这一页退回只读形态并把原因照原文显示。
+ * 那条老纪律一个字没变：**一个点了必然失败的按钮比没有更糟**。
+ *
+ * ## 写回是 patch，不是整份回传
+ *
+ * 每个表单提交前都 `diffPatch`，**只发真正改过的那几个键**。整份回传会把引擎缺省值写死进
+ * 用户的 `config.yaml`（那些行他从来没写过），还会让两个人的并发改动互相覆盖。
+ *
+ * ## 写完之后拿回执替换整份 config
+ *
+ * 改一条连接会让若干环节的绑定、时间预算、体检结论一起变。回执里带着引擎**重新解析过**的
+ * 那一份，直接换上即可 —— 既省一次 GET，也堵掉「前端自己再算一遍三层优先级」那条明令禁止的路。
  */
 
 const config = ref<ModelConfig | null>(null)
@@ -93,6 +129,83 @@ const usage = computed(() => {
   }
   return map
 })
+
+// ── 编辑：写完拿回执替换整份 config ──────────────────────────────────────────
+
+/** 引擎说这份文件改不改得动。**判据不在前端**，见组件块注释 */
+const writable = computed(() => config.value?.writable ?? false)
+
+/** 每次写成功都走这里 —— 回执里那份是引擎重新解析过的，直接换上 */
+function applySaved(next: ModelConfig) {
+  config.value = next
+  editingConnection.value = null
+  creatingConnection.value = false
+  editingPreset.value = null
+  creatingPreset.value = false
+  editingAgent.value = null
+  creatingAgent.value = false
+}
+
+const editingConnection = ref<Connection | null>(null)
+const creatingConnection = ref(false)
+const editingPreset = ref<Preset | null>(null)
+const creatingPreset = ref(false)
+const editingAgent = ref<AgentOverride | null>(null)
+const creatingAgent = ref(false)
+
+/**
+ * 待确认的删除。
+ *
+ * ⚠️ **两段式**：第一次不带 `force`，引擎那边如果还有人指着它就回 409 **并列出是谁** ——
+ * 那不是「删不掉」，是「删掉之后那几处会静默回落到缺省连接与缺省预设，超时/重试/预设一起丢，
+ * 而现象只是模型行为莫名其妙变了」。把那句话原样摆给人看，再让他决定要不要 `force`。
+ */
+const pendingDelete = ref<
+  { kind: "connection" | "preset" | "agent"; id: string; conflict: string } | null
+>(null)
+
+/**
+ * ⚠️ **「开关」与「删哪一个」是两个 ref**，而且这一颗确认按钮**不能用 `AlertDialogAction`**。
+ *
+ * 它内部就是 `DialogClose` —— **先关掉对话框、再**跑透传下来的 `@click`，而那句关闭是裸的
+ * `onOpenChange(false)`、**不看 `event.defaultPrevented`**，故 `@click.prevent` 挡不住（试过）。
+ * 合成一个 ref 的话 handler 读到的是被关闭清掉的 null，请求一声不响地发不出去；而就算拆成两个
+ * ref，用 `AlertDialogAction` 也会把上面那段**两段式**顶掉 —— 409 之后要把「谁还指着它」留在
+ * 框里给人看，可框已经被它关了。故确认那一颗是普通 `Button`，关框由这里的代码显式决定。
+ * 同一个坑在 `FlowList.vue` / `LinkedAccounts.vue` / `ProgressDialog.vue` 里各钉过一次。
+ */
+const deleteOpen = ref(false)
+
+function askDelete(kind: "connection" | "preset" | "agent", id: string) {
+  pendingDelete.value = { kind, id, conflict: "" }
+  deleteOpen.value = true
+}
+
+const { run: confirmDelete, pending: deleting } = useAsyncAction(async (force: boolean) => {
+  const target = pendingDelete.value
+  if (!target) return
+  try {
+    const result =
+      target.kind === "connection"
+        ? await configApi.deleteConnection(target.id, force)
+        : target.kind === "preset"
+          ? await configApi.deletePreset(target.id, force)
+          : await configApi.deleteAgent(target.id)
+    // 框由这里关（确认那一颗不是 AlertDialogAction，见 askDelete 上面那段）。
+    // `pendingDelete` 留着：关闭有动画，清掉会让框里的文案在收起途中变成空白。
+    deleteOpen.value = false
+    toast.success(`「${target.id}」已删除`)
+    applySaved(result.config)
+  } catch (err) {
+    // 409 = 还被指着。**留在对话框里**把引擎那句话显示出来，别弹一个 toast 就把框关了 ——
+    // 那句话里有「谁指着它」，而那正是决定要不要强删所需要的全部信息。
+    if (err instanceof GalStoryError && err.status === 409) {
+      pendingDelete.value = { ...target, conflict: err.message }
+      return
+    }
+    throw err
+  }
+}, { errorMessage: "删除失败" })
 
 // ── 行详情：三层优先级到底是怎么算出来的 ─────────────────────────────────────
 
@@ -142,7 +255,11 @@ const yamlPreview = computed(() => {
     `  timeout_s: ${conn.timeoutS}`,
     `  max_retries: ${conn.maxRetries}`,
     conn.contextWindow ? `  context_window: ${conn.contextWindow}` : null,
-    conn.reasoningEffort ? `  reasoning_effort: ${conn.reasoningEffort}` : null,
+    // 新字段优先：`reasoning_effort` 是弃用的旧写法，引擎装载期会点名让改
+    conn.reasoning ? `  reasoning: ${conn.reasoning}` : null,
+    !conn.reasoning && conn.reasoningEffort
+      ? `  reasoning_effort: ${conn.reasoningEffort}`
+      : null,
     conn.stream ? "  stream: true" : null,
     conn.stream && conn.idleTimeoutS ? `  idle_timeout_s: ${conn.idleTimeoutS}` : null,
     conn.stream && conn.chunkTimeoutS ? `  chunk_timeout_s: ${conn.chunkTimeoutS}` : null,
@@ -175,23 +292,47 @@ const yamlPreview = computed(() => {
       <BackendNotice v-else-if="error || !config" :error="error ?? '读不到配置'" @retry="load()" />
 
       <template v-else>
-        <!-- 整页只读，那就把「该去改哪个文件」直接说出来 -->
+        <!-- 这一页写的就是这个文件 —— 路径直接给出来 -->
         <div
           v-if="config.sourceFile"
           class="flex items-center gap-2 rounded-lg border p-3 text-sm text-muted-foreground"
         >
           <FileCog class="size-4 shrink-0" />
-          <span>改配置改这个文件：</span>
+          <span>这一页写的是：</span>
           <code class="truncate font-mono text-xs">{{ config.sourceFile }}</code>
+          <span v-if="config.format === 'yaml'" class="ml-auto shrink-0 text-xs">
+            写回保留文件里的注释与引擎读不到的键
+          </span>
+        </div>
+
+        <!-- 改不动时退回只读形态，并把引擎给的原因照原文显示（不在前端重编一份文案） -->
+        <div
+          v-if="!writable"
+          class="flex items-center gap-2 rounded-lg border border-dashed p-3 text-sm text-muted-foreground"
+        >
+          <Lock class="size-4 shrink-0" />
+          <span>{{ config.readOnlyReason || "这份配置当前只读" }}</span>
         </div>
 
         <Tabs default-value="bindings" class="flex min-h-0 flex-1 flex-col gap-4">
           <TabsList>
             <TabsTrigger value="bindings">Agent 绑定</TabsTrigger>
+            <TabsTrigger value="general">常规</TabsTrigger>
             <TabsTrigger value="connections">连接 {{ config.connections.length }}</TabsTrigger>
             <TabsTrigger value="presets">采样预设 {{ config.presets.length }}</TabsTrigger>
             <TabsTrigger value="lint">体检</TabsTrigger>
           </TabsList>
+
+          <!-- ── 常规：顶层那几个键 ──────────────────────────────────────── -->
+          <TabsContent value="general">
+            <!-- 只读时整块不给（表单里全是会发请求的控件），改用一句话指回文件 -->
+            <GeneralForm v-if="writable" :config="config" @saved="applySaved" />
+            <p v-else class="text-sm text-muted-foreground">
+              这份配置当前只读，改它请直接编辑
+              <code class="font-mono text-xs">{{ config.sourceFile || "config.yaml" }}</code>
+              。
+            </p>
+          </TabsContent>
 
           <!-- ── Agent 绑定：这一页的主角 ────────────────────────────────── -->
           <TabsContent value="bindings" class="flex flex-col gap-4">
@@ -224,13 +365,91 @@ const yamlPreview = computed(() => {
               :issues-by-agent="issuesByAgent"
               @select="selected = $event"
             />
+
+            <!-- ⚠️ 这张表与上面那张矩阵**刻意不是同一个东西**：矩阵是三层算完的解析结果，
+                 这里是作者**显式写过**的那几行。「空」在两边含义相反，合并会把它们弄混。 -->
+            <Separator />
+
+            <div class="flex flex-wrap items-center gap-3">
+              <div class="flex-1">
+                <h2 class="text-sm font-medium">环节覆盖项</h2>
+                <p class="text-xs text-muted-foreground">
+                  作者在 <code class="font-mono">agents:</code> 里显式写过的那几行 ——
+                  上面矩阵显示的是它们回落之后的解析结果。
+                </p>
+              </div>
+              <Button v-if="writable" size="sm" variant="outline" @click="creatingAgent = true">
+                <Plus class="size-4" />
+                新建覆盖项
+              </Button>
+            </div>
+
+            <div v-if="config.agents.length" class="rounded-lg border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>环节</TableHead>
+                    <TableHead class="w-40">连接</TableHead>
+                    <TableHead class="w-28">预设</TableHead>
+                    <TableHead class="w-32 text-right">超时 / 重发</TableHead>
+                    <TableHead class="w-32" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow v-for="row in config.agents" :key="row.name">
+                    <TableCell>
+                      <div class="flex flex-col">
+                        <span class="text-sm">{{ agentLabel(row.name) }}</span>
+                        <code class="font-mono text-xs text-muted-foreground">{{ row.name }}</code>
+                        <!-- 引擎不认识 = 运行期静默回落，整段配置白写。标出来 -->
+                        <span v-if="!row.known" class="text-xs text-destructive">
+                          引擎不认识它 —— 这一段配置运行期会被丢掉
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <code class="font-mono text-xs">{{ row.connectionId || "未写" }}</code>
+                    </TableCell>
+                    <TableCell>
+                      <code class="font-mono text-xs">{{ row.presetId || "未写" }}</code>
+                    </TableCell>
+                    <TableCell class="text-right tabular-nums text-xs">
+                      {{ row.wallTimeoutS ?? row.timeoutS ?? "-" }}s ·
+                      {{ row.maxRetries ?? "-" }}
+                    </TableCell>
+                    <TableCell class="text-right">
+                      <div v-if="writable" class="flex justify-end gap-1">
+                        <Button variant="ghost" size="sm" @click="editingAgent = row">编辑</Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          class="text-destructive"
+                          @click="askDelete('agent', row.name)"
+                        >
+                          删除
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </div>
+            <p v-else class="text-sm text-muted-foreground">
+              还没有任何覆盖项 —— 每个环节都按「按类绑定 &gt; 缺省连接」回落。
+            </p>
           </TabsContent>
 
           <!-- ── 连接 ────────────────────────────────────────────────────── -->
           <TabsContent value="connections" class="flex flex-col gap-4">
-            <p class="text-sm text-muted-foreground">
-              缺省连接：<code class="font-mono">{{ config.defaultConnect }}</code>
-            </p>
+            <div class="flex flex-wrap items-center gap-3">
+              <p class="flex-1 text-sm text-muted-foreground">
+                缺省连接：<code class="font-mono">{{ config.defaultConnect || "未配" }}</code>
+              </p>
+              <Button v-if="writable" size="sm" variant="outline" @click="creatingConnection = true">
+                <Plus class="size-4" />
+                新建连接
+              </Button>
+            </div>
             <div class="grid gap-4 md:grid-cols-2">
               <ConnectionCard
                 v-for="conn in config.connections"
@@ -238,17 +457,25 @@ const yamlPreview = computed(() => {
                 :connection="conn"
                 :used-by="usage.get(conn.id) ?? 0"
                 :is-default="conn.id === config.defaultConnect"
-                @edit="viewing = $event"
+                :readonly="!writable"
+                @edit="writable ? (editingConnection = $event) : (viewing = $event)"
+                @remove="askDelete('connection', $event.id)"
               />
             </div>
           </TabsContent>
 
           <!-- ── 采样预设 ───────────────────────────────────────────────── -->
           <TabsContent value="presets" class="flex flex-col gap-4">
-            <p class="text-sm text-muted-foreground">
-              采样参数与连接是两件事：连接管「谁提供、卡多久算卡住」，预设管「怎么采样」。
-              同一条连接可以被几个不同温度的环节共用。
-            </p>
+            <div class="flex flex-wrap items-center gap-3">
+              <p class="flex-1 text-sm text-muted-foreground">
+                采样参数与连接是两件事：连接管「谁提供、卡多久算卡住」，预设管「怎么采样」。
+                同一条连接可以被几个不同温度的环节共用。
+              </p>
+              <Button v-if="writable" size="sm" variant="outline" @click="creatingPreset = true">
+                <Plus class="size-4" />
+                新建预设
+              </Button>
+            </div>
 
             <div class="rounded-lg border">
               <Table>
@@ -259,6 +486,7 @@ const yamlPreview = computed(() => {
                     <TableHead class="w-24 text-right">top_p</TableHead>
                     <TableHead class="w-28 text-right">max_tokens</TableHead>
                     <TableHead class="w-64">用在哪</TableHead>
+                    <TableHead class="w-28" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -280,6 +508,21 @@ const yamlPreview = computed(() => {
                         >
                           {{ agentLabel(row.name) }}
                         </Badge>
+                      </div>
+                    </TableCell>
+                    <TableCell class="text-right">
+                      <div v-if="writable" class="flex justify-end gap-1">
+                        <Button variant="ghost" size="sm" @click="editingPreset = preset">
+                          编辑
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          class="text-destructive"
+                          @click="askDelete('preset', preset.id)"
+                        >
+                          删除
+                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -383,7 +626,66 @@ const yamlPreview = computed(() => {
         </DialogContent>
       </Dialog>
 
-      <!-- 连接详情：整页只读，给出可以贴回 config.yaml 的片段 -->
+      <!-- ── 表单 ────────────────────────────────────────────────────────
+           只在可写时挂：不可写时连接卡片走的是下面那个只读的 yaml 片段对话框 -->
+      <template v-if="config && writable">
+        <ConnectionForm
+          :connection="editingConnection"
+          :creating="creatingConnection"
+          :config="config"
+          @saved="applySaved"
+          @close="((editingConnection = null), (creatingConnection = false))"
+        />
+        <PresetForm
+          :preset="editingPreset"
+          :creating="creatingPreset"
+          :config="config"
+          @saved="applySaved"
+          @close="((editingPreset = null), (creatingPreset = false))"
+        />
+        <AgentOverrideForm
+          :override="editingAgent"
+          :creating="creatingAgent"
+          :config="config"
+          @saved="applySaved"
+          @close="((editingAgent = null), (creatingAgent = false))"
+        />
+      </template>
+
+      <!-- 删除确认。**两段式**：第一次不带 force，引擎回 409 时把「谁还指着它」原样摆出来，
+           再让人决定要不要强删 —— 那句话里有做这个决定所需要的全部信息 -->
+      <AlertDialog :open="deleteOpen" @update:open="(open) => !open && (deleteOpen = false)">
+        <AlertDialogContent v-if="pendingDelete">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              删除
+              <code class="font-mono text-sm">{{ pendingDelete.id }}</code>
+              ？
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              <template v-if="pendingDelete.conflict">{{ pendingDelete.conflict }}</template>
+              <template v-else-if="pendingDelete.kind === 'agent'">
+                这只删掉它的<strong>覆盖项</strong>（环节由引擎定义，不会消失），删完按三层优先级
+                回落。⚠️ 该环节在配置里写的提示词段也会跟着删掉。
+              </template>
+              <template v-else>这一项会从配置文件里删掉。</template>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel :disabled="deleting">取消</AlertDialogCancel>
+            <!-- 冲突之后那一颗才是「强删」：文案要跟着变，别让两次点的是同一句话。
+                 ⚠️ 这里**刻意不是 `AlertDialogAction`** —— 它会先关框，两段式就没地方显示了 -->
+            <Button
+              :disabled="deleting"
+              @click="confirmDelete(Boolean(pendingDelete.conflict))"
+            >
+              {{ pendingDelete.conflict ? "仍然删除" : "删除" }}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <!-- 连接详情：只读形态下给出可以贴回 config.yaml 的片段 -->
       <Dialog :open="viewing !== null" @update:open="(open) => !open && (viewing = null)">
         <DialogContent v-if="viewing" class="max-w-lg">
           <DialogHeader>
@@ -391,9 +693,9 @@ const yamlPreview = computed(() => {
               <code class="font-mono text-sm">{{ viewing.id }}</code>
             </DialogTitle>
             <DialogDescription>
-              引擎只提供读口，故这里不改配置。下面这段对应
+              这份配置当前只读，故这里不改。下面这段对应
               <code class="font-mono">config.yaml</code> 的
-              <code class="font-mono">connections:</code>。
+              <code class="font-mono">connections:</code>，可以直接贴回去。
             </DialogDescription>
           </DialogHeader>
 

@@ -62,6 +62,15 @@ export const galStoryApiUrl = (process.env.GAL_STORY_API_URL ?? '').trim().repla
  */
 export const galStoryTimeoutMs = Number(process.env.GAL_STORY_API_TIMEOUT_MS ?? 30_000)
 
+/**
+ * 与 GalStory 引擎之间的共享密钥（`X-Gal-Gateway-Token`）。空 = 不带这个头。
+ *
+ * 引擎那一侧没有账号体系，属主完全由本服务注入的 `X-Gal-Owner` 决定 —— 也就是说，**谁能直连
+ * 引擎，谁就能扮演任何用户**。引擎缺省只听 127.0.0.1，这道密钥是第二层：配了它，绕过本服务
+ * 的请求会被引擎 403。同一个值要同时配在引擎的 `GAL_SERVER_GATEWAY_TOKEN` 上。
+ */
+export const galStoryGatewayToken = (process.env.GAL_STORY_GATEWAY_TOKEN ?? '').trim()
+
 /** 支持的两种库，名字就是 prisma datasource 的 provider 值 */
 export type DbProvider = 'sqlite' | 'postgresql'
 
@@ -237,8 +246,99 @@ export const logSlowRequestMs = Number(process.env.LOG_SLOW_MS ?? 1000)
 /** 超过这个毫秒数的数据库查询记一条 warn。0 = 不记 */
 export const logSlowQueryMs = Number(process.env.LOG_SLOW_QUERY_MS ?? 200)
 
-/** 应用对外地址：拼 redirect_uri / post_logout_redirect_uri 用 */
-export const appOrigin = (process.env.APP_ORIGIN ?? `http://${host}:${port}`).replace(/\/+$/, '')
+/**
+ * 把一个 origin 归一化成可比较的形式：`协议://host[:非默认端口]`，全小写、去尾斜杠。
+ *
+ * 比较必须走这一步而不是字符串相等 —— `https://a.com/`、`https://A.com`、
+ * `https://a.com:443` 是同一个源，浏览器发 `Origin` 头时给的又永远是最规范的那种写法。
+ * 认不出来的（不是合法 URL、不是 http/https）返回 null，一律当不在名单里。
+ */
+export function normalizeOrigin(value: string | null | undefined): string | null {
+  const raw = value?.trim()
+  if (!raw) return null
+  try {
+    const url = new URL(raw)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    return url.origin.toLowerCase()
+  } catch {
+    return null
+  }
+}
+
+/** 应用对外地址：没配 `APP_ORIGIN` 时按监听地址兜底，同时也是白名单的默认成员 */
+export const appOrigin =
+  normalizeOrigin(process.env.APP_ORIGIN) ?? normalizeOrigin(`http://${host}:${port}`) ?? ''
+
+/**
+ * 允许的对外域名白名单。
+ *
+ * 同一套部署常常挂在好几个域名下（内网域名 / 外网域名 / 老域名 / 裸 IP），
+ * 而 OAuth 的 `redirect_uri`、CORS、WebSocket 的 `Origin` 校验都是**绝对地址**，
+ * 写死一个 `APP_ORIGIN` 就意味着：从别的域名进来的人，登录会被甩到另一个域名上
+ * （cookie 也就落在了那个域名下），或者干脆被提供方以 redirect_uri 不匹配拒掉。
+ *
+ * 所以这些地方一律改成「按这次请求的域名来」，再用这份名单收口 ——
+ * 名单之外的一律回落到 `APP_ORIGIN`，绝不跟着 `Host` 头走。
+ * 反代后面 `Host` 是外部可控的输入，无脑相信它就是 host header 注入。
+ *
+ * 写法：`APP_ORIGINS="https://a.example.com,https://b.example.com"`（逗号或空白分隔）。
+ * **不支持通配符**：每个域名的 `/api/auth/callback` 都得在 Keycloak / GitHub 那边
+ * 注册成合法回调，通配符只会造出一批注册不了的地址。
+ */
+export const appOrigins: readonly string[] = (() => {
+  const listed = (process.env.APP_ORIGINS ?? '')
+    .split(/[\s,]+/)
+    .map((item) => normalizeOrigin(item))
+    .filter((item): item is string => Boolean(item))
+  // APP_ORIGIN 永远在名单里：它是兜底值，不在名单里的话回落目标自己就是非法的
+  return [...new Set([appOrigin, ...listed].filter(Boolean))]
+})()
+
+/** 这个 origin 在名单里吗 */
+export function isAllowedOrigin(value: string | null | undefined): boolean {
+  const origin = normalizeOrigin(value)
+  return Boolean(origin) && appOrigins.includes(origin as string)
+}
+
+/**
+ * 这次请求该用哪个对外地址。
+ *
+ * 依次看 `X-Forwarded-Proto` + `X-Forwarded-Host`（反代改写过的对外地址）、`Host`、
+ * 最后才是 `Origin`（整页导航根本不带这个头，只在 XHR 上有）。取第一个**在白名单里**的；
+ * 一个都不在就回落 `APP_ORIGIN` —— 行为和加这个特性之前完全一样。
+ */
+export function resolveOrigin(headers: {
+  origin?: string | null
+  forwardedProto?: string | null
+  forwardedHost?: string | null
+  host?: string | null
+  /** 直连（没有反代）时的协议，用来给 Host 头补上 scheme */
+  protocol?: string | null
+}): string {
+  const proto = headers.forwardedProto?.split(',')[0]?.trim() || headers.protocol || 'http'
+  const forwardedHost = headers.forwardedHost?.split(',')[0]?.trim()
+
+  const candidates = [
+    // 反代改写过的对外地址最贴近「用户在浏览器地址栏里看到的那个域名」
+    forwardedHost ? `${proto}://${forwardedHost}` : null,
+    headers.host ? `${proto}://${headers.host}` : null,
+    // 反代终止了 https 却没给 X-Forwarded-Proto 时的补救
+    headers.host ? `https://${headers.host}` : null,
+    // 最后才看 Origin：反代把 Host 改成了内网名字时，只有它还认得对外域名
+    headers.origin,
+  ]
+
+  for (const candidate of candidates) {
+    const origin = normalizeOrigin(candidate)
+    if (origin && appOrigins.includes(origin)) return origin
+  }
+  return appOrigin
+}
+
+/** 某个 origin 下的 OAuth 回调地址。回调只有这一个路径，靠 `AuthRequest.provider` 分发 */
+export function callbackUriFor(origin: string) {
+  return `${origin}/api/auth/callback`
+}
 
 /** Keycloak / OIDC 配置。issuer 就是 {keycloak}/realms/{realm} */
 export const authConfig = {
@@ -247,7 +347,6 @@ export const authConfig = {
   /** public client（纯 PKCE）留空 */
   clientSecret: process.env.KEYCLOAK_CLIENT_SECRET ?? '',
   scope: process.env.KEYCLOAK_SCOPE ?? 'openid profile email',
-  redirectUri: `${appOrigin}/api/auth/callback`,
   /** 登出后回到的前端地址 */
   postLogoutRedirectUri: `${appOrigin}/login`,
   /** 会话 cookie 名 */
@@ -258,9 +357,21 @@ export const authConfig = {
   ttl: Number(process.env.SESSION_TTL ?? 7 * 24 * 3600),
   /** 会话 token 做 HMAC 的密钥：库里存的是 HMAC 结果，光拖库伪造不出 cookie */
   secret: process.env.SESSION_SECRET ?? '',
-  /** https 部署时 cookie 带 Secure */
+  /**
+   * https 部署时 cookie 带 Secure。
+   *
+   * 这是**默认值**（拿不到请求上下文时用它）；有 `Context` 的地方一律走
+   * `secureCookieFor(originOf(c))` —— 白名单里可以同时有 http 和 https 的域名，
+   * 按 `APP_ORIGIN` 一刀切的话，https 那边不带 Secure（浪费一层保护），
+   * http 那边带上 Secure（cookie 直接种不下去，表现为「登录成功但还是未登录」）。
+   */
   secureCookie: appOrigin.startsWith('https://'),
 } as const
+
+/** 这个 origin 下的 cookie 该不该带 Secure */
+export function secureCookieFor(origin: string) {
+  return origin.startsWith('https://')
+}
 
 /**
  * GitHub OAuth App 配置。
@@ -277,7 +388,6 @@ export const githubConfig = {
   clientSecret: process.env.GITHUB_CLIENT_SECRET ?? '',
   /** 只要读身份：read:user 拿档案，user:email 拿主邮箱（GitHub 可能把邮箱设为私密） */
   scope: process.env.GITHUB_SCOPE ?? 'read:user user:email',
-  redirectUri: `${appOrigin}/api/auth/callback`,
   /** 落进 User.issuer / UserIdentity.issuer 的固定值 */
   issuer: 'https://github.com',
 } as const

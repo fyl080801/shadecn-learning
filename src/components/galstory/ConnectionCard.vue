@@ -22,24 +22,29 @@ const props = defineProps<{
   /** 有几个环节最终解析到了它 —— 「这条连接删了会影响谁」 */
   usedBy: number
   isDefault: boolean
+  /** 配置文件改不动时只给「查看」——一个点了必然 409 的按钮比没有更糟 */
+  readonly?: boolean
 }>()
 
-defineEmits<{ edit: [connection: Connection] }>()
+defineEmits<{ edit: [connection: Connection]; remove: [connection: Connection] }>()
 
 /**
  * 这条连接上有没有**任何**关思考的声明。判据是「两个字段都空 = 作者一个字没写」，
  * 而不是「值对不对」—— 合法取值是**端点**的事（本地 ollama /v1 只认 `none`，
  * DeepSeek 官方要走 extra_body），前端替端点判值必然过时。
  */
-const noThinking = computed(
-  () => Boolean(props.connection.reasoningEffort) || props.connection.thinkingDisabled
+const noThinking = computed(() => props.connection.thinkingDisabled)
+
+/** 作者到底写了什么（新字段优先；两个都空就是一个字没写） */
+const reasoningDecl = computed(
+  () => props.connection.reasoning || props.connection.reasoningEffort
 )
 
-const thinkingHint = computed(() =>
-  noThinking.value
-    ? `已声明关思考（${props.connection.reasoningEffort || "extra_body"}）`
-    : "没有任何关思考的声明 —— 机械型环节指到这里会为拿不到的思考付钱"
-)
+const thinkingHint = computed(() => {
+  if (noThinking.value) return `已声明关思考（${reasoningDecl.value || "extra_body"}）`
+  if (reasoningDecl.value) return `推理档位：${reasoningDecl.value}`
+  return "没有任何关思考的声明 —— 机械型环节指到这里会为拿不到的思考付钱"
+})
 
 /** 提交触发线 = 窗口 × 水位。它是**模型的技术下限**，与故事的 max_context 分开判 */
 const watermark = computed(() =>
@@ -137,7 +142,20 @@ const watermark = computed(() =>
       <span class="text-xs text-muted-foreground">
         {{ usedBy > 0 ? `${usedBy} 个环节解析到它` : "当前没有环节用它" }}
       </span>
-      <Button variant="outline" size="sm" @click="$emit('edit', connection)">查看 / 编辑</Button>
+      <div class="flex gap-2">
+        <Button
+          v-if="!readonly"
+          variant="ghost"
+          size="sm"
+          class="text-destructive"
+          @click="$emit('remove', connection)"
+        >
+          删除
+        </Button>
+        <Button variant="outline" size="sm" @click="$emit('edit', connection)">
+          {{ readonly ? "查看" : "编辑" }}
+        </Button>
+      </div>
     </CardFooter>
   </Card>
 </template>

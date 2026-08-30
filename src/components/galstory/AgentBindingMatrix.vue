@@ -13,11 +13,11 @@ import {
 } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
-  AGENT_KIND_HINTS,
-  AGENT_KIND_LABELS,
-  AGENT_KINDS,
+  AGENT_ROLE_ORDER,
   OUTPUT_FORM_LABELS,
-  agentLabel
+  agentLabel,
+  roleHint,
+  roleLabel
 } from "@/lib/galstory-agents"
 import type { Binding, LintIssue, LintLevel, ModelConfig } from "@/types/galstory"
 
@@ -26,8 +26,20 @@ import type { Binding, LintIssue, LintLevel, ModelConfig } from "@/types/galstor
  *
  * 配置页最容易做成的样子是「把 config.yaml 摊成一堆表单」，但那等于把问题原样丢回给人：
  * `connection_id` 一个字段同时背着**这一步要什么**（agent 固有，换端点不变）与
- * **谁提供它**（端点属性，换端点全变）。引擎为此把环节划成三类、让「按类绑定」承担后者，
- * 这里就是把那层结构画出来 —— 三个组头就是 `agent_bindings` 那三行。
+ * **谁提供它**（端点属性，换端点全变）。
+ *
+ * ## 按**职能**分组，不按路由键
+ *
+ * 组头是引擎里的**五位 agent**（世界 / 导演 / 演员 / 场景 / 玩家）—— 那是读的人心里的单位：
+ * 「导演这几步指到哪条连接了」是个有意义的问题，「thinking 那一档有哪些」不是。
+ *
+ * ⚠️ **路由键没被藏掉**，它只是回到了它该在的位置：`agent_bindings` 那两行由页面在表**上方**
+ * 单列成两张卡（换 provider 时要改的就是它俩），每一行则用「不必思考」这个徽章说明它走哪一边。
+ * 此前它是组头，于是同一位 agent 的几步会被拆到两个组里 —— 而作者要找的是「导演」，
+ * 不是「不必思考」。
+ *
+ * ⚠️ **归属由引擎给**（`Binding.role`，判据写在那个环节自己的模块里），这里**不许**按环节名
+ * 再归一次 —— 引擎把某个环节从一位挪给另一位时，前端不会有任何东西提醒，页面只是默默放错组。
  *
  * ⚠️ **每一行的 `connectionId` / `source` / `timeBudgetS` 都是引擎算好给的，这里只渲染**。
  * 三层优先级的唯一声明处是 `AgentClients.binding_of`；在前端重算一份就是同一个判据两处声明，
@@ -42,13 +54,32 @@ const props = defineProps<{
 
 const emit = defineEmits<{ select: [binding: Binding] }>()
 
-const grouped = computed(() =>
-  AGENT_KINDS.map((kind) => ({
-    kind,
-    boundTo: props.config.agentBindings[kind],
-    rows: props.config.bindings.filter((b) => b.binding === kind)
-  })).filter((group) => group.rows.length > 0)
-)
+/**
+ * 按五位分组。**跨位的那些单列在最后**（`shared`：核验器伺候四位的产出，挂在其中任何一位
+ * 名下都是错的）—— 判据是引擎给的那个布尔，不是这里按名字认出来的。
+ */
+const grouped = computed(() => {
+  const shared = props.config.bindings.filter((b) => b.shared)
+  // ⚠️ **顺序由引擎给**（`config.roleOrder`）；接口没给时才回落到本地那份
+  const order = props.config.roleOrder?.length ? props.config.roleOrder : AGENT_ROLE_ORDER
+  const groups = order.map((role) => ({
+    role: role as string,
+    label: roleLabel(role),
+    hint: roleHint(role),
+    rows: props.config.bindings.filter((b) => !b.shared && b.role === role)
+  }))
+  return [
+    ...groups,
+    {
+      role: "shared",
+      label: "跨位",
+      hint: "归属由调用现场决定：核验器跑在生成之后，核的是谁就归谁 —— 四位的产出它都伺候。",
+      rows: shared
+    }
+  ].filter((group) => group.rows.length > 0)
+})
+
+
 
 const SOURCE_LABELS: Record<Binding["source"], string> = {
   override: "本行覆盖",
@@ -104,27 +135,20 @@ function worst(row: Binding): LintLevel | null {
       </TableHeader>
 
       <TableBody>
-        <template v-for="group in grouped" :key="group.kind">
-          <!-- 组头就是 agent_bindings 的那一行：换 provider 时要改的就是它 -->
+        <template v-for="group in grouped" :key="group.role">
+          <!-- 组头 = 引擎里的**一位 agent**（归属由引擎给，见组件头） -->
           <TableRow class="bg-muted/50 hover:bg-muted/50">
-            <TableCell :colspan="2">
+            <TableCell :colspan="6">
               <div class="flex items-center gap-2">
-                <span class="font-medium">{{ AGENT_KIND_LABELS[group.kind] }}</span>
+                <span class="font-medium">{{ group.label }}</span>
                 <Tooltip>
                   <TooltipTrigger as-child>
                     <Info class="size-3.5 text-muted-foreground" />
                   </TooltipTrigger>
-                  <TooltipContent class="max-w-xs">
-                    {{ AGENT_KIND_HINTS[group.kind] }}
-                  </TooltipContent>
+                  <TooltipContent class="max-w-xs">{{ group.hint }}</TooltipContent>
                 </Tooltip>
                 <span class="text-xs text-muted-foreground">{{ group.rows.length }} 个环节</span>
               </div>
-            </TableCell>
-            <TableCell :colspan="4">
-              <code class="font-mono text-xs">
-                agent_bindings.{{ group.kind }} = {{ group.boundTo || "（未配，走缺省）" }}
-              </code>
             </TableCell>
           </TableRow>
 

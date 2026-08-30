@@ -71,7 +71,7 @@
   Hono 的中间件链一个都不经过，所以这道只能自己判。`sid` 是 `SameSite=Lax`、现代浏览器本来
   就不会给跨站 WS 握手带上它，但那是浏览器替我们兜的底，当不了一道防线。
   放行三种：**没有 `Origin`**（非浏览器客户端——浏览器一定会带，所以放行不开口子）、
-  **等于 `APP_ORIGIN`**、**`Origin` 的 host 等于请求的 `Host`**（`APP_ORIGIN` 没配对时也是同源，
+  **在 `APP_ORIGINS` 白名单里**（`APP_ORIGIN` 永远是其中一员；多域名部署时每个对外域名的协同连接都得放行，见 [REQ-AUTH §3.2.0](02-auth-keycloak.md)）、**`Origin` 的 host 等于请求的 `Host`**（`APP_ORIGIN` 没配对时也是同源，
   跨站攻击够不着这条：它的 `Origin` 是自己的域名，`Host` 是我们的）。拒绝时回一行 403 再断开，
   比一个 TCP reset 好查。
 

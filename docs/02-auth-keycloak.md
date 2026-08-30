@@ -108,8 +108,45 @@
 （`authorizationUrl` / `exchange` / `refresh`）对外。路由、会话、登录页都**不认识**具体是谁 ——
 加一个登录方式 = 新写一个实现 + 在注册表数组里加一行。
 
-**回调只有一个地址**（`$APP_ORIGIN/api/auth/callback`），靠 `AuthRequest.provider` 分发。
+**每个提供方只有一个回调路径**（`/api/auth/callback`），靠 `AuthRequest.provider` 分发。
 这样多接一个提供方不需要去 Keycloak 那边再注册一个回调地址。
+
+#### 3.2.0 回调的**域名**跟着访问的域名走（`APP_ORIGINS` 白名单）
+
+回调路径只有一条，但它的**域名**不是常量。同一套部署经常挂在好几个域名下
+（外网域名、内网域名、老域名、裸 IP），而 `redirect_uri` 是个绝对地址 ——
+写死一个 `APP_ORIGIN` 的后果是：从 B 域名点「登录」，人在 A 域名上完成回调，
+会话 cookie 也就种在了 A 上，回到 B 依旧是未登录。真要命的是它**看起来像成功了**：
+整条授权流程一路 302 都没报错。
+
+所以 `server/auth/origin.ts` 的 `originOf(c)` 按**这次请求**算出对外地址，
+`redirect_uri`、CORS 回显、WebSocket 的 `Origin` 校验、分享链接、cookie 的 `Secure`
+标记全都从它取值。
+
+但**不能无脑跟着 `Host` 走**。反代后面 `Host` / `X-Forwarded-Host` 都是外部可控的
+输入，跟着它拼 `redirect_uri` 就是把授权码送去攻击者的域名（经典的 host header 注入）。
+收口的是 `APP_ORIGINS` 白名单（`server/config.ts`）：
+
+- 取值顺序 `X-Forwarded-Proto` + `X-Forwarded-Host` → `Host` → `Origin`，
+  取第一个**在名单里**的（整页导航根本不带 `Origin`，所以它排最后；
+  反代把 `Host` 改成内网名字时，又只剩它认得对外域名）；
+- 一个都不在名单里 → 回落 `APP_ORIGIN`，也就是**和没有这份名单时行为一致**；
+- `APP_ORIGIN` 永远是名单成员（它是回落目标，自己不在名单里说不通）；
+- 比较前先归一化（小写、去尾斜杠、抹掉默认端口），只认 http/https；
+- **不支持通配符**：每个域名的 `/api/auth/callback` 都要在 Keycloak client 的
+  *Valid redirect URIs* 里注册，通配符只会造出一批注册不了的地址。
+  GitHub 的 OAuth App 只能填一个回调，多域名要么分开建 App，要么把 GitHub 入口
+  固定在 `APP_ORIGIN` 上。
+
+两个细节是必须的，少一个就是 bug：
+
+- **`AuthRequest.origin` 要落库**。OAuth2 要求换 token 时的 `redirect_uri` 和授权那一步
+  **逐字符相同**，回调这一趟重新算一遍是不保险的（反代改了头、名单改了，都会算出
+  另一个值，然后被提供方回绝）。
+- **cookie 的 `Secure` 按域名算**。名单里可以同时有 https 和 http 的域名，一刀切的
+  两种错法都很难查：https 那边漏了 `Secure` 是白丢一层保护；http 那边多了 `Secure`，
+  浏览器**直接不存这个 cookie**，表现成「登录一路成功、跳回来还是未登录」，
+  而服务端日志里一切正常。
 
 #### 3.2.1 Keycloak（OIDC）
 
@@ -357,7 +394,7 @@ authorize 端点只接受一个 `login=` 做建议；真要换号得先去 githu
 | Client authentication | 建议 **On**（confidential，secret 填进 `KEYCLOAK_CLIENT_SECRET`）；Off 也支持，走纯 PKCE |
 | Standard flow | 开 |
 | Direct access grants / Service accounts | 关 |
-| Valid redirect URIs | `http://127.0.0.1:3000/api/auth/callback`，线上再加 `https://<域名>/api/auth/callback` |
+| Valid redirect URIs | `http://127.0.0.1:3000/api/auth/callback`，线上再加 `https://<域名>/api/auth/callback`。**`APP_ORIGINS` 里的每一个域名都要单独加一条**（§3.2.0） |
 | Valid post logout redirect URIs | **不用配**：登出只退本站，不走 RP-initiated logout（§3.2.3） |
 | Web origins | 同源部署填 `+` |
 | PKCE | Advanced → Proof Key for Code Exchange 设为 `S256`（留空也能跑） |
@@ -392,7 +429,8 @@ GitHub App（不是 OAuth App）也能跑，但它发的 token 会过期、带 r
 | `GITHUB_CLIENT_ID` | OAuth App 的 client id |
 | `GITHUB_CLIENT_SECRET` | OAuth App 的 client secret，**必填**（没有它换不了 token） |
 | `GITHUB_SCOPE` | 默认 `read:user user:email`，只读身份 |
-| `APP_ORIGIN` | 应用对外地址，`redirect_uri` 由它拼出，必须与 Keycloak 配置一致 |
+| `APP_ORIGIN` | 应用对外地址，`redirect_uri` 由它拼出，必须与 Keycloak 配置一致；也是白名单认不出访问域名时的回落值 |
+| `APP_ORIGINS` | 多域名部署时的白名单（逗号/空白分隔），`APP_ORIGIN` 自动在内。见 §3.2.0 |
 | `SESSION_SECRET` | 会话 token 的 HMAC 密钥，生产必须是随机串（`openssl rand -hex 32`） |
 | `SESSION_TTL` | 会话最长存活秒数，默认 604800（7 天） |
 

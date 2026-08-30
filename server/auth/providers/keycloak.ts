@@ -35,11 +35,16 @@ export const keycloakProvider: AuthProvider = {
   buttonLabel: '使用 Keycloak 登录',
   enabled: keycloakEnabled,
 
-  authorizationUrl: ({ state, nonce, codeVerifier }) =>
-    buildAuthorizationUrl({ state, nonce, codeChallenge: codeChallengeOf(codeVerifier) }),
+  authorizationUrl: ({ state, nonce, codeVerifier, redirectUri }) =>
+    buildAuthorizationUrl({
+      state,
+      nonce,
+      redirectUri,
+      codeChallenge: codeChallengeOf(codeVerifier),
+    }),
 
-  async exchange({ code, codeVerifier, nonce }) {
-    const tokens = await exchangeCode(code, codeVerifier)
+  async exchange({ code, codeVerifier, nonce, redirectUri }) {
+    const tokens = await exchangeCode(code, codeVerifier, redirectUri)
     if (!tokens.id_token) {
       throw new Error('Keycloak 没返回 id_token，检查 client 的 scope 是否含 openid')
     }

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import { authConfig, authEnabled, keycloakEnabled } from '../config.ts'
+import { authConfig, authEnabled, callbackUriFor, keycloakEnabled, secureCookieFor } from '../config.ts'
 import { prisma } from '../db.ts'
 import {
   type AuthVariables,
@@ -10,6 +10,7 @@ import {
   setSessionCookie,
 } from '../auth/middleware.ts'
 import { randomToken } from '../auth/oidc.ts'
+import { originOf } from '../auth/origin.ts'
 import {
   type AuthProvider,
   defaultProviderId,
@@ -65,6 +66,8 @@ async function startAuthorization(
   const state = randomToken()
   const nonce = randomToken()
   const codeVerifier = randomToken(64)
+  // 从哪个域名进来的就回到哪个域名（白名单之外回落 APP_ORIGIN），见 auth/origin.ts
+  const origin = originOf(c)
 
   const request = await prisma.authRequest.create({
     data: {
@@ -74,6 +77,7 @@ async function startAuthorization(
       provider: input.provider.id,
       linkUserId: input.linkUserId ?? null,
       redirectTo: input.redirectTo,
+      origin,
       expiresAt: new Date(Date.now() + AUTH_REQUEST_TTL),
     },
   })
@@ -81,13 +85,18 @@ async function startAuthorization(
   setCookie(c, authConfig.txCookieName, request.id, {
     httpOnly: true,
     sameSite: 'Lax',
-    secure: authConfig.secureCookie,
+    secure: secureCookieFor(origin),
     path: '/api/auth',
     maxAge: AUTH_REQUEST_TTL / 1000,
   })
 
   try {
-    return await input.provider.authorizationUrl({ state, nonce, codeVerifier })
+    return await input.provider.authorizationUrl({
+      state,
+      nonce,
+      codeVerifier,
+      redirectUri: callbackUriFor(origin),
+    })
   } catch (err) {
     await prisma.authRequest.delete({ where: { id: request.id } }).catch(() => undefined)
     console.error(`[auth] 构造 ${input.provider.id} 授权地址失败`, err)
@@ -172,7 +181,10 @@ export const auth = new Hono<{ Variables: AuthVariables }>()
     if (!authEnabled) return c.redirect(loginPageWithError('没有配置任何登录方式'))
 
     const txId = getCookie(c, authConfig.txCookieName)
-    deleteCookie(c, authConfig.txCookieName, { path: '/api/auth', secure: authConfig.secureCookie })
+    deleteCookie(c, authConfig.txCookieName, {
+      path: '/api/auth',
+      secure: secureCookieFor(originOf(c)),
+    })
 
     // 一次性消费：拿到就删，重放同一个 code 不会再有 AuthRequest。
     // **先读它再看 ?error=** —— 用户在提供方那边点了「取消」时，得知道该把人送回
@@ -206,6 +218,9 @@ export const auth = new Hono<{ Variables: AuthVariables }>()
         code,
         codeVerifier: request.codeVerifier,
         nonce: request.nonce,
+        // 用授权那一步存下来的 origin，而不是这一趟重新算 —— 两者必须逐字符相同。
+        // 老数据（这个字段是后加的）没有值，回落到按当前请求算
+        redirectUri: callbackUriFor(request.origin || originOf(c)),
       })
 
       // ---- 关联：**先不写**，暂存起来等用户确认（§3.9.2）

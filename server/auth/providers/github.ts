@@ -56,7 +56,7 @@ interface GithubEmail {
   verified: boolean
 }
 
-async function exchangeToken(code: string): Promise<string> {
+async function exchangeToken(code: string, redirectUri: string): Promise<string> {
   let res: Response
   try {
     res = await fetch(TOKEN_URL, {
@@ -66,7 +66,8 @@ async function exchangeToken(code: string): Promise<string> {
         client_id: githubConfig.clientId,
         client_secret: githubConfig.clientSecret,
         code,
-        redirect_uri: githubConfig.redirectUri,
+        // GitHub 也要求和授权那一步一致
+        redirect_uri: redirectUri,
       }),
       signal: AbortSignal.timeout(HTTP_TIMEOUT),
     })
@@ -162,10 +163,10 @@ export const githubProvider: AuthProvider = {
   buttonLabel: '使用 GitHub 登录',
   enabled: githubEnabled,
 
-  authorizationUrl({ state }) {
+  authorizationUrl({ state, redirectUri }) {
     const url = new URL(AUTHORIZE_URL)
     url.searchParams.set('client_id', githubConfig.clientId)
-    url.searchParams.set('redirect_uri', githubConfig.redirectUri)
+    url.searchParams.set('redirect_uri', redirectUri)
     url.searchParams.set('scope', githubConfig.scope)
     url.searchParams.set('state', state)
     // 这是个内部系统，别在授权页上引导人去注册 GitHub
@@ -173,8 +174,8 @@ export const githubProvider: AuthProvider = {
     return Promise.resolve(url.toString())
   },
 
-  async exchange({ code }) {
-    const accessToken = await exchangeToken(code)
+  async exchange({ code, redirectUri }) {
+    const accessToken = await exchangeToken(code, redirectUri)
     const user = await callApi<GithubUser>(USER_URL, accessToken)
     if (typeof user.id !== 'number') throw new OidcError('GitHub 返回的用户信息里没有 id')
 

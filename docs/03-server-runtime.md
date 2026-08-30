@@ -43,7 +43,7 @@
 
 ### 2.4 中间件
 
-- 日志（logger）与 CORS，CORS 只放开 `APP_ORIGIN`。
+- 日志（logger）与 CORS，CORS 只放开**自己的那些域名** —— `APP_ORIGIN` 加上 `APP_ORIGINS` 白名单（多域名部署，见 [REQ-AUTH §3.2.0](02-auth-keycloak.md)）。
 - `withSession` 全局解析会话；随后对 `/api/*` 上除公开路径（`/api/health`、`/api/auth`）外的全部路由加 `requireAuth`。
 - Hono app 的类型是 `Hono<{ Bindings: HttpBindings; Variables: AuthVariables }>`：前端中间件要用 `c.env` 拿 Node 原始 `req`/`res`，鉴权中间件要往 `Variables` 里放 `session`/`user`。
 

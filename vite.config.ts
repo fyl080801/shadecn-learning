@@ -35,6 +35,26 @@ export default defineConfig({
      */
     dedupe: ['yjs', 'y-protocols'],
   },
+  server: {
+    /**
+     * 允许哪些 Host 头打进 dev server（`DEV_ALLOWED_HOSTS`，逗号分隔）。
+     *
+     * Vite 缺省只认 localhost 一类的本机名，别的 Host 一律 403「Blocked request」。
+     * 那**不是多余的严格**：dev server 上挂着 HMR 与任意文件读取能力，而浏览器对
+     * 一个域名的同源限制拦不住 DNS rebinding —— 攻击者把自己的域名解析到 127.0.0.1，
+     * 就能让受害者的浏览器替他读本机源码。故这里**只加名单、不关这道门**
+     * （`allowedHosts: true` 等于对任意域名敞开）。
+     *
+     * 调试用途：把本机这个 dev server 挂到集群的 ingress 后面时，进来的 Host 是那个域名，
+     * 不加进来就是一句 403，而它长得**很像**网关或鉴权拒绝，很容易往错的方向查。
+     *
+     * ⚠️ 只影响 dev；`vite build` 不读它。
+     */
+    allowedHosts: (process.env.DEV_ALLOWED_HOSTS ?? '')
+      .split(',')
+      .map((host) => host.trim())
+      .filter(Boolean),
+  },
   build: {
     // 前端产物直接落进后端的静态资源目录：output/ 里就是一份完整可跑的东西
     outDir: path.resolve(__dirname, 'output/public'),

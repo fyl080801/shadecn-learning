@@ -43,12 +43,24 @@ export interface AuthorizeInput {
   nonce: string
   /** PKCE 的原文，provider 自己决定要不要算 challenge */
   codeVerifier: string
+  /**
+   * 这一趟用哪个回调地址。**按访问的域名算出来的**（见 `auth/origin.ts`），
+   * 不是一个全局常量 —— 同一套部署挂在多个域名下时，从哪个域名进来就得回到哪个域名，
+   * 否则会话 cookie 会种到另一个域名上。取值范围由 `APP_ORIGINS` 白名单收口。
+   */
+  redirectUri: string
 }
 
 export interface ExchangeInput {
   code: string
   codeVerifier: string
   nonce: string
+  /**
+   * 换 token 时带的 `redirect_uri`，**必须和授权那一步一模一样** —— OAuth2 要求
+   * 逐字符相等，对不上提供方会直接回绝。所以它是从 `AuthRequest.origin` 读回来的，
+   * 而不是回调这一趟重新算一遍。
+   */
+  redirectUri: string
 }
 
 export interface ExchangeResult {

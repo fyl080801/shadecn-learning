@@ -25,6 +25,11 @@ spec:
 #     --from-literal=GITHUB_CLIENT_ID="$GITHUB_CLIENT_ID" \
 #     --from-literal=GITHUB_CLIENT_SECRET="$GITHUB_CLIENT_SECRET" \
 # GitHub OAuth App 的回调填 $APP_ORIGIN/api/auth/callback —— 和 Keycloak 共用同一个。
+# gal-story 那条链路还有一个可选的键：GAL_STORY_GATEWAY_TOKEN —— 引擎没有账号体系，
+# 属主完全由本服务注入的 X-Gal-Owner 决定，谁能直连引擎谁就能扮演任何人。引擎缺省只听
+# 127.0.0.1，这道共享密钥是第二层；配了它，绕过本服务的请求会被引擎 403。
+# 要开的话两边一起配（引擎那侧是 GAL_SERVER_GATEWAY_TOKEN），值必须一样：
+#     --from-literal=GAL_STORY_GATEWAY_TOKEN="$GAL_STORY_GATEWAY_TOKEN" \
 apiVersion: apps/v1
 kind: Deployment
 metadata:

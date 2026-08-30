@@ -180,7 +180,7 @@ unsupported relocation type 1026
 
 ### 3.3 配置
 
-明文环境变量（在 Deployment 里）：`NODE_ENV`、`HOST`、`PORT`、`DATA_DIR`、`APP_ORIGIN`、`KEYCLOAK_ISSUER`、`KEYCLOAK_CLIENT_ID`。
+明文环境变量（在 Deployment 里）：`NODE_ENV`、`HOST`、`PORT`、`DATA_DIR`、`APP_ORIGIN`、`KEYCLOAK_ISSUER`、`KEYCLOAK_CLIENT_ID`；挂多个对外域名时再加 `APP_ORIGINS`。
 
 密钥走 Secret（`envFrom.secretRef`）：`KEYCLOAK_CLIENT_SECRET`、`SESSION_SECRET`，PG 部署再加一个 `DATABASE_URL`（连接串里有密码，**不能**写进 Deployment 的明文 env）。
 
@@ -204,6 +204,8 @@ GitHub OAuth App 的 Authorization callback URL 填 `$APP_ORIGIN/api/auth/callba
 **真值不得提交进仓库** —— 仓库里的 Secret 清单只是占位模板。
 
 部署前必须按实际环境改：`APP_ORIGIN`、`KEYCLOAK_ISSUER`、镜像地址。`APP_ORIGIN` 必须与 Keycloak client 里配的 redirect URI 一致，否则登录回调失败。
+
+同一套服务挂在多个域名下时，把每个对外域名都写进 `APP_ORIGINS`（逗号分隔，`APP_ORIGIN` 自动在内），并且**每个域名的 `/api/auth/callback` 都要加进 Keycloak client 的 *Valid redirect URIs***。不配的话，从名单外的域名进来一律回落到 `APP_ORIGIN` —— 登录会跳到另一个域名上完成，cookie 种在那边，人回来还是未登录。详见 [REQ-AUTH §3.2.0](02-auth-keycloak.md)。
 
 ### 3.4 探针与资源
 

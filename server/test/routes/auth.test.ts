@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from '../../app.ts'
 import { identiconUrl } from '../../avatar/index.ts'
 import { prisma, resetDb } from '../helpers/db.ts'
@@ -103,6 +103,93 @@ describe('GET /api/auth/me', () => {
 
     expect(text).not.toContain('refresh-1')
     expect(text).not.toContain('access_token')
+  })
+})
+
+/**
+ * 多域名部署（`APP_ORIGINS` 白名单）。
+ *
+ * 同一套服务挂在好几个域名下时，`redirect_uri` 不能是一个写死的常量：从 B 域名点
+ * 登录却回到 A 域名，会话 cookie 就种在 A 上，人回到 B 依旧是未登录。
+ * 反过来也不能无脑跟着 `Host` —— 那是外部可控的输入，跟着它就是把授权码送去别人家。
+ */
+describe('多域名回跳（APP_ORIGINS 白名单）', () => {
+  const ALT = 'https://alt.example.com'
+
+  /** 白名单是模块加载时算出来的常量，改了 env 就得重新 import 整张模块图 */
+  async function appWithWhitelist() {
+    vi.stubEnv('APP_ORIGINS', ALT)
+    vi.resetModules()
+    return (await import('../../app.ts')).app
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
+
+  it('从名单里的域名进来 → redirect_uri 跟着这个域名走', async () => {
+    const fresh = await appWithWhitelist()
+    const res = await fresh.request('/api/auth/login', {
+      headers: { host: 'alt.example.com', 'x-forwarded-proto': 'https' },
+    })
+
+    const url = new URL(res.headers.get('location') ?? '')
+    expect(url.searchParams.get('redirect_uri')).toBe(`${ALT}/api/auth/callback`)
+
+    // 落库，回调那一步换 token 还要照原样再用一次
+    const txId = cookieValue(res, 'oidc_tx')
+    const request = await prisma.authRequest.findUniqueOrThrow({ where: { id: txId ?? '' } })
+    expect(request.origin).toBe(ALT)
+  })
+
+  it('Host 不在名单里 → 回落 APP_ORIGIN，绝不跟着伪造的 Host 走', async () => {
+    const fresh = await appWithWhitelist()
+    const res = await fresh.request('/api/auth/login', {
+      headers: { host: 'evil.example', 'x-forwarded-proto': 'https' },
+    })
+
+    const url = new URL(res.headers.get('location') ?? '')
+    expect(url.searchParams.get('redirect_uri')).toBe(REDIRECT_URI)
+  })
+
+  it('换 token 用的是授权那一步存下来的 redirect_uri —— 两者必须逐字符相同', async () => {
+    const fresh = await appWithWhitelist()
+    const login = await fresh.request('/api/auth/login', {
+      headers: { host: 'alt.example.com', 'x-forwarded-proto': 'https' },
+    })
+    const txId = cookieValue(login, 'oidc_tx')
+    const request = await prisma.authRequest.findUniqueOrThrow({ where: { id: txId ?? '' } })
+    stub.token = { status: 200, body: tokenResponse({ nonce: request.nonce }) }
+
+    await fresh.request(`/api/auth/callback?code=c&state=${request.state}`, {
+      // 回调这一趟故意换个域名进来，redirect_uri 也不该跟着变
+      headers: { cookie: `oidc_tx=${txId}`, host: '127.0.0.1:3000' },
+    })
+
+    const body = new URLSearchParams(stub.calls.find((c) => c.url.endsWith('/token'))?.body ?? '')
+    expect(body.get('redirect_uri')).toBe(`${ALT}/api/auth/callback`)
+  })
+
+  it('https 的域名上 sid 带 Secure，http 的不带 —— 一刀切会让其中一边登不进去', async () => {
+    const fresh = await appWithWhitelist()
+
+    const start = async (host: string, proto: string) => {
+      const login = await fresh.request('/api/auth/login', {
+        headers: { host, 'x-forwarded-proto': proto },
+      })
+      const txId = cookieValue(login, 'oidc_tx')
+      const req = await prisma.authRequest.findUniqueOrThrow({ where: { id: txId ?? '' } })
+      stub.token = { status: 200, body: tokenResponse({ nonce: req.nonce }) }
+      return fresh.request(`/api/auth/callback?code=c&state=${req.state}`, {
+        headers: { cookie: `oidc_tx=${txId}`, host, 'x-forwarded-proto': proto },
+      })
+    }
+
+    expect((await start('alt.example.com', 'https')).headers.get('set-cookie')).toContain('Secure')
+    expect((await start('127.0.0.1:3000', 'http')).headers.get('set-cookie')).not.toContain(
+      'Secure',
+    )
   })
 })
 

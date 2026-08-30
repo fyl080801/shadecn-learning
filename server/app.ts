@@ -4,7 +4,7 @@ import { cors } from 'hono/cors'
 import type { AuthVariables } from './auth/middleware.ts'
 import { requireAuth, withSession } from './auth/middleware.ts'
 import type { ProjectVariables } from './auth/project.ts'
-import { appOrigin, isApiPath } from './config.ts'
+import { appOrigin, isAllowedOrigin, isApiPath } from './config.ts'
 import { attachPageGuard } from './frontend/guard.ts'
 import { httpLogger } from './logger/index.ts'
 import { auth } from './routes/auth.ts'
@@ -27,8 +27,16 @@ const app: ServerApp = new Hono<ServerEnv>()
 // 那个只往 console 打两行文本，这个带状态码、耗时，并且是 AsyncLocalStorage 的入口，
 // 让链路上任何深度的日志都自动带上 requestId（见 server/logger/）
 app.use('*', httpLogger())
-// 前后端同源，CORS 只放开自己的 origin —— 带 cookie 的接口不能对任意站点开
-app.use('/api/*', cors({ origin: appOrigin, credentials: true }))
+// 前后端同源，CORS 只放开**自己的那些域名** —— 带 cookie 的接口不能对任意站点开。
+// 一套部署可能挂在好几个域名下（APP_ORIGINS 白名单），逐个回显；名单外的一律
+// 回 APP_ORIGIN，也就是不匹配，浏览器自己会拦下
+app.use(
+  '/api/*',
+  cors({
+    origin: (origin) => (isAllowedOrigin(origin) ? origin : appOrigin),
+    credentials: true,
+  }),
+)
 
 // 先解析会话，再决定拦不拦。页面也要判登录，所以挂在 '*' 上而不只是 /api/*
 app.use('*', withSession)

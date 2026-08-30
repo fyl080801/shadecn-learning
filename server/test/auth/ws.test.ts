@@ -166,6 +166,21 @@ describe('isAllowedCollabOrigin', () => {
     expect(isAllowedCollabOrigin('null', host)).toBe(false)
     expect(isAllowedCollabOrigin('不是个 URL', host)).toBe(false)
   })
+
+  it('APP_ORIGINS 里的另一个域名 → 放行；名单外的同名邻居还是拒绝', async () => {
+    // 白名单是模块加载时算出来的常量，换一份 env 就得重新 import 一次
+    vi.resetModules()
+    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+    const ws = await import('../../auth/ws.ts')
+
+    // 反代把 Host 改成了内网名字，这条只能靠名单认出来
+    expect(ws.isAllowedCollabOrigin('https://b.example.com', 'internal.svc')).toBe(true)
+    expect(ws.isAllowedCollabOrigin('https://b.example.com.evil.example', 'internal.svc')).toBe(
+      false,
+    )
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
 })
 
 /**

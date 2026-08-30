@@ -132,6 +132,11 @@ export interface AuthorizeParams {
   state: string
   nonce: string
   codeChallenge: string
+  /**
+   * 回调地址。按访问的域名算（`auth/origin.ts` 的 `originOf`），不是全局常量 ——
+   * 每个域名的这个地址都要在 Keycloak client 的 *Valid redirect URIs* 里注册。
+   */
+  redirectUri: string
   /** 传 'login' 强制重新输密码，'none' 静默探测登录态 */
   prompt?: 'login' | 'none' | 'consent'
 }
@@ -140,7 +145,7 @@ export async function buildAuthorizationUrl(params: AuthorizeParams) {
   const { authorization_endpoint } = await discover()
   const url = new URL(authorization_endpoint)
   url.searchParams.set('client_id', authConfig.clientId)
-  url.searchParams.set('redirect_uri', authConfig.redirectUri)
+  url.searchParams.set('redirect_uri', params.redirectUri)
   url.searchParams.set('response_type', 'code')
   url.searchParams.set('scope', authConfig.scope)
   url.searchParams.set('state', params.state)
@@ -189,12 +194,13 @@ async function postToken(body: URLSearchParams): Promise<TokenResponse> {
   return payload
 }
 
-export function exchangeCode(code: string, codeVerifier: string) {
+/** `redirectUri` 必须和授权那一步逐字符相同，否则 Keycloak 直接回绝 */
+export function exchangeCode(code: string, codeVerifier: string, redirectUri: string) {
   return postToken(
     new URLSearchParams({
       grant_type: 'authorization_code',
       code,
-      redirect_uri: authConfig.redirectUri,
+      redirect_uri: redirectUri,
       code_verifier: codeVerifier,
     }),
   )

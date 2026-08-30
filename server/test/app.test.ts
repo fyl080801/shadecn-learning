@@ -101,4 +101,26 @@ describe('CORS', () => {
     const res = await app.request('/some/page', { headers: { origin: APP_ORIGIN } })
     expect(res.headers.get('access-control-allow-origin')).toBeNull()
   })
+
+  it('APP_ORIGINS 里的域名也回显 —— 一套部署挂多个域名时它们都是「自己」', async () => {
+    vi.stubEnv('APP_ORIGINS', 'https://alt.example.com')
+    vi.resetModules()
+    const fresh = (await import('../app.ts')).app
+
+    const ok = await fresh.request('/api/health', {
+      headers: { origin: 'https://alt.example.com' },
+    })
+    expect(ok.headers.get('access-control-allow-origin')).toBe('https://alt.example.com')
+
+    // 名单外的照旧拿不到自己的 origin
+    const denied = await fresh.request('/api/health', {
+      headers: { origin: 'https://alt.example.com.evil.example' },
+    })
+    expect(denied.headers.get('access-control-allow-origin')).not.toBe(
+      'https://alt.example.com.evil.example',
+    )
+
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
 })

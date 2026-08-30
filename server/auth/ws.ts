@@ -1,4 +1,4 @@
-import { appOrigin, authConfig, authEnabled } from '../config.ts'
+import { authConfig, authEnabled, isAllowedOrigin } from '../config.ts'
 import { flows } from '../store/flows.ts'
 import { projects } from '../store/projects.ts'
 import { loadSession } from './session.ts'
@@ -32,7 +32,8 @@ function cookieValue(header: string | null | undefined, name: string) {
  * 三条放行规则：
  * - **没有 `Origin`**：非浏览器客户端（探针、脚本、测试）。浏览器发起的握手一定带
  *   `Origin`，所以放它过去并不给 CSWSH 开口子；一律拒绝倒会把这些客户端全挡死。
- * - **等于 `APP_ORIGIN`**：正常情况。
+ * - **在 `APP_ORIGINS` 白名单里**（`APP_ORIGIN` 永远是其中一员）：正常情况。
+ *   一套部署挂多个对外域名时，每个域名的协同连接都得放行。
  * - **`Origin` 的 host 和请求的 `Host` 头相同**：这也是同源，只是 `APP_ORIGIN` 没配对
  *   （dev 下它默认是 `http://127.0.0.1:3000`，而人从 `localhost:3000` 打开页面），
  *   或者反代换过对外域名。跨站攻击够不着这一条 —— 攻击页面的 `Origin` 是它自己的域名，
@@ -43,7 +44,7 @@ export function isAllowedCollabOrigin(
   host: string | undefined,
 ): boolean {
   if (!origin) return true
-  if (origin === appOrigin) return true
+  if (isAllowedOrigin(origin)) return true
   try {
     return Boolean(host) && new URL(origin).host === host
   } catch {
