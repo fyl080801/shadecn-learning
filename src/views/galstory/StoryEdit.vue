@@ -19,7 +19,6 @@ import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -473,10 +472,13 @@ function baseName(path: string) {
           <AlertDialogDescription>切到别的文件会丢掉它们。</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel @click="pendingSwitch = null">留在这里</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" @click.prevent="discardAndSwitch()">
-            丢掉并切换
-          </AlertDialogAction>
+          <AlertDialogCancel>留在这里</AlertDialogCancel>
+            <!-- ⚠️ **刻意不是 `AlertDialogAction`**：它内部就是 `DialogClose`，**先关框、再**跑
+                 透传下来的 `@click`，而那句关闭不看 `event.defaultPrevented`（`@click.prevent`
+                 挡不住）。开关与「删哪一个」共用一个 ref 的话，handler 读到的就是被关闭清成
+                 null 的那个 —— **请求一声不响地发不出去**，界面上看着像点了没反应。
+                 这个坑本仓库在 `ModelConfig.vue` 踩过一次并写进了测试文件头，这里是第二次。 -->
+            <Button variant="destructive" @click="discardAndSwitch()">丢掉并切换</Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
@@ -491,10 +493,15 @@ function baseName(path: string) {
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel @click="removingFile = null">取消</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" :loading="removingNow" @click.prevent="removeFile()">
-            删除
-          </AlertDialogAction>
+          <AlertDialogCancel :disabled="removingNow">取消</AlertDialogCancel>
+            <!-- ⚠️ **刻意不是 `AlertDialogAction`**：它内部就是 `DialogClose`，**先关框、再**跑
+                 透传下来的 `@click`，而那句关闭不看 `event.defaultPrevented`（`@click.prevent`
+                 挡不住）。开关与「删哪一个」共用一个 ref 的话，handler 读到的就是被关闭清成
+                 null 的那个 —— **请求一声不响地发不出去**，界面上看着像点了没反应。
+                 这个坑本仓库在 `ModelConfig.vue` 踩过一次并写进了测试文件头，这里是第二次。 -->
+            <Button variant="destructive" :loading="removingNow" @click="removeFile()">
+              删除
+            </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

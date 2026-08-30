@@ -24,7 +24,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -38,7 +37,7 @@ import NewStoryDialog from "@/components/galstory/NewStoryDialog.vue"
 
 import { useAsyncAction } from "@/composables/useAsyncAction"
 
-import { GalStoryError, runApi, saveApi, storyApi, structureLabel } from "@/lib/galstory"
+import { GalStoryError, emphasize, runApi, saveApi, storyApi, structureLabel } from "@/lib/galstory"
 import type { Quota, StoryScope, StorySummary } from "@/types/galstory"
 
 /**
@@ -457,17 +456,24 @@ const shown = computed(() => {
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>删除《{{ removing?.story.title }}》？</AlertDialogTitle>
-          <AlertDialogDescription>{{ removing?.detail }}</AlertDialogDescription>
+          <AlertDialogDescription>
+            <!-- 引擎的文案用 `**…**` 标重点，原样渲染就是一串星号（判据在 `emphasize` 一处） -->
+            <template v-for="(seg, i) in emphasize(removing?.detail ?? '')" :key="i">
+              <strong v-if="seg.strong" class="font-medium text-foreground">{{ seg.text }}</strong>
+              <template v-else>{{ seg.text }}</template>
+            </template>
+          </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel @click="removing = null">取消</AlertDialogCancel>
-          <AlertDialogAction
-            variant="destructive"
-            :loading="removingNow"
-            @click.prevent="confirmRemove()"
-          >
-            删除
-          </AlertDialogAction>
+          <AlertDialogCancel :disabled="removingNow">取消</AlertDialogCancel>
+            <!-- ⚠️ **刻意不是 `AlertDialogAction`**：它内部就是 `DialogClose`，**先关框、再**跑
+                 透传下来的 `@click`，而那句关闭不看 `event.defaultPrevented`（`@click.prevent`
+                 挡不住）。开关与「删哪一个」共用一个 ref 的话，handler 读到的就是被关闭清成
+                 null 的那个 —— **请求一声不响地发不出去**，界面上看着像点了没反应。
+                 这个坑本仓库在 `ModelConfig.vue` 踩过一次并写进了测试文件头，这里是第二次。 -->
+            <Button variant="destructive" :loading="removingNow" @click="confirmRemove()">
+              删除
+            </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

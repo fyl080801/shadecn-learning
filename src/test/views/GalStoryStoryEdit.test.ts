@@ -175,6 +175,38 @@ describe("保存被拒", () => {
   })
 })
 
+describe("确认框里那颗按钮不能是 AlertDialogAction", () => {
+  it("⚠️ 删文件：点「删除」真的会发出请求 —— 这个坑本仓库踩过两次", async () => {
+    // `AlertDialogAction` 内部就是 `DialogClose`：**先关框、再**跑透传下来的 `@click`，
+    // 而那句关闭不看 `event.defaultPrevented`（`@click.prevent` 挡不住）。开关与「删哪一个」
+    // 共用一个 ref 时，handler 读到的就是被关闭清成 null 的那个 —— **请求一声不响地发不出去**，
+    // 界面上看着像点了没反应（实跑：点完删除，故事还在列表里）。
+    // 第一次是 `ModelConfig.vue`（那条判据写在它的测试文件头），这是第二次。
+    // ⚠️ 弹层是 **teleport 到 body** 的，`wrapper.findAll` 看不见它 —— 要查 document
+    const wrapper = mount(StoryEdit, { attachTo: document.body })
+    await flushPromises()
+    await flushPromises()
+
+    vi.mocked(storyApi.deleteFile).mockResolvedValue(OK)
+    vi.mocked(storyApi.files).mockResolvedValue(["story.yaml"])
+
+    const vm = wrapper.vm as unknown as { removingFile: string | null }
+    vm.removingFile = "characters/npc.yaml"
+    await flushPromises()
+    await flushPromises()
+
+    const confirm = [...document.body.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "删除"
+    )
+    expect(confirm, "确认框里那颗「删除」要在").toBeTruthy()
+    confirm!.click()
+    await flushPromises()
+
+    expect(storyApi.deleteFile).toHaveBeenCalledWith("s2026-abc", "characters/npc.yaml")
+    wrapper.unmount()
+  })
+})
+
 describe("新建文件", () => {
   it("⚠️ 打开的是刚建的那个路径，不是被清空之后算出来的", async () => {
     // 实跑踩过：`newPath` 是从输入框算出来的 computed，而代码先清空了输入框再拿它去 open ——
@@ -203,7 +235,9 @@ describe("新建文件", () => {
 
     expect(vi.mocked(storyApi.writeFile).mock.calls[0]?.[1]).toBe("characters/lin.yaml")
     // 建完之后**打开的就是它**（读的那一发用的是同一个路径）
-    const opened = vi.mocked(storyApi.readFile).mock.calls.at(-1)?.[1]
+    // `Array.prototype.at` 不在这个 tsconfig 的 lib 里 —— 用下标，别为一处便利改全局 target
+    const reads = vi.mocked(storyApi.readFile).mock.calls
+    const opened = reads[reads.length - 1]?.[1]
     expect(opened).toBe("characters/lin.yaml")
   })
 })

@@ -2,6 +2,7 @@
 import { computed } from "vue"
 import { CircleAlert, CircleCheck, Info, TriangleAlert } from "@lucide/vue"
 
+import { emphasize } from "@/lib/galstory"
 import type { LintIssue, LintLevel } from "@/types/galstory"
 
 /**
@@ -42,15 +43,10 @@ const TONES: Record<LintLevel, string> = {
 const LABELS: Record<LintLevel, string> = { error: "错误", warn: "警告", info: "提示" }
 
 /**
- * 引擎的体检文案是**写给日志看的**，里面用 `**…**` 标重点（那是它整个仓库的行文习惯）。
- * 原样渲染就是一串星号；而它标的恰恰是「这句话里最该看到的那半句」，丢掉也可惜。
- *
- * 故切成段自己渲染 —— **不走 `v-html`**：这串文本来自后端，哪怕后端是本机的引擎，
- * 把它当 HTML 插进 DOM 也是一条不该开的口子。
+ * 引擎的体检文案是**写给日志看的**，里面用 `**…**` 标重点。判据抽在 `lib/galstory.emphasize`
+ * 一处（删故事的确认框也要用它）—— 同一件事抄两遍就会漂。
  */
-function segments(text: string) {
-  return text.split("**").map((chunk, index) => ({ text: chunk, strong: index % 2 === 1 }))
-}
+const segments = emphasize
 </script>
 
 <template>

@@ -590,3 +590,18 @@ export function structureLabel(stages: number | null, scenes: number): string {
   if (stages === null) return scenes <= 1 ? "单场景" : `${scenes} 场`
   return `${stages} 幕 · ${scenes} 场`
 }
+
+
+/**
+ * 引擎的文案用 `**…**` 标重点（那是它整个仓库的行文习惯）。原样渲染就是一串星号，
+ * 而它标的恰恰是「这句话里最该看到的那半句」。
+ *
+ * ⚠️ **切成段自己渲染，不走 `v-html`**：这串文本来自后端，哪怕后端是本机的引擎，
+ * 把它当 HTML 插进 DOM 也是一条不该开的口子。
+ *
+ * 这是这段逻辑的**唯一声明处** —— `LintList` 里本来有一份，删故事的确认框是第二个用它的地方，
+ * 而同一件事抄两遍就会漂（一边支持了新语法、另一边没有）。
+ */
+export function emphasize(text: string): { text: string; strong: boolean }[] {
+  return text.split("**").map((chunk, index) => ({ text: chunk, strong: index % 2 === 1 }))
+}
