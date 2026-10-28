@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { clusterHealth } from '../cluster/index.ts'
-import { prisma } from '../db.ts'
+import { orm } from '../db.ts'
 
 /**
  * 两个探针，**故意是两个路径**。
@@ -30,7 +30,7 @@ const startedAt = Date.now()
 /**
  * 依赖检查的超时。
  *
- * **必须自己带**：`prisma.$queryRaw` 没有默认上界，数据库进网络黑洞时这个请求会一直挂着，
+ * **必须自己带**：ORM 的查询没有默认上界，数据库进网络黑洞时这个请求会一直挂着，
  * 而 kubelet 那头只会记一次 probe 超时 —— 两者都在等，谁也不说话。
  * 自己超时才能回一个说得清的 503。
  *
@@ -56,7 +56,7 @@ function withTimeout<T>(task: Promise<T>, label: string): Promise<T> {
  */
 async function checkDatabase(): Promise<boolean> {
   try {
-    await withTimeout(prisma.$queryRaw`SELECT 1`, '数据库')
+    await withTimeout(orm.em.getConnection().execute('select 1'), '数据库')
     return true
   } catch (error) {
     console.warn('[health] readiness：数据库探测失败', error)

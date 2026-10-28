@@ -19,6 +19,6 @@ export const moduleDir = path.dirname(fileURLToPath(import.meta.url))
  * - 源码运行：apps/server/ 的上两级，也就是仓库根目录（monorepo 之后源码挪进了
  *   apps/server，但 .env、data/、output/ 仍在仓库根，所以这里往上走两层，不是一层）；
  * - 构建产物：进程 cwd（本地是仓库根，容器里是 /app）。产物自己躺在 output/ 下，
- *   拿 output/ 当根会让 data/ 和 prisma CLI（在应用根目录跑迁移）对不上。
+ *   拿 output/ 当根会让 data/ 跑到 output/ 里去，和容器里挂卷的 /app/data 对不上。
  */
 export const appRoot = isBundle ? process.cwd() : path.resolve(moduleDir, '..', '..')

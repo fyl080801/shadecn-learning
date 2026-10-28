@@ -79,12 +79,15 @@ export const galStoryTimeoutMs = Number(process.env.GAL_STORY_API_TIMEOUT_MS ?? 
  */
 export const galStoryGatewayToken = (process.env.GAL_STORY_GATEWAY_TOKEN ?? '').trim()
 
-/** 支持的两种库，名字就是 prisma datasource 的 provider 值 */
+/** 支持的两种库 */
 export type DbProvider = 'sqlite' | 'postgresql'
 
 /**
- * 用哪种库。这段解析必须和 apps/server/prisma/db-provider.mjs（CLI 侧：迁移、schema 选择）
- * 逐条一致 —— apps/server 的 tsconfig 没开 allowJs，类型检查够不到那份 .mjs，所以这里是手抄的一份。
+ * 用哪种库。**这是唯一的一份解析规则**：服务端进程（apps/server/db/orm.ts）和表结构同步入口
+ * （apps/server/db/sync-cli.ts，源码态 `pnpm db:push`、产物态 `node server/db-sync.js`）
+ * 都从这里取，不会出现「同步的是这个库、服务端连的是那个库」。
+ *
+ * 只决定运行时加载哪个驱动 —— 实体定义和构建产物都和库无关。
  *
  *   1. 显式的 DB_PROVIDER 最优先；
  *   2. 否则看 DATABASE_URL 的协议；
@@ -96,8 +99,10 @@ export const dbProvider: DbProvider = resolveProvider()
  * 数据库连接串。
  *
  * - sqlite：默认 <dataDir>/app.db，DATABASE_URL 可整个换掉（相对路径同样按仓库根目录
- *   解析，这样 prisma CLI（在根目录跑）和服务端进程（cwd 可能不同）看到的是同一个文件）；
- * - postgresql：必须给 DATABASE_URL，原样透传给 pg。
+ *   解析，不按 cwd —— `pnpm db:push` 在 apps/server 下跑，服务端进程的 cwd 可能又是别处，
+ *   两边必须看到同一个文件）；
+ * - postgresql：必须给 DATABASE_URL。Prisma 时代的 `?schema=xxx` 写法照旧认
+ *   （db/orm.ts 把它摘出来交给 MikroORM 的 schema 选项，pg 本身不认这个参数）。
  */
 export const databaseUrl = resolveDatabaseUrl()
 
@@ -125,7 +130,8 @@ function resolveProvider(): DbProvider {
 }
 
 function resolveDatabaseUrl() {
-  const configured = process.env.DATABASE_URL?.trim()
+  // 空串当没设：`DATABASE_URL=` 常被用来在命令行上临时盖掉 .env 里的那一行
+  const configured = process.env.DATABASE_URL?.trim() || undefined
   const scheme = providerFromUrl(configured)
   if (configured && scheme && scheme !== dbProvider) {
     throw new Error(`DB_PROVIDER=${dbProvider} 与 DATABASE_URL 的协议（${scheme}）不一致`)

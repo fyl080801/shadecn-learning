@@ -1,7 +1,7 @@
 # REQ-SOLO 个人画布（不走协同的画布）
 
 > 状态：**已实现** —— 数据模型、`applyFlowUpdate` 写入通道、两条 REST、两处互拒、
-> 前端同步层（`useFlowSync` + 两种 transport）、`/personal` 界面均已落地，
+> 前端同步层（`useFlowSync` + 两种 transport）、`/personal` 界面均已落地（界面为画布工作区，见 §4.8），
 > 测试见第 5 节。
 >
 > 前置：[REQ-CANVAS](13-flow-canvas-management.md)（项目 / 画布 / 成员 / 分享链接）与
@@ -40,14 +40,18 @@
 
 ### 3.1 个人空间就是一个 Project
 
-```prisma
-model Project {
-  /// team | personal —— personal 是每人一个的私人空间，里面的画布不走协同
-  kind            String  @default("team")
-  /// 个人空间的归属者；团队项目为 null。unique 保证「一人最多一个」
-  personalOwnerId String? @unique
-  personalOwner   User?   @relation("PersonalSpace", fields: [personalOwnerId], references: [id], onDelete: Cascade)
-}
+```ts
+// apps/server/db/entities/canvas.ts（节选）
+export const Project = defineEntity({
+  name: 'Project',
+  properties: {
+    /** team | personal —— personal 是每人一个的私人空间，里面的画布不走协同 */
+    kind: p.text().default('team'),
+    /** 个人空间的归属者；团队项目为 null。unique 保证「一人最多一个」 */
+    personalOwner: () => p.manyToOne(User).nullable().unique().deleteRule('cascade'),
+    // …
+  },
+})
 ```
 
 **为什么不是 `Flow.projectId` 可空 + `Flow.ownerId`。** 那个模型看起来更直白，代价却是
@@ -258,15 +262,20 @@ type FlowSyncStatus =
 个人画布的 `POST /doc` 本身就是真实 HTTP 请求，顺带把心跳问题消掉了 ——
 它没有一条长连接可以自己养活自己。
 
-### 4.8 界面：个人画布是独立的一页、独立的侧栏入口
+### 4.8 界面：个人画布是工作区的第一项、独立的一页
 
 **不在任何列表里混着区分两种画布**，也**不在同一页用 Tab 区分**：
 
 ```
-侧栏
- ├─「画布项目」  → /projects        只列项目（过滤掉 kind=personal），点进去是 /projects/:id
- └─「个人画布」  → /personal        直接列画布，点进去是 /flows/:id
+应用侧栏「画布」→ /personal，进入画布工作区；工作区内的页内侧栏（CanvasWorkspace）
+ ├─「个人画布」  → /personal        直接列画布，点进去是 /flows/:id
+ └─ 分组「项目」（标题行有 + 新建项目；行 hover 出现删除图标，仅管理员）
+     └─ 各项目   → /projects/:id    过滤掉 kind=personal，点进去是项目主页
 ```
+
+> **再改过一次口径。** 原先「画布项目」「个人画布」是应用侧栏上的两个入口、两个页面；
+> 现在合成一个界面，用页内二级侧栏切换。路由仍是两条（`/personal`、`/projects/:id`，
+> `/projects` 重定向到 `/personal`），所以下面「两个 URL query 互不串」的结论不变。
 
 > **改过一次口径。** 最初两者是 `/projects` 页上的两个并列 Tab（§7 里当时留着
 > 「侧栏要不要给个人画布独立入口」这条待确认）。落地后的结论是：**要**。
@@ -310,6 +319,10 @@ collab 回 `/projects/:projectId`。个人空间是个项目，这是存储上�
 | 匿名 | 401 / 页面守卫跳登录 | 与全站一致 |
 
 ### 4.10 上线注意：这次 schema 变更会挡住不带 flag 的 `db push`
+
+> **历史记录（Prisma 时代）。** 数据层换成 MikroORM 之后是按全新方案建表的，这一节描述的那次上线已经
+> 不会再发生；现在的有损变更守卫对「加唯一约束」是放行的（见 [REQ-DATA §3.4.1](05-data-persistence.md)）。
+> 留着它，是因为「新增约束被一律拦下 → 手工执行纯新增的 DDL」这个处置思路仍然适用。
 
 `Project` 上新增的 `personalOwnerId` 带 `@unique`，而 Prisma 对**新增 unique 约束**一律
 发出「可能丢数据」的警告 —— 于是不带 `--accept-data-loss` 的 `prisma db push` 会**直接拒绝执行**。
@@ -357,7 +370,7 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
 11. `useFlowSync` 在 `mode = 'solo'` 时不创建 `HocuspocusProvider`。
 12. `syncText` 文案矩阵：solo 下不会出现任何协同专属文案；`too-large` 有独立提示。
 13. `stores/flow` 的既有测试**一行不改**照常通过 —— 这本身就是「模型没分叉」的证据。
-14. `/personal` 与 `/projects` 是两个页面，各自独占一份 `page` / `keyword`，互不串。
+14. `/personal` 与 `/projects/:id` 是两个路由，各自独占一份 `page` / `keyword`，互不串。
 
 ### 5.1 落地时才发现的三件事
 
@@ -388,7 +401,7 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
 1. ~~**`FlowOperation` 对个人画布是否值得写。**~~ —— 已定：不写。操作日志整体移除了，
    两条通道都只写 `ydoc` + 投影（[REQ-DATA §5](05-data-persistence.md)）。
 2. ~~**侧栏是否要给个人画布一个独立入口。**~~ —— 已定：给。个人画布已经提到侧栏一级
-   （`/personal`），`/projects` 页回到只列项目，理由见 §4.8。
+   （`/personal`），后来又与项目合并进同一个工作区界面（页内侧栏），理由见 §4.8。
 3. **推送防抖的窗口取值。** 暂定沿用 user-state 那组（2s / 10s `maxWait`），
    但那组是为「视口 + 心跳」调的；个人画布推的是内容，丢窗口的代价更大（只在本地留着），
    可能应该更短。

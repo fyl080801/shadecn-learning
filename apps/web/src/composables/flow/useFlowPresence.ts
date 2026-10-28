@@ -43,15 +43,6 @@ export function useFlowPresence(sync: FlowSync) {
   const peers = shallowRef<PresencePeer[]>([])
   const localClientId = shallowRef(-1)
 
-  /**
-   * 上报的节流窗口 —— **跟着房间人数走**，见 `feedbackThrottle`。
-   *
-   * 写成 getter 而不是常量：`useThrottleFn` 每次调用都会 `toValue(ms)` 重读，
-   * 所以人进人出时窗口自动跟着变，不用重建节流函数。
-   * 人数在 `FEEDBACK_THROTTLE_ROOM` 以内时它就是原来那个常量，行为不变。
-   */
-  const throttleMs = computed(() => feedbackThrottle(peers.value.length))
-
   function awareness() {
     return sync.session.value?.awareness ?? null
   }
@@ -70,53 +61,79 @@ export function useFlowPresence(sync: FlowSync) {
     })
   }
 
+  /*
+   * —— 操作反馈：光标、选中、拖动几何、拉线，全部走**同一个缓冲、同一个节流** ——
+   *
+   * 每次写 awareness 都会发一个包，而且包里是**整份**本地状态。各字段各发各的话，
+   * 拖动时一个窗口要发好几包（光标一包、几何一包…），内容大半重复；
+   * 合到一个缓冲里，**不管动了几样，一个窗口最多一包**。
+   * 离散事件（点一下选中、开始拉线）也不吃亏：安静一阵后的第一次走节流的前沿，立刻发。
+   *
+   * 加一种新的反馈字段：往 `FeedbackField` 里加个名字，setter 里调 `publish` 即可。
+   * 身份（`user`）不是操作反馈，低频且必须立刻到，所以不走这里。
+   *
+   * 节流函数读的是缓冲而不是自己的入参：尾巴上那一次补发拿到的一定是**当前**状态，
+   * 而不是一个已经过期的值（松手清空后又被补发回去）。
+   */
+  type FeedbackField = "cursor" | "selection" | "transform" | "connecting"
+  let pending: Partial<Record<FeedbackField, unknown>> = {}
+
+  /**
+   * 上报的节流窗口 —— 所有反馈字段一个值，**跟着房间人数走**，见 `feedbackThrottle`。
+   *
+   * 写成 getter 而不是常量：`useThrottleFn` 每次调用都会 `toValue(ms)` 重读，
+   * 所以人进人出时窗口自动跟着变，不用重建节流函数。
+   */
+  const throttleMs = computed(() => feedbackThrottle(peers.value.length))
+
+  /**
+   * 把缓冲写进 awareness。**值没变就不发** —— y-protocols 的 `update` 事件不去重，
+   * provider 收到就发包，所以「鼠标在一个整数像素内抖」「选中没变又报一遍」这种都得在这儿拦掉。
+   */
+  function flush() {
+    const current = awareness()
+    const next = pending
+    pending = {}
+    if (!current) return
+
+    const state = current.getLocalState() ?? {}
+    const changed = (Object.keys(next) as FeedbackField[]).some(
+      (field) => JSON.stringify(state[field] ?? null) !== JSON.stringify(next[field] ?? null)
+    )
+    if (changed) current.setLocalState({ ...state, ...next })
+  }
+
+  const scheduleFlush = useThrottleFn(flush, throttleMs, true)
+
+  function publish(field: FeedbackField, value: unknown) {
+    pending[field] = value
+    void scheduleFlush()
+  }
+
   /**
    * 上报鼠标位置。传的是**画布坐标**不是屏幕坐标 ——
    * 各人的视口不一样，屏幕坐标到了对方那儿毫无意义。
    */
-  const setCursor = useThrottleFn(
-    (point: PresencePoint | null) => {
-      awareness()?.setLocalStateField(
-        "cursor",
-        // 亚像素精度对显示毫无帮助，取整能让包小一点
-        point ? { x: Math.round(point.x), y: Math.round(point.y) } : null
-      )
-    },
-    throttleMs,
-    true
-  )
+  function setCursor(point: PresencePoint | null) {
+    // 亚像素精度对显示毫无帮助，取整能让包小一点，也让「没动」更容易判出来
+    publish("cursor", point ? { x: Math.round(point.x), y: Math.round(point.y) } : null)
+  }
 
   /** 上报我选中了哪些元素（元素 key）。节点和边一视同仁 */
   function setSelection(keys: readonly string[]) {
-    awareness()?.setLocalStateField("selection", [...keys])
+    publish("selection", [...keys])
   }
 
-  /**
-   * 上报「我正操作着哪些元素、它们此刻在哪」。
-   *
-   * 节流函数读的是 `transformState` 而不是自己的入参：这样节流尾巴上那一次补发
-   * 拿到的一定是**当前**状态，而不是一个已经过期的值（松手清空后又被补发回去）。
-   */
-  let transformState: Record<string, PresencePoint> = {}
-
-  const flushTransform = useThrottleFn(
-    () => {
-      awareness()?.setLocalStateField("transform", transformState)
-    },
-    throttleMs,
-    true
-  )
-
+  /** 上报「我正操作着哪些元素、它们此刻在哪」 */
   function setTransform(geometry: Record<string, PresencePoint>) {
-    transformState = geometry
-    void flushTransform()
+    publish("transform", geometry)
   }
 
   function clearTransform() {
-    transformState = {}
-    // 立刻发一次，不等节流：松手了对方就该看到节点落定，不能压在节流窗口里
-    awareness()?.setLocalStateField("transform", {})
-    void flushTransform()
+    pending.transform = {}
+    // 立刻发一次，不等节流：松手了对方就该看到节点落定，不能压在节流窗口里。
+    // 之后节流尾巴即使再触发，缓冲已空、状态没变，也不会多发
+    flush()
   }
 
   /**
@@ -124,13 +141,13 @@ export function useFlowPresence(sync: FlowSync) {
    *
    * 线的另一头跟着 `cursor` 走，所以只发起点。
    */
-  function setConnecting(connecting: { from: PresencePoint; nodeId: string } | null) {
-    awareness()?.setLocalStateField(
+  function setConnecting(next: { from: PresencePoint; nodeId: string } | null) {
+    publish(
       "connecting",
-      connecting
+      next
         ? {
-            from: { x: Math.round(connecting.from.x), y: Math.round(connecting.from.y) },
-            nodeId: connecting.nodeId
+            from: { x: Math.round(next.from.x), y: Math.round(next.from.y) },
+            nodeId: next.nodeId
           }
         : null
     )

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 import { useRouter } from "vue-router"
-import { ArrowLeft, Check, Copy, Link2, Trash2, UserMinus } from "@lucide/vue"
+import { Check, Copy, Link2, UserMinus } from "@lucide/vue"
 import { toast } from "vue-sonner"
 
 import { Badge } from "@/components/ui/badge"
@@ -43,22 +43,25 @@ import {
   TableRow
 } from "@/components/ui/table"
 
+import CanvasWorkspace from "@/components/canvas/CanvasWorkspace.vue"
 import FlowList from "@/components/canvas/FlowList.vue"
 import { projectApi } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { usePageTitle } from "@/composables/usePageTitle"
 import { useAsyncAction } from "@/composables/useAsyncAction"
+import { useProjectNav } from "@/composables/useProjectNav"
 import { formatDateTime } from "@/lib/format"
 import type { ProjectInviteView, ProjectMemberView, ProjectSummary } from "@shadecn/shared/canvas"
 
 /**
- * 项目主页 —— **一个路由搞定**：固定的项目头部 + 同页 Tab（画布 / 成员）。
+ * 项目主页（工作区的内容区之一，侧栏由 `CanvasWorkspace` 提供）—— **一个路由搞定**：固定的项目头部 + 同页 Tab（画布 / 成员）。
  * 切 Tab 不改 URL、不重新请求、不闪 loading：两个 Tab 的数据进页面时一起取好。
  */
 
 const props = defineProps<{ projectId: string }>()
 
 const router = useRouter()
+const { refresh: refreshProjectNav } = useProjectNav()
 
 const project = ref<ProjectSummary | null>(null)
 const members = ref<ProjectMemberView[]>([])
@@ -131,18 +134,9 @@ const { run: submitRename } = useAsyncAction(async () => {
   if (!project.value || !name || name === project.value.name) return
 
   project.value = await projectApi.update(props.projectId, { name })
+  // 页内侧栏列着项目名，改完要跟着变
+  await refreshProjectNav()
 }, { errorMessage: "改名失败" })
-
-const deletingProject = ref(false)
-
-const { run: confirmDeleteProject } = useAsyncAction(
-  async () => {
-    await projectApi.remove(props.projectId)
-    toast.success("项目已删除")
-    void router.push("/projects")
-  },
-  { errorMessage: "删除失败" }
-)
 
 // —— 成员与邀请 ——
 
@@ -244,256 +238,235 @@ function displayName(member: ProjectMemberView) {
 </script>
 
 <template>
-  <div class="mx-auto flex h-full w-full max-w-6xl flex-col gap-6 p-6">
-    <div v-if="loading || redirecting" class="space-y-4">
-      <Skeleton class="h-9 w-64" />
-      <Skeleton class="h-64 w-full" />
-    </div>
+  <CanvasWorkspace>
+    <div class="mx-auto flex h-full w-full max-w-6xl flex-col gap-6 p-6">
+      <div v-if="loading || redirecting" class="space-y-4">
+        <Skeleton class="h-9 w-64" />
+        <Skeleton class="h-64 w-full" />
+      </div>
 
-    <div
-      v-else-if="loadError || !project"
-      class="flex flex-col items-center gap-3 rounded-lg border border-dashed p-12 text-center"
-    >
-      <p class="text-sm text-destructive">{{ loadError ?? "项目不存在" }}</p>
-      <Button variant="outline" size="sm" @click="router.push('/projects')">返回项目列表</Button>
-    </div>
+      <div
+        v-else-if="loadError || !project"
+        class="flex flex-col items-center gap-3 rounded-lg border border-dashed p-12 text-center"
+      >
+        <p class="text-sm text-destructive">{{ loadError ?? "项目不存在" }}</p>
+        <Button variant="outline" size="sm" @click="router.push('/personal')">返回个人画布</Button>
+      </div>
 
-    <template v-else>
-      <!-- 项目头部：常驻，不随 Tab 切换 -->
-      <header class="flex items-start justify-between gap-4">
-        <div class="min-w-0">
-          <Button variant="ghost" size="sm" class="-ml-2 mb-1" @click="router.push('/projects')">
-            <ArrowLeft />
-            全部项目
-          </Button>
+      <template v-else>
+        <!-- 项目头部：常驻，不随 Tab 切换 -->
+        <header class="flex items-start justify-between gap-4">
+          <div class="min-w-0">
+            <Input
+              v-if="editingName"
+              v-model="nameDraft"
+              class="h-9 max-w-sm text-xl font-semibold"
+              autofocus
+              @blur="submitRename()"
+              @keydown.enter="submitRename()"
+              @keydown.esc="editingName = false"
+            />
+            <h1
+              v-else
+              class="truncate text-2xl font-semibold tracking-tight"
+              :class="isAdmin ? 'cursor-text hover:text-primary' : ''"
+              :title="isAdmin ? '点击改名' : undefined"
+              @click="startRename"
+            >
+              {{ project.name }}
+            </h1>
 
-          <Input
-            v-if="editingName"
-            v-model="nameDraft"
-            class="h-9 max-w-sm text-xl font-semibold"
-            autofocus
-            @blur="submitRename()"
-            @keydown.enter="submitRename()"
-            @keydown.esc="editingName = false"
-          />
-          <h1
-            v-else
-            class="truncate text-2xl font-semibold tracking-tight"
-            :class="isAdmin ? 'cursor-text hover:text-primary' : ''"
-            :title="isAdmin ? '点击改名' : undefined"
-            @click="startRename"
-          >
-            {{ project.name }}
-          </h1>
+            <p v-if="project.description" class="mt-1 text-sm text-muted-foreground">
+              {{ project.description }}
+            </p>
+          </div>
 
-          <p v-if="project.description" class="mt-1 text-sm text-muted-foreground">
-            {{ project.description }}
-          </p>
-        </div>
+          <div v-if="isAdmin" class="flex shrink-0 items-center gap-2">
+            <Button variant="outline" :loading="inviteLoading" @click="openSharePanel()">
+              <Link2 />
+              分享
+            </Button>
+          </div>
+        </header>
 
-        <div v-if="isAdmin" class="flex shrink-0 items-center gap-2">
-          <Button variant="outline" :loading="inviteLoading" @click="openSharePanel()">
-            <Link2 />
-            分享
-          </Button>
-          <Button variant="ghost" size="icon" title="删除项目" @click="deletingProject = true">
-            <Trash2 class="text-destructive" />
-          </Button>
-        </div>
-      </header>
+        <!-- 同页 Tab：切换不改路由、不重新请求 -->
+        <Tabs default-value="flows" class="flex min-h-0 flex-1 flex-col gap-4">
+          <TabsList>
+            <TabsTrigger value="flows">画布 {{ flowTotal }}</TabsTrigger>
+            <TabsTrigger value="members">成员 {{ members.length }}</TabsTrigger>
+          </TabsList>
 
-      <!-- 同页 Tab：切换不改路由、不重新请求 -->
-      <Tabs default-value="flows" class="flex min-h-0 flex-1 flex-col gap-4">
-        <TabsList>
-          <TabsTrigger value="flows">画布 {{ flowTotal }}</TabsTrigger>
-          <TabsTrigger value="members">成员 {{ members.length }}</TabsTrigger>
-        </TabsList>
+          <!-- Tab 1 · 画布 -->
+          <TabsContent value="flows" class="flex min-h-0 flex-1 flex-col gap-4">
+            <!-- 只有这一个列表，所以页码 / 关键字写进 URL；刷新、分享链接都能停在原处 -->
+            <FlowList
+              v-model:total="flowTotal"
+              :project-id="projectId"
+              sync-query
+              @changed="loadProject"
+            />
+          </TabsContent>
 
-        <!-- Tab 1 · 画布 -->
-        <TabsContent value="flows" class="flex min-h-0 flex-1 flex-col gap-4">
-          <!-- 只有这一个列表，所以页码 / 关键字写进 URL；刷新、分享链接都能停在原处 -->
-          <FlowList
-            v-model:total="flowTotal"
-            :project-id="projectId"
-            sync-query
-            @changed="loadProject"
-          />
-        </TabsContent>
-
-        <!-- Tab 2 · 成员 -->
-        <TabsContent value="members" class="flex min-h-0 flex-1 flex-col gap-4">
-          <div class="rounded-lg border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>成员</TableHead>
-                  <TableHead class="w-28">角色</TableHead>
-                  <TableHead class="w-44">加入时间</TableHead>
-                  <TableHead class="w-12" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                <TableRow v-for="member in members" :key="member.userId">
-                  <TableCell>
-                    <div class="flex items-center gap-3">
-                      <!-- bg-muted 是给默认头像垫的底：那张图是透明底的像素方块 -->
-                      <Avatar class="size-8 bg-muted">
-                        <AvatarImage
-                          v-if="member.avatarUrl"
-                          :src="member.avatarUrl"
-                          :alt="displayName(member)"
-                        />
-                        <AvatarFallback>{{ initials(member) }}</AvatarFallback>
-                      </Avatar>
-                      <div class="min-w-0">
-                        <div class="truncate font-medium">{{ displayName(member) }}</div>
-                        <div v-if="member.email" class="truncate text-xs text-muted-foreground">
-                          {{ member.email }}
+          <!-- Tab 2 · 成员 -->
+          <TabsContent value="members" class="flex min-h-0 flex-1 flex-col gap-4">
+            <div class="rounded-lg border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>成员</TableHead>
+                    <TableHead class="w-28">角色</TableHead>
+                    <TableHead class="w-44">加入时间</TableHead>
+                    <TableHead class="w-12" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow v-for="member in members" :key="member.userId">
+                    <TableCell>
+                      <div class="flex items-center gap-3">
+                        <!-- bg-muted 是给默认头像垫的底：那张图是透明底的像素方块 -->
+                        <Avatar class="size-8 bg-muted">
+                          <AvatarImage
+                            v-if="member.avatarUrl"
+                            :src="member.avatarUrl"
+                            :alt="displayName(member)"
+                          />
+                          <AvatarFallback>{{ initials(member) }}</AvatarFallback>
+                        </Avatar>
+                        <div class="min-w-0">
+                          <div class="truncate font-medium">{{ displayName(member) }}</div>
+                          <div v-if="member.email" class="truncate text-xs text-muted-foreground">
+                            {{ member.email }}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge :variant="member.role === 'admin' ? 'default' : 'secondary'">
-                      {{ member.role === "admin" ? "管理员" : "成员" }}
-                    </Badge>
-                  </TableCell>
-                  <TableCell class="text-sm text-muted-foreground">
-                    {{ formatDateTime(member.joinedAt) }}
-                  </TableCell>
-                  <TableCell>
-                    <!-- 管理员不能移除自己 -->
-                    <Button
-                      v-if="isAdmin && member.userId !== currentUserId"
-                      variant="ghost"
-                      size="icon"
-                      title="移出项目"
-                      @click="startRemoveMember(member)"
-                    >
-                      <UserMinus class="text-destructive" />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
-          </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge :variant="member.role === 'admin' ? 'default' : 'secondary'">
+                        {{ member.role === "admin" ? "管理员" : "成员" }}
+                      </Badge>
+                    </TableCell>
+                    <TableCell class="text-sm text-muted-foreground">
+                      {{ formatDateTime(member.joinedAt) }}
+                    </TableCell>
+                    <TableCell>
+                      <!-- 管理员不能移除自己 -->
+                      <Button
+                        v-if="isAdmin && member.userId !== currentUserId"
+                        variant="ghost"
+                        size="icon"
+                        title="移出项目"
+                        @click="startRemoveMember(member)"
+                      >
+                        <UserMinus class="text-destructive" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </div>
 
-          <p v-if="isAdmin" class="text-sm text-muted-foreground">
-            加入项目的唯一方式是分享链接 —— 点右上角的「分享」把链接发给对方。
-          </p>
-        </TabsContent>
-      </Tabs>
-    </template>
+            <p v-if="isAdmin" class="text-sm text-muted-foreground">
+              加入项目的唯一方式是分享链接 —— 点右上角的「分享」把链接发给对方。
+            </p>
+          </TabsContent>
+        </Tabs>
+      </template>
 
-    <!-- 分享面板：一打开就有链接，没有「生成」这一步 -->
-    <Dialog v-model:open="sharePanel">
-      <DialogContent class="max-w-xl">
-        <DialogHeader>
-          <DialogTitle>分享项目</DialogTitle>
-          <DialogDescription>
-            把链接发给对方，打开即可加入本项目。不限人数，链接是加入本项目的唯一方式。
-          </DialogDescription>
-        </DialogHeader>
+      <!-- 分享面板：一打开就有链接，没有「生成」这一步 -->
+      <Dialog v-model:open="sharePanel">
+        <DialogContent class="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>分享项目</DialogTitle>
+            <DialogDescription>
+              把链接发给对方，打开即可加入本项目。不限人数，链接是加入本项目的唯一方式。
+            </DialogDescription>
+          </DialogHeader>
 
-        <p v-if="inviteLoading" class="text-sm text-muted-foreground">加载中…</p>
+          <p v-if="inviteLoading" class="text-sm text-muted-foreground">加载中…</p>
 
-        <template v-else-if="invite">
-          <!-- 链接是主角：一行就是「链接 + 复制」，有效期在下面当脚注 -->
-          <div class="flex w-full min-w-0 items-center gap-2">
-            <Input
-              :model-value="invite.url"
-              readonly
-              class="min-w-0 flex-1 font-mono text-xs"
-              @focus="selectAllText"
-            />
-            <Button class="shrink-0" @click="copyShareLink">
-              <Check v-if="copied" />
-              <Copy v-else />
-              {{ copied ? "已复制" : "复制" }}
-            </Button>
-          </div>
+          <template v-else-if="invite">
+            <!-- 链接是主角：一行就是「链接 + 复制」，有效期在下面当脚注 -->
+            <div class="flex w-full min-w-0 items-center gap-2">
+              <Input
+                :model-value="invite.url"
+                readonly
+                class="min-w-0 flex-1 font-mono text-xs"
+                @focus="selectAllText"
+              />
+              <Button class="shrink-0" @click="copyShareLink">
+                <Check v-if="copied" />
+                <Copy v-else />
+                {{ copied ? "已复制" : "复制" }}
+              </Button>
+            </div>
 
-          <div class="flex w-full min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span class="shrink-0">有效期</span>
-            <Select
-              v-model="inviteExpiry"
-              :disabled="expiryPending"
-              @update:model-value="(v) => changeExpiry(String(v))"
-            >
-              <SelectTrigger class="h-7 w-24 shrink-0 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="1">1 天</SelectItem>
-                <SelectItem value="7">7 天</SelectItem>
-                <SelectItem value="30">30 天</SelectItem>
-              </SelectContent>
-            </Select>
-            <span class="truncate">{{ formatDateTime(invite.expiresAt) }} 过期</span>
-            <Button
-              variant="ghost"
-              size="sm"
-              class="ml-auto h-7 shrink-0 text-xs"
-              @click="resetOpen = true"
-            >
-              重置链接
-            </Button>
-          </div>
-        </template>
-      </DialogContent>
-    </Dialog>
+            <div class="flex w-full min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span class="shrink-0">有效期</span>
+              <Select
+                v-model="inviteExpiry"
+                :disabled="expiryPending"
+                @update:model-value="(v) => changeExpiry(String(v))"
+              >
+                <SelectTrigger class="h-7 w-24 shrink-0 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">1 天</SelectItem>
+                  <SelectItem value="7">7 天</SelectItem>
+                  <SelectItem value="30">30 天</SelectItem>
+                </SelectContent>
+              </Select>
+              <span class="truncate">{{ formatDateTime(invite.expiresAt) }} 过期</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                class="ml-auto h-7 shrink-0 text-xs"
+                @click="resetOpen = true"
+              >
+                重置链接
+              </Button>
+            </div>
+          </template>
+        </DialogContent>
+      </Dialog>
 
-    <!-- 各种二次确认 -->
-    <AlertDialog v-model:open="deletingProject">
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>删除项目「{{ project?.name }}」？</AlertDialogTitle>
-          <AlertDialogDescription>
-            项目和其中的全部画布都会对所有成员不可见，且没有恢复入口。
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>取消</AlertDialogCancel>
-          <AlertDialogAction @click="confirmDeleteProject()">删除</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+      <!-- 各种二次确认（删除项目的入口在页内侧栏，见 CanvasWorkspace） -->
+      <AlertDialog v-model:open="resetOpen">
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>重置分享链接？</AlertDialogTitle>
+            <AlertDialogDescription>
+              会换成一条新链接，之前发出去的链接立刻失效。已经加入的成员不受影响。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction @click="confirmResetInvite()">重置</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-    <AlertDialog v-model:open="resetOpen">
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>重置分享链接？</AlertDialogTitle>
-          <AlertDialogDescription>
-            会换成一条新链接，之前发出去的链接立刻失效。已经加入的成员不受影响。
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>取消</AlertDialogCancel>
-          <AlertDialogAction @click="confirmResetInvite()">重置</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-
-    <AlertDialog v-model:open="removeMemberOpen">
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            把 {{ removingMember ? displayName(removingMember) : "" }} 移出项目？
-          </AlertDialogTitle>
-          <!--
-            这两句都是事实，不能只写第一句：分享链接是一条、可无限次使用、只看有效期，
-            对方手里若还留着当初进来用的那条，移除之后自己点一下就能回来。
-            不说的话，管理员会以为「移除」等于「收回权限」。
-          -->
-          <AlertDialogDescription>
-            移除后对方立刻访问不到本项目及其中的画布，正在编辑的人会在几十秒内断开。
-            注意：分享链接可以重复使用，对方若还留着那条链接可以自行重新加入——
-            要彻底断掉，请在分享面板里重置链接。
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>取消</AlertDialogCancel>
-          <AlertDialogAction @click="confirmRemoveMember()">移除</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  </div>
+      <AlertDialog v-model:open="removeMemberOpen">
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              把 {{ removingMember ? displayName(removingMember) : "" }} 移出项目？
+            </AlertDialogTitle>
+            <!--
+              这两句都是事实，不能只写第一句：分享链接是一条、可无限次使用、只看有效期，
+              对方手里若还留着当初进来用的那条，移除之后自己点一下就能回来。
+              不说的话，管理员会以为「移除」等于「收回权限」。
+            -->
+            <AlertDialogDescription>
+              移除后对方立刻访问不到本项目及其中的画布，正在编辑的人会在几十秒内断开。
+              注意：分享链接可以重复使用，对方若还留着那条链接可以自行重新加入——
+              要彻底断掉，请在分享面板里重置链接。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction @click="confirmRemoveMember()">移除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  </CanvasWorkspace>
 </template>

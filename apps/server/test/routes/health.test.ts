@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from '../../app.ts'
 import { createMemoryBackend, useBackendForTesting } from '../../cluster/index.ts'
-import { prisma } from '../../db.ts'
+import { orm } from '../../db.ts'
 import { health } from '../../routes/health.ts'
 import { resetDb } from '../helpers/db.ts'
 
@@ -42,7 +42,7 @@ describe('GET /api/health（浅探针，给 liveness / startup）', () => {
   })
 
   it('匿名可访问，且不碰数据库', async () => {
-    const query = vi.spyOn(prisma, '$queryRaw')
+    const query = vi.spyOn(orm.em.getConnection(), 'execute')
 
     const response = await app.request('/api/health')
 
@@ -53,7 +53,7 @@ describe('GET /api/health（浅探针，给 liveness / startup）', () => {
   })
 
   it('数据库不可用时**照样** 200 —— 重启治不了数据库故障', async () => {
-    vi.spyOn(prisma, '$queryRaw').mockRejectedValue(new Error('数据库炸了'))
+    vi.spyOn(orm.em.getConnection(), 'execute').mockRejectedValue(new Error('数据库炸了'))
     expect((await app.request('/api/health')).status).toBe(200)
   })
 })
@@ -70,7 +70,7 @@ describe('GET /api/health/ready（深探针，给 readiness）', () => {
   })
 
   it('数据库不通 → 503，把这个 Pod 摘出 endpoints', async () => {
-    vi.spyOn(prisma, '$queryRaw').mockRejectedValue(new Error('数据库炸了'))
+    vi.spyOn(orm.em.getConnection(), 'execute').mockRejectedValue(new Error('数据库炸了'))
     vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     const response = await app.request('/api/health/ready')
@@ -102,7 +102,7 @@ describe('GET /api/health/ready（深探针，给 readiness）', () => {
    * 都只进日志（那边 module=health）。
    */
   it('失败时不把原因写进响应', async () => {
-    vi.spyOn(prisma, '$queryRaw').mockRejectedValue(new Error('connect ECONNREFUSED 10.0.0.5:5432'))
+    vi.spyOn(orm.em.getConnection(), 'execute').mockRejectedValue(new Error('connect ECONNREFUSED 10.0.0.5:5432'))
     vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     const body = await (await app.request('/api/health/ready')).text()

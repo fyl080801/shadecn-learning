@@ -7,8 +7,8 @@ import {
   toSessionUser,
 } from '../../auth/session.ts'
 import { identities } from '../../store/identities.ts'
-import type { User } from '../../generated/prisma/client.ts'
-import { createUser, prisma, resetDb } from '../helpers/db.ts'
+import { createUser, db, firstRow, resetDb } from '../helpers/db.ts'
+import { AuthRequest, Session, User } from '../../db/entities/index.ts'
 import {
   CLIENT_ID,
   ISSUER,
@@ -77,7 +77,7 @@ describe('createSession() / loadSession()', () => {
     const user = await createUser()
     const token = await createSession({ user, provider: 'keycloak', tokens: providerTokens() })
 
-    const row = await prisma.session.findFirstOrThrow()
+    const row = await firstRow(Session)
     expect(row.id).not.toBe(token)
     expect(row.id).toMatch(/^[0-9a-f]{64}$/)
   })
@@ -108,7 +108,7 @@ describe('createSession() / loadSession()', () => {
       tokens: providerTokens({ expiresIn: 300, refreshExpiresIn: 1800 }),
     })
 
-    const row = await prisma.session.findFirstOrThrow()
+    const row = await firstRow(Session)
     expect(row.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 300_000)
     expect(row.refreshExpiresAt?.getTime()).toBeGreaterThanOrEqual(before + 1_800_000)
   })
@@ -118,7 +118,7 @@ describe('createSession() / loadSession()', () => {
     const tokens = { ...providerTokens(), refreshExpiresAt: null }
     await createSession({ user, provider: 'keycloak', tokens })
 
-    expect((await prisma.session.findFirstOrThrow()).refreshExpiresAt).toBeNull()
+    expect((await firstRow(Session)).refreshExpiresAt).toBeNull()
   })
 
   it.each([
@@ -131,10 +131,10 @@ describe('createSession() / loadSession()', () => {
   it('会话活得超过 SESSION_TTL 就作废并删掉（不能无限续）', async () => {
     const user = await createUser()
     const token = await createSession({ user, provider: 'keycloak', tokens: providerTokens() })
-    await prisma.session.updateMany({ data: { createdAt: new Date(Date.now() - TTL_MS - 1000) } })
+    await db().nativeUpdate(Session, {}, { createdAt: new Date(Date.now() - TTL_MS - 1000) })
 
     await expect(loadSession(token)).resolves.toBeNull()
-    expect(await prisma.session.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
   })
 
   it('access_token 还有 30 秒以上就不去打扰 Keycloak', async () => {
@@ -183,7 +183,7 @@ describe('loadSession() 自动续期', () => {
     const session = await loadSession(token)
 
     expect(toSessionUser(session!.user).roles).toEqual(['admin', `${CLIENT_ID}:ops`])
-    const persisted = await prisma.user.findUniqueOrThrow({ where: { id: user.id } })
+    const persisted = await db().findOneOrFail(User, { id: user.id })
     expect(persisted.roles).toBe(JSON.stringify(['admin', `${CLIENT_ID}:ops`]))
   })
 
@@ -203,7 +203,7 @@ describe('loadSession() 自动续期', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     await expect(loadSession(token)).resolves.toBeNull()
-    expect(await prisma.session.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
   })
 
   it('连不上 Keycloak → 保留会话，不能因为一次网络抖动就把人踢下线', async () => {
@@ -214,7 +214,7 @@ describe('loadSession() 自动续期', () => {
     const session = await loadSession(token)
 
     expect(session).not.toBeNull()
-    expect(await prisma.session.count()).toBe(1)
+    expect(await db().count(Session, {})).toBe(1)
   })
 
   it('Keycloak 自己 5xx → 同样保留会话', async () => {
@@ -223,7 +223,7 @@ describe('loadSession() 自动续期', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     await expect(loadSession(token)).resolves.not.toBeNull()
-    expect(await prisma.session.count()).toBe(1)
+    expect(await db().count(Session, {})).toBe(1)
   })
 
   it('连不上之后进入冷却期，不会每个请求都去撞一次超时', async () => {
@@ -244,10 +244,10 @@ describe('loadSession() 自动续期', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     await expect(loadSession(token)).resolves.not.toBeNull()
-    await prisma.session.updateMany({ data: { refreshExpiresAt: new Date(Date.now() - 1000) } })
+    await db().nativeUpdate(Session, {}, { refreshExpiresAt: new Date(Date.now() - 1000) })
 
     await expect(loadSession(token)).resolves.toBeNull()
-    expect(await prisma.session.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
   })
 
   it('压根没有 refresh_token → 直接作废，不去打 token 端点', async () => {
@@ -260,7 +260,7 @@ describe('loadSession() 自动续期', () => {
 
     await expect(loadSession(token)).resolves.toBeNull()
     expect(stub.tokenCalls()).toBe(0)
-    expect(await prisma.session.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
   })
 
   it('refresh_token 自己也过期了 → 直接作废', async () => {
@@ -270,7 +270,7 @@ describe('loadSession() 自动续期', () => {
       provider: 'keycloak',
       tokens: providerTokens({ expiresIn: 10 }),
     })
-    await prisma.session.updateMany({ data: { refreshExpiresAt: new Date(Date.now() - 1000) } })
+    await db().nativeUpdate(Session, {}, { refreshExpiresAt: new Date(Date.now() - 1000) })
 
     await expect(loadSession(token)).resolves.toBeNull()
     expect(stub.tokenCalls()).toBe(0)
@@ -296,7 +296,7 @@ describe('deleteSessionByToken()', () => {
     const deleted = await deleteSessionByToken(token)
 
     expect(deleted?.idToken).toBeTruthy()
-    expect(await prisma.session.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
   })
 
   it.each([
@@ -307,7 +307,7 @@ describe('deleteSessionByToken()', () => {
     await createSession({ user, provider: 'keycloak', tokens: providerTokens() })
 
     await expect(deleteSessionByToken(token)).resolves.toBeNull()
-    expect(await prisma.session.count()).toBe(1)
+    expect(await db().count(Session, {})).toBe(1)
   })
 })
 
@@ -325,35 +325,34 @@ describe('sweepExpired()', () => {
       provider: 'keycloak',
       tokens: providerTokens(),
     })
-    const staleId = (await prisma.session.findMany()).map((s) => s.id).filter((id) => id)[1]
-    await prisma.session.update({
-      where: { id: staleId },
-      data: { createdAt: new Date(Date.now() - TTL_MS - 1000) },
-    })
+    const staleId = (await db().find(Session, {})).map((s) => s.id).filter((id) => id)[1]
+    await db().nativeUpdate(
+      Session,
+      { id: staleId },
+      { createdAt: new Date(Date.now() - TTL_MS - 1000) },
+    )
 
-    await prisma.authRequest.create({
-      data: {
-        state: 'expired',
-        nonce: 'n',
-        codeVerifier: 'v',
-        expiresAt: new Date(Date.now() - 1000),
-      },
+    const em = db()
+    em.create(AuthRequest, {
+      state: 'expired',
+      nonce: 'n',
+      codeVerifier: 'v',
+      expiresAt: new Date(Date.now() - 1000),
     })
-    await prisma.authRequest.create({
-      data: {
-        state: 'fresh',
-        nonce: 'n',
-        codeVerifier: 'v',
-        expiresAt: new Date(Date.now() + 60_000),
-      },
+    em.create(AuthRequest, {
+      state: 'fresh',
+      nonce: 'n',
+      codeVerifier: 'v',
+      expiresAt: new Date(Date.now() + 60_000),
     })
+    await em.flush()
 
     const result = await sweepExpired()
 
     expect(result).toEqual({ sessions: 1, authRequests: 1, pendingLinks: 0 })
     await expect(loadSession(liveToken)).resolves.not.toBeNull()
     await expect(loadSession(staleToken)).resolves.toBeNull()
-    expect(await prisma.authRequest.count()).toBe(1)
+    expect(await db().count(AuthRequest, {})).toBe(1)
   })
 
   it('没东西可清时返回 0', async () => {

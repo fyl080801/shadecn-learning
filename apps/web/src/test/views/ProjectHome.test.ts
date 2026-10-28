@@ -4,6 +4,7 @@ import { createMemoryHistory, createRouter } from "vue-router"
 
 import ProjectHome from "@/views/canvas/ProjectHome.vue"
 import { flowApi, projectApi } from "@/lib/api"
+import { resetProjectNav } from "@/composables/useProjectNav"
 import { emptyGraph } from "@shadecn/shared/flow-graph"
 import type {
   FlowDetail,
@@ -25,6 +26,7 @@ import type {
 
 vi.mock("@/lib/api", () => ({
   projectApi: {
+    list: vi.fn(),
     get: vi.fn(),
     members: vi.fn(),
     update: vi.fn(),
@@ -132,7 +134,7 @@ async function mountPage() {
     history: createMemoryHistory(),
     routes: [
       { path: "/", component: { template: "<div />" } },
-      { path: "/projects", component: { template: "<div />" } },
+      { path: "/personal", component: { template: "<div />" } },
       { path: "/projects/:projectId", component: { template: "<div />" } },
       { path: "/flows/:flowId", component: { template: "<div />" } }
     ]
@@ -186,7 +188,16 @@ describe("项目主页的删除确认", () => {
     stubPointerApis()
     document.body.innerHTML = ""
     vi.clearAllMocks()
+    // 页内侧栏的项目列表是模块级缓存，用例之间要清掉
+    resetProjectNav()
 
+    vi.mocked(projectApi.list).mockResolvedValue({
+      items: [project()],
+      page: 1,
+      pageSize: 100,
+      total: 1,
+      totalPages: 1
+    })
     vi.mocked(projectApi.get).mockResolvedValue(project())
     vi.mocked(projectApi.members).mockResolvedValue([member])
     vi.mocked(flowApi.list).mockResolvedValue(paged([flow("f1", "画布A"), flow("f2", "画布B")]))
@@ -207,6 +218,28 @@ describe("项目主页的删除确认", () => {
     // 删的必须是点开菜单的那一张，不是 undefined、也不是别的
     expect(flowApi.remove).toHaveBeenCalledWith("f1")
     expect(flowApi.list).toHaveBeenCalled()
+  })
+
+  it("头部没有删除项目的入口 —— 删除统一在页内侧栏的 hover 图标", async () => {
+    const wrapper = await mountPage()
+
+    expect(wrapper.find('button[title="删除项目"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain("全部项目")
+  })
+
+  it("改名成功 → 侧栏的项目列表重新拉一次", async () => {
+    const wrapper = await mountPage()
+    vi.mocked(projectApi.update).mockResolvedValue({ ...project(), name: "新名字" })
+    vi.mocked(projectApi.list).mockClear()
+
+    await wrapper.find("h1").trigger("click")
+    const input = wrapper.find("input.text-xl")
+    await input.setValue("新名字")
+    await input.trigger("keydown.enter")
+    await flushPromises()
+
+    expect(projectApi.update).toHaveBeenCalledWith(PROJECT_ID, { name: "新名字" })
+    expect(projectApi.list).toHaveBeenCalledTimes(1)
   })
 
   it("取消删除画布 → 什么都不发", async () => {
@@ -239,7 +272,16 @@ describe("防连点：一次点击一次请求", () => {
     stubPointerApis()
     document.body.innerHTML = ""
     vi.clearAllMocks()
+    // 页内侧栏的项目列表是模块级缓存，用例之间要清掉
+    resetProjectNav()
 
+    vi.mocked(projectApi.list).mockResolvedValue({
+      items: [project()],
+      page: 1,
+      pageSize: 100,
+      total: 1,
+      totalPages: 1
+    })
     vi.mocked(projectApi.get).mockResolvedValue(project())
     vi.mocked(projectApi.members).mockResolvedValue([member])
     vi.mocked(flowApi.list).mockResolvedValue(paged([flow("f1", "画布A")]))
@@ -328,7 +370,16 @@ describe("项目的分享链接", () => {
     stubPointerApis()
     document.body.innerHTML = ""
     vi.clearAllMocks()
+    // 页内侧栏的项目列表是模块级缓存，用例之间要清掉
+    resetProjectNav()
 
+    vi.mocked(projectApi.list).mockResolvedValue({
+      items: [project()],
+      page: 1,
+      pageSize: 100,
+      total: 1,
+      totalPages: 1
+    })
     vi.mocked(projectApi.get).mockResolvedValue(project())
     vi.mocked(projectApi.members).mockResolvedValue([member])
     vi.mocked(flowApi.list).mockResolvedValue(paged([flow("f1", "画布A")]))

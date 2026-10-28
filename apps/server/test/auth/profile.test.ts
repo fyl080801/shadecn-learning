@@ -3,7 +3,8 @@ import { completeUserProfile, registerProfileHook } from '../../auth/profile.ts'
 // 引入即挂上 identicon 那条补齐规则
 import '../../avatar/index.ts'
 import { identiconUrl } from '../../avatar/identicon.ts'
-import { createUser, prisma, resetDb } from '../helpers/db.ts'
+import { createUser, db, resetDb } from '../helpers/db.ts'
+import { User } from '../../db/entities/index.ts'
 
 beforeEach(async () => {
   await resetDb()
@@ -17,17 +18,14 @@ describe('登录后的档案补齐', () => {
     const filled = await completeUserProfile(user)
 
     expect(filled.avatarUrl).toBe(identiconUrl(user.issuer, user.subject))
-    const stored = await prisma.user.findUnique({ where: { id: user.id } })
+    const stored = await db().findOne(User, { id: user.id })
     expect(stored?.avatarUrl).toBe(filled.avatarUrl)
   })
 
   it('Keycloak 给了头像就不动它', async () => {
     const user = await createUser()
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { avatarUrl: 'https://cdn.test/me.png' },
-    })
-    const withPicture = await prisma.user.findUniqueOrThrow({ where: { id: user.id } })
+    await db().nativeUpdate(User, { id: user.id }, { avatarUrl: 'https://cdn.test/me.png' })
+    const withPicture = await db().findOneOrFail(User, { id: user.id })
 
     const filled = await completeUserProfile(withPicture)
 
@@ -71,7 +69,8 @@ describe('登录后的档案补齐', () => {
     try {
       const created = await createUser()
       // createUser 的默认值会把 null 兜成 Alice，这里直接把名字清掉
-      const user = await prisma.user.update({ where: { id: created.id }, data: { name: null } })
+      await db().nativeUpdate(User, { id: created.id }, { name: null })
+      const user = await db().findOneOrFail(User, { id: created.id })
       const filled = await completeUserProfile(user)
 
       expect(filled.name).toBe('无名氏')

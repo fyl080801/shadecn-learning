@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Hono } from 'hono'
 import { identities } from '../../store/identities.ts'
-import { prisma, resetDb } from '../helpers/db.ts'
+import { db, firstRow, resetDb } from '../helpers/db.ts'
+import { closeFreshOrms, importFreshApp } from '../helpers/fresh-app.ts'
+import { AuthRequest, PendingLink, Session, User, UserIdentity } from '../../db/entities/index.ts'
 import {
   GITHUB_AUTHORIZE_URL,
   GITHUB_CLIENT_ID,
@@ -30,21 +32,24 @@ beforeEach(async () => {
   vi.spyOn(console, 'log').mockImplementation(() => {})
 })
 
+afterEach(async () => {
+  await closeFreshOrms()
+})
+
 type App = Hono<never>
 
 /** 一个「配了 GitHub」的全新 app（Keycloak 也还在，两个都启用） */
 async function githubApp(): Promise<App> {
   vi.stubEnv('GITHUB_CLIENT_ID', GITHUB_CLIENT_ID)
   vi.stubEnv('GITHUB_CLIENT_SECRET', GITHUB_CLIENT_SECRET)
-  vi.resetModules()
-  return (await import('../../app.ts')).app as unknown as App
+  return (await importFreshApp()) as unknown as App
 }
 
 /** 走一遍入口，把落库的授权请求和 oidc_tx cookie 一起拿回来 */
 async function start(app: App, path: string, cookie?: string) {
   const res = await app.request(path, cookie ? { headers: { cookie } } : undefined)
   const txId = cookieValue(res, 'oidc_tx')
-  const request = txId ? await prisma.authRequest.findUnique({ where: { id: txId } }) : null
+  const request = txId ? await db().findOne(AuthRequest, { id: txId }) : null
   return { res, txId, request }
 }
 
@@ -129,7 +134,8 @@ describe('GitHub 登录', () => {
     expect(res.headers.get('location')).toBe('/2048')
     expect(cookieValue(res, 'sid')).toBeTruthy()
 
-    const user = await prisma.user.findFirstOrThrow({ include: { identities: true } })
+    const user = await firstRow(User)
+    const identities = await db().find(UserIdentity, { user: user.id })
     expect(user).toMatchObject({
       issuer: GITHUB_ISSUER,
       subject: '4242',
@@ -137,15 +143,15 @@ describe('GitHub 登录', () => {
       email: 'octo@example.com',
       name: 'Octo Cat',
     })
-    expect(user.identities).toHaveLength(1)
-    expect(user.identities[0]).toMatchObject({ provider: 'github', subject: '4242' })
+    expect(identities).toHaveLength(1)
+    expect(identities[0]).toMatchObject({ provider: 'github', subject: '4242' })
   })
 
   it('会话上记着 provider，续期时才知道该问谁', async () => {
     const app = await githubApp()
     await loginWithGithub(app)
 
-    const session = await prisma.session.findFirstOrThrow()
+    const session = await firstRow(Session)
     expect(session.provider).toBe('github')
     // OAuth App 的 token 不会过期，也没有 refresh_token
     expect(session.refreshToken).toBeNull()
@@ -157,8 +163,8 @@ describe('GitHub 登录', () => {
     await loginWithGithub(app)
     await loginWithGithub(app)
 
-    expect(await prisma.user.count()).toBe(1)
-    expect(await prisma.userIdentity.count()).toBe(1)
+    expect(await db().count(User, {})).toBe(1)
+    expect(await db().count(UserIdentity, {})).toBe(1)
   })
 
   it('token 端点回 200 但 body 里是 error → 不建会话（只看状态码会当成功）', async () => {
@@ -172,8 +178,8 @@ describe('GitHub 登录', () => {
     const res = await loginWithGithub(app)
 
     expect(decodeURIComponent(res.headers.get('location') ?? '')).toContain('code 已经用过了')
-    expect(await prisma.session.count()).toBe(0)
-    expect(await prisma.user.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
+    expect(await db().count(User, {})).toBe(0)
   })
 
   it('邮箱设为私密时（/user 的 email 是 null）去 /user/emails 取主邮箱', async () => {
@@ -189,7 +195,7 @@ describe('GitHub 登录', () => {
 
     await loginWithGithub(app)
 
-    expect((await prisma.user.findFirstOrThrow()).email).toBe('primary@example.com')
+    expect((await firstRow(User)).email).toBe('primary@example.com')
   })
 
   it('连 /user/emails 也拿不到邮箱时照样登得进来 —— 邮箱不是必填项', async () => {
@@ -201,7 +207,7 @@ describe('GitHub 登录', () => {
     const res = await loginWithGithub(app)
 
     expect(cookieValue(res, 'sid')).toBeTruthy()
-    expect((await prisma.user.findFirstOrThrow()).email).toBeNull()
+    expect((await firstRow(User)).email).toBeNull()
   })
 
   it('邮箱和已有账号相同也不会登进那个账号 —— 身份只认 (provider, subject)', async () => {
@@ -220,9 +226,9 @@ describe('GitHub 登录', () => {
     const res = await loginWithGithub(app)
 
     expect(cookieValue(res, 'sid')).toBeTruthy()
-    expect(await prisma.user.count()).toBe(2)
+    expect(await db().count(User, {})).toBe(2)
     // 那个 Keycloak 账号原封不动，没被绑上一条 GitHub
-    const rows = await prisma.userIdentity.findMany({ where: { userId: existing.id } })
+    const rows = await db().find(UserIdentity, { user: existing.id })
     expect(rows.map((row) => row.provider)).toEqual(['keycloak'])
   })
 
@@ -269,7 +275,7 @@ describe('GET /api/auth/link/:provider', () => {
     expect(res.headers.get('location')).toBe('/settings')
     expect(cookieValue(res, 'sid')).toBeNull()
     // 一条 identity 都没多
-    expect(await prisma.userIdentity.count({ where: { userId: user.id, provider: 'github' } })).toBe(
+    expect(await db().count(UserIdentity, { user: user.id, provider: 'github' })).toBe(
       0,
     )
 
@@ -289,15 +295,15 @@ describe('GET /api/auth/link/:provider', () => {
     expect(res.status).toBe(200)
     // 没有换会话：cookie 还是原来那个
     expect(cookieValue(res, 'sid')).toBeNull()
-    expect(await prisma.user.count()).toBe(1)
+    expect(await db().count(User, {})).toBe(1)
 
-    const rows = await prisma.userIdentity.findMany({ where: { userId: user.id } })
+    const rows = await db().find(UserIdentity, { user: user.id })
     expect(rows.map((row) => row.provider).sort()).toEqual(['github', 'keycloak'])
     // 主身份还是 Keycloak：关联不改档案归属
-    const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } })
+    const after = await db().findOneOrFail(User, { id: user.id })
     expect(after.issuer).toBe(user.issuer)
     // 暂存用掉就没了
-    expect(await prisma.pendingLink.count()).toBe(0)
+    expect(await db().count(PendingLink, {})).toBe(0)
   })
 
   it('放弃确认 → 什么都没发生，暂存也清了', async () => {
@@ -311,8 +317,8 @@ describe('GET /api/auth/link/:provider', () => {
     })
 
     expect(res.status).toBe(204)
-    expect(await prisma.pendingLink.count()).toBe(0)
-    expect(await prisma.userIdentity.count({ where: { userId: user.id, provider: 'github' } })).toBe(
+    expect(await db().count(PendingLink, {})).toBe(0)
+    expect(await db().count(UserIdentity, { user: user.id, provider: 'github' })).toBe(
       0,
     )
   })
@@ -324,7 +330,7 @@ describe('GET /api/auth/link/:provider', () => {
     const res = await app.request('/api/auth/link/confirm', { method: 'POST', headers: { cookie } })
 
     expect(res.status).toBe(404)
-    expect(await prisma.userIdentity.count({ where: { provider: 'github' } })).toBe(0)
+    expect(await db().count(UserIdentity, { provider: 'github' })).toBe(0)
   })
 
   it('确认接口未登录 → 401', async () => {
@@ -346,7 +352,7 @@ describe('GET /api/auth/link/:provider', () => {
 
     expect(res.status).toBe(404)
     // 我那条还在，没被别人消费掉
-    expect(await prisma.pendingLink.count({ where: { userId: mine.user.id } })).toBe(1)
+    expect(await db().count(PendingLink, { user: mine.user.id })).toBe(1)
   })
 
   it('再发起一次会顶掉上一条待确认的，不会攒出两条', async () => {
@@ -357,8 +363,8 @@ describe('GET /api/auth/link/:provider', () => {
     stub.user = { status: 200, body: githubUser({ id: 9999, login: 'another' }) }
     await startLink(app, cookie, 'c2')
 
-    expect(await prisma.pendingLink.count({ where: { userId: user.id } })).toBe(1)
-    const row = await prisma.pendingLink.findFirstOrThrow()
+    expect(await db().count(PendingLink, { user: user.id })).toBe(1)
+    const row = await firstRow(PendingLink)
     expect(row.subject).toBe('9999')
   })
 
@@ -371,7 +377,7 @@ describe('GET /api/auth/link/:provider', () => {
     const app = await githubApp()
     // A：用 GitHub 账号 G 登进来，G 就此绑在 A 名下
     await loginWithGithub(app)
-    const a = await prisma.user.findFirstOrThrow()
+    const a = await firstRow(User)
 
     // B：自己的账号，登录状态正常
     const { cookie, user: b } = await signIn({ subject: 'someone-else' })
@@ -386,17 +392,17 @@ describe('GET /api/auth/link/:provider', () => {
     expect(location).toContain('已经关联到另一个用户')
 
     // G 还在 A 名下，没被抢走；B 身上一条 github 都没多出来
-    const github = await prisma.userIdentity.findFirstOrThrow({ where: { provider: 'github' } })
-    expect(github.userId).toBe(a.id)
-    expect(await prisma.userIdentity.count({ where: { userId: b.id, provider: 'github' } })).toBe(0)
+    const github = await db().findOneOrFail(UserIdentity, { provider: 'github' })
+    expect(github.user.id).toBe(a.id)
+    expect(await db().count(UserIdentity, { user: b.id, provider: 'github' })).toBe(0)
 
     // B 的会话原样不动：没换 sid，也没被顺手登成 A
     expect(cookieValue(res, 'sid')).toBeNull()
-    const session = await prisma.session.findFirstOrThrow({ where: { userId: b.id } })
-    expect(session.userId).toBe(b.id)
+    const session = await db().findOneOrFail(Session, { user: b.id })
+    expect(session.user.id).toBe(b.id)
 
     // 授权请求一次性消费掉了，没有残留可供重放
-    expect(await prisma.authRequest.count()).toBe(0)
+    expect(await db().count(AuthRequest, {})).toBe(0)
   })
 
   it('自己已经绑了一个 GitHub 账号时不能再绑第二个', async () => {
@@ -410,8 +416,8 @@ describe('GET /api/auth/link/:provider', () => {
 
     // 预检就拦下了，连确认框都不该弹
     expect(decodeURIComponent(res.headers.get('location') ?? '')).toContain('请先解绑')
-    expect(await prisma.pendingLink.count()).toBe(0)
-    expect(await prisma.userIdentity.count()).toBe(2)
+    expect(await db().count(PendingLink, {})).toBe(0)
+    expect(await db().count(UserIdentity, {})).toBe(2)
   })
 
   it('用户在 GitHub 上点了取消 → 回设置页而不是登录页', async () => {
@@ -434,7 +440,7 @@ describe('GET /api/auth/identities', () => {
   it('存量用户（UserIdentity 表之前就在的人）读列表时补出主身份', async () => {
     const app = await githubApp()
     const { cookie, user } = await signIn()
-    expect(await prisma.userIdentity.count()).toBe(0)
+    expect(await db().count(UserIdentity, {})).toBe(0)
 
     const body = (await (await app.request('/api/auth/identities', { headers: { cookie } })).json()) as {
       items: { provider: string; primary: boolean }[]
@@ -443,7 +449,7 @@ describe('GET /api/auth/identities', () => {
     expect(body.items).toHaveLength(1)
     expect(body.items[0]).toMatchObject({ provider: 'keycloak', label: 'Keycloak', primary: true })
     // 真的落库了，不是只在响应里补
-    expect(await prisma.userIdentity.count({ where: { userId: user.id } })).toBe(1)
+    expect(await db().count(UserIdentity, { user: user.id })).toBe(1)
   })
 })
 
@@ -459,7 +465,7 @@ describe('DELETE /api/auth/identities/:id', () => {
     })
 
     expect(res.status).toBe(409)
-    expect(await prisma.userIdentity.count()).toBe(1)
+    expect(await db().count(UserIdentity, {})).toBe(1)
   })
 
   it('不是自己的那条 → 404', async () => {
@@ -477,7 +483,7 @@ describe('DELETE /api/auth/identities/:id', () => {
     })
 
     expect(res.status).toBe(404)
-    expect(await prisma.userIdentity.count()).toBe(2)
+    expect(await db().count(UserIdentity, {})).toBe(2)
   })
 
   it('解绑主身份 → 204，剩下的那条被提升为主身份', async () => {
@@ -492,17 +498,17 @@ describe('DELETE /api/auth/identities/:id', () => {
     })
 
     expect(res.status).toBe(204)
-    const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } })
+    const after = await db().findOneOrFail(User, { id: user.id })
     expect(after.issuer).toBe(GITHUB_ISSUER)
     expect(after.subject).toBe('4242')
     // 会话是我们自己发的，不跟着提供方走
-    expect(await prisma.session.count()).toBe(1)
+    expect(await db().count(Session, {})).toBe(1)
   })
 })
 
 /** 读一次授权请求（state 每次都是新的，不能写死） */
 async function current(txId: string | null | undefined) {
-  return prisma.authRequest.findUniqueOrThrow({ where: { id: txId ?? '' } })
+  return db().findOneOrFail(AuthRequest, { id: txId ?? '' })
 }
 
 async function list(app: App, cookie: string) {

@@ -125,7 +125,7 @@ podman run -d --name shadecn-postgres -p 127.0.0.1:5432:5432 \
 ```
 
 然后配 `.env`（`REDIS_URL`，真多副本再加 PostgreSQL 的 `DB_PROVIDER` / `DATABASE_URL`，
-换库记得 `pnpm db:generate && pnpm db:push`），跑：
+换库后先 `pnpm db:push` 把表建出来 —— `pnpm dev` 本来也会先跑它），跑：
 
 ```bash
 pnpm dev          # 单副本，现状

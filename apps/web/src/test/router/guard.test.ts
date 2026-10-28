@@ -159,7 +159,7 @@ describe("路由表约定", () => {
       "@/layouts/SidebarLayout.vue"
     )
 
-    const matched = router.resolve("/projects").matched
+    const matched = router.resolve("/personal").matched
 
     expect(matched).toHaveLength(2)
     expect(matched[0]?.components?.default).toBe(SidebarLayout)

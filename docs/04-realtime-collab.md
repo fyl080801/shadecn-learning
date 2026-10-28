@@ -139,7 +139,7 @@ Hocuspocus 之后就不存在了。）
 
 **不用 y-leveldb**（原生模块），也**不用 `@hocuspocus/extension-database`` ——
 后者只是 `onLoadDocument` / `onStoreDocument` 的一层薄封装，直接实现这两个 hook 更直白。
-写的是现成的 Prisma 表，一个原生依赖都不需要（SQLite / PostgreSQL 都行）。
+写的是应用自己的 `flow` 表（MikroORM 实体），不额外引入任何存储依赖（SQLite / PostgreSQL 都行）。
 
 **落库的时机不归我们管了**，Hocuspocus 自带：
 

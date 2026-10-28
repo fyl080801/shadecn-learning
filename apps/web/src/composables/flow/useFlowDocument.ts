@@ -108,7 +108,7 @@ export function useFlowDocument(
   function backPath() {
     if (store.meta?.mode === "solo") return "/personal"
     const projectId = store.meta?.projectId
-    return projectId ? `/projects/${projectId}` : "/projects"
+    return projectId ? `/projects/${projectId}` : "/personal"
   }
 
   /** 文案和落点是同一个判断，放在一起，免得哪天只改了一半 */

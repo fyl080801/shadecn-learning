@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { app } from '../../app.ts'
-import { prisma, resetDb } from '../helpers/db.ts'
+import { db, resetDb } from '../helpers/db.ts'
+import { ProjectInvite, ProjectMember } from '../../db/entities/index.ts'
 import { actor, createProject, type Actor } from '../helpers/project.ts'
 
 beforeEach(async () => {
@@ -22,10 +23,7 @@ async function share(admin: Actor, projectId: string) {
 
 /** 让一条链接过期 */
 async function expire(token: string) {
-  await prisma.projectInvite.update({
-    where: { token },
-    data: { expiresAt: new Date(Date.now() - 1000) },
-  })
+  await db().nativeUpdate(ProjectInvite, { token }, { expiresAt: new Date(Date.now() - 1000) })
 }
 
 describe('GET /api/projects/:id/invite', () => {
@@ -47,7 +45,7 @@ describe('GET /api/projects/:id/invite', () => {
     const second = (await share(alice, projectId)).invite
 
     expect(second.token).toBe(first.token)
-    expect(await prisma.projectInvite.count({ where: { projectId } })).toBe(1)
+    expect(await db().count(ProjectInvite, { project: projectId })).toBe(1)
   })
 
   it('已过期时自动换一条新的', async () => {
@@ -60,7 +58,7 @@ describe('GET /api/projects/:id/invite', () => {
     const fresh = (await share(alice, projectId)).invite
     expect(fresh.token).not.toBe(old.token)
     expect(new Date(fresh.expiresAt).getTime()).toBeGreaterThan(Date.now())
-    expect(await prisma.projectInvite.count({ where: { projectId } })).toBe(1)
+    expect(await db().count(ProjectInvite, { project: projectId })).toBe(1)
   })
 })
 
@@ -121,7 +119,7 @@ describe('POST /api/projects/:id/invite/reset', () => {
     await alice.json(`/api/projects/${projectId}/invite/reset`, 'POST', {})
     await alice.json(`/api/projects/${projectId}/invite/reset`, 'POST', { expiresInDays: 1 })
 
-    expect(await prisma.projectInvite.count({ where: { projectId } })).toBe(1)
+    expect(await db().count(ProjectInvite, { project: projectId })).toBe(1)
   })
 })
 
@@ -224,7 +222,7 @@ describe('POST /api/invites/:token/accept', () => {
 
     expect((await bob.json(`/api/invites/${invite.token}/accept`, 'POST')).status).toBe(200)
     expect((await carol.json(`/api/invites/${invite.token}/accept`, 'POST')).status).toBe(200)
-    expect(await prisma.projectMember.count({ where: { projectId } })).toBe(3)
+    expect(await db().count(ProjectMember, { project: projectId })).toBe(3)
   })
 
   it('加入者记录了分享人', async () => {
@@ -234,9 +232,7 @@ describe('POST /api/invites/:token/accept', () => {
     const { invite } = await share(alice, projectId)
     await bob.json(`/api/invites/${invite.token}/accept`, 'POST')
 
-    const member = await prisma.projectMember.findFirst({
-      where: { projectId, userId: bob.userId },
-    })
+    const member = await db().findOne(ProjectMember, { project: projectId, user: bob.userId })
     expect(member?.invitedById).toBe(alice.userId)
   })
 
@@ -250,7 +246,7 @@ describe('POST /api/invites/:token/accept', () => {
     const second = await bob.json(`/api/invites/${invite.token}/accept`, 'POST')
 
     expect(second.status).toBe(200)
-    expect(await prisma.projectMember.count({ where: { projectId, userId: bob.userId } })).toBe(1)
+    expect(await db().count(ProjectMember, { project: projectId, user: bob.userId })).toBe(1)
   })
 
   it('过期的链接不能再用', async () => {

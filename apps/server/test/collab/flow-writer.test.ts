@@ -4,7 +4,9 @@ import { edgesMap, nodesMap } from '@shadecn/shared/flow-doc'
 import { applyFlowUpdate, readFlowUpdate } from '../../collab/flow-writer.ts'
 import { forgetFlow, roomOf } from '../../collab/persistence.ts'
 import { COLLAB_LIMITS } from '../../collab/quota.ts'
-import { prisma, resetDb } from '../helpers/db.ts'
+import { db, resetDb } from '../helpers/db.ts'
+import { EntityManager } from '@mikro-orm/core'
+import { Flow } from '../../db/entities/index.ts'
 import { actor, createFlow, createProject } from '../helpers/project.ts'
 
 /**
@@ -41,10 +43,7 @@ function addNodes(...ids: string[]): Uint8Array {
 
 /** 把库里那份 ydoc 读成一个文档 */
 async function docInDb(flowId: string): Promise<Y.Doc> {
-  const row = await prisma.flow.findUniqueOrThrow({
-    where: { id: flowId },
-    select: { ydoc: true },
-  })
+  const row = await db().findOneOrFail(Flow, { id: flowId }, { populate: ['ydoc'] })
   const doc = new Y.Doc()
   if (row.ydoc) Y.applyUpdate(doc, new Uint8Array(row.ydoc))
   return doc
@@ -70,14 +69,25 @@ describe('个人画布的写入通道', () => {
     expect(result.ok).toBe(true)
     expect(await nodeIds(flowId)).toEqual(['n1', 'n2'])
 
-    const row = await prisma.flow.findUniqueOrThrow({
-      where: { id: flowId },
-      select: { nodeCount: true, graph: true, revision: true },
-    })
+    const row = await db().findOneOrFail(Flow, { id: flowId }, { populate: ['graph'] })
     // 协同那边投影要等散场，这边每次都写 —— 列表页的计数不能等人离开画布
     expect(row.nodeCount).toBe(2)
     expect(JSON.parse(row.graph).nodes).toHaveLength(2)
     expect(row.revision).toBe(1)
+
+    await forgetFlow(roomOf(flowId))
+  })
+
+  it('写入推进 updatedAt —— CAS 写走的是 nativeUpdate，不会自动带上它', async () => {
+    const flowId = await newFlow()
+    // 把「上次修改」拨回过去，这样不依赖两次写之间隔了几毫秒
+    const past = new Date(Date.now() - 60_000)
+    await db().nativeUpdate(Flow, { id: flowId }, { updatedAt: past })
+
+    expect((await applyFlowUpdate(flowId, addNodes('n1'))).ok).toBe(true)
+
+    const row = await db().findOneOrFail(Flow, { id: flowId })
+    expect(row.updatedAt.getTime()).toBeGreaterThan(past.getTime())
 
     await forgetFlow(roomOf(flowId))
   })
@@ -92,10 +102,7 @@ describe('个人画布的写入通道', () => {
     expect(again.ok && again.noop).toBe(true)
     expect(await nodeIds(flowId)).toEqual(['n1'])
     // revision 没涨：重发是真的什么都没发生
-    const row = await prisma.flow.findUniqueOrThrow({
-      where: { id: flowId },
-      select: { revision: true },
-    })
+    const row = await db().findOneOrFail(Flow, { id: flowId })
     expect(row.revision).toBe(1)
 
     await forgetFlow(roomOf(flowId))
@@ -176,10 +183,7 @@ describe('个人画布的写入通道', () => {
     data.set('label', 'x'.repeat(COLLAB_LIMITS.document + 1))
     node.set('data', data)
     nodesMap(fat).set('big', node)
-    await prisma.flow.update({
-      where: { id: flowId },
-      data: { ydoc: Buffer.from(Y.encodeStateAsUpdate(fat)) },
-    })
+    await db().nativeUpdate(Flow, { id: flowId }, { ydoc: Buffer.from(Y.encodeStateAsUpdate(fat)) })
     fat.destroy()
 
     const result = await applyFlowUpdate(flowId, addNodes('n1'))
@@ -204,7 +208,7 @@ describe('个人画布的写入通道', () => {
 
   it('画布不存在 / 已软删 → not-found', async () => {
     const flowId = await newFlow()
-    await prisma.flow.update({ where: { id: flowId }, data: { deletedAt: new Date() } })
+    await db().nativeUpdate(Flow, { id: flowId }, { deletedAt: new Date() })
 
     const deleted = await applyFlowUpdate(flowId, addNodes('n1'))
     expect(deleted.ok === false && deleted.reason).toBe('not-found')
@@ -253,31 +257,29 @@ describe('写回撞车时的重试', () => {
 
   /** 扮演「另一个实例」：不走队列、不走 applyFlowUpdate，直接读改写 + 涨 revision */
   async function writeFromOtherInstance(flowId: string, update: Uint8Array) {
-    // 用 findUnique 而不是 findFirst：后者正被 spy 着，会把自己也绕进去
-    const row = await prisma.flow.findUniqueOrThrow({
-      where: { id: flowId },
-      select: { ydoc: true },
-    })
+    // 用 find 而不是 findOne：后者正被 spy 着，会把自己也绕进去（findOneOrFail 内部也走 findOne）
+    const [row] = await db().find(Flow, { id: flowId }, { populate: ['ydoc'] })
     const doc = new Y.Doc()
     if (row.ydoc) Y.applyUpdate(doc, new Uint8Array(row.ydoc))
     Y.applyUpdate(doc, update)
-    await prisma.flow.update({
-      where: { id: flowId },
-      data: { ydoc: Buffer.from(Y.encodeStateAsUpdate(doc)), revision: { increment: 1 } },
-    })
+    await db().nativeUpdate(
+      Flow,
+      { id: flowId },
+      { ydoc: Buffer.from(Y.encodeStateAsUpdate(doc)), revision: row.revision + 1 },
+    )
     doc.destroy()
   }
 
   /**
-   * 每次 `findFirst` 返回之后就插一次别人的写。
+   * 每次 `findOne` 返回之后就插一次别人的写。
    * @param times 插几次；`Infinity` 就是每次都插（用来把重试耗光）
    */
   function raceOnRead(flowId: string, update: Uint8Array, times: number) {
-    const real = prisma.flow.findFirst.bind(prisma.flow)
+    const real = EntityManager.prototype.findOne
     let done = 0
 
-    const impl = async (...args: Parameters<typeof real>) => {
-      const row = await real(...args)
+    const impl = async function (this: EntityManager, ...args: unknown[]) {
+      const row = await (real as (...a: unknown[]) => Promise<unknown>).apply(this, args)
       if (done < times) {
         done += 1
         await writeFromOtherInstance(flowId, update)
@@ -285,14 +287,10 @@ describe('写回撞车时的重试', () => {
       return row
     }
 
-    /*
-     * 断言一下类型：Prisma 的 `findFirst` 返回的不是普通 Promise，而是还挂着
-     * `.project()` 这些关系方法的 fluent client。被测代码只 await 它，
-     * 用不到那些方法，所以给个普通的 async 函数就够了。
-     */
+    // 断言一下类型：findOne 是带重载的泛型方法，这里只需要一个普通的 async 函数
     return vi
-      .spyOn(prisma.flow, 'findFirst')
-      .mockImplementation(impl as unknown as typeof prisma.flow.findFirst)
+      .spyOn(EntityManager.prototype, 'findOne')
+      .mockImplementation(impl as unknown as typeof EntityManager.prototype.findOne)
   }
 
   it('被抢先一次 → 重读重来，两边的改动都在', async () => {
@@ -310,10 +308,7 @@ describe('写回撞车时的重试', () => {
     // 谁的都没丢：抢先那位的节点在，我的也在
     expect(await nodeIds(flowId)).toEqual(['base', 'from-other-instance', 'mine'].sort())
 
-    const row = await prisma.flow.findUniqueOrThrow({
-      where: { id: flowId },
-      select: { revision: true },
-    })
+    const row = await db().findOneOrFail(Flow, { id: flowId })
     // base=1、别的实例=2、我的=3；返回值要和库里对得上，客户端拿它判断有没有别人在写
     expect(row.revision).toBe(3)
     expect(result.ok && result.revision).toBe(3)

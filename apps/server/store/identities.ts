@@ -1,7 +1,8 @@
 import type { IdentityView, PendingLinkView } from '@shadecn/shared/auth'
-import { prisma } from '../db.ts'
+import { UniqueConstraintViolationException } from '@mikro-orm/core'
+import { db } from '../db.ts'
 import { type ProviderId, type ProviderProfile, getProvider } from '../auth/providers/index.ts'
-import type { User, UserIdentity } from '../generated/prisma/client.ts'
+import { newId, PendingLink, User, UserIdentity } from '../db/entities/index.ts'
 
 /**
  * 「登录方式」的数据层（REQ-AUTH §3.9）。
@@ -91,20 +92,26 @@ function identityData(provider: ProviderId, identity: LinkableIdentity) {
  * 那一对值。不写迁移脚本（这个仓库没有 migration，见 docs/05 §3.4），而是
  * **用到的时候补** —— 登录走 `resolveLogin` 的领养分支，设置页走 `listFor`。
  */
-function backfillPrimary(user: User): Promise<UserIdentity> {
+async function backfillPrimary(user: User): Promise<UserIdentity> {
   const provider: ProviderId = user.issuer === GITHUB_ISSUER ? 'github' : 'keycloak'
-  return prisma.userIdentity.create({
-    data: {
-      userId: user.id,
-      provider,
-      subject: user.subject,
-      issuer: user.issuer,
-      username: user.username,
-      email: user.email,
-      avatarUrl: user.avatarUrl,
-      lastLoginAt: user.lastLoginAt,
-    },
+  const em = db()
+  const row = em.create(UserIdentity, {
+    user: user.id,
+    provider,
+    subject: user.subject,
+    issuer: user.issuer,
+    username: user.username,
+    email: user.email,
+    avatarUrl: user.avatarUrl,
+    lastLoginAt: user.lastLoginAt,
   })
+  await em.flush()
+  return row
+}
+
+/** 这个人的全部登录方式，按绑定先后排 */
+function identitiesOf(userId: string): Promise<UserIdentity[]> {
+  return db().find(UserIdentity, { user: userId }, { orderBy: { createdAt: 'asc' } })
 }
 
 export type LinkFailure =
@@ -148,26 +155,30 @@ export const identities = {
   async resolveLogin(providerId: ProviderId, profile: ProviderProfile): Promise<User> {
     const now = new Date()
 
-    const existing = await prisma.userIdentity.findUnique({
-      where: { provider_subject: { provider: providerId, subject: profile.subject } },
-      include: { user: true },
-    })
+    const existing = await db().findOne(
+      UserIdentity,
+      { provider: providerId, subject: profile.subject },
+      { populate: ['user'] },
+    )
 
     if (existing) {
-      const [, user] = await prisma.$transaction([
-        prisma.userIdentity.update({
-          where: { id: existing.id },
-          data: {
+      return db().transactional(async (em) => {
+        await em.nativeUpdate(
+          UserIdentity,
+          { id: existing.id },
+          {
             username: profile.username,
             email: profile.email,
             avatarUrl: profile.avatarUrl,
             lastLoginAt: now,
           },
-        }),
-        prisma.user.update({
-          where: { id: existing.userId },
-          data: {
+        )
+        await em.nativeUpdate(
+          User,
+          { id: existing.user.id },
+          {
             lastLoginAt: now,
+            updatedAt: now,
             // 档案只跟主身份走；用副身份登录不改显示名 / 头像
             ...(isPrimary(existing, existing.user)
               ? {
@@ -180,39 +191,42 @@ export const identities = {
             // 角色只有 Keycloak 给得出来，用 GitHub 登录时照写会把人的角色清空
             ...(providerId === 'keycloak' ? { roles: JSON.stringify(profile.roles) } : {}),
           },
-        }),
-      ])
-      return user
+        )
+        return em.findOneOrFail(User, existing.user.id)
+      })
     }
 
     // 存量用户：有 User 行但还没有 identity 行
-    const legacy = await prisma.user.findUnique({
-      where: { issuer_subject: { issuer: profile.issuer, subject: profile.subject } },
-    })
+    const legacy = await db().findOne(User, { issuer: profile.issuer, subject: profile.subject })
     if (legacy) {
-      const [, user] = await prisma.$transaction([
-        prisma.userIdentity.create({
-          data: { userId: legacy.id, ...identityData(providerId, profile), lastLoginAt: now },
-        }),
-        prisma.user.update({
-          where: { id: legacy.id },
-          data: {
+      return db().transactional(async (em) => {
+        em.create(UserIdentity, {
+          user: legacy.id,
+          ...identityData(providerId, profile),
+          lastLoginAt: now,
+        })
+        await em.flush()
+        await em.nativeUpdate(
+          User,
+          { id: legacy.id },
+          {
             username: profile.username,
             email: profile.email,
             name: profile.name,
             ...(profile.avatarUrl ? { avatarUrl: profile.avatarUrl } : {}),
             ...(providerId === 'keycloak' ? { roles: JSON.stringify(profile.roles) } : {}),
             lastLoginAt: now,
+            updatedAt: now,
           },
-        }),
-      ])
-      return user
+        )
+        return em.findOneOrFail(User, legacy.id, { refresh: true })
+      })
     }
 
-    // 全新的人：这条 identity 就是主身份。
+    // 全新的人：这条 identity 就是主身份，和 User 一个事务落库。
     // 邮箱撞上别人也照建不误 —— 这里**不做任何身份推断**
-    return prisma.user.create({
-      data: {
+    return db().transactional(async (em) => {
+      const user = em.create(User, {
         issuer: profile.issuer,
         subject: profile.subject,
         username: profile.username,
@@ -221,8 +235,9 @@ export const identities = {
         avatarUrl: profile.avatarUrl,
         roles: JSON.stringify(providerId === 'keycloak' ? profile.roles : []),
         lastLoginAt: now,
-        identities: { create: { ...identityData(providerId, profile), lastLoginAt: now } },
-      },
+      })
+      em.create(UserIdentity, { user, ...identityData(providerId, profile), lastLoginAt: now })
+      return user
     })
   },
 
@@ -238,16 +253,11 @@ export const identities = {
     providerId: ProviderId,
     subject: string,
   ): Promise<LinkFailure | null> {
-    const owner = await prisma.userIdentity.findUnique({
-      where: { provider_subject: { provider: providerId, subject } },
-    })
-    if (owner) return owner.userId === userId ? 'already-linked' : 'taken'
+    const owner = await db().findOne(UserIdentity, { provider: providerId, subject })
+    if (owner) return owner.user.id === userId ? 'already-linked' : 'taken'
 
-    const mine = await prisma.userIdentity.findFirst({
-      where: { userId, provider: providerId },
-      select: { id: true },
-    })
-    if (mine) return 'provider-occupied'
+    const mine = await db().count(UserIdentity, { user: userId, provider: providerId })
+    if (mine > 0) return 'provider-occupied'
 
     return null
   },
@@ -263,24 +273,23 @@ export const identities = {
     providerId: ProviderId,
     identity: LinkableIdentity,
   ): Promise<LinkResult> {
-    const owner = await prisma.userIdentity.findUnique({
-      where: { provider_subject: { provider: providerId, subject: identity.subject } },
+    const owner = await db().findOne(UserIdentity, {
+      provider: providerId,
+      subject: identity.subject,
     })
     if (owner) {
-      return { ok: false, reason: owner.userId === userId ? 'already-linked' : 'taken' }
+      return { ok: false, reason: owner.user.id === userId ? 'already-linked' : 'taken' }
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: { identities: true },
-    })
+    const user = await db().findOne(User, userId)
     // 会话里的 user 一定在库里（外键管着），读不到就是真出事了，别悄悄当成业务失败
     if (!user) throw new Error(`[identities] 会话里的用户不存在：${userId}`)
 
     // 存量用户还没回填过主身份就来关联第二条：**先**把第一条补上。
     // 顺序要紧：不补的话下面那条「一个提供方只留一条」看到的是一张空表，
     // 老用户重新关联同一个 Keycloak 会一路撞到唯一约束上，报出一句错话
-    const rows = user.identities.length > 0 ? user.identities : [await backfillPrimary(user)]
+    const existingRows = await identitiesOf(userId)
+    const rows = existingRows.length > 0 ? existingRows : [await backfillPrimary(user)]
 
     // 一个提供方只留一条：设置页那张列表按提供方读，两条 GitHub 并排时
     // 「解绑哪一个」和「主身份是哪个」都会变得需要解释
@@ -289,28 +298,25 @@ export const identities = {
     }
 
     try {
-      const row = await prisma.userIdentity.create({
-        data: { userId, ...identityData(providerId, identity) },
-      })
+      const em = db()
+      const row = em.create(UserIdentity, { user: userId, ...identityData(providerId, identity) })
+      await em.flush()
       return { ok: true, identity: toView(row, user) }
-    } catch {
-      // 唯一约束撞车 = 这一瞬间被别人绑走了
-      return { ok: false, reason: 'taken' }
+    } catch (err) {
+      // 唯一约束撞车 = 这一瞬间被别人绑走了。别的错误照常抛
+      if (err instanceof UniqueConstraintViolationException) return { ok: false, reason: 'taken' }
+      throw err
     }
   },
 
   /** 设置页的列表。存量用户在这里被回填出主身份 */
   async listFor(userId: string): Promise<IdentityView[]> {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: { identities: true },
-    })
+    const user = await db().findOne(User, userId)
     if (!user) return []
 
-    const rows = user.identities.length > 0 ? user.identities : [await backfillPrimary(user)]
-    return rows
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-      .map((row) => toView(row, user))
+    const existingRows = await identitiesOf(userId)
+    const rows = existingRows.length > 0 ? existingRows : [await backfillPrimary(user)]
+    return rows.map((row) => toView(row, user))
   },
 
   /**
@@ -323,31 +329,26 @@ export const identities = {
    * 当前会话不受影响 —— 会话是我们自己发的，不是提供方发的。
    */
   async unlink(userId: string, identityId: string): Promise<UnlinkResult> {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: { identities: true },
-    })
+    const user = await db().findOne(User, userId)
     if (!user) return 'not-found'
 
-    const target = user.identities.find((row) => row.id === identityId)
+    const rows = await identitiesOf(userId)
+    const target = rows.find((row) => row.id === identityId)
     if (!target) return 'not-found'
-    if (user.identities.length <= 1) return 'last'
+    if (rows.length <= 1) return 'last'
 
-    const promoted = isPrimary(target, user)
-      ? user.identities.find((row) => row.id !== identityId)
-      : null
+    const promoted = isPrimary(target, user) ? rows.find((row) => row.id !== identityId) : null
 
-    await prisma.$transaction([
-      prisma.userIdentity.delete({ where: { id: identityId } }),
-      ...(promoted
-        ? [
-            prisma.user.update({
-              where: { id: userId },
-              data: { issuer: promoted.issuer, subject: promoted.subject },
-            }),
-          ]
-        : []),
-    ])
+    await db().transactional(async (em) => {
+      await em.nativeDelete(UserIdentity, { id: identityId })
+      if (promoted) {
+        await em.nativeUpdate(
+          User,
+          { id: userId },
+          { issuer: promoted.issuer, subject: promoted.subject, updatedAt: new Date() },
+        )
+      }
+    })
     return 'ok'
   },
 
@@ -372,19 +373,32 @@ export const identities = {
       avatarUrl: profile.avatarUrl,
       expiresAt: new Date(Date.now() + PENDING_LINK_TTL),
     }
-    await prisma.pendingLink.upsert({
-      where: { userId },
-      create: { userId, ...data },
-      update: data,
-    })
+    // upsert 直接发 SQL：id / createdAt 不会自动生成，得自己给；撞上同一个人的旧暂存时整条换掉（id 不变）
+    await db().upsert(
+      PendingLink,
+      { id: newId(), user: userId, createdAt: new Date(), ...data },
+      {
+        onConflictFields: ['user'],
+        onConflictMergeFields: [
+          'provider',
+          'subject',
+          'issuer',
+          'username',
+          'email',
+          'avatarUrl',
+          'createdAt',
+          'expiresAt',
+        ],
+      },
+    )
   },
 
   /** 这个人有没有待确认的关联。过期的当作没有，并顺手删掉 */
   async pendingFor(userId: string): Promise<PendingLinkView | null> {
-    const row = await prisma.pendingLink.findUnique({ where: { userId } })
+    const row = await db().findOne(PendingLink, { user: userId })
     if (!row) return null
     if (row.expiresAt.getTime() < Date.now()) {
-      await prisma.pendingLink.delete({ where: { userId } }).catch(() => undefined)
+      await db().nativeDelete(PendingLink, { user: userId })
       return null
     }
 
@@ -399,7 +413,7 @@ export const identities = {
   },
 
   async discardPending(userId: string) {
-    await prisma.pendingLink.delete({ where: { userId } }).catch(() => undefined)
+    await db().nativeDelete(PendingLink, { user: userId })
   },
 
   /**
@@ -411,13 +425,13 @@ export const identities = {
    * 不论成败都把暂存删掉：失败了让用户重新走一遍，比留着一条注定失败的记录好。
    */
   async confirmPending(userId: string): Promise<ConfirmResult> {
-    const row = await prisma.pendingLink.findUnique({ where: { userId } })
+    const row = await db().findOne(PendingLink, { user: userId })
     if (!row) return { ok: false, reason: 'none' }
 
     const provider = row.provider as ProviderId
     const label = getProvider(provider)?.label ?? provider
 
-    await prisma.pendingLink.delete({ where: { userId } }).catch(() => undefined)
+    await db().nativeDelete(PendingLink, { user: userId })
     if (row.expiresAt.getTime() < Date.now()) return { ok: false, reason: 'expired', label }
 
     const result = await identities.link(userId, provider, {

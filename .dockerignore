@@ -21,7 +21,6 @@ data
 **/*.db-journal
 **/*.db-wal
 **/*.db-shm
-apps/server/generated
 
 # 测试相关，不进镜像
 apps/server/test

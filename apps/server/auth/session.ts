@@ -1,8 +1,8 @@
 import crypto from 'node:crypto'
 import { numberCodec, sharedLock, sharedMap } from '../cluster/index.ts'
-import { prisma } from '../db.ts'
+import { db } from '../db.ts'
 import { authConfig, isDev } from '../config.ts'
-import type { Session, User } from '../generated/prisma/client.ts'
+import { AuthRequest, PendingLink, Session, User } from '../db/entities/index.ts'
 import { OidcError } from './oidc.ts'
 import { type ProviderId, type ProviderTokens, getProvider } from './providers/index.ts'
 
@@ -66,26 +66,32 @@ export interface CreateSessionInput {
 export async function createSession(input: CreateSessionInput): Promise<string> {
   const token = crypto.randomBytes(32).toString('base64url')
 
-  await prisma.session.create({
-    data: {
-      id: tokenId(token),
-      userId: input.user.id,
-      provider: input.provider,
-      accessToken: input.tokens.accessToken,
-      refreshToken: input.tokens.refreshToken,
-      idToken: input.tokens.idToken,
-      expiresAt: input.tokens.expiresAt,
-      refreshExpiresAt: input.tokens.refreshExpiresAt,
-      sessionState: input.tokens.sessionState,
-      userAgent: input.userAgent ?? null,
-      ip: input.ip ?? null,
-    },
+  const em = db()
+  em.create(Session, {
+    // 主键就是 token 的 HMAC，由这里给 —— 实体上故意没有自动生成主键
+    id: tokenId(token),
+    user: input.user.id,
+    provider: input.provider,
+    accessToken: input.tokens.accessToken,
+    refreshToken: input.tokens.refreshToken,
+    idToken: input.tokens.idToken,
+    expiresAt: input.tokens.expiresAt,
+    refreshExpiresAt: input.tokens.refreshExpiresAt,
+    sessionState: input.tokens.sessionState,
+    userAgent: input.userAgent ?? null,
+    ip: input.ip ?? null,
   })
+  await em.flush()
 
   return token
 }
 
+/** 带着用户档案的会话（`user` 已 populate） */
 export type LoadedSession = Session & { user: User }
+
+function findLoadedSession(id: string): Promise<LoadedSession | null> {
+  return db().findOne(Session, id, { populate: ['user'] })
+}
 
 /**
  * 同一个会话的并发刷新合并成一次，避免 refresh token 轮换后互相踩。
@@ -141,7 +147,7 @@ export async function loadSession(
   if (!token) return null
 
   const id = tokenId(token)
-  const session = await prisma.session.findUnique({ where: { id }, include: { user: true } })
+  const session = await findLoadedSession(id)
   if (!session) return null
 
   // 会话本身活得太久也要作废，防止一直续下去
@@ -166,8 +172,7 @@ export async function loadSession(
   return refreshLock.run(id, () => renew(session), {
     // 抢不到锁 = 别人正在换。等它换完，重新读一遍库拿新 token；
     // 会话在这期间被判失效（换的时候被 Keycloak 回绝）就会读不到，那也是对的
-    fallback: () =>
-      prisma.session.findUnique({ where: { id }, include: { user: true } }).catch(() => session),
+    fallback: () => findLoadedSession(id).catch(() => session),
     ttlMs: 15_000,
   })
 }
@@ -189,24 +194,32 @@ async function renew(session: LoadedSession): Promise<LoadedSession | null> {
   try {
     const { tokens, roles } = await refresh(session.refreshToken as string)
 
-    const [updated] = await prisma.$transaction([
-      prisma.session.update({
-        where: { id: session.id },
-        data: {
+    const now = new Date()
+    const updated = await db().transactional(async (em) => {
+      await em.nativeUpdate(
+        Session,
+        { id: session.id },
+        {
           accessToken: tokens.accessToken,
           refreshToken: tokens.refreshToken ?? session.refreshToken,
           idToken: tokens.idToken ?? session.idToken,
           expiresAt: tokens.expiresAt,
           refreshExpiresAt: tokens.refreshExpiresAt,
+          // 直接发 SQL 的更新不触发 onUpdate，updatedAt 得自己写
+          updatedAt: now,
         },
-        include: { user: true },
-      }),
+      )
       // 角色可能在 Keycloak 侧被改过，刷新时一并同步
-      prisma.user.update({ where: { id: session.userId }, data: { roles: JSON.stringify(roles) } }),
-    ])
+      await em.nativeUpdate(
+        User,
+        { id: session.user.id },
+        { roles: JSON.stringify(roles), updatedAt: now },
+      )
+      return em.findOneOrFail(Session, session.id, { populate: ['user'] })
+    })
 
     await refreshCooldown.delete(session.id).catch(() => undefined)
-    return { ...updated, user: { ...updated.user, roles: JSON.stringify(roles) } }
+    return updated
   } catch (err) {
     // Keycloak 明确回绝（用户登出 / SSO 会话超时 / 被踢）——本地也清掉
     if (err instanceof OidcError && !err.retryable) {
@@ -226,13 +239,14 @@ async function renew(session: LoadedSession): Promise<LoadedSession | null> {
 
 export async function deleteSessionById(id: string) {
   await refreshCooldown.delete(id).catch(() => undefined)
-  await prisma.session.delete({ where: { id } }).catch(() => undefined)
+  // 已经不在了（并发的另一个请求先删了）不算错：nativeDelete 删 0 行就是 0，不抛
+  await db().nativeDelete(Session, { id })
 }
 
 export async function deleteSessionByToken(token: string | undefined) {
   if (!token) return null
   const id = tokenId(token)
-  const session = await prisma.session.findUnique({ where: { id } })
+  const session = await db().findOne(Session, id)
   if (session) await deleteSessionById(id)
   return session
 }
@@ -240,17 +254,14 @@ export async function deleteSessionByToken(token: string | undefined) {
 /** 清掉过期会话、没用掉的授权请求、没人确认的待关联；启动时跑一次，之后定时跑 */
 export async function sweepExpired() {
   const now = new Date()
-  const [sessions, requests, pendingLinks] = await Promise.all([
-    prisma.session.deleteMany({
-      where: { createdAt: { lt: new Date(now.getTime() - authConfig.ttl * 1000) } },
+  const em = db()
+  const [sessions, authRequests, pendingLinks] = await Promise.all([
+    em.nativeDelete(Session, {
+      createdAt: { $lt: new Date(now.getTime() - authConfig.ttl * 1000) },
     }),
-    prisma.authRequest.deleteMany({ where: { expiresAt: { lt: now } } }),
+    em.nativeDelete(AuthRequest, { expiresAt: { $lt: now } }),
     // 过期的待确认关联在读取时也会被顺手删掉，这里是「一直没人再打开设置页」的兜底
-    prisma.pendingLink.deleteMany({ where: { expiresAt: { lt: now } } }),
+    em.nativeDelete(PendingLink, { expiresAt: { $lt: now } }),
   ])
-  return {
-    sessions: sessions.count,
-    authRequests: requests.count,
-    pendingLinks: pendingLinks.count,
-  }
+  return { sessions, authRequests, pendingLinks }
 }

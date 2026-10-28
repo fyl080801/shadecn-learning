@@ -274,7 +274,7 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
    放在这里而不是 `flushCollabWrites` 内部：**退出的时间预算是一个整体**，
    和 `terminationGracePeriodSeconds` 直接对应，拆成两个各自的超时反而说不清总账。
    超时就认了往下走 —— 再等也写不进去，而内容还在客户端的 IndexedDB 里，下次打开会推上来。
-   （Prisma 侧仍没有 statement timeout，写队列仍无界；那是 §4.3 之后再看的事。）
+   （数据库侧仍没有 statement timeout，写队列仍无界；那是 §4.3 之后再看的事。）
 3. **~~readiness 不反映依赖健康~~** —— 拆成了两条路径：
 
    | 路径 | 探针 | 查什么 |
@@ -287,7 +287,7 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
    还握着未落库内容的进程杀掉，然后在 CrashLoopBackOff 里反复重启，把故障放大一圈。
    所以 liveness 必须保持浅探针 —— 有一条用例专门钉「`/api/health` 一次数据库都不碰」。
 
-   两个细节：依赖探测自己带 2 秒超时（`prisma.$queryRaw` 没有默认上界，数据库进黑洞时
+   两个细节：依赖探测自己带 2 秒超时（ORM 的查询没有默认上界，数据库进黑洞时
    会一直挂着），而探针的 `timeoutSeconds: 3` 比它宽，好让**服务端先超时**、原因落进日志；
    响应里**只有「通没通」**，连接串和错误码只进日志 —— 这个端点匿名可读（kubelet 不带 cookie）。
 

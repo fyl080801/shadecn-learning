@@ -76,7 +76,7 @@
 
 `apps/server/config.ts` 统一导出：`rootDir` / `outputDir` / `staticDir` / `isDev` / `port` / `host` / `isApiPath()` / `dataDir` / `databaseUrl` / `ensureDatabaseDir()` / `appOrigin` / `authConfig` / `authEnabled` / `assertAuthConfig()`。
 
-`rootDir`（应用根目录）来自 `apps/server/runtime.ts`：源码运行是 `apps/server/` 的上两级（仓库根；monorepo 之后源码挪进了 `apps/server`，但 `.env`、`data/`、`output/` 仍在仓库根），构建产物运行是进程 cwd —— 产物躺在 `output/` 下，拿 `output/` 当根会让 `data/` 和 prisma CLI 对不上。
+`rootDir`（应用根目录）来自 `apps/server/runtime.ts`：源码运行是 `apps/server/` 的上两级（仓库根；monorepo 之后源码挪进了 `apps/server`，但 `.env`、`data/`、`output/` 仍在仓库根），构建产物运行是进程 cwd —— 产物躺在 `output/` 下，拿 `output/` 当根会让 `data/` 跑进 `output/` 里，和容器挂卷的 `/app/data` 对不上。
 
 | 变量 | 默认值 |
 |---|---|
@@ -119,4 +119,4 @@
 ## 5. 待确认事项
 
 - 生产环境是否需要给静态资源加长缓存头 + 文件名哈希（当前依赖 Vite 默认产物命名）。
-- `store/notes.ts` 之外的业务数据是否统一走 Prisma，还是继续保留内存实现作为演示。
+- `store/notes.ts` 之外的业务数据是否统一走数据库（MikroORM），还是继续保留内存实现作为演示。

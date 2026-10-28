@@ -28,6 +28,7 @@
 | REQ-BACKEND | 数据访问下沉：Node 不再直连数据库与存储 | [17-backend-extraction.md](17-backend-extraction.md) | 规划中 |
 | REQ-GALSTORY | GalStory 控制台：故事管理与模型配置 | [18-galstory-console.md](18-galstory-console.md) | 部分实现 |
 | REQ-RESILIENCE | 协同服务端容灾 | [19-collab-resilience.md](19-collab-resilience.md) | 部分实现 |
+| REQ-AGENT | 画布 Agent：服务端 agent 编辑画布，客户端实时可见 | [20-agent-canvas.md](20-agent-canvas.md) | 规划中 |
 
 ## 状态口径
 
@@ -56,7 +57,7 @@
 | 断网时刷新打不开页面 | 数据有 IndexedDB 兜底，但应用本体要从服务器加载 —— 没有 Service Worker 就刷不出来 | [REQ-COLLAB §7](04-realtime-collab.md) |
 | 侧栏导航与路由表各写一份 | 容易漏配；`Example.vue` / `Emu3DView.vue` 已无对应路由 | [REQ-SHELL §3](01-app-shell.md) |
 | 同一个人可能有两个账号 | 先用 Keycloak、后用 GitHub 各登一次会得到两个互不相干的号，且**并不到一起去**。身份只认 `(provider, subject)`，不按邮箱推断（那是账号接管的经典入口）。正确姿势是先用主账号登录、再到设置页关联 | [REQ-AUTH §3.9](02-auth-keycloak.md) |
-| schema 变更可能让容器起不来 | 启动时的 `prisma db push` 不带 `--accept-data-loss`（有意为之），遇到删列、改类型、**新增 unique** 一律拒绝执行 → CrashLoopBackOff。上线前先 `migrate diff` 看 DDL，被拦了按文档处置 | [REQ-DEPLOY §3.6](12-deployment.md) |
+| 表结构变更可能让容器起不来 | 启动时的表结构同步（`node server/db-sync.js`）不带 `--force`（有意为之），遇到删列、删表、改列类型、SQLite 上的整表重建一律拒绝执行 → CrashLoopBackOff。上线前先对着同结构的库跑一次 `pnpm db:push` 看会执行什么，被拦了按文档处置 | [REQ-DEPLOY §3.6](12-deployment.md) |
 
 ### 值得做的优化（按性价比排序）
 

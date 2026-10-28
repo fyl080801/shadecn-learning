@@ -295,7 +295,7 @@ const title = useDraftField<string>({
 3. **手势结束必须清干净。** awareness 的 local state 每 15s 会被 y-protocols 全量重播一次（`outdatedTimeout / 2`，也正是靠它撑住连接不超时），草稿留着不清就是每人每 15 秒重播一份废数据，人越多越贵。`clearTransform()` 除了清还**绕过节流立刻发一次**，这个细节也要照抄。
 4. **节流两端都要开。** `useThrottleFn(fn, ms, trailing, leading)` —— leading 保证第一帧立刻发、跟手，trailing 保证窗口末尾补发。**trailing 不能省**：awareness 是 last-writer-wins 的**状态**而不是事件流，所以丢中间的包完全无害（最后一包携带完整当前状态），但**丢最后一包就是错的**。
 
-   也正因为是状态而非事件，降帧率**只损失流畅度、不损失正确性** —— 真正不能丢的那些（落定的位置、提交的值）根本不走这条路，走的是 Y.Doc。这条性质就是「窗口跟着人数走」能成立的前提：`ms` 是个 getter（`feedbackThrottle(roomSize)`，在 `apps/web/src/lib/presence.ts`），VueUse 的过滤器每次调用都 `toValue(ms)` 重读，所以人进人出时窗口自动跟着变、不用重建节流函数。`FEEDBACK_THROTTLE_ROOM`（6 人）以内返回原来那个 40ms —— 真实房间基本都在这一档，**行为和以前完全一样**；再多就阶梯放大，封顶在 `FEEDBACK_THROTTLE_MAX`（约 6fps，再稀对方的光标看着就像卡死了，那还不如别发）。
+   也正因为是状态而非事件，降帧率**只损失流畅度、不损失正确性** —— 真正不能丢的那些（落定的位置、提交的值）根本不走这条路，走的是 Y.Doc。这条性质就是「窗口跟着人数走」能成立的前提：`ms` 是个 getter（`feedbackThrottle(roomSize)`，在 `apps/web/src/lib/presence.ts`），VueUse 的过滤器每次调用都 `toValue(ms)` 重读，所以人进人出时窗口自动跟着变、不用重建节流函数。`FEEDBACK_THROTTLE_ROOM`（6 人）以内返回基础窗口 `FEEDBACK_THROTTLE`（60ms，光标、选中、拖动几何、拉线共用一个缓冲一个节流，值没变不发） —— 真实房间基本都在这一档，**行为和以前完全一样**；再多就阶梯放大，封顶在 `FEEDBACK_THROTTLE_MAX`（约 6fps，再稀对方的光标看着就像卡死了，那还不如别发）。
 
    ⚠️ **这条曲线是判断，不是实测出来的**，而且如上一条所说它是**二阶**的 —— 包大小的影响能压过它一个量级。真要调，改那三个常量一处即可。
 
@@ -370,7 +370,11 @@ interface FlowEdge {
 - **拖动的中间态不进文档**：一次拖拽只在 `onNodeDragStop` 提交落点，途中的位置走反馈层（awareness）。否则拖一下就是几十次更新。
 - `viewport` 的变化**不是内容**：不进文档、不进撤销、不涨 `revision`，走的是 3.5.1 那条「按用户存」的路。
 
-### 3.10 数据库模型（Prisma，新增六张表）
+### 3.10 数据库模型（新增六张表）
+
+> 下面是这批表**最初设计时**的 Prisma 写法，字段和约束的语义至今没变；数据层换成 MikroORM 之后，
+> 现行定义在 `apps/server/db/entities/canvas.ts`（外键变成了关系属性：`projectId` → `project`，
+> 列名按 `UnderscoreNamingStrategy` 变成 `project_id`；`FlowOperation` 那张表后来已整体移除）。
 
 ```prisma
 /// 画布的容器与权限边界。
@@ -486,14 +490,16 @@ model FlowUserState {
 
 ## 4. 功能需求
 
-### 4.1 项目列表页（`/projects`）
+### 4.1 项目列表（画布工作区的页内侧栏）
+
+> 原先的独立列表页 `/projects` 已并入工作区：个人画布与项目共用一个界面（`CanvasWorkspace`），左侧页内侧栏第一项是「个人画布」（`/personal`），其下「项目」分组列出项目，分组标题行有「+」新建项目，项目行 hover 出现删除图标（仅管理员）；内容区保留搜索与新建画布。`/projects` 仅作为重定向到 `/personal` 保留给老书签。下面的条目描述的是列表本身的行为，现在由侧栏承载（一次取 100 个，不分页）。
 
 - 应用的落地页，卡片或表格形态都行，展示：项目名、描述、成员数、画布数、我的角色、更新时间。
 - 分页：默认每页 20；页码写进 URL query。
 - 只列出**我是成员**的项目 —— 没有「所有项目」视图，也没有公开项目。
 - 顶部「新建项目」：填名称后创建，创建者自动成为该项目的 admin 成员（`ProjectMember` 里要真实写入这一行，不能靠 `createdById` 隐式推断，否则成员列表和权限判断得处处特判）。
 - 空态要给出引导：「你还没有项目 —— 新建一个，或让同事把邀请链接发给你」。
-- **这一页只列项目**。个人画布（[REQ-SOLO](16-personal-flow.md)）是侧栏另一个入口、另一个页面（`/personal`），不在这里用 Tab 并列 —— 理由见 [REQ-SOLO §4.8](16-personal-flow.md)。个人空间本身是一个 `kind='personal'` 的项目，但**不出现在项目列表里**。
+- **这里只列项目**。个人画布（[REQ-SOLO](16-personal-flow.md)）是工作区侧栏的第一项、另一个页面（`/personal`），不在项目主页里用 Tab 并列 —— 理由见 [REQ-SOLO §4.8](16-personal-flow.md)。个人空间本身是一个 `kind='personal'` 的项目，但**不出现在项目列表里**。
 
 ### 4.2 项目主页（`/projects/:id`）—— 一个界面统一展现
 
@@ -532,7 +538,7 @@ model FlowUserState {
 
 这对应用外壳（[REQ-SHELL](01-app-shell.md)）是个改动：「每个 SPA 路由都带菜单」这条约束到此为止。做法见 [REQ-SHELL 2.1](01-app-shell.md#21-整体布局) —— 带不带菜单由**模板页**区分，`/flows/:id` 挂在 `BlankLayout` 下，是第一条也是目前唯一一条不套侧栏的路由。注意这**不是**登录态的例外 —— 它依然是登录后才能进的页面，只是不带菜单。
 
-> `AppSidebar.vue` 的布局与行为都不动 —— 只是把导航项里的「VueFlow」换成指向 `/projects` 的「画布项目」（`/vue-flow` 那个 demo 路由本身保留，只是不再挂在菜单上）。
+> `AppSidebar.vue` 的布局与行为都不动 —— 只是把导航项里的「VueFlow」换成指向 `/personal` 的「画布」（在 `/personal` 与 `/projects/*` 下都高亮）（`/vue-flow` 那个 demo 路由本身保留，只是不再挂在菜单上）。
 
 - 进入时 `GET /api/flows/:id` 取的是**文档元信息 + 我自己的 `userState`**；画布内容随即由 `flow:<id>` 房间的首次同步送达（见 [REQ-COLLAB §4](04-realtime-collab.md)）。视口优先用 `userState.viewport`，没有才退到 `graph.viewport` 兜底，再没有就 `fitView`。
 - 沿用 [REQ-FLOW](09-flow-chart.md) 的全部交互（滚轮平移、Ctrl+滚轮以光标为锚点缩放、自定义节点、连线）。
@@ -694,7 +700,7 @@ store 的职责边界：
 
 **画布内容走的不是 HTTP**：`ws://<host>/ws/collaboration`（房间 `flow:<flowId>` 走消息，不在路径里），握手时按项目成员身份鉴权（`apps/server/auth/ws.ts`），此后服务端还会持续确认这条连接的权限还在：**移除成员 / 删项目 / 删画布这三个接口会当场把受影响的 WebSocket 踢掉**（本实例立即，其它实例 ≤3 秒），另有每 20 秒一轮的复验兜底。所以「移除成员」对正在编辑的人不再有可观的窗口期——这很要紧，因为他在窗口期里改的东西会被 CRDT 合并落库，而留下的人**撤销不回来**（撤销只跟踪自己的操作）。踢下线时会区分「会话过期」和「不是成员了」，两者给用户的出路不同。协议与运行参数见 [REQ-COLLAB](04-realtime-collab.md)。
 
-约定沿用 [REQ-DATA](05-data-persistence.md)：错误响应统一 `{ error: string }`；请求体非法 JSON → 400；参数校验在路由层，数据访问全在 `apps/server/store/projects.ts` 与 `apps/server/store/flows.ts`，路由文件里不出现 `prisma`。
+约定沿用 [REQ-DATA](05-data-persistence.md)：错误响应统一 `{ error: string }`；请求体非法 JSON → 400；参数校验在路由层，数据访问全在 `apps/server/store/projects.ts` 与 `apps/server/store/flows.ts`，路由文件里不出现任何数据库访问。
 
 所有端点在 `/api/*` 之下，因此默认需要登录（[REQ-AUTH](02-auth-keycloak.md)）。
 
@@ -804,7 +810,7 @@ store 的职责边界：
 
 ## 7. 待确认事项
 
-暂无 —— 前几轮提出的问题已全部拍板并写进上文：撤销栈不跨会话、不存操作日志也不做历史、项目主页用同页 Tab、软删不清理不恢复、侧栏用「画布项目」替掉原来的「VueFlow」入口。
+暂无 —— 前几轮提出的问题已全部拍板并写进上文：撤销栈不跨会话、不存操作日志也不做历史、项目主页用同页 Tab、软删不清理不恢复、侧栏用「画布」替掉原来的「VueFlow」入口。
 
 实现过程中新冒出来的取舍，追加到这里。
 

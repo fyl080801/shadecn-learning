@@ -2,7 +2,8 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { authConfig, authEnabled, callbackUriFor, keycloakEnabled, secureCookieFor } from '../config.ts'
-import { prisma } from '../db.ts'
+import { db } from '../db.ts'
+import { AuthRequest } from '../db/entities/index.ts'
 import {
   type AuthVariables,
   clearSessionCookie,
@@ -69,18 +70,18 @@ async function startAuthorization(
   // 从哪个域名进来的就回到哪个域名（白名单之外回落 APP_ORIGIN），见 auth/origin.ts
   const origin = originOf(c)
 
-  const request = await prisma.authRequest.create({
-    data: {
-      state,
-      nonce,
-      codeVerifier,
-      provider: input.provider.id,
-      linkUserId: input.linkUserId ?? null,
-      redirectTo: input.redirectTo,
-      origin,
-      expiresAt: new Date(Date.now() + AUTH_REQUEST_TTL),
-    },
+  const em = db()
+  const request = em.create(AuthRequest, {
+    state,
+    nonce,
+    codeVerifier,
+    provider: input.provider.id,
+    linkUserId: input.linkUserId ?? null,
+    redirectTo: input.redirectTo,
+    origin,
+    expiresAt: new Date(Date.now() + AUTH_REQUEST_TTL),
   })
+  await em.flush()
 
   setCookie(c, authConfig.txCookieName, request.id, {
     httpOnly: true,
@@ -98,7 +99,7 @@ async function startAuthorization(
       redirectUri: callbackUriFor(origin),
     })
   } catch (err) {
-    await prisma.authRequest.delete({ where: { id: request.id } }).catch(() => undefined)
+    await db().nativeDelete(AuthRequest, { id: request.id })
     console.error(`[auth] 构造 ${input.provider.id} 授权地址失败`, err)
     return null
   }
@@ -188,11 +189,12 @@ export const auth = new Hono<{ Variables: AuthVariables }>()
 
     // 一次性消费：拿到就删，重放同一个 code 不会再有 AuthRequest。
     // **先读它再看 ?error=** —— 用户在提供方那边点了「取消」时，得知道该把人送回
-    // 登录页还是设置页，而那个答案只有 AuthRequest 知道
-    const request = txId ? await prisma.authRequest.findUnique({ where: { id: txId } }) : null
-    if (request) {
-      await prisma.authRequest.delete({ where: { id: request.id } }).catch(() => undefined)
-    }
+    // 登录页还是设置页，而那个答案只有 AuthRequest 知道。
+    // 「消费」以删除成功为准：两个回调同时拿着同一个 tx cookie 进来时，只有真删掉那一行的
+    // 那个算数，另一个当作读不到（重放）
+    const found = txId ? await db().findOne(AuthRequest, txId) : null
+    const consumed = found ? await db().nativeDelete(AuthRequest, { id: found.id }) : 0
+    const request = consumed > 0 ? found : null
 
     const linking = request?.linkUserId ?? null
     const failed = (message: string) =>

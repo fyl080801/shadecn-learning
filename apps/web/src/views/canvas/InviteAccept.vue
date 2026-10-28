@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { inviteApi } from "@/lib/api"
 import { usePageTitle } from "@/composables/usePageTitle"
 import { useAsyncAction } from "@/composables/useAsyncAction"
+import { refreshProjectNav } from "@/composables/useProjectNav"
 import type { InvitePreview } from "@shadecn/shared/canvas"
 
 /**
@@ -50,6 +51,8 @@ const { run: join, pending: joining } = useAsyncAction(
     }
 
     const { projectId } = await inviteApi.accept(props.token)
+    // 工作区侧栏的项目列表是模块级缓存，刚加入的项目要拉一遍才会出现在里面
+    await refreshProjectNav()
     void router.replace(`/projects/${projectId}`)
   },
   {
@@ -79,7 +82,7 @@ const { run: join, pending: joining } = useAsyncAction(
           <CardDescription>请联系项目管理员重新发一条邀请链接。</CardDescription>
         </CardHeader>
         <CardContent class="flex justify-center">
-          <Button variant="outline" @click="router.push('/projects')">去我的项目</Button>
+          <Button variant="outline" @click="router.push('/personal')">去我的项目</Button>
         </CardContent>
       </template>
 
@@ -101,7 +104,7 @@ const { run: join, pending: joining } = useAsyncAction(
           <Button :loading="joining" @click="join()">
             {{ preview.alreadyMember ? "进入项目" : "加入项目" }}
           </Button>
-          <Button variant="ghost" @click="router.push('/projects')">取消</Button>
+          <Button variant="ghost" @click="router.push('/personal')">取消</Button>
         </CardContent>
       </template>
     </Card>

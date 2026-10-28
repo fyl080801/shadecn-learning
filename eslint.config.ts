@@ -15,9 +15,7 @@ export default defineConfig(
       // `pnpm build` 的产物
       "output",
       "node_modules",
-      "apps/web/src/components/ui/**",
-      // Prisma 生成的 client
-      "apps/server/generated/**"
+      "apps/web/src/components/ui/**"
     ]
   },
   {

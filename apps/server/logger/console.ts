@@ -12,7 +12,7 @@ import { logger, type LogMeta } from './logger.ts'
  * - 业务代码一行不改，写法照旧就是 `console.warn('[collab] xxx')`；
  * - 前缀被解析成结构化的 `module` 字段，JSON 输出里可以直接按模块过滤；
  * - 请求上下文（requestId / userId）自动补上，调用处什么都不用传；
- * - 第三方库（Hono 的 logger 中间件、Prisma、ioredis）的 console 输出一并收编。
+ * - 第三方库（Hono 的 logger 中间件、ioredis）的 console 输出一并收编。
  *
  * 换句话说：**日志的「写」留在原地，日志的「怎么写、去哪儿」全在这里**。
  * 将来真要换掉 winston，业务代码同样一行不动。

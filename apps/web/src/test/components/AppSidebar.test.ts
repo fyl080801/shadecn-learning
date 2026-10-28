@@ -154,3 +154,25 @@ describe("侧栏用户菜单", () => {
     )
   })
 })
+
+describe("侧栏的「画布」入口", () => {
+  /** 当前高亮的那一项（高亮态的类名是独立的 `bg-sidebar-accent`，不含 hover: 前缀） */
+  async function activeLabels(path: string) {
+    const wrapper = await mountSidebar()
+    await router.push(path)
+    await flushPromises()
+    return wrapper
+      .findAll("a")
+      .filter((a) => a.classes().includes("bg-sidebar-accent"))
+      .map((a) => a.attributes("href"))
+  }
+
+  it("个人画布与项目页是同一个工作区 → 都让「画布」（/personal）亮着", async () => {
+    expect(await activeLabels("/personal")).toContain("/personal")
+    expect(await activeLabels("/projects/p1")).toContain("/personal")
+  })
+
+  it("别的页面 → 「画布」不亮", async () => {
+    expect(await activeLabels("/snake")).not.toContain("/personal")
+  })
+})

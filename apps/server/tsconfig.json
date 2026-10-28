@@ -23,6 +23,5 @@
     "noUncheckedSideEffectImports": true
   },
   "include": ["**/*.ts"],
-  // prisma.config.ts 引的是 prisma/db-provider.mjs（没开 allowJs），迁移前也从不在类型检查范围里
-  "exclude": ["node_modules", "prisma.config.ts"]
+  "exclude": ["node_modules"]
 }

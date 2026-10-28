@@ -6,7 +6,8 @@ import {
   requireRole,
   withSession,
 } from '../../auth/middleware.ts'
-import { prisma, resetDb } from '../helpers/db.ts'
+import { db, resetDb } from '../helpers/db.ts'
+import { Session } from '../../db/entities/index.ts'
 import { CLIENT_ID, stubOidcFetch } from '../helpers/oidc.ts'
 import { signIn } from '../helpers/session.ts'
 
@@ -58,7 +59,7 @@ describe('withSession', () => {
 
   it('cookie 还在但会话已经没了 → 顺手把 cookie 清掉', async () => {
     const { cookie } = await signIn()
-    await prisma.session.deleteMany()
+    await db().nativeDelete(Session, {})
 
     const res = await app.request('/who', { headers: { cookie } })
     const setCookie = res.headers.get('set-cookie') ?? ''

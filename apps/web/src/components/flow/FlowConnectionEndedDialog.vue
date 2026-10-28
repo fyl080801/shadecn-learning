@@ -47,9 +47,9 @@ const notices = {
     description:
       "这张画布可能已被删除，或者你已不是它所属项目的成员 —— 通道已断开，" +
       "此处的改动不会再保存。如果这是误操作，请联系项目管理员重新邀请你。",
-    action: "返回画布项目",
+    action: "返回画布",
     dismissible: false,
-    run: () => void router.push("/projects")
+    run: () => void router.push("/personal")
   },
   /**
    * 两种画布共用：个人画布是推送被回了 413，项目画布是房间顶到硬限被锁写清场
@@ -72,7 +72,7 @@ const notices = {
  * 只剩「这张画布已经没了」（推送被回 404，多半是在另一个窗口里删的）。
  *
  * 所以文案和落点都得换。落点尤其不能照抄：离开画布回哪儿**认 `mode` 不认 `projectId`**
- * （REQ-SOLO）—— 个人空间在库里确实是个项目，但把人送进「画布项目」列表，
+ * （REQ-SOLO）—— 个人空间在库里确实是个项目，但把人送进项目那一栏，
  * 他会在那儿找不到自己刚才那张画布。
  */
 const soloForbidden = {

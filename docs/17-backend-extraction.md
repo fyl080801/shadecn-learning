@@ -95,11 +95,12 @@ sweepExpired(before: string): Promise<{ sessions: number; authRequests: number }
 
 - `id` 由 Node 算（`HMAC-SHA256(SESSION_SECRET, cookie token)`）。后端看不到 cookie 里的原始 token，
   拖库也伪造不出 cookie —— 这个性质是现在就有的，下沉后更要保住。
-- **`refreshSession` 必须原子**。它现在是 `prisma.$transaction([session.update, user.update])`：
+- **`refreshSession` 必须原子**。它现在是一个 `em.transactional()`（session 更新 + user 更新）：
   换完 token 的同时把 Keycloak 侧可能变过的角色同步进 `User.roles`。拆成两个调用，
   中间挂掉就会留下「新 token + 旧角色」。
-- **`consumeAuthRequest` 必须原子**。现在是 `findUnique` + `delete` 两步，靠单进程凑合；
-  跨网络之后这就是一个真实的重放窗口（同一个 `code` 被并发回调两次）。
+- **`consumeAuthRequest` 必须原子**。现在是 `findOne` + `nativeDelete` 两步，以「删除成功（影响 1 行）」
+  作为消费成功的判据，所以同库内的并发重放已经只有一个能过；下沉之后要把这一判据原样保住，
+  别退化成「读到就算」。
 
 ### 4.2 项目 / 成员 / 邀请（12）
 
@@ -288,10 +289,10 @@ resolveProjectAccess(sessionId, projectId)
 ## 8. 验收标准
 
 1. `apps/server/` 下除了 `store/`（重命名为 client/adapter 亦可）与一处 HTTP 客户端，
-   **没有任何文件 import `prisma`**；`apps/server/db.ts` 与两个 driver adapter 从 `dependencies` 移除。
+   **没有任何文件 import `../db.ts`**；`apps/server/db.ts`、`apps/server/db/` 与 `@mikro-orm/*` 从 `dependencies` 移除。
 2. 现有测试全绿。`apps/server/test/` 里用 `app.request()` 驱动的路由测试**一条都不用改**
    —— 这是「前端契约不变、鉴权判定留在 Node」是否真的做到了的判据。
-   替换成一个假的后端客户端即可（比现在的 `prisma db push` 全量建库更快）。
+   替换成一个假的后端客户端即可（比现在每轮跑一次表结构同步全量建库更快）。
 3. 两个人同时编辑同一张协同画布，落库不丢改动（CAS + 无条件写两条路都走到）。
 4. 一个人在两个实例上同时推送同一张个人画布，`applied=false` 会触发 Node 重试并最终收敛。
 5. 移除成员后 **3 秒内**（跨实例）该用户的写帧被拒且连接被关闭 —— 撤销事件通道生效。

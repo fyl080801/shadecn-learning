@@ -35,9 +35,6 @@ import {
   Boxes,
   Video,
   Workflow,
-  UserRoundPen,
-  BookOpen,
-  SlidersHorizontal,
   ChevronsUpDown,
   LogIn,
   LogOut,
@@ -56,6 +53,12 @@ interface NavItem {
    * 那一项亮着，否则点进去侧栏就整个失去当前位置，所以那类入口写 `prefix`。
    */
   match?: "exact" | "prefix"
+  /**
+   * 额外的前缀列表：路由落在其中任何一个之下（该路径本身或 `<路径>/…`）也算这一项。
+   * 给「一个入口、多个地址」用 —— 「画布」入口指向 `/personal`，
+   * 但项目页 `/projects/:id` 是同一个工作区，也要亮着它。
+   */
+  activePaths?: string[]
 }
 
 /**
@@ -83,8 +86,7 @@ const navGroups: NavGroup[] = [
       { label: "richeditor", to: "/richeditor", icon: Sun },
       { label: "Three Editor", to: "/three-editor", icon: Boxes },
       { label: "3D导演台", to: "/3d-scene", icon: Video },
-      { label: "画布项目", to: "/projects", icon: Workflow },
-      { label: "个人画布", to: "/personal", icon: UserRoundPen }
+      { label: "画布", to: "/personal", icon: Workflow, activePaths: ["/personal", "/projects"] }
     ]
   }
   // {
@@ -124,6 +126,9 @@ const accountLabel = computed(() =>
 
 /** 当前路由算不算落在这一项上；详情页要让它所属的入口继续亮着（见 NavItem.match） */
 function isActive(item: NavItem) {
+  if (item.activePaths?.some((p) => route.path === p || route.path.startsWith(`${p}/`))) {
+    return true
+  }
   return item.match === "prefix"
     ? route.path.startsWith(item.to)
     : route.path === item.to

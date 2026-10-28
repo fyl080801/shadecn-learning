@@ -1,5 +1,6 @@
 import type { FlowUserState } from '@shadecn/shared/flow-graph'
-import { prisma } from '../db.ts'
+import { db } from '../db.ts'
+import { FlowUserState as FlowUserStateRow, newId } from '../db/entities/index.ts'
 import { FLOW_USER_STATE_PARSERS } from './flow-types.ts'
 
 /**
@@ -13,10 +14,11 @@ import { FLOW_USER_STATE_PARSERS } from './flow-types.ts'
 export const flowUserState = {
   /** 取某人在某张画布上的全部分区；没存过的 key 不出现在结果里 */
   async get(flowId: string, userId: string): Promise<FlowUserState> {
-    const rows = await prisma.flowUserState.findMany({
-      where: { flowId, userId },
-      select: { key: true, value: true },
-    })
+    const rows = await db().find(
+      FlowUserStateRow,
+      { flow: flowId, user: userId },
+      { fields: ['key', 'value'] },
+    )
 
     // 库里的 key 是任意字符串，先按普通对象收，认得的才放进来
     const state: Record<string, unknown> = {}
@@ -38,12 +40,23 @@ export const flowUserState = {
    */
   async patch(flowId: string, userId: string, patch: FlowUserState): Promise<void> {
     for (const [key, value] of Object.entries(patch)) {
-      const serialized = JSON.stringify(value)
-      await prisma.flowUserState.upsert({
-        where: { flowId_userId_key: { flowId, userId, key } },
-        update: { value: serialized },
-        create: { flowId, userId, key, value: serialized },
-      })
+      // upsert 直接发 SQL，不走工作单元：id / updatedAt 的 onCreate、onUpdate 都不会触发，得自己给。
+      // 撞上 (flow, user, key) 时只改 value 和 updatedAt —— id 留着原来那个
+      await db().upsert(
+        FlowUserStateRow,
+        {
+          id: newId(),
+          flow: flowId,
+          user: userId,
+          key,
+          value: JSON.stringify(value),
+          updatedAt: new Date(),
+        },
+        {
+          onConflictFields: ['flow', 'user', 'key'],
+          onConflictMergeFields: ['value', 'updatedAt'],
+        },
+      )
     }
   },
 }

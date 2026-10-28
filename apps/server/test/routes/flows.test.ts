@@ -4,7 +4,8 @@ import { app } from '../../app.ts'
 import { nodesMap } from '@shadecn/shared/flow-doc'
 import { emptyGraph, type FlowGraph } from '@shadecn/shared/flow-graph'
 import { closeRoom, openRoom, resetRooms, writeGraph } from '../helpers/collab.ts'
-import { prisma, resetDb } from '../helpers/db.ts'
+import { db, resetDb } from '../helpers/db.ts'
+import { Flow, FlowUserState } from '../../db/entities/index.ts'
 import { actor, createFlow, createProject, joinViaInvite, type Actor } from '../helpers/project.ts'
 
 beforeEach(async () => {
@@ -154,7 +155,7 @@ describe('画布内容的写入路径（Yjs）', () => {
     // revision 不再是乐观锁，只是服务端写入次数的单调计数
     expect(detail.revision).toBe(1)
 
-    const row = await prisma.flow.findUniqueOrThrow({ where: { id: flowId } })
+    const row = await db().findOneOrFail(Flow, { id: flowId }, { populate: ['ydoc'] })
     expect(row.ydoc).not.toBeNull()
     expect(row.ydoc!.length).toBeGreaterThan(0)
   })
@@ -177,17 +178,18 @@ describe('画布内容的写入路径（Yjs）', () => {
     const flowId = await createFlow(alice, projectId)
 
     // 直接写库，模拟 Yjs 之前留下的数据：有 graph、没有 ydoc
-    await prisma.flow.update({
-      where: { id: flowId },
-      data: { graph: JSON.stringify(graphWith(2)), ydoc: null, nodeCount: 2, edgeCount: 1 },
-    })
+    await db().nativeUpdate(
+      Flow,
+      { id: flowId },
+      { graph: JSON.stringify(graphWith(2)), ydoc: null, nodeCount: 2, edgeCount: 1 },
+    )
 
     const doc = await openRoom(flowId)
     expect([...doc.getMap('nodes').keys()].sort()).toEqual(['n0', 'n1'])
     expect([...doc.getMap('edges').keys()]).toEqual(['e1'])
     await closeRoom(flowId)
 
-    expect((await prisma.flow.findUniqueOrThrow({ where: { id: flowId } })).ydoc).not.toBeNull()
+    expect((await db().findOneOrFail(Flow, { id: flowId }, { populate: ['ydoc'] })).ydoc).not.toBeNull()
   })
 
   it('节点 data 上平铺的任意业务字段原样存取', async () => {
@@ -294,7 +296,7 @@ describe('PATCH /api/flows/:id/user-state', () => {
     })
 
     expect(await userStateOf(alice, flowId)).toEqual({ viewport: { x: 2, y: 2, zoom: 2 } })
-    expect(await prisma.flowUserState.count({ where: { flowId } })).toBe(1)
+    expect(await db().count(FlowUserState, { flow: flowId })).toBe(1)
   })
 
   it('视图操作不动画布数据：revision 不涨', async () => {
@@ -339,7 +341,7 @@ describe('PATCH /api/flows/:id/user-state', () => {
       viewport: { x: 1, y: 1, zoom: 1 },
     })
     expect(res.status).toBe(404)
-    expect(await prisma.flowUserState.count({ where: { flowId } })).toBe(0)
+    expect(await db().count(FlowUserState, { flow: flowId })).toBe(0)
   })
 
   it('画布删掉，附带的用户状态一起没', async () => {
@@ -351,8 +353,8 @@ describe('PATCH /api/flows/:id/user-state', () => {
       viewport: { x: 1, y: 1, zoom: 1 },
     })
     // 软删只是过滤，行还在；真正的级联删除靠外键，这里直接删库里那行画布
-    await prisma.flow.delete({ where: { id: flowId } })
+    await db().nativeDelete(Flow, { id: flowId })
 
-    expect(await prisma.flowUserState.count({ where: { flowId } })).toBe(0)
+    expect(await db().count(FlowUserState, { flow: flowId })).toBe(0)
   })
 })

@@ -16,7 +16,7 @@ import { installProcessLogging } from './process.ts'
  * |---|---|---|
  * | `apps/server/index.ts` | `installLogging()` | console 接管 + 进程级异常 |
  * | `apps/server/app.ts` | `logger()` → `httpLogger()` | 每个请求的方法/状态/耗时 + requestId 上下文 |
- * | `apps/server/db.ts` | `instrumentAdapter(...)` | 每条 SQL 的耗时、慢查询、失败 |
+ * | `apps/server/db/orm.ts` | `loggerFactory: ormLoggerFactory` | 每条 SQL 的耗时、慢查询、失败 |
  * | `apps/server/collab/hocuspocus.ts` | extensions 数组 +1 | 房间生命周期、连接进出、落库健康度 |
  *
  * 其中 **console 接管是支点**：仓库里本来就有 49 处 `console.log/warn/error`，
@@ -33,7 +33,7 @@ import { installProcessLogging } from './process.ts'
  */
 export { logger, errorFields, type LogMeta } from './logger.ts'
 export { httpLogger } from './http.ts'
-export { instrumentAdapter } from './db.ts'
+export { ormLoggerFactory } from './db.ts'
 export { collabLogging, collabLogStats } from './collab.ts'
 export { currentContext, contextFields } from './context.ts'
 

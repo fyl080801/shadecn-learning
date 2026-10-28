@@ -75,7 +75,7 @@ describe("协同通道终局提示", () => {
     expect(shown()).toBe("")
   })
 
-  it("被移出项目 / 画布被删 → 说清两种可能，出路是回项目列表", async () => {
+  it("被移出项目 / 画布被删 → 说清两种可能，出路是回画布工作区", async () => {
     fatal.value = "forbidden"
     mount(FlowConnectionEndedDialog)
     await flushPromises()
@@ -83,13 +83,13 @@ describe("协同通道终局提示", () => {
     expect(shown()).toContain("已失去这张画布的访问权限")
     expect(shown()).toContain("项目管理员")
 
-    button("返回画布项目")?.click()
+    button("返回画布")?.click()
     await flushPromises()
-    expect(push).toHaveBeenCalledWith("/projects")
+    expect(push).toHaveBeenCalledWith("/personal")
   })
 
   it("个人画布被删 → 换一套说法和落点：没有项目也没有管理员", async () => {
-    // 个人空间在库里确实是个项目，但把人送进「画布项目」列表，他会找不到刚才那张画布
+    // 个人空间在库里确实是个项目，但把人送进项目那一栏，他会找不到刚才那张画布
     meta.value = { mode: "solo" }
     fatal.value = "forbidden"
     mount(FlowConnectionEndedDialog)

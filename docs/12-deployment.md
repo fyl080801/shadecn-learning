@@ -26,7 +26,7 @@ monorepo 之后依赖分散在各个包里（`apps/web`、`apps/server`、`packa
 
 | 组 | 含义 | 内容 |
 |---|---|---|
-| `dependencies` | **生产运行时**真正要装的 | `hono` / `@hono/node-server`、`yjs`、`@hocuspocus/server` / `crossws`、`@prisma/client` + 两个 driver adapter（`@prisma/adapter-better-sqlite3` / `@prisma/adapter-pg`）、`prisma`（启动时跑 db push） |
+| `dependencies` | **生产运行时**真正要装的 | `hono` / `@hono/node-server`、`yjs`、`@hocuspocus/server` / `crossws`、`@mikro-orm/core` + 两个驱动（`@mikro-orm/sqlite` 连带 better-sqlite3、`@mikro-orm/postgresql` 连带 pg，版本锁死 7.2.5） |
 | `devDependencies` | 开发和构建期才要的 | 前端全家桶（vue、vue-router、three、tailwind、reka-ui、codemirror、vue-flow、`@hocuspocus/provider`、y-protocols…）+ 工具链（vite、esbuild、tsx、vue-tsc、eslint、vitest…） |
 
 其余三处：`apps/web` **只有 `devDependencies`**（整包被 `vite build` 打进 `output/public`）；`@shadecn/shared` 在 web 和 server 里都是 `workspace:*` 的 devDependency（被各自的 bundle 内联，产物运行时不需要装）；仓库根只放全仓工具（eslint 全家、typescript、vitest、coverage、jsdom）。
@@ -49,47 +49,39 @@ output/
   package.json        # 运行时依赖（版本锁死）+ start / db:push 脚本
   server/
     index.js          # 打包后的后端入口（ESM，node 22），带 .map
+    db-sync.js        # 表结构同步入口（apps/server/db/sync-cli.ts），容器启动先跑它
+    chunk-*.js        # 两个入口共用的模块（config、实体、ORM 工厂…）
     dev-*.js          # 动态 import 切出来的开发分支 chunk，生产不会加载
   public/             # 前端静态资源 = 后端的静态资源目录
     index.html
     assets/...
-  prisma/             # schema.prisma + models/（没有 migrations），给启动时的 db push 用
-                      #（这是 output/ 里的路径；仓库里对应的是 apps/server/prisma/）
-  prisma.config.js    # 产物自带的 prisma CLI 配置
   Dockerfile          # 构建上下文就是 output/ 自己
   .dockerignore
   README.md           # 产物怎么跑 / 怎么打镜像
 ```
 
 `package.json` 的 `dependencies` 不是照抄仓库那份，而是**从 esbuild 的 external 列表反推**
-出来的实际运行时依赖（`@hono/node-server`、`hono`、`@prisma/client`、当次 provider 对应的那个
-driver adapter、`yjs`、`y-protocols`、`lib0`、`ws`，外加跑 db push 用的
-`prisma`），版本锁到构建当次实际装的那一个。`vite` 只出现在永不加载的 dev chunk 里，
+出来的实际运行时依赖（`@hono/node-server`、`hono`、`@mikro-orm/core`、`@mikro-orm/sqlite`、
+`@mikro-orm/postgresql`、`yjs`、`@hocuspocus/*`、`ioredis`…），版本锁到构建当次实际装的那一个。
+better-sqlite3 / pg 不在这份清单里 —— bundle 不直接 import 它们，它们是两个 `@mikro-orm/*` 驱动包
+锁死版本的依赖，装驱动包时一起进来。`vite` 只出现在永不加载的 dev chunk 里，
 不进这份清单。前端那一堆（vue / three / tailwind…）已经打进 `public/`，运行时一个都不需要。
 
-> `node_modules` 不在产物里 —— better-sqlite3 是原生模块，必须在目标平台上装。
+> `node_modules` 不在产物里 —— better-sqlite3 是原生模块，要按目标平台装（它从 13 起把各平台的
+> 预编译二进制打在包里，`npm install` 不再现场编译，但二进制仍然得是目标平台的那一个）。
 > 产物里锁的是直接依赖的版本，间接依赖没有 lockfile 兜底。
 
-**产物是绑定 provider 的**：Prisma 生成的 client 在编译期就把 sqlite 或 postgres 的查询编译器
-打了进去，换不了。所以构建时的 `DB_PROVIDER` / `DATABASE_URL` 决定了这份产物连哪种库：
-
-```bash
-pnpm db:generate && pnpm build                                   # SQLite 产物
-DB_PROVIDER=postgresql DATABASE_URL=postgresql://… \
-  pnpm db:generate && DB_PROVIDER=postgresql pnpm build          # PostgreSQL 产物
-```
-
-`build:server` 会核对生成的 client 和构建目标是不是同一种库，对不上直接失败。产物里
-`prisma/` 只放当次 provider 的 schema（铺平成 `prisma/schema.prisma` + `prisma/models/`，
-目录形状不随 provider 变；没有迁移文件，见 [REQ-DATA §3.3.1](05-data-persistence.md)），用不上的那个 driver adapter 也不会进
-`dependencies` —— PG 部署因此不必为 better-sqlite3 装一套编译工具链。
+**一个产物两种库**：实体定义和库无关，驱动在**运行时**按 `DB_PROVIDER` / `DATABASE_URL`
+动态 import（`apps/server/db/orm.ts`）。构建时不用关心连哪种库，同一个 `pnpm build`、同一个镜像，
+换库只改环境变量（Prisma 时代生成的 client 编译期绑死一种库、要按库分别构建，这一条随换 ORM 取消了，
+见 [REQ-DATA §2.1](05-data-persistence.md)）。代价是 PG 部署的镜像里也带着 better-sqlite3 的二进制，几 MB。
 
 - **前端静态资源直接构建进后端的静态资源目录**：`apps/web/vite.config.ts` 里 `build.outDir = output/public`，后端生产模式就吐这个目录（可用 `STATIC_DIR` 覆盖）。
-- 后端由 `apps/server/scripts/build-server.mjs`（esbuild）打包：仓库内的相对导入全部内联（含 `apps/server/generated/prisma` 那份生成的 client），`node_modules` 里的第三方包保持 external（运行时从产物旁的 `node_modules` 解析）。**workspace 包 `@shadecn/*` 例外，一律内联**：`apps/server/scripts/build-server.mjs` 里用 `externalizePackages` 插件代替了 `packages: 'external'` —— 判据相同（不以 `.` / `/` 开头的导入路径视为 external），只是放过 `@shadecn/`，否则 `@shadecn/shared` 会留成一句运行时 import，而产物里根本没装这个包。
+- 后端由 `apps/server/scripts/build-server.mjs`（esbuild）打包，两个入口（`index.ts` → `server/index.js`、`db/sync-cli.ts` → `server/db-sync.js`）一次构建：仓库内的相对导入全部内联（实体定义、ORM 配置都在其中），`node_modules` 里的第三方包保持 external（运行时从产物旁的 `node_modules` 解析）。**workspace 包 `@shadecn/*` 例外，一律内联**：`apps/server/scripts/build-server.mjs` 里用 `externalizePackages` 插件代替了 `packages: 'external'` —— 判据相同（不以 `.` / `/` 开头的导入路径视为 external），只是放过 `@shadecn/`，否则 `@shadecn/shared` 会留成一句运行时 import，而产物里根本没装这个包。
 - `splitting: true` 是硬要求：`frontend/index.ts` 里的 `await import('./dev.ts')` 必须留成真正的动态 import，否则 `vite` 会被提升成顶层静态依赖 —— 而 `vite` 是 devDependency，生产环境根本不会装，一启动就崩。
 - 打包时 define 了 `__APP_BUNDLE__`，`apps/server/runtime.ts` 靠它区分「源码运行」和「产物运行」：产物运行时应用根目录取进程 cwd（容器里就是 `/app`），静态资源取产物自己旁边的 `public/`。
-- 运行产物**不再需要 `tsx`**；`prisma` 进产物的 `dependencies`，因为容器启动时要跑 `prisma db push`。
-- 产物里的 `prisma.config.js` / `Dockerfile` / `.dockerignore` / `README.md` 是从 `apps/server/scripts/output-image/` 原样拷进去的 —— 要改这几个文件改模板，别改产物。
+- 运行产物**不再需要 `tsx`**；表结构同步也是打包好的 `server/db-sync.js`，不需要任何 CLI 工具。
+- 产物里的 `Dockerfile` / `.dockerignore` / `README.md` 是从 `apps/server/scripts/output-image/` 原样拷进去的 —— 要改这几个文件改模板，别改产物。
 
 ### 2.4 直接基于产物打镜像（推荐）
 
@@ -100,35 +92,36 @@ docker build -t shadecn-learning ./output
 
 `output/Dockerfile` 两个阶段：
 
-1. **deps** —— 只 `COPY package.json` 再 `npm install --omit=dev`，装的就是那 9 个运行时依赖；
-   装 `python3 make g++`，**better-sqlite3 在 musl 上没有预编译包，必须现场编译**
-   （PG 产物里没有 better-sqlite3，这套工具链是白装的；Dockerfile 是两种产物共用的模板，不为此分叉）；
+1. **deps** —— 只 `COPY package.json` 再 `npm install --omit=dev`，装的就是那十来个运行时依赖；
+   **不再装 `python3 make g++`**：better-sqlite3 13（`@mikro-orm/sqlite` 的依赖）自带 `linuxmusl-x64` /
+   `linuxmusl-arm64` 的预编译二进制，并声明了 `gypfile: false`，npm 不会现场编译；
 2. **运行时** —— 拷 deps 阶段的 `node_modules` + 产物本身，`ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data`，
    建好 `/app/data` 并声明为 `VOLUME`，`EXPOSE 3000`，启动命令是
-   **先 `npx prisma db push`，再 `node server/index.js`**（不带 `--accept-data-loss`：破坏性变更宁可启动失败，也不静默丢数据）。
+   **`node server/db-sync.js && exec node server/index.js`**：先把表结构对齐到实体定义（不带 `--force`：
+   有损变更宁可启动失败，也不静默丢数据），再用 `exec` 让 node 替掉 sh 成为 1 号进程 —— 这样 k8s 的
+   SIGTERM 直接送到 node 手上，退出前的落库（`SHUTDOWN_FLUSH_TIMEOUT`）才有机会跑。
 
 镜像里没有源码、没有 pnpm、没有构建期依赖，`WORKDIR /app` 就是产物根目录 ——
-服务端的「应用根目录」取进程 cwd，正好也是 `/app`，和 `prisma.config.js` 看到的是同一个库。
+服务端的「应用根目录」取进程 cwd，正好也是 `/app`，`db-sync.js` 和 `index.js` 用的是同一份 config，看到的是同一个库。
 
 ### 2.5 从源码一把梭（仓库根 `Dockerfile`）
 
 CI 里想一条命令从源码出镜像就用它，三个阶段：
 
-1. **build** —— 全量 `pnpm install --frozen-lockfile` → `prisma generate` → `pnpm build`，产出 `/app/output`；
+1. **build** —— 全量 `pnpm install --frozen-lockfile` → `pnpm build`，产出 `/app/output`（没有生成步骤，也不需要编译工具链 ——
+   根 `package.json` 的 `pnpm.neverBuiltDependencies` 让 pnpm 不去跑 better-sqlite3 的 `node-gyp rebuild`，见下）；
    install 之前**按包逐个 `COPY` `package.json`**（根的 `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml`，加 `apps/web`、`packages/shared`、`apps/server` 各自的 `package.json`），
    这样改源码不会让依赖层失效；**以后新增 workspace 包要在 Dockerfile 里补一行 `COPY`**。
    `.dockerignore` 必须写 `**/node_modules`（只写 `node_modules` 只排得掉根目录那一个）：每个包的 `node_modules` 是指进宿主机 `.pnpm` 的符号链接，
    漏进构建上下文，`COPY . .` 会把镜像里刚装好的依赖盖掉。
-   除此之外还必须先把 **`apps/server/prisma/`**（连同 `apps/server/prisma.config.ts`）拷进去 —— `postinstall` 是
-   `prisma generate || true`，而 generate 要顺着 `prisma.config.ts` → `apps/server/prisma/db-provider.mjs`
-   → `apps/server/prisma/<provider>/` 这条链去找 schema 目录。少拷不会让构建失败（`|| true` 兜住），
-   但这一步的 generate 会白跑（`COPY . .` 之后那句显式的 `npx prisma generate` 是为此留的保险）。
-   `apps/server/prisma/<provider>/models` 是符号链接，docker 的 `COPY` 会原样保留，不用特殊处理；
+   **为什么要 `neverBuiltDependencies`**：pnpm 9 看到包根目录有 `binding.gyp`、又没有 install 脚本时，会**无视
+   `gypfile: false`** 自作主张跑 `node-gyp rebuild`（npm 会尊重这个声明），没有 node-gyp 的机器上 install 直接失败。
+   better-sqlite3 13 的二进制是预编译好打在包里的，根本不需要这一步；
 2. **deps** —— 和 `output/Dockerfile` 的 deps 阶段一样，只从 `/app/output/package.json` 装生产依赖；
 3. **运行时** —— `COPY --from=build /app/output ./`，其余同上。
 
 > ⚠️ 跨架构构建：build 阶段带了 `--platform=$BUILDPLATFORM`（构建产物与架构无关，随构建机跑最快）；
-> deps 阶段**故意不带**，跑在目标平台上，这样 better-sqlite3 编译出来的才是目标架构的 `.node`。
+> deps 阶段**故意不带**，跑在目标平台上 —— better-sqlite3 按运行时的平台 + 架构挑预编译二进制，基础镜像架构对了，加载的就是对的那一个。
 > 在 amd64 上构 arm64 镜像需要 QEMU/binfmt 支持。
 
 #### 2.5.1 三道架构护栏，全都是事故留下的
@@ -136,7 +129,7 @@ CI 里想一条命令从源码出镜像就用它，三个阶段：
 线上出过这么一档事：`/api/health` 一路 200、Pod `1/1 Available`，但每个真实请求都 500 ——
 
 ```
-Invalid prisma.session.findUnique() invocation:
+Invalid prisma.session.findUnique() invocation:   ← 当时还是 Prisma
 Error relocating /app/node_modules/better-sqlite3/build/Release/better_sqlite3.node:
 unsupported relocation type 1026
 ```
@@ -159,11 +152,13 @@ unsupported relocation type 1026
 |---|---|---|
 | 三个阶段同一个**多架构**引用（`192.168.68.95:31443/docker.io/library/node:22-alpine`） | `FROM` 行 | 不同阶段拉到不同架构，拼成嵌合体 |
 | `ARG TARGETARCH` + 比对 `process.arch`（deps、运行时各一处） | 每个阶段开头 | 基础镜像的 tag 没有目标架构，被 QEMU 静默糊弄过去 |
-| `find … -name '*.node'` 逐个 `process.dlopen` | 运行时阶段末尾 | 前两道漏掉的任何组合 —— 最终镜像里的原生模块能不能真的加载 |
+| `require('better-sqlite3')` 真开一个 `:memory:` 库 + 其余 `*.node` 逐个 `process.dlopen` | 运行时阶段末尾 | 前两道漏掉的任何组合 —— 最终镜像里的原生模块能不能真的加载 |
 
-第三道用 dlopen 遍历而不是 `require('better-sqlite3')`，是因为 postgresql 构建的产物里
-没有这个包（provider 绑构建，见 §2.3）。**换基础镜像的 tag 或仓库之前先验一遍**：在 amd64
-节点上跑一次 `uname -m`，必须是 `x86_64`。
+第三道现在分两步：better-sqlite3 13 的 `prebuilds/` 里**躺着全平台的 `.node`**（darwin、win32、glibc…），
+照原来那样挨个 dlopen 必然失败，所以那个目录不进遍历，改由 `require` 按它自己的挑选规则
+（`prebuilds/<平台>-<架构>.node`）加载并真的执行一句 SQL；其余原生模块（以后新增的）照旧逐个 dlopen。
+（以前不 `require('better-sqlite3')` 是因为 PostgreSQL 产物里没有这个包；换 MikroORM 之后每个产物都带着它。）
+**换基础镜像的 tag 或仓库之前先验一遍**：在 amd64 节点上跑一次 `uname -m`，必须是 `x86_64`。
 
 ## 3. Kubernetes 部署需求
 
@@ -178,7 +173,7 @@ unsupported relocation type 1026
 - **要多副本用 `k8s/variants/deployment.cluster.yaml`**（与上面那份是同一个 Deployment 的两种形态，
   它放在 `variants/` 而不是 `k8s/` 下是必须的，理由见 [§4.4](#44-argocd-application)）：`CLUSTER_MODE=redis` +
   PostgreSQL，两条原因都解掉了，于是 `replicas: 3` + `RollingUpdate`，不再有发布中断。
-  镜像是同一个 —— 副本模式只由环境变量决定，**唯一绑构建的仍是数据库 provider**。
+  镜像是同一个 —— 副本模式和数据库种类都只由环境变量决定，没有任何东西绑构建。
   Service 不需要 `sessionAffinity`，Ingress 也不需要 sticky session：任意实例都能服务任意房间。
   详见 [REQ-CLUSTER](14-clustering.md)。
 
@@ -231,53 +226,46 @@ GitHub OAuth App 的 Authorization callback URL 填 `$APP_ORIGIN/api/auth/callba
 - 需要支持 **WebSocket** 透传（`/ws/collaboration`）。
 - 建议启用 TLS；生产环境的会话 Cookie 依赖 HTTPS。
 
-### 3.6 schema 变更：`db push` 会拦下破坏性变更，容器就起不来
+### 3.6 表结构变更：有损变更会被拦下，容器就起不来
 
-这个项目**没有迁移文件**（理由见 [REQ-DATA §3](05-data-persistence.md)），表结构靠容器启动时的
-一句 `prisma db push` 对齐：
+这个项目**没有迁移文件**（理由见 [REQ-DATA §3.4](05-data-persistence.md)），表结构靠容器启动时的
+一句同步对齐：
 
 ```dockerfile
-CMD ["sh", "-c", "npx prisma db push && node server/index.js"]
+CMD ["sh", "-c", "node server/db-sync.js && exec node server/index.js"]
 ```
 
-三处都**故意不带** `--accept-data-loss`：仓库根 `Dockerfile`、`apps/server/scripts/output-image/Dockerfile`、
-以及产物 `package.json` 里的 `db:push`。（仓库根的 `pnpm db:push:force` 带这个 flag，但它是**开发期专用**的
-单独命令，既不在镜像里，也不挂在 `pnpm dev` 上 —— 见 [REQ-DATA §3.3](05-data-persistence.md)。）于是遇到它认为有风险的变更时，`db push` 直接以非 0 退出，
-`&&` 断掉，`node server/index.js` 根本不执行 —— **不是启动慢，是启动失败**，k8s 上表现为
-CrashLoopBackOff，探针的宽限期救不了。多副本下每个 Pod 启动都跑一次，三个一起失败。
+三处都**故意不带** `--force`：仓库根 `Dockerfile`、`apps/server/scripts/output-image/Dockerfile`、
+以及产物 `package.json` 里的 `db:push`。（仓库根的 `pnpm db:push:force` 带它，但那是**开发期专用**的
+单独命令，既不在镜像里，也不挂在 `pnpm dev` 上 —— 见 [REQ-DATA §3.4](05-data-persistence.md)。）于是遇到有损变更时，
+`db-sync.js` 把语句打出来、以 1 退出，`&&` 断掉，`node server/index.js` 根本不执行 ——
+**不是启动慢，是启动失败**，k8s 上表现为 CrashLoopBackOff，探针的宽限期救不了。多副本下每个 Pod 启动都跑一次，三个一起失败。
 
-**会被拦下的变更**（不限于破坏性的那些）：
+**会被拦下的变更**（守卫按将要执行的 SQL 逐句判，见 [REQ-DATA §3.4.1](05-data-persistence.md)）：
 
 | 变更 | 真的会丢数据吗 |
 |---|---|
-| 删列 / 改列类型 / 重命名 | **会**。SQLite 尤其危险：它不能 ALTER/DROP 列，一次「删 5 列加 1 列」是整表重建 |
-| 新增 `@unique` 约束 | 不会（若现有数据无重复）。Prisma 无法预判，所以一律拦 |
-| 新增无默认值的 `NOT NULL` 列 | 表非空时会失败 |
+| 删列 / 删表 / 改列类型 | **会** |
+| SQLite 上的任何「改列」（改类型、改可空、改默认值） | 不一定。MikroORM 走整表重建（`__temp_alter`），列一变就可能搬丢，一律拦 |
+| 列改名 | 不一定。MikroORM 按启发式判「删一列 + 加一列」是不是改名，判错了数据挪到别的列上，一律拦 |
 
-后两类是「明明安全却被拦」的常客 —— REQ-SOLO 给 `Project` 加 `personalOwnerId @unique`
-就是这么一次（[docs/16 §4.10](16-personal-flow.md) 记了那次的完整 DDL）。
+**不会**被拦的：建表、加列、建 / 删索引、加唯一约束、PG 上改可空 / 默认值。其中加唯一约束、
+加无默认值的非空列在表里已有数据时会**执行失败**（同样以非 0 退出），但不会悄悄丢东西。
 
-**改完模型、上线之前，先把 DDL 打出来看一眼**：
-
-```bash
-pnpm exec prisma migrate diff --from-config-datasource --to-schema apps/server/prisma/postgresql --script
-```
-
-只有 `ADD COLUMN` / `CREATE INDEX` / `ADD CONSTRAINT` 就是安全的；出现 `DROP` 或
-`ALTER ... TYPE` 才是真需要停下来想的变更。
+**改完实体、上线之前，先看一眼会执行什么**：对着一份和线上同结构的库跑 `pnpm db:push`
+（或者产物里 `node server/db-sync.js`）—— 有损的会被拒绝并逐句打出，放行的会打出执行了哪几句。
 
 **被拦下之后怎么上线**，按保守程度排序：
 
 1. **手工执行那几条 DDL**（推荐）。不给任何工具「允许丢数据」的权限；执行完之后正常的
-   `db push` 会发现无差异、直接放行，容器照常启动。
-2. 在能连到目标库的地方跑一次 `npx prisma db push --accept-data-loss`。一条命令解决，
-   但那一刻会把 schema 的**全部**差异一并放行 —— 库里若还有没意识到的漂移，也一起执行了。
+   同步会发现无差异、直接放行，容器照常启动。
+2. 在能连到目标库的地方跑一次 `node server/db-sync.js --force`（产物里 `npm run db:push:force`）。一条命令解决，
+   但那一刻会把实体与库的**全部**差异一并放行 —— 包括删掉库里实体之外的表。
 3. 用一次性的 k8s Job / initContainer 做迁移。更工程化，但为一次变更引入一套机制。
 
-**不要图省事给镜像的 CMD 加上这个 flag。** 没有迁移文件，`db push` 就是 schema 变更的唯一通道，
+**不要图省事给镜像的 CMD 加上 `--force`。** 没有迁移文件，这次同步就是表结构变更的唯一通道，
 那句拒绝是唯一的守门人；加上之后，以后每一次 rename / drop / retype 都会在生产库上静默执行。
-用一个长期护栏换一次性的方便，不划算。（旁证：Prisma 7 对 AI agent 执行这个 flag 内置了拦截，
-必须先拿到人的明确同意 —— 上游同样认为这该由人拍板。）
+用一个长期护栏换一次性的方便，不划算。
 
 ## 4. CI/CD 需求：Argo Workflows 构建 + ArgoCD 部署
 
@@ -483,17 +471,17 @@ workflow-controller 的 tag），argo 升级之后要跟着改这里 —— 这�
 
 - [ ] `pnpm build` 后 `output/` 里同时有 `server/index.js` 和 `public/index.html`，`pnpm start` 能直接起服务。
 - [ ] 把 `output/` 单独拷到别处（拿不到仓库的 `node_modules`），`npm install --omit=dev && npm run db:push && npm start` 能跑起来，页面、`/api/*`、登录跳转都正常。
-- [ ] `docker build ./output` 与仓库根 `docker build .` 都能出可运行镜像，better-sqlite3 编译通过。
+- [ ] `docker build ./output` 与仓库根 `docker build .` 都能出可运行镜像，运行时阶段的 better-sqlite3 加载自检通过。
 - [ ] 把任意一个运行时依赖挪进 `devDependencies`，`pnpm build:server` 必须失败并指名道姓。
-- [ ] 容器首次启动时自动建库、跑完迁移再对外服务。
+- [ ] 容器首次启动时自动建库、跑完表结构同步再对外服务。
 - [ ] 删除 Pod 重建后，`/app/data` 中的数据仍在（用户和会话不丢）。
 - [ ] 通过 Ingress 完整走通 Keycloak 登录回跳。
 - [ ] 通过 Ingress 能建立 `/ws/collaboration` WebSocket 连接。
 - [ ] **一个登录方式都没配齐**（Keycloak 与 GitHub 的必填项都缺）时容器启动失败并给出明确报错（不能静默放行）；
       只配了其中一个能正常启动，只配了半个（如有 `KEYCLOAK_ISSUER` 无 `KEYCLOAK_CLIENT_ID`）也要报错。
 - [ ] `/api/health` 返回 200，探针不误杀。
-- [ ] `DB_PROVIDER=postgresql` 构建出的产物里没有 `@prisma/adapter-better-sqlite3`，`prisma/schema.prisma` 是 PG 那份。
-- [ ] client 和构建目标 provider 不一致时，`pnpm build:server` 失败并指出该跑哪条命令。
+- [ ] 同一份产物 / 同一个镜像，只改 `DB_PROVIDER` + `DATABASE_URL` 就能分别连 SQLite 和 PostgreSQL，`/api/health/ready` 都是 200。
+- [ ] 实体上有删列 / 改类型时，容器启动在 `db-sync.js` 那一步失败并打出具体语句，`index.js` 没有被执行。
 - [ ] `kubectl create -f ci/run.yaml` 跑完之后：Harbor 里有 `apps/shadecn-learning:<short-sha>` 的**双架构** manifest，gitea 上多出一条 `ci: update image tag to <short-sha>`，且 ArgoCD 在 3 分钟内把 Application 同步回 `Synced` / `Healthy`。
 - [ ] `ci/workflow-template.yaml` 与集群里那份一致：`kubectl diff -f ci/workflow-template.yaml` 无输出。
 - [ ] `git push gitea master` 之后无需任何手工操作：Gitea 的 Actions 页出现一条 `cicd` 运行，`devops` 命名空间里多出一条 `shadecn-learning-cicd-*`，job 一直守到构建结束（成功则绿、失败则红且日志里有出错那步的 Pod 日志）。

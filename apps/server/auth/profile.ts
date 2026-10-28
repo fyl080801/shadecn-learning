@@ -1,5 +1,5 @@
-import { prisma } from '../db.ts'
-import type { User } from '../generated/prisma/client.ts'
+import { db } from '../db.ts'
+import { User } from '../db/entities/index.ts'
 
 /**
  * 用户档案的**补齐钩子**。
@@ -64,7 +64,10 @@ export async function completeUserProfile(user: User): Promise<User> {
   if (Object.keys(patch).length === 0) return user
 
   try {
-    return await prisma.user.update({ where: { id: user.id }, data: patch })
+    // 直接发 SQL 的更新不触发 onUpdate，updatedAt 得自己写
+    const em = db()
+    await em.nativeUpdate(User, { id: user.id }, { ...patch, updatedAt: new Date() })
+    return await em.findOneOrFail(User, user.id)
   } catch (err) {
     console.error('[profile] 写入补齐结果失败，本次登录先用原档案', err)
     return user

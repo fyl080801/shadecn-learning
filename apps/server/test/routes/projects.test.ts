@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { app } from '../../app.ts'
 import { createRevocationWatcher } from '../../collab/revocation.ts'
-import { prisma, resetDb } from '../helpers/db.ts'
+import { db, resetDb } from '../helpers/db.ts'
+import { ProjectMember } from '../../db/entities/index.ts'
 import { actor, createProject, joinViaInvite } from '../helpers/project.ts'
 
 beforeEach(async () => {
@@ -17,8 +18,9 @@ describe('POST /api/projects', () => {
     const body = (await res.json()) as { id: string; myRole: string; memberCount: number }
     expect(body).toMatchObject({ myRole: 'admin', memberCount: 1 })
 
-    const member = await prisma.projectMember.findFirst({
-      where: { projectId: body.id, userId: alice.userId },
+    const member = await db().findOne(ProjectMember, {
+      project: body.id,
+      user: alice.userId,
     })
     expect(member?.role).toBe('admin')
   })

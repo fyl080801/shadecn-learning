@@ -1,10 +1,11 @@
 import type { FlowDetail, FlowMode, FlowStatus, FlowSummary } from '@shadecn/shared/canvas'
 import { emptyGraph } from '@shadecn/shared/flow-graph'
-import { prisma } from '../db.ts'
+import { db } from '../db.ts'
+import { Flow, Project } from '../db/entities/index.ts'
+import { containsIgnoreCase } from '../db/query.ts'
 import { readGraph } from './flow-types.ts'
 import { flowUserState } from './flow-user-state.ts'
 import type { ProjectKind } from './projects.ts'
-import { nameContains } from './text.ts'
 
 /**
  * 画布的数据访问层。
@@ -42,24 +43,12 @@ export interface ListFlowsOptions {
   order: 'asc' | 'desc'
 }
 
-/** 库里那一行的形状（不含 graph），用来拼 FlowSummary */
-type FlowRow = {
-  id: string
-  projectId: string
-  /** 所属项目的形态，mode 从它派生 —— 每次查画布都顺带取出来 */
-  project: { kind: string }
-  name: string
-  description: string | null
-  status: string
-  tags: string
-  thumbnail: string | null
-  nodeCount: number
-  edgeCount: number
-  revision: number
-  createdById: string
-  createdAt: Date
-  updatedAt: Date
-}
+/**
+ * 拼 FlowSummary 要用的那一行：`project` 必须已经 populate 过 ——
+ * mode 是从所属项目的 kind 派生的，所以每次查画布都顺带把项目取出来。
+ * `graph` / `ydoc` 是 lazy 列（见实体定义），这里用不到也不会被取出来。
+ */
+type FlowRow = Omit<Flow, 'project'> & { project: Pick<Project, 'id' | 'kind'> }
 
 function toStatus(value: string): FlowStatus {
   return FLOW_STATUSES.includes(value as FlowStatus) ? (value as FlowStatus) : 'draft'
@@ -77,7 +66,7 @@ function readTags(serialized: string): string[] {
 function toSummary(row: FlowRow): FlowSummary {
   return {
     id: row.id,
-    projectId: row.projectId,
+    projectId: row.project.id,
     mode: modeOfKind(row.project.kind === 'personal' ? 'personal' : 'team'),
     name: row.name,
     description: row.description,
@@ -93,51 +82,28 @@ function toSummary(row: FlowRow): FlowSummary {
   }
 }
 
-/** 列表查询要用的列 —— 显式列出来，保证 graph 永远不会漏进列表响应 */
-const SUMMARY_SELECT = {
-  id: true,
-  projectId: true,
-  // mode 是派生的，所以每次都要把归属项目的形态带出来
-  project: { select: { kind: true } },
-  name: true,
-  description: true,
-  status: true,
-  tags: true,
-  thumbnail: true,
-  nodeCount: true,
-  edgeCount: true,
-  revision: true,
-  createdById: true,
-  createdAt: true,
-  updatedAt: true,
-} as const
-
 export const flows = {
-  /** 项目内的画布列表；响应里没有 graph */
+  /** 项目内的画布列表；响应里没有 graph（lazy 列，不 populate 就不取） */
   async listByProject(projectId: string, options: ListFlowsOptions) {
     const where = {
-      projectId,
+      project: projectId,
       deletedAt: null,
-      ...(options.keyword ? { name: nameContains(options.keyword) } : {}),
+      ...(options.keyword ? containsIgnoreCase('name', options.keyword) : {}),
       ...(options.status ? { status: options.status } : {}),
     }
 
-    const [total, rows] = await Promise.all([
-      prisma.flow.count({ where }),
-      prisma.flow.findMany({
-        where,
-        orderBy: { [options.sort]: options.order },
-        skip: (options.page - 1) * options.pageSize,
-        take: options.pageSize,
-        select: SUMMARY_SELECT,
-      }),
-    ])
+    const [rows, total] = await db().findAndCount(Flow, where, {
+      populate: ['project'],
+      orderBy: { [options.sort]: options.order } as Record<FlowSort, 'asc' | 'desc'>,
+      offset: (options.page - 1) * options.pageSize,
+      limit: options.pageSize,
+    })
 
     return { items: rows.map(toSummary), total }
   },
 
   countByProject(projectId: string) {
-    return prisma.flow.count({ where: { projectId, deletedAt: null } })
+    return db().count(Flow, { project: projectId, deletedAt: null })
   },
 
   async create(input: {
@@ -147,16 +113,18 @@ export const flows = {
     createdById: string
   }): Promise<FlowDetail> {
     const graph = emptyGraph()
-    const row = await prisma.flow.create({
-      data: {
-        projectId: input.projectId,
-        name: input.name,
-        description: input.description ?? null,
-        createdById: input.createdById,
-        graph: JSON.stringify(graph),
-      },
-      select: SUMMARY_SELECT,
+    const em = db()
+    // 先取项目：summary 里的 mode 要从它的 kind 派生
+    const project = await em.findOneOrFail(Project, input.projectId)
+    const row = em.create(Flow, {
+      project,
+      name: input.name,
+      description: input.description ?? null,
+      thumbnail: null,
+      createdById: input.createdById,
+      graph: JSON.stringify(graph),
     })
+    await em.flush()
     return { ...toSummary(row), graph, userState: {} }
   },
 
@@ -167,23 +135,25 @@ export const flows = {
    * （协同握手要据此拒掉 solo 画布，路由要据此拒掉走错通道的写入）。
    */
   async locate(flowId: string): Promise<{ projectId: string; kind: ProjectKind } | null> {
-    const row = await prisma.flow.findFirst({
-      where: { id: flowId, deletedAt: null, project: { deletedAt: null } },
-      select: { projectId: true, project: { select: { kind: true } } },
-    })
+    const row = await db().findOne(
+      Flow,
+      { id: flowId, deletedAt: null, project: { deletedAt: null } },
+      { populate: ['project'] },
+    )
     if (!row) return null
     return {
-      projectId: row.projectId,
+      projectId: row.project.id,
       kind: row.project.kind === 'personal' ? 'personal' : 'team',
     }
   },
 
   /** 详情永远是「谁在看」的详情：userState 那部分因人而异 */
   async get(flowId: string, userId: string): Promise<FlowDetail | null> {
-    const row = await prisma.flow.findFirst({
-      where: { id: flowId, deletedAt: null, project: { deletedAt: null } },
-      select: { ...SUMMARY_SELECT, graph: true },
-    })
+    const row = await db().findOne(
+      Flow,
+      { id: flowId, deletedAt: null, project: { deletedAt: null } },
+      { populate: ['project', 'graph'] },
+    )
     if (!row) return null
 
     return {
@@ -202,51 +172,57 @@ export const flows = {
       tags?: string[]
     },
   ): Promise<FlowSummary> {
-    const row = await prisma.flow.update({
-      where: { id: flowId },
-      data: {
+    // 直接发 SQL 的更新不触发 onUpdate，updatedAt 得自己写（Prisma 的 @updatedAt 是自动带上的）
+    const em = db()
+    await em.nativeUpdate(
+      Flow,
+      { id: flowId },
+      {
         ...(patch.name !== undefined ? { name: patch.name } : {}),
         ...(patch.description !== undefined ? { description: patch.description } : {}),
         ...(patch.status !== undefined ? { status: patch.status } : {}),
         ...(patch.tags !== undefined ? { tags: JSON.stringify(patch.tags) } : {}),
+        updatedAt: new Date(),
       },
-      select: SUMMARY_SELECT,
-    })
-    return toSummary(row)
+    )
+    // 调用方（路由）在鉴权中间件里已经确认过这张画布存在；真不在了就是并发删除，抛出去
+    return toSummary(await em.findOneOrFail(Flow, flowId, { populate: ['project'] }))
   },
 
   async softDelete(flowId: string) {
-    await prisma.flow.update({ where: { id: flowId }, data: { deletedAt: new Date() } })
+    await db().nativeUpdate(Flow, { id: flowId }, { deletedAt: new Date(), updatedAt: new Date() })
   },
 
   /**
-   * 复制到同一项目下；操作日志不复制，新画布 revision 从 0 起。
+   * 复制到同一项目下；新画布 revision 从 0 起。
    *
    * **ydoc 要一起复制**：它才是内容，graph 只是投影。
    * 直接拷二进制就行 —— Yjs 的状态是自包含的，换个文档 id 照样能加载。
    */
   async duplicate(flowId: string, createdById: string): Promise<FlowDetail | null> {
-    const source = await prisma.flow.findFirst({
-      where: { id: flowId, deletedAt: null },
-      select: { ...SUMMARY_SELECT, graph: true, ydoc: true },
-    })
+    const em = db()
+    const source = await em.findOne(
+      Flow,
+      { id: flowId, deletedAt: null },
+      { populate: ['project', 'graph', 'ydoc'] },
+    )
     if (!source) return null
 
-    const row = await prisma.flow.create({
-      data: {
-        projectId: source.projectId,
-        name: `${source.name} 副本`,
-        description: source.description,
-        status: source.status,
-        tags: source.tags,
-        graph: source.graph,
-        ydoc: source.ydoc,
-        nodeCount: source.nodeCount,
-        edgeCount: source.edgeCount,
-        createdById,
-      },
-      select: { ...SUMMARY_SELECT, graph: true },
+    const row = em.create(Flow, {
+      project: source.project,
+      name: `${source.name} 副本`,
+      description: source.description,
+      // 缩略图不随副本走：它描述的是那张画布，副本还没被打开渲染过
+      thumbnail: null,
+      status: source.status,
+      tags: source.tags,
+      graph: source.graph,
+      ydoc: source.ydoc,
+      nodeCount: source.nodeCount,
+      edgeCount: source.edgeCount,
+      createdById,
     })
+    await em.flush()
     // 副本是新画布：谁都还没在它上面留下过视口
     return { ...toSummary(row), graph: readGraph(row.graph), userState: {} }
   },

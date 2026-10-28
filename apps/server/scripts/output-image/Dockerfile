@@ -2,9 +2,9 @@
 #
 #   pnpm build && docker build -t shadecn-learning ./output
 #
-# 镜像里不需要源码、不需要 tsx、也不需要 prisma generate ——
-# 后端已经打包成 server/index.js，Prisma client 也内联进去了，
-# 这里只装 output/package.json 里那几个运行时依赖。
+# 镜像里不需要源码、不需要 tsx —— 后端已经打包成 server/index.js（服务）和
+# server/db-sync.js（表结构同步），这里只装 output/package.json 里那几个运行时依赖。
+# 同一个镜像连 SQLite 还是 PostgreSQL 由运行时的 DB_PROVIDER / DATABASE_URL 决定。
 #
 # 基础镜像走构建参数，不写死地址（和仓库根 Dockerfile 一致）；
 # 在外网环境构建就把它换回官方的 node:22-alpine。
@@ -23,8 +23,8 @@
 ARG NODE_IMAGE=192.168.68.95:31443/docker.io/library/node:22-alpine
 
 FROM ${NODE_IMAGE} AS deps
-# better-sqlite3 在 musl 上没有预编译包，得现场编译
-RUN apk add --no-cache python3 make g++
+# 不需要编译工具链：better-sqlite3（@mikro-orm/sqlite 的依赖）从 13 起把各平台的预编译二进制
+# 直接打在包里（含 linuxmusl-x64 / linuxmusl-arm64），并声明了 gypfile: false，npm 不会现场编译
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
@@ -34,15 +34,20 @@ FROM ${NODE_IMAGE}
 WORKDIR /app
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data
 COPY --from=deps /app/node_modules ./node_modules
-# 打包产物本身：server/（后端）、public/（前端静态资源）、prisma/（schema）
+# 打包产物本身：server/（后端 + 表结构同步）、public/（前端静态资源）
 COPY . .
-# 构建期自检：node_modules 里的原生模块必须和这一层的 node 同架构 —— 架构串了的话
+# 构建期自检：原生模块必须能在这一层的 node 上加载 —— 架构串了的话
 # 容器照样能起、/api/health 也一路 200，直到第一次查库才炸
 # 「Error relocating ...: unsupported relocation type 1026」。宁可构建期就失败。
-# 逐个 dlopen 而不是 require 某个包名：postgresql 构建里没有 better-sqlite3。
+# 两步：
+# 1. better-sqlite3 按它自己的规则挑二进制（prebuilds/<平台>-<架构>.node）再真开一个库 ——
+#    它的 prebuilds/ 里躺着全平台的 .node（darwin / win32 / glibc …），挨个 dlopen 必然失败，
+#    所以那个目录不进下面的循环，改由这一句按真实加载路径验；
+# 2. 其余原生模块（以后新增的）照旧逐个 dlopen。
 RUN set -e; \
-    found=0; \
-    for f in $(find /app/node_modules -name '*.node'); do \
+    node -e "new (require('better-sqlite3'))(':memory:').prepare('select 1').get(); console.log('  ok better-sqlite3')"; \
+    found=1; \
+    for f in $(find /app/node_modules -name '*.node' -not -path '*/better-sqlite3/prebuilds/*'); do \
       node -e "process.dlopen({ exports: {} }, process.argv[1])" "$f"; \
       echo "  ok $f"; \
       found=$((found + 1)); \
@@ -52,6 +57,7 @@ RUN set -e; \
 RUN mkdir -p /app/data
 VOLUME ["/app/data"]
 EXPOSE 3000
-# 起服务前先把表结构对齐到 schema（db push，没有迁移历史），库文件不存在会自动建。
-# 不带 --accept-data-loss：真要删列删表时宁可启动失败，也不在生产库上静默丢数据
-CMD ["sh", "-c", "npx prisma db push && node server/index.js"]
+# 起服务前先把表结构对齐到实体定义（没有迁移历史），库文件 / PG 库不存在会自动建。
+# 不带 --force：真要删列删表改类型时宁可启动失败，也不在生产库上静默丢数据。
+# exec：让 node 替掉 sh 成为 1 号进程，k8s 的 SIGTERM 才能直接送到它手上（退出前要落库）
+CMD ["sh", "-c", "node server/db-sync.js && exec node server/index.js"]

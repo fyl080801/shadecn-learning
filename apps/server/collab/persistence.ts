@@ -2,7 +2,8 @@ import * as Y from 'yjs'
 import { applyGraphToDoc } from '@shadecn/shared/flow-doc'
 import { FLOW_ROOM_PREFIX } from '@shadecn/shared/collab'
 import { bytesCodec, sharedMap } from '../cluster/index.ts'
-import { prisma } from '../db.ts'
+import { db } from '../db.ts'
+import { Flow } from '../db/entities/index.ts'
 import { GRAPH_LIMITS, readGraph } from '../store/flow-types.ts'
 import { readGraphFromDoc } from './flow-doc.ts'
 
@@ -97,10 +98,11 @@ export async function loadFlowState(documentName: string): Promise<Uint8Array | 
   const flowId = flowIdOf(documentName)
   if (!flowId) return null
 
-  const row = await prisma.flow.findFirst({
-    where: { id: flowId, deletedAt: null, project: { deletedAt: null } },
-    select: { ydoc: true, graph: true },
-  })
+  const row = await db().findOne(
+    Flow,
+    { id: flowId, deletedAt: null, project: { deletedAt: null } },
+    { fields: ['ydoc', 'graph'] },
+  )
   if (!row) return null
 
   return stateFromRow(row)
@@ -316,10 +318,11 @@ function storeTask(
 ): () => Promise<void> {
   return async () => {
     for (let attempt = 1; attempt <= MAX_STORE_ATTEMPTS; attempt += 1) {
-      const row = await prisma.flow.findFirst({
-        where: { id: flowId, deletedAt: null },
-        select: { ydoc: true, revision: true },
-      })
+      const row = await db().findOne(
+        Flow,
+        { id: flowId, deletedAt: null },
+        { fields: ['ydoc', 'revision'] },
+      )
       // 画布已经被删了：没什么可写的，也不算失败
       if (!row) return
 
@@ -331,18 +334,19 @@ function storeTask(
         Y.applyUpdate(doc, new Uint8Array(row.ydoc), MERGE_ORIGIN)
       }
 
-      const data: Record<string, unknown> = {
-        ydoc: Buffer.from(Y.encodeStateAsUpdate(doc)),
-        // CAS 要求显式给出新值，不能再用 `increment`
-        revision: row.revision + 1,
-      }
-
-      if (options.projection) Object.assign(data, deriveProjection(doc, documentName) ?? {})
-
-      const { count } = await prisma.flow.updateMany({
-        where: { id: flowId, deletedAt: null, revision: row.revision },
-        data,
-      })
+      const count = await db().nativeUpdate(
+        Flow,
+        { id: flowId, deletedAt: null, revision: row.revision },
+        {
+          ydoc: Buffer.from(Y.encodeStateAsUpdate(doc)),
+          // CAS：新值显式给出（读到的 + 1），where 里带着读到的那个
+          revision: row.revision + 1,
+          // 直接发 SQL 的更新不触发 onUpdate —— Prisma 的 @updatedAt 是自动带上的，这里得自己写，
+          // 不然列表页按「最近修改」排序时，编辑过的画布纹丝不动
+          updatedAt: new Date(),
+          ...(options.projection ? (deriveProjection(doc, documentName) ?? {}) : {}),
+        },
+      )
 
       // 被别的实例抢先写了（或这张画布刚被删）—— 重读重来。
       // 重放同一份内容是幂等的，所以重试永远安全

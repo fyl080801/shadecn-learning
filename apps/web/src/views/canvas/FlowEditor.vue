@@ -55,7 +55,7 @@ const ready = computed(() => {
       class="flex h-full flex-col items-center justify-center gap-3 text-center"
     >
       <p class="text-sm text-destructive">{{ doc.loadError.value }}</p>
-      <Button variant="outline" size="sm" @click="router.push('/projects')">返回项目列表</Button>
+      <Button variant="outline" size="sm" @click="router.push('/personal')">返回工作区</Button>
     </div>
 
     <div

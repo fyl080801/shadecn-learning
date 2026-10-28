@@ -7,10 +7,8 @@
   "scripts": {
     "dev": "pnpm --filter @shadecn/server dev",
     "dev:cluster": "pnpm --filter @shadecn/server dev:cluster",
-    "db:generate": "pnpm --filter @shadecn/server db:generate",
     "db:push": "pnpm --filter @shadecn/server db:push",
     "db:push:force": "pnpm --filter @shadecn/server db:push:force",
-    "db:studio": "pnpm --filter @shadecn/server db:studio",
     "build": "pnpm build:client && pnpm build:server",
     "build:client": "pnpm --filter @shadecn/web build",
     "build:server": "pnpm --filter @shadecn/server build",
@@ -39,5 +37,10 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.60.1",
     "vitest": "^4.1.10"
+  },
+  "pnpm": {
+    "neverBuiltDependencies": [
+      "better-sqlite3"
+    ]
   }
 }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { PROJECT_LIMITS, type ProjectSummary } from '../../store/projects.ts'
-import { prisma, resetDb } from '../helpers/db.ts'
+import { db, resetDb } from '../helpers/db.ts'
+import { Project, ProjectInvite } from '../../db/entities/index.ts'
 import { actor, createFlow, createProject, type Actor } from '../helpers/project.ts'
 
 /**
@@ -32,7 +33,7 @@ describe('个人空间', () => {
     expect(first.myRole).toBe('admin')
     expect(second.id).toBe(first.id)
     // 唯一性由 personalOwnerId 的 unique 兜着，不靠调用方只调一次
-    expect(await prisma.project.count({ where: { personalOwnerId: alice.userId } })).toBe(1)
+    expect(await db().count(Project, { personalOwner: alice.userId })).toBe(1)
   })
 
   it('并发访问只会建出一个', async () => {
@@ -45,7 +46,7 @@ describe('个人空间', () => {
     ])
 
     expect(new Set(results.map((row) => row.id)).size).toBe(1)
-    expect(await prisma.project.count({ where: { personalOwnerId: alice.userId } })).toBe(1)
+    expect(await db().count(Project, { personalOwner: alice.userId })).toBe(1)
   })
 
   it('一人一个，互相看不见', async () => {
@@ -94,7 +95,7 @@ describe('个人空间', () => {
 
     // 403 而不是 404：他确实是这个「项目」的成员，只是这些动作对个人空间没有意义
     expect(denied.map((res) => res.status)).toEqual([403, 403, 403, 403, 403, 403])
-    expect(await prisma.projectInvite.count({ where: { projectId: space.id } })).toBe(0)
+    expect(await db().count(ProjectInvite, { project: space.id })).toBe(0)
   })
 
   it('画布数不受项目上限限制', async () => {

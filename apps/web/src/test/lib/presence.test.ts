@@ -345,7 +345,9 @@ describe("上报节流窗口", () => {
   it("人越多窗口越大：广播扇出是 (N-1)，窗口放大正好抵掉它", () => {
     expect(feedbackThrottle(FEEDBACK_THROTTLE_ROOM + 1)).toBe(FEEDBACK_THROTTLE * 2)
     expect(feedbackThrottle(FEEDBACK_THROTTLE_ROOM * 2)).toBe(FEEDBACK_THROTTLE * 2)
-    expect(feedbackThrottle(FEEDBACK_THROTTLE_ROOM * 2 + 1)).toBe(FEEDBACK_THROTTLE * 3)
+    expect(feedbackThrottle(FEEDBACK_THROTTLE_ROOM * 2 + 1)).toBe(
+      Math.min(FEEDBACK_THROTTLE * 3, FEEDBACK_THROTTLE_MAX)
+    )
   })
 
   it("再稀也不稀过上限 —— 更稀的话对方光标看着像卡死，那还不如别发", () => {

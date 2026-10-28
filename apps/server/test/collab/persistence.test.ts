@@ -11,7 +11,9 @@ import {
   roomOf,
   storeFlowState,
 } from '../../collab/persistence.ts'
-import { prisma, resetDb } from '../helpers/db.ts'
+import { db, resetDb } from '../helpers/db.ts'
+import { EntityManager } from '@mikro-orm/core'
+import { Flow } from '../../db/entities/index.ts'
 import { actor, createFlow, createProject } from '../helpers/project.ts'
 
 /**
@@ -43,10 +45,11 @@ function docWith(nodeIds: string[]) {
 
 /** 库里那行现在长什么样 */
 async function row(flowId: string) {
-  return prisma.flow.findUniqueOrThrow({
-    where: { id: flowId },
-    select: { ydoc: true, graph: true, nodeCount: true, revision: true },
-  })
+  return db().findOneOrFail(
+    Flow,
+    { id: flowId },
+    { populate: ['ydoc', 'graph'] },
+  )
 }
 
 describe('落库的写放大', () => {
@@ -66,6 +69,19 @@ describe('落库的写放大', () => {
     // 内容进了 ydoc，但列表页看到的还是初始值 —— 投影要等散场
     expect(after.nodeCount).toBe(0)
     expect(JSON.parse(after.graph).nodes).toHaveLength(0)
+    await forgetFlow(roomOf(flowId))
+  })
+
+  it('落库推进 updatedAt —— CAS 写走的是 nativeUpdate，不会自动带上它', async () => {
+    const flowId = await newFlow()
+    // 把「上次修改」拨回过去，列表按「最近修改」排序靠的就是这一列往前走
+    const past = new Date(Date.now() - 60_000)
+    await db().nativeUpdate(Flow, { id: flowId }, { updatedAt: past })
+
+    await storeFlowState(roomOf(flowId), docWith(['n1']))
+    await flushCollabWrites()
+
+    expect((await row(flowId)).updatedAt.getTime()).toBeGreaterThan(past.getTime())
     await forgetFlow(roomOf(flowId))
   })
 
@@ -200,7 +216,7 @@ describe('落库失败', () => {
   it('写库失败 → 往外抛，不能报成成功', async () => {
     const flowId = await newFlow()
     const doc = docWith(['n1'])
-    vi.spyOn(prisma.flow, 'updateMany').mockRejectedValue(new Error('数据库炸了'))
+    vi.spyOn(EntityManager.prototype, 'nativeUpdate').mockRejectedValue(new Error('数据库炸了'))
 
     /*
      * 抛出去，Hocuspocus 才会保住文档：`onStoreDocument` 抛 → `storeDocumentHooks`
@@ -213,7 +229,7 @@ describe('落库失败', () => {
   it('失败会记账，好让重试认得出来', async () => {
     const flowId = await newFlow()
     const doc = docWith(['n1'])
-    vi.spyOn(prisma.flow, 'updateMany').mockRejectedValue(new Error('数据库炸了'))
+    vi.spyOn(EntityManager.prototype, 'nativeUpdate').mockRejectedValue(new Error('数据库炸了'))
 
     await expect(storeFlowState(roomOf(flowId), doc)).rejects.toThrow()
     expect(failedStoreCount()).toBe(1)
@@ -230,7 +246,7 @@ describe('落库失败', () => {
     const flowId = await newFlow()
     const doc = docWith(['n1', 'n2'])
 
-    const write = vi.spyOn(prisma.flow, 'updateMany').mockRejectedValue(new Error('数据库炸了'))
+    const write = vi.spyOn(EntityManager.prototype, 'nativeUpdate').mockRejectedValue(new Error('数据库炸了'))
     await expect(storeFlowState(roomOf(flowId), doc)).rejects.toThrow()
     expect(failedStoreCount()).toBe(1)
     // 这会儿库里还是空的 —— 内容只在内存
@@ -252,7 +268,7 @@ describe('落库失败', () => {
     const flowId = await newFlow()
     const doc = docWith(['n1'])
 
-    const write = vi.spyOn(prisma.flow, 'updateMany').mockRejectedValueOnce(new Error('抖了一下'))
+    const write = vi.spyOn(EntityManager.prototype, 'nativeUpdate').mockRejectedValueOnce(new Error('抖了一下'))
     await expect(storeFlowState(roomOf(flowId), doc)).rejects.toThrow()
 
     // 队列是 `previous.then(task, task)`：前一个失败，后一个照样跑
@@ -369,8 +385,8 @@ describe('落库的跨副本并发', () => {
     const doc = docWith(['n1'])
 
     // 第一次假装被别的实例抢先写了
-    const update = vi.spyOn(prisma.flow, 'updateMany')
-    update.mockResolvedValueOnce({ count: 0 })
+    const update = vi.spyOn(EntityManager.prototype, 'nativeUpdate')
+    update.mockResolvedValueOnce(0)
 
     await storeFlowState(room, doc)
     await flushCollabWrites()
@@ -387,7 +403,7 @@ describe('落库的跨副本并发', () => {
     const room = roomOf(flowId)
     const doc = docWith(['n1'])
 
-    vi.spyOn(prisma.flow, 'updateMany').mockResolvedValue({ count: 0 })
+    vi.spyOn(EntityManager.prototype, 'nativeUpdate').mockResolvedValue(0)
 
     await expect(storeFlowState(room, doc)).rejects.toThrow(/被抢先写入/)
     expect(failedStoreCount()).toBe(1)
@@ -422,7 +438,7 @@ describe('落库的跨副本并发', () => {
     const room = roomOf(flowId)
     const doc = docWith(['n1'])
 
-    await prisma.flow.update({ where: { id: flowId }, data: { deletedAt: new Date() } })
+    await db().nativeUpdate(Flow, { id: flowId }, { deletedAt: new Date() })
 
     await expect(storeFlowState(room, doc)).resolves.toBeUndefined()
     expect(failedStoreCount()).toBe(0)
@@ -463,7 +479,7 @@ describe('落库状态通知', () => {
     const doc = docWith(['n1'])
     const seen = collect()
 
-    const write = vi.spyOn(prisma.flow, 'updateMany').mockRejectedValue(new Error('炸了'))
+    const write = vi.spyOn(EntityManager.prototype, 'nativeUpdate').mockRejectedValue(new Error('炸了'))
     await expect(storeFlowState(room, doc)).rejects.toThrow()
     expect(seen).toEqual([`${room}:false`])
 
@@ -485,7 +501,7 @@ describe('落库状态通知', () => {
     const doc = docWith(['n1'])
     const seen = collect()
 
-    const write = vi.spyOn(prisma.flow, 'updateMany').mockRejectedValue(new Error('炸了'))
+    const write = vi.spyOn(EntityManager.prototype, 'nativeUpdate').mockRejectedValue(new Error('炸了'))
     await expect(storeFlowState(room, doc)).rejects.toThrow()
     await expect(storeFlowState(room, doc)).rejects.toThrow()
     await expect(storeFlowState(room, doc)).rejects.toThrow()
@@ -517,7 +533,7 @@ describe('落库状态通知', () => {
     })
     vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    const write = vi.spyOn(prisma.flow, 'updateMany').mockRejectedValueOnce(new Error('炸了'))
+    const write = vi.spyOn(EntityManager.prototype, 'nativeUpdate').mockRejectedValueOnce(new Error('炸了'))
     // 抛的仍是落库那个异常，不是广播那个
     await expect(storeFlowState(room, doc)).rejects.toThrow('炸了')
 
@@ -536,7 +552,7 @@ describe('落库状态通知', () => {
 
     expect(isStoreFailing(room)).toBe(false)
 
-    const write = vi.spyOn(prisma.flow, 'updateMany').mockRejectedValue(new Error('炸了'))
+    const write = vi.spyOn(EntityManager.prototype, 'nativeUpdate').mockRejectedValue(new Error('炸了'))
     await expect(storeFlowState(room, doc)).rejects.toThrow()
     expect(isStoreFailing(room)).toBe(true)
 

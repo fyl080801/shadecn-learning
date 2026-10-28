@@ -26,7 +26,6 @@ coverage
 *.sln
 *.sw?
 .pnpm-store
-/apps/server/generated/prisma
 
 # 本地环境变量与运行时数据（SQLite 库在 data/ 下）
 .env

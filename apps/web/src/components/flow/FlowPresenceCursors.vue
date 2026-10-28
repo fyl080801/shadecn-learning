@@ -4,6 +4,7 @@ import { getBezierPath, Position, useVueFlow } from "@vue-flow/core"
 
 import FlowPresenceAvatar from "@/components/flow/FlowPresenceAvatar.vue"
 import { useFlowEditor } from "@/composables/flow/editor-context"
+import { FEEDBACK_THROTTLE } from "@/lib/presence"
 
 /**
  * 别人的**操作反馈**：鼠标（箭头 + 头像 + 名字）和正在拉的连线。
@@ -73,6 +74,8 @@ const connections = computed(() =>
     class="pointer-events-none absolute left-0 top-0 origin-top-left"
     :style="{
       transform: `translate(${peer.cursor.x}px, ${peer.cursor.y}px) scale(${counterScale})`,
+      // 光标按 FEEDBACK_THROTTLE 的间隔才来一包，补一段同长的线性过渡，看起来才是连续滑动
+      transition: `transform ${FEEDBACK_THROTTLE}ms linear`,
       // 节点自带 z-index，光标要压在它们上面
       zIndex: 10000
     }"

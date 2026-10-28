@@ -33,9 +33,11 @@
 
 ### 2.3 数据库
 
-- `apps/server/test/global-setup.ts` 在**整轮开始前**清空 `data/test/`，并执行**真实的 `prisma db push`**。
-  > 用真命令而不是手写建表，是为了让测试库和生产库走同一条建表路径，schema 写错测试就会红。
-  > 这个项目没有迁移文件，结构同步就是 db push 这一条（见 [REQ-DATA §3.3.1](05-data-persistence.md)）。
+- `apps/server/test/global-setup.ts` 在**整轮开始前**清空 `data/test/`，并在子进程里执行**真实的表结构同步入口**（`apps/server/db/sync-cli.ts`，就是 `pnpm db:push` 和容器启动跑的那一个）。
+  > 用真命令而不是手写建表，是为了让测试库和生产库走同一条建表路径，实体写错测试就会红。
+  > 这个项目没有迁移文件，结构同步就是这一条（见 [REQ-DATA §3.4](05-data-persistence.md)）。
+  > 放在子进程里，是因为同步入口会读仓库根的 `.env`；在子进程里读就污染不到 Vitest 主进程和各个 worker。
+- `apps/server/test/db/schema-sync.test.ts` 覆盖有损变更守卫：判据用两种库**实际吐出来的** SQL 样本测，另有一组在真实测试库上只算不执行的用例（实体与库一致时差异为空、删字段被拒、改类型被拒、加列放行）。
 - 所有测试文件共用同一个库，因此 `fileParallelism: false`，串行执行。
 - 提供辅助函数：`helpers/db.ts`（`resetDb` / `createUser`）、`helpers/session.ts`（`signIn` → 直接拿到可用的 `sid` Cookie）。
 - **同一套后端测试要能在两种库上跑**。默认是 `data/test/app.db`；给 `TEST_DATABASE_URL` 一个 PG 连接串就切过去：
@@ -44,10 +46,10 @@
   TEST_DATABASE_URL=postgresql://app:app@127.0.0.1:5432/app_test pnpm test:server
   ```
 
-  PG 分支会给 db push 加上 `--accept-data-loss`：那边删不掉库文件，库里可能留着上一轮的表，
-  不允许丢数据就推不上去（**所以只能指专用测试库**）。SQLite 不加这个 flag —— 整个 `data/test/`
-  每轮都删掉重建，压根没有数据可丢。生成的 Prisma client 是跟 provider 绑定的，global-setup 会先比对
-  `activeProvider`，对不上才重新 `generate` —— 所以来回切库不用手动记得重新生成。
+  PG 分支给同步入口加 `--reset`：那边删不掉库文件，所以先删光实体对应的表、再完整同步（连同库里实体之外的表
+  一起删掉）—— **所以只能指专用测试库**。SQLite 不需要 —— 整个 `data/test/` 每轮都删掉重建，压根没有数据可丢。
+  驱动是运行时按连接串选的，来回切库没有任何生成步骤要记得做。
+  仓库根 `.env` 里写了 `TEST_DATABASE_URL` 时，想临时跑 SQLite 就在命令行给个空值：`TEST_DATABASE_URL= pnpm test:server`。
 
 ### 2.4 假 Keycloak
 

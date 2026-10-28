@@ -29,10 +29,8 @@ export default defineConfig({
         'packages/shared/src/**/*.ts',
       ],
       exclude: [
-        'apps/server/generated/**',
         'apps/server/test/**',
-        // 迁移前这两份配置不在 server/** 范围里，不计入覆盖率
-        'apps/server/prisma.config.ts',
+        // 测试配置本身不计入覆盖率
         'apps/server/vitest.config.ts',
         'apps/web/src/test/**',
         'apps/web/src/components/ui/**',

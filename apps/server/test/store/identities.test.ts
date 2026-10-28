@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { identities } from '../../store/identities.ts'
 import type { ProviderProfile } from '../../auth/providers/index.ts'
-import { createUser, prisma, resetDb } from '../helpers/db.ts'
+import { createUser, db, resetDb } from '../helpers/db.ts'
+import { User, UserIdentity } from '../../db/entities/index.ts'
 import { ISSUER } from '../helpers/oidc.ts'
 
 /**
@@ -67,7 +68,7 @@ describe('resolveLogin()', () => {
     expect(second.id).toBe(first.id)
     expect(second.username).toBe('alice2')
     expect(second.roles).toBe('["user"]')
-    expect(await prisma.user.count()).toBe(1)
+    expect(await db().count(User, {})).toBe(1)
   })
 
   it('换了 realm（issuer 不同）就是另一个人', async () => {
@@ -77,7 +78,7 @@ describe('resolveLogin()', () => {
       keycloakProfile({ subject: 'user-2', issuer: 'https://kc.test/realms/other' }),
     )
 
-    expect(await prisma.user.count()).toBe(2)
+    expect(await db().count(User, {})).toBe(2)
   })
 
   it('存量用户（只有 User 行、没有 identity 行）被领养，不会被当成新人再建一个号', async () => {
@@ -86,8 +87,8 @@ describe('resolveLogin()', () => {
     const user = await identities.resolveLogin('keycloak', keycloakProfile())
 
     expect(user.id).toBe(legacy.id)
-    expect(await prisma.user.count()).toBe(1)
-    expect(await prisma.userIdentity.count({ where: { userId: legacy.id } })).toBe(1)
+    expect(await db().count(User, {})).toBe(1)
+    expect(await db().count(UserIdentity, { user: legacy.id })).toBe(1)
   })
 
   it('用副身份（GitHub）登录不改显示名 —— 档案只跟主身份走', async () => {
@@ -95,21 +96,21 @@ describe('resolveLogin()', () => {
 
     await identities.resolveLogin('github', githubProfile())
 
-    const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } })
+    const after = await db().findOneOrFail(User, { id: user.id })
     expect(after.name).toBe('Alice')
     expect(after.username).toBe('alice')
   })
 
   it('用 GitHub 登录不会把 Keycloak 给的角色清空', async () => {
     const user = await userWithBoth()
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).roles).toBe(
+    expect((await db().findOneOrFail(User, { id: user.id })).roles).toBe(
       '["admin"]',
     )
 
     // GitHub 那边的 roles 永远是空数组，照写就等于每次登录都把人降级
     await identities.resolveLogin('github', githubProfile())
 
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).roles).toBe(
+    expect((await db().findOneOrFail(User, { id: user.id })).roles).toBe(
       '["admin"]',
     )
   })
@@ -130,7 +131,7 @@ describe('resolveLogin() 不按邮箱认定身份', () => {
     const second = await identities.resolveLogin('github', githubProfile({ email: SAME }))
 
     expect(second.id).not.toBe(first.id)
-    expect(await prisma.user.count()).toBe(2)
+    expect(await db().count(User, {})).toBe(2)
     // 各自只有自己那一条身份，谁也没被绑到对方名下
     expect(await identities.listFor(first.id)).toHaveLength(1)
     expect(await identities.listFor(second.id)).toHaveLength(1)
@@ -143,14 +144,14 @@ describe('resolveLogin() 不按邮箱认定身份', () => {
     const fresh = await identities.resolveLogin('github', githubProfile({ email: SAME }))
 
     expect(fresh.id).not.toBe(legacy.id)
-    expect(await prisma.user.count()).toBe(2)
+    expect(await db().count(User, {})).toBe(2)
   })
 
   it('两条身份都没有邮箱时同样各建各的', async () => {
     await identities.resolveLogin('keycloak', keycloakProfile({ email: null }))
     await identities.resolveLogin('github', githubProfile({ email: null }))
 
-    expect(await prisma.user.count()).toBe(2)
+    expect(await db().count(User, {})).toBe(2)
   })
 })
 
@@ -195,13 +196,13 @@ describe('link()', () => {
 describe('listFor()', () => {
   it('存量用户在读列表时被回填出主身份（不需要迁移脚本）', async () => {
     const legacy = await createUser({ subject: 'user-1', issuer: ISSUER })
-    expect(await prisma.userIdentity.count()).toBe(0)
+    expect(await db().count(UserIdentity, {})).toBe(0)
 
     const rows = await identities.listFor(legacy.id)
 
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ provider: 'keycloak', label: 'Keycloak', primary: true })
-    expect(await prisma.userIdentity.count()).toBe(1)
+    expect(await db().count(UserIdentity, {})).toBe(1)
   })
 
   it('GitHub 建的号回填出来的是 github，不是默认的 keycloak', async () => {
@@ -218,7 +219,7 @@ describe('unlink()', () => {
     const [only] = await identities.listFor(user.id)
 
     await expect(identities.unlink(user.id, only?.id ?? '')).resolves.toBe('last')
-    expect(await prisma.userIdentity.count()).toBe(1)
+    expect(await db().count(UserIdentity, {})).toBe(1)
   })
 
   it('不是自己的那条 → not-found（不泄露别人有什么）', async () => {
@@ -230,7 +231,7 @@ describe('unlink()', () => {
     const [victim] = await identities.listFor(theirs.id)
 
     await expect(identities.unlink(mine.id, victim?.id ?? '')).resolves.toBe('not-found')
-    expect(await prisma.userIdentity.count()).toBe(2)
+    expect(await db().count(UserIdentity, {})).toBe(2)
   })
 
   it('解绑主身份 → 剩下的那条被提升，User 的 (issuer, subject) 跟着改写', async () => {
@@ -239,7 +240,7 @@ describe('unlink()', () => {
 
     await expect(identities.unlink(user.id, primary?.id ?? '')).resolves.toBe('ok')
 
-    const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } })
+    const after = await db().findOneOrFail(User, { id: user.id })
     expect(after.issuer).toBe(GITHUB_ISSUER)
     expect(after.subject).toBe('4242')
     // 显示名不跟着变：换一种登录方式不该让别人看到的你变个样
@@ -256,7 +257,7 @@ describe('unlink()', () => {
 
     await expect(identities.unlink(user.id, secondary?.id ?? '')).resolves.toBe('ok')
 
-    const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } })
+    const after = await db().findOneOrFail(User, { id: user.id })
     expect(after.issuer).toBe(ISSUER)
     expect(after.subject).toBe('user-1')
   })

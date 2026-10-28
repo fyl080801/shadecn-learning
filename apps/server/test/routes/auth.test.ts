@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from '../../app.ts'
 import { identiconUrl } from '../../avatar/index.ts'
-import { prisma, resetDb } from '../helpers/db.ts'
+import { db, firstRow, resetDb } from '../helpers/db.ts'
+import { closeFreshOrms, importFreshApp } from '../helpers/fresh-app.ts'
+import { AuthRequest, Session, User } from '../../db/entities/index.ts'
 import {
   AUTHORIZATION_ENDPOINT,
   CLIENT_ID,
@@ -23,22 +25,25 @@ beforeEach(async () => {
   vi.spyOn(console, 'log').mockImplementation(() => {})
 })
 
+afterEach(async () => {
+  await closeFreshOrms()
+})
+
 /**
  * discovery 有 10 分钟的模块级缓存，一旦拉成功过，后面再改 stub.discovery 也没用。
  * 要测「Keycloak 连不上」这类分支就得拿一份全新的模块图。
- * db.ts 的 PrismaClient 挂在 globalThis 上、session 密钥来自同一份 env，
- * 所以新旧模块共用同一个库、同一批 cookie。
+ * 新模块图自带一个 ORM（见 helpers/fresh-app.ts），但 session 密钥来自同一份 env、
+ * 连的是同一个库，所以新旧模块共用同一批数据、同一批 cookie。
  */
 async function freshApp() {
-  vi.resetModules()
-  return (await import('../../app.ts')).app
+  return importFreshApp()
 }
 
 /** 走一遍 /login，把落库的授权请求和 oidc_tx cookie 一起拿回来 */
 async function startLogin(query = '') {
   const res = await app.request(`/api/auth/login${query}`)
   const txId = cookieValue(res, 'oidc_tx')
-  const request = txId ? await prisma.authRequest.findUnique({ where: { id: txId } }) : null
+  const request = txId ? await db().findOne(AuthRequest, { id: txId }) : null
   return { res, txId, request }
 }
 
@@ -119,8 +124,7 @@ describe('多域名回跳（APP_ORIGINS 白名单）', () => {
   /** 白名单是模块加载时算出来的常量，改了 env 就得重新 import 整张模块图 */
   async function appWithWhitelist() {
     vi.stubEnv('APP_ORIGINS', ALT)
-    vi.resetModules()
-    return (await import('../../app.ts')).app
+    return importFreshApp()
   }
 
   afterEach(() => {
@@ -139,7 +143,7 @@ describe('多域名回跳（APP_ORIGINS 白名单）', () => {
 
     // 落库，回调那一步换 token 还要照原样再用一次
     const txId = cookieValue(res, 'oidc_tx')
-    const request = await prisma.authRequest.findUniqueOrThrow({ where: { id: txId ?? '' } })
+    const request = await db().findOneOrFail(AuthRequest, { id: txId ?? '' })
     expect(request.origin).toBe(ALT)
   })
 
@@ -159,7 +163,7 @@ describe('多域名回跳（APP_ORIGINS 白名单）', () => {
       headers: { host: 'alt.example.com', 'x-forwarded-proto': 'https' },
     })
     const txId = cookieValue(login, 'oidc_tx')
-    const request = await prisma.authRequest.findUniqueOrThrow({ where: { id: txId ?? '' } })
+    const request = await db().findOneOrFail(AuthRequest, { id: txId ?? '' })
     stub.token = { status: 200, body: tokenResponse({ nonce: request.nonce }) }
 
     await fresh.request(`/api/auth/callback?code=c&state=${request.state}`, {
@@ -179,7 +183,7 @@ describe('多域名回跳（APP_ORIGINS 白名单）', () => {
         headers: { host, 'x-forwarded-proto': proto },
       })
       const txId = cookieValue(login, 'oidc_tx')
-      const req = await prisma.authRequest.findUniqueOrThrow({ where: { id: txId ?? '' } })
+      const req = await db().findOneOrFail(AuthRequest, { id: txId ?? '' })
       stub.token = { status: 200, body: tokenResponse({ nonce: req.nonce }) }
       return fresh.request(`/api/auth/callback?code=c&state=${req.state}`, {
         headers: { cookie: `oidc_tx=${txId}`, host, 'x-forwarded-proto': proto },
@@ -256,7 +260,7 @@ describe('GET /api/auth/login', () => {
 
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/2048')
-    expect(await prisma.authRequest.count()).toBe(0)
+    expect(await db().count(AuthRequest, {})).toBe(0)
   })
 
   it('连不上 Keycloak 时跳回登录页报错，并把没用上的授权请求删掉', async () => {
@@ -267,7 +271,7 @@ describe('GET /api/auth/login', () => {
 
     expect(res.headers.get('location')).toContain('/login?error=')
     expect(decodeURIComponent(res.headers.get('location') ?? '')).toContain('连不上 Keycloak')
-    expect(await prisma.authRequest.count()).toBe(0)
+    expect(await db().count(AuthRequest, {})).toBe(0)
   })
 })
 
@@ -288,10 +292,10 @@ describe('GET /api/auth/callback', () => {
     const sid = cookieValue(res, 'sid')
     expect(sid).toBeTruthy()
     expect(res.headers.get('set-cookie')).toContain('HttpOnly')
-    expect(await prisma.session.count()).toBe(1)
+    expect(await db().count(Session, {})).toBe(1)
 
     // 用户档案和角色一起落库
-    const user = await prisma.user.findFirstOrThrow()
+    const user = await firstRow(User)
     expect(user).toMatchObject({ issuer: ISSUER, subject: 'user-1', roles: '["admin"]' })
 
     // 拿新 cookie 立刻就能过闸门
@@ -305,7 +309,7 @@ describe('GET /api/auth/callback', () => {
 
     const res = await callback({ code: 'the-code', state: request?.state ?? '' }, txId)
 
-    const user = await prisma.user.findFirstOrThrow()
+    const user = await firstRow(User)
     expect(user.avatarUrl).toBe(identiconUrl(user.issuer, user.subject))
 
     // 前端从 /api/auth/me 拿到的就是这个地址，直接能当 <img src>
@@ -337,7 +341,7 @@ describe('GET /api/auth/callback', () => {
 
     const replay = await callback({ code: 'c', state: request?.state ?? '' }, txId)
     expect(decodeURIComponent(replay.headers.get('location') ?? '')).toContain('state 校验失败')
-    expect(await prisma.session.count()).toBe(1)
+    expect(await db().count(Session, {})).toBe(1)
   })
 
   it.each([
@@ -357,15 +361,12 @@ describe('GET /api/auth/callback', () => {
     const res = await callback({ code: 'c', state: 'not-my-state' }, txId)
 
     expect(decodeURIComponent(res.headers.get('location') ?? '')).toContain('state 校验失败')
-    expect(await prisma.session.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
   })
 
   it('授权请求过期 → 提示重试', async () => {
     const { txId, request } = await startLogin()
-    await prisma.authRequest.update({
-      where: { id: txId ?? '' },
-      data: { expiresAt: new Date(Date.now() - 1000) },
-    })
+    await db().nativeUpdate(AuthRequest, { id: txId ?? '' }, { expiresAt: new Date(Date.now() - 1000) })
 
     const res = await callback({ code: 'c', state: request?.state ?? '' }, txId)
     expect(decodeURIComponent(res.headers.get('location') ?? '')).toContain('登录超时')
@@ -389,7 +390,7 @@ describe('GET /api/auth/callback', () => {
     const res = await callback({ code: 'c', state: request?.state ?? '' }, txId)
 
     expect(decodeURIComponent(res.headers.get('location') ?? '')).toContain('nonce 不匹配')
-    expect(await prisma.session.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
   })
 
   it('id_token 签名被改过 → 不建会话', async () => {
@@ -404,7 +405,7 @@ describe('GET /api/auth/callback', () => {
     const res = await callback({ code: 'c', state: request?.state ?? '' }, txId)
 
     expect(decodeURIComponent(res.headers.get('location') ?? '')).toContain('签名校验失败')
-    expect(await prisma.session.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
   })
 
   it('id_token 的 iss 是别的 realm → 不建会话', async () => {
@@ -429,7 +430,7 @@ describe('GET /api/auth/callback', () => {
     const res = await callback({ code: 'c', state: request?.state ?? '' }, txId)
 
     expect(decodeURIComponent(res.headers.get('location') ?? '')).toContain('iss 不匹配')
-    expect(await prisma.session.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
   })
 
   it('没返回 id_token 时提示去检查 scope', async () => {
@@ -463,7 +464,7 @@ describe('GET /api/auth/callback', () => {
       },
     })
 
-    const session = await prisma.session.findFirstOrThrow()
+    const session = await firstRow(Session)
     expect(session.userAgent).toBe('TestBrowser/1.0')
     expect(session.ip).toBe('203.0.113.7')
   })
@@ -480,7 +481,7 @@ describe('GET /api/auth/logout', () => {
 
     const res = await app.request('/api/auth/logout', { headers: { cookie } })
 
-    expect(await prisma.session.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
     const setCookie = res.headers.get('set-cookie') ?? ''
     expect(setCookie).toContain('sid=')
     expect(setCookie).toMatch(/Max-Age=0|Expires=Thu, 01 Jan 1970/)
@@ -533,6 +534,6 @@ describe('GET /api/auth/logout', () => {
 
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/login')
-    expect(await prisma.session.count()).toBe(0)
+    expect(await db().count(Session, {})).toBe(0)
   })
 })

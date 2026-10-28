@@ -290,7 +290,7 @@ GitHub 上没有本应用的角色概念，用它登录拿到的 roles 恒为空
 
 一个用户可以绑多条登录方式，用其中任意一条都登进同一个账号。
 
-**数据模型**（`apps/server/prisma/models/auth.prisma`、`apps/server/store/identities.ts`）：
+**数据模型**（`apps/server/db/entities/auth.ts`、`apps/server/store/identities.ts`）：
 
 - 每条绑定是一行 `UserIdentity`，`(provider, subject)` **唯一** —— 同一个 GitHub 账号
   只能绑给一个人，这条约束就是冲突检测的全部依据。
@@ -440,8 +440,8 @@ GitHub App（不是 OAuth App）也能跑，但它发的 token 会过期、带 r
 
 ```bash
 cp .env.example .env      # 改成自己的 Keycloak
-pnpm install              # postinstall 会跑 prisma generate
-pnpm db:push              # 建 data/app.db（db push，无迁移文件）
+pnpm install
+pnpm db:push              # 建 data/app.db（按实体定义同步表结构，无迁移文件）
 pnpm dev                  # http://127.0.0.1:3000
 ```
 
