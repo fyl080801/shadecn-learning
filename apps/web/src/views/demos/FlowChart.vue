@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { markRaw, ref } from "vue"
+import { ref } from "vue"
 import { until } from "@vueuse/core"
 import {
   ConnectionMode,
@@ -17,21 +17,20 @@ import { MiniMap } from "@vue-flow/minimap"
 import { Plus } from "@lucide/vue"
 
 import { Button } from "@/components/ui/button"
-import ProcessNode from "@/components/flow/ProcessNode.vue"
 
-// 组件定义不能进响应式对象，理由同 FlowCanvas.vue
-const nodeTypes = markRaw({ process: ProcessNode })
+// 用 Vue Flow 内置的 default 节点（显示 data.label）：画布编辑器的节点组件要编辑器上下文
+// （store、协同、注册表），这个独立的交互演示没有那些
 
 const nodes = ref<Node[]>([
   {
     id: "1",
-    type: "process",
+    type: "default",
     position: { x: 0, y: 0 },
     data: { label: "开始" }
   },
   {
     id: "2",
-    type: "process",
+    type: "default",
     position: { x: 240, y: 0 },
     data: { label: "结束" }
   }
@@ -118,7 +117,7 @@ async function addNode() {
 
   addNodes({
     id,
-    type: "process",
+    type: "default",
     position: center,
     data: { label: `节点 ${id}` }
   })
@@ -143,7 +142,6 @@ async function addNode() {
     <VueFlow
       v-model:nodes="nodes"
       v-model:edges="edges"
-      :node-types="nodeTypes"
       :connection-mode="ConnectionMode.Strict"
       :default-edge-options="{
         type: 'smoothstep',

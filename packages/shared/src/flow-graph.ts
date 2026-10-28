@@ -1,9 +1,23 @@
 /**
  * 画布内容的数据结构 —— 前后端共用的这一份（REQ-CANVAS，见 docs/13-flow-canvas-management.md）。
  *
- * 约定：Vue Flow 认识的字段留在节点顶层，业务自定义的一切都塞进 `data` ——
- * 换渲染层时业务数据不受影响。服务端只做**结构校验**（`apps/server/store/flow-types.ts`
- * 的 `parseGraph`），不解释 `data` 上那些业务字段，原样透传存储。
+ * 一个节点分五组，外加一组只读派生的 `inputs`：
+ *
+ * | 组         | 放什么                                         | 谁写                         |
+ * | ---------- | ---------------------------------------------- | ---------------------------- |
+ * | `type`     | 节点类型注册表的键，建好不改                   | 新建时                       |
+ * | `layout`   | 位置、尺寸、层级、分组归属 —— Vue Flow 认识的   | 拖动 / 拉伸 / 打组           |
+ * | `metadata` | 名字、说明、图标、创建时刻 / 创建者、UI 状态     | 改名、改说明                 |
+ * | `data`     | **纯业务字段**，平铺，没有任何保留字           | 各节点类型自己的编辑入口     |
+ * | `runtime`  | 运行态：状态、错误、任务 id、各输出端口的产出   | 执行器（将来）/ agent        |
+ * | `inputs`   | 派生：连进来的边 + 上游对应端口的产出（不存）   | 没人写，投影时算出来         |
+ *
+ * 分组的理由是**谁在什么时候改它**：拖动只碰 layout，改名只碰 metadata，跑一次生成只碰
+ * runtime —— 三者互不相干，混在一层里（v2 的 `data` 上同时住着 label / status / prompt）
+ * 就只能靠一张「保留字清单」去区分哪些是框架的、哪些是业务的。
+ *
+ * 服务端只做**结构校验**（`apps/server/store/flow-types.ts` 的 `parseGraph`），
+ * 不解释 `data` 上那些业务字段，原样透传存储。
  *
  * 这里只放纯类型、常量和纯函数：没有 DOM、没有 Node，也不 import 任何东西 ——
  * 前端的叶子模块（`components/flow/node-constants.ts`）也会引它，不能把环带进去。
@@ -12,15 +26,15 @@
 /**
  * 当前的图结构版本。
  *
- * - v1：业务种类在 `data.kind`，业务字段裹在 `data.config` 里，`ports` 必填空壳；
- * - v2：业务种类**并入顶层 `type`**（节点类型注册表的键），业务字段直接平铺在 `data` 上，
- *   每个节点带 `status`。
+ * - v1：业务种类在 `data.kind`，业务字段裹在 `data.config` 里；
+ * - v2：业务字段平铺在 `data` 上，框架字段（label / status / createdAt…）也混在里面；
+ * - v3：节点分 `type` / `layout` / `metadata` / `data` / `runtime` 五组（见文件头）。
  *
- * **v1 会被就地升级，不是拒收**（见 {@link upgradeNodeData} / {@link upgradeEdgeData}）：
- * 读 Y.Doc 时在 `fromYNode` 里升，读 `Flow.graph` 时在服务端的 `parseGraph` 里升。
- * 所以没有迁移脚本，老画布第一次被打开时各自完成升级。
+ * **v1 / v2 不做迁移、不就地升级**（产品决定）：老文档照常能读，读不出来的字段退化成
+ * 缺省值（老节点的名字读出来是空串、老的 label / status 留在 `data` 上当普通业务字段），
+ * 但**读的时候绝不抛错**，形状不对的节点整条跳过。
  */
-export const GRAPH_SCHEMA_VERSION = 2
+export const GRAPH_SCHEMA_VERSION = 3
 
 /**
  * 认不出 `type` 的节点按哪种渲染 —— 也是 Y.Doc 里 `type` 缺失时 `fromYNode` 读出来的值。
@@ -30,13 +44,6 @@ export const GRAPH_SCHEMA_VERSION = 2
  * （`components/flow/node-constants.ts`）也是从这里转出去的。
  */
 export const FALLBACK_NODE_TYPE = 'process'
-
-export interface FlowPort {
-  id: string
-  label?: string
-  /** 数据类型标记，将来做连线合法性校验用；本期只存不判 */
-  dataType?: string
-}
 
 /** 连接点贴在节点的哪一边（Vue Flow 的 Position；服务端不依赖 vue-flow，所以自己写一份） */
 export type FlowHandlePosition = 'left' | 'right' | 'top' | 'bottom'
@@ -50,59 +57,12 @@ export type FlowHandlePosition = 'left' | 'right' | 'top' | 'bottom'
 export type FlowNodeStatus = 'idle' | 'processing' | 'completed' | 'error'
 
 /**
- * 节点的业务数据。
+ * 布局 —— Vue Flow 认识的那些字段。
  *
- * **框架字段之外，业务字段直接平铺在这一层**（v1 那个 `config` 包装没有了）。
- * 两个理由：
- * - Y.Map 的合并粒度是 key。`config` 整块存成一个 key 时，甲改 config.prompt、
- *   乙同时改 config.model，后到的那次会把整块盖掉 —— 明明改的是不同字段；
- *   平铺之后每个业务字段各占一个 key，逐键合并才真正成立。
- * - 示例数据（`sample/画布数据参考/`）就是平铺的，对齐之后两边可以直接互读。
- *
- * 代价是索引签名让拼错的字段名不再报错 —— 这是弱 schema 的固有代价，
- * 换来的是加一种节点不用改类型。框架字段的名字见 {@link NODE_DATA_RESERVED_KEYS}。
+ * 在 Y.Doc 里它们**留在节点顶层原位、不嵌套**（见 `flow-doc.ts`）：拖动是最热的写路径，
+ * 多套一层 Y.Map 只会多一次查找；Vue Flow 本来也要平铺的形状。
  */
-export interface FlowNodeData {
-  label: string
-  status: FlowNodeStatus
-  /** 创建时刻，UTC epoch 毫秒。老数据没有这个字段，所以可选 */
-  createdAt?: number
-  description?: string
-  icon?: string
-  /** 端口定义；不声明就是「一进一出」的默认形状，所以可选 */
-  ports?: { inputs: FlowPort[]; outputs: FlowPort[] }
-  /** 需要持久化的 UI 状态（折叠、颜色…） */
-  ui?: Record<string, unknown>
-  /** 业务字段平铺在这里 */
-  [key: string]: unknown
-}
-
-/**
- * `data` 上属于框架的键。
- *
- * 用来把「框架字段」和「平铺的业务字段」分开 —— 升级 v1 数据时用到，
- * 将来做通用属性面板（"其余字段"那一栏）也读它。
- */
-export const NODE_DATA_RESERVED_KEYS = [
-  'label',
-  'status',
-  'createdAt',
-  'description',
-  'icon',
-  'ports',
-  'ui',
-] as const
-
-/**
- * Vue Flow 认识的字段在顶层，业务数据全在 data 里。
- *
- * **`type` 就是业务种类**（v1 那个和它恒等的 `data.kind` 已经并进来了）：
- * 它是前端节点类型注册表（`apps/web/src/components/flow/node-types.ts`）的键，
- * 决定用哪个组件渲染、新建时给什么默认 data。
- */
-export interface FlowNode {
-  id: string
-  type: string
+export interface FlowNodeLayout {
   position: { x: number; y: number }
   width?: number
   height?: number
@@ -112,13 +72,100 @@ export interface FlowNode {
   extent?: 'parent' | null
   sourcePosition?: FlowHandlePosition
   targetPosition?: FlowHandlePosition
-  data: FlowNodeData
 }
 
-/** 连线的业务数据，和节点一样平铺 */
+/** 节点的描述性信息：叫什么、什么时候谁建的 */
+export interface FlowNodeMetadata {
+  /** 节点名。老数据（v1 / v2）没有 metadata，读出来是空串 */
+  label: string
+  description?: string
+  icon?: string
+  /** 创建时刻，UTC epoch 毫秒 */
+  createdAt?: number
+  /** 创建者的用户 id */
+  createdBy?: string
+  /** 需要持久化的 UI 状态（折叠、颜色…） */
+  ui?: Record<string, unknown>
+}
+
+/**
+ * 运行态。
+ *
+ * `outputs` 按**输出端口 id** 分键：在 Y.Doc 里摊成 `outputs.<portId>` 一串平级的键
+ * （`flow-doc.ts`），一个端口的产出更新不会盖掉另一个端口的。
+ */
+export interface FlowNodeRuntime {
+  status: FlowNodeStatus
+  error?: string
+  taskId?: string
+  outputs?: Record<string, unknown>
+}
+
+/**
+ * 一条连进来的输入 —— **派生值，不存**。
+ *
+ * 连线是唯一的事实源：`port` 是边上的 `data.targetPort`、`sourcePort` 是 `data.sourcePort`，
+ * `index` 是 `data.index`（同一个多输入端口里的序号），`value` 是上游节点
+ * `runtime.outputs[sourcePort]`。端口**不是** Vue Flow 的 handle id —— 每个节点最多左右各一个
+ * 不带 id 的连接点，端口只存在边的 data 上（见 {@link FlowEdgeData}）。
+ */
+export interface FlowNodeInput {
+  /** 连到本节点的哪个输入端口；没声明端口的节点是 null */
+  port: string | null
+  /** 同一端口内的序号，来自 `edge.data.index`；老边没有就是 0 */
+  index: number
+  edgeId: string
+  source: string
+  /** 上游的哪个输出端口；没声明端口的上游是 null */
+  sourcePort: string | null
+  /** 上游对应输出端口当前的产出；还没有就不出现 */
+  value?: unknown
+}
+
+/**
+ * 节点**存下来的那部分** —— Y.Doc 里有的、`Flow.graph` 投影里存的就是这个形状。
+ *
+ * `type` 是业务种类，也是前端节点类型注册表（`apps/web/src/components/flow/node-types.ts`）的键，
+ * 决定用哪个组件渲染、新建时给什么默认值、有哪些端口。
+ */
+export interface FlowNodeRecord {
+  id: string
+  type: string
+  layout: FlowNodeLayout
+  metadata: FlowNodeMetadata
+  /**
+   * 纯业务字段，平铺。**没有保留字** —— 框架字段都搬去了 metadata / runtime。
+   *
+   * 平铺的理由没变：Y.Map 的合并粒度是 key，甲改 prompt、乙同时改 model 要各自保留。
+   */
+  data: Record<string, unknown>
+  runtime: FlowNodeRuntime
+}
+
+/** 编辑器和 agent 读到的节点：存下来的部分 + 派生的 inputs */
+export interface FlowNode extends FlowNodeRecord {
+  inputs: FlowNodeInput[]
+}
+
+/**
+ * 连线的业务数据，和节点一样平铺。
+ *
+ * **端口存在这里，不存在 handle 上**：画布上每个节点最多左边一个、右边一个连接点（都不带 id），
+ * 连上的是哪对端口由连线时自动选定（`resolveConnection`）后写进 `sourcePort` / `targetPort`。
+ * 两端都没声明端口的连线不写这三个字段。
+ */
 export interface FlowEdgeData {
   /** 连线建立的时刻，UTC epoch 毫秒 */
   createdAt?: number
+  /** 起点的输出端口 id；起点类型没声明端口时不写 */
+  sourcePort?: string
+  /** 终点的输入端口 id；终点类型没声明端口时不写 */
+  targetPort?: string
+  /**
+   * 在目标端口里的序号（从 1 起），有 `targetPort` 才有。连线时取该端口现有最大值 + 1，
+   * **删线不重排** —— prompt 里写的「图片2」指的就是 index 为 2 的那条，删掉 1 号之后它也不能变成 1。
+   */
+  index?: number
   [key: string]: unknown
 }
 
@@ -126,6 +173,7 @@ export interface FlowEdge {
   id: string
   source: string
   target: string
+  /** Vue Flow 的 handle id —— 节点的连接点不带 id，所以一律为 null（端口见 `data`） */
   sourceHandle?: string | null
   targetHandle?: string | null
   type?: string
@@ -148,7 +196,8 @@ export interface FlowGraph {
    * 这里这份只在某人第一次打开、还没有自己的记录时用。
    */
   viewport: FlowViewport
-  nodes: FlowNode[]
+  /** 只存节点自己的部分；`inputs` 是派生的，不进投影 */
+  nodes: FlowNodeRecord[]
   edges: FlowEdge[]
   /** 画布级自定义数据，同样透传 */
   meta: Record<string, unknown>
@@ -180,22 +229,21 @@ export interface FlowUserState {
 
 // —— 新建 ——
 
-/**
- * 新建节点时的默认 data。
- *
- * 只保证框架字段齐全（`label` / `status` / `createdAt`）；业务字段由各节点类型的
- * `defaultData()` 铺在上面，见 `apps/web/src/components/flow/node-types.ts`。
- */
-export function defaultNodeData(label: string, patch?: Record<string, unknown>): FlowNodeData {
+/** 新建节点时的 metadata：名字 + 创建时刻（+ 创建者，知道的话） */
+export function defaultNodeMetadata(label: string, createdBy?: string): FlowNodeMetadata {
   return {
     label,
-    status: 'idle',
     createdAt: Date.now(),
-    ...patch,
+    ...(createdBy ? { createdBy } : {}),
   }
 }
 
-/** 新建连线时的默认 data */
+/** 新建节点时的运行态：空闲，没有产出 */
+export function defaultNodeRuntime(): FlowNodeRuntime {
+  return { status: 'idle' }
+}
+
+/** 新建连线时的默认 data（不含端口）；带端口的见 `flow-node-types.ts` 的 `connectionEdgeData` */
 export function defaultEdgeData(): FlowEdgeData {
   return { createdAt: Date.now() }
 }
@@ -219,118 +267,204 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : []
-}
+// —— 规范化：把来路不明的各组拼成一个节点 ——
 
-// —— v1 → v2 的就地升级 ——
-
-/**
- * 这份节点 `data` 是 v1 写进去的吗？
- *
- * Y.Doc 里没有版本号可查（它存的是内容，不是快照），所以只能看形状：
- * **同时**有字符串 `kind` 和对象 `config` —— 这正是 v1 必写的两个键，
- * 而 v2 一个都不写。要求两个同时命中是为了不误伤某个真的叫 `config` 的业务字段。
- *
- * 升级只发生在**读**这一侧，纯函数、幂等，**不回写文档**：投影函数里写文档会凭空
- * 产生一次 Yjs 事务 —— 进别人的撤销栈、广播给所有人。文档里残留的 `kind` / `config`
- * 键无害（Yjs 本来就只增不减），下次读再拆一遍，结果一样。
- */
-export function isLegacyNodeData(data: Record<string, unknown>): boolean {
-  return typeof data.kind === 'string' && isRecord(data.config)
-}
-
-/** v1 的边 data 是 `{kind?, condition?, config}`，`config` 在就当它是老的 */
-export function isLegacyEdgeData(data: Record<string, unknown>): boolean {
-  return isRecord(data.config)
-}
+/** 运行态里「某输出端口的产出」在扁平形状下的键前缀（`outputs.<portId>`） */
+export const OUTPUT_KEY_PREFIX = 'outputs.'
 
 /**
- * v1 → v2 升级时的可调项。
- *
- * ⚠️ 只有一项，而且它存在的唯一理由是**两端历史上不一致**：合并进 shared 时原样保留了
- * 两边各自的判据，没有趁机统一（统一是一次行为变更，要单独决定）。
- *
- * - `keepCreatedAt` —— v1 data 上的 `createdAt` 留不留。缺省（前端编辑器的投影）只要求
- *   是 number；服务端（`parseGraph`、`readGraphFromDoc` 的 graph 投影）传
- *   {@link STRICT_UPGRADE}，要求 {@link isTimestamp}（正的安全整数）。
- *   只在「v1 形状 + createdAt 是个非正 / 非整数的 number」时有差别 —— 正常写进去的
- *   都是 `Date.now()`，碰不到。
+ * 节点五组的原始材料，来自 Y.Doc（`fromYNode`）或 JSON（`parseGraph`）。
+ * 每一组都可能缺、可能形状不对 —— 数据可能来自老客户端、老版本，或者干脆是坏的。
  */
-export interface UpgradeOptions {
-  keepCreatedAt?: (value: unknown) => boolean
+export interface FlowNodeParts {
+  type: unknown
+  /** 布局字段所在的对象（Y.Doc 里就是节点顶层） */
+  layout: Record<string, unknown>
+  metadata: unknown
+  data: unknown
+  runtime: unknown
 }
 
-/** 服务端用的那套升级判据（见 {@link UpgradeOptions}） */
-export const STRICT_UPGRADE: UpgradeOptions = { keepCreatedAt: isTimestamp }
-
-function isNumber(value: unknown): boolean {
-  return typeof value === 'number'
-}
-
-/**
- * 把 v1 的节点 `data` 升级成 v2：`config` 拆平、`kind` 丢掉、补上 `status`。
- *
- * `kind` 直接丢：v1 里它和顶层 `type` 恒等（两者都只可能是 `'process'`），
- * 留着就是两个字段说同一件事。
- *
- * **框架字段压在业务字段之上**：`config` 里万一有个叫 `label` 的键，
- * 它是业务数据，不该顶掉节点真正的标题。
- */
-export function upgradeNodeData(
-  raw: Record<string, unknown>,
-  options: UpgradeOptions = {},
-): FlowNodeData {
-  const keepCreatedAt = options.keepCreatedAt ?? isNumber
-  const config = isRecord(raw.config) ? raw.config : {}
-
-  // 先铺 v1 的 config，再铺 raw 上其余的键 —— 后者包括已经平铺着的未知字段，
-  // 升级不该顺手把它们丢了
-  const data: FlowNodeData = { ...config, label: '', status: 'idle' }
-  for (const [key, value] of Object.entries(raw)) {
-    if (key === 'kind' || key === 'config' || key === 'ports') continue
-    if (value !== undefined) data[key] = value
+function normalizeLayout(source: Record<string, unknown>): FlowNodeLayout | null {
+  const position = source.position
+  if (!isRecord(position) || typeof position.x !== 'number' || typeof position.y !== 'number') {
+    return null
   }
-
-  // 框架字段最后规范化一遍，压在业务字段之上
-  data.label = typeof raw.label === 'string' ? raw.label : ''
-  data.status = isNodeStatus(raw.status) ? raw.status : 'idle'
-  if (!keepCreatedAt(data.createdAt)) delete data.createdAt
-  if (typeof data.description !== 'string') delete data.description
-  if (typeof data.icon !== 'string') delete data.icon
-  if (!isRecord(data.ui)) delete data.ui
-
-  // 空壳端口不留：v1 给每个节点都塞了 `{inputs:[],outputs:[]}`，那是噪声不是信息
-  const ports = raw.ports
-  if (isRecord(ports) && (asArray(ports.inputs).length > 0 || asArray(ports.outputs).length > 0)) {
-    data.ports = ports as FlowNodeData['ports']
+  const { width, height, zIndex, parentNode, extent, sourcePosition, targetPosition } = source
+  return {
+    position: { x: position.x, y: position.y },
+    ...(typeof width === 'number' ? { width } : {}),
+    ...(typeof height === 'number' ? { height } : {}),
+    ...(typeof zIndex === 'number' ? { zIndex } : {}),
+    ...(typeof parentNode === 'string' ? { parentNode } : {}),
+    ...(extent === 'parent' || extent === null ? { extent } : {}),
+    ...(isHandlePosition(sourcePosition) ? { sourcePosition } : {}),
+    ...(isHandlePosition(targetPosition) ? { targetPosition } : {}),
   }
-
-  return data
 }
 
-/** v2 的节点 data：原样收下，只保证框架字段的形状对 */
-export function normalizeNodeData(raw: Record<string, unknown>): FlowNodeData {
-  const data: FlowNodeData = { ...raw, label: '', status: 'idle' }
-  data.label = typeof raw.label === 'string' ? raw.label : ''
-  data.status = isNodeStatus(raw.status) ? raw.status : 'idle'
-  return data
+function normalizeMetadata(raw: unknown): FlowNodeMetadata {
+  const source = isRecord(raw) ? raw : {}
+  const { label, description, icon, createdAt, createdBy, ui } = source
+  return {
+    label: typeof label === 'string' ? label : '',
+    ...(typeof description === 'string' ? { description } : {}),
+    ...(typeof icon === 'string' ? { icon } : {}),
+    ...(isTimestamp(createdAt) ? { createdAt } : {}),
+    ...(typeof createdBy === 'string' ? { createdBy } : {}),
+    ...(isRecord(ui) ? { ui } : {}),
+  }
 }
 
 /**
- * 把 v1 的连线 `data`（`{kind?, condition?, config}`）升级成 v2 的平铺形状。
- *
- * `kind` / `condition` 和节点的 `kind` 不一样，它们是**边自己的**业务语义、
- * 没有别的字段与之重复，所以保留下来平铺，不丢。
+ * 运行态两种来路都认：Y.Doc 里产出是扁平的 `outputs.<portId>` 键，
+ * JSON 投影里是一个 `outputs` 对象。两种同时出现时扁平键优先（它是事实源的形状）。
  */
-export function upgradeEdgeData(raw: Record<string, unknown>): FlowEdgeData {
-  const config = isRecord(raw.config) ? raw.config : {}
-  const data: FlowEdgeData = { ...config }
+function normalizeRuntime(raw: unknown): FlowNodeRuntime {
+  const source = isRecord(raw) ? raw : {}
+  const runtime: FlowNodeRuntime = { status: isNodeStatus(source.status) ? source.status : 'idle' }
+  if (typeof source.error === 'string') runtime.error = source.error
+  if (typeof source.taskId === 'string') runtime.taskId = source.taskId
 
-  for (const [key, value] of Object.entries(raw)) {
-    if (key === 'config') continue
-    if (value !== undefined) data[key] = value
+  const outputs: Record<string, unknown> = isRecord(source.outputs) ? { ...source.outputs } : {}
+  for (const [key, value] of Object.entries(source)) {
+    if (key.length > OUTPUT_KEY_PREFIX.length && key.startsWith(OUTPUT_KEY_PREFIX)) {
+      outputs[key.slice(OUTPUT_KEY_PREFIX.length)] = value
+    }
   }
+  for (const key of Object.keys(outputs)) {
+    if (outputs[key] === undefined) delete outputs[key]
+  }
+  if (Object.keys(outputs).length > 0) runtime.outputs = outputs
+  return runtime
+}
 
-  return data
+/**
+ * 把节点五组的原始材料拼成一个 {@link FlowNodeRecord}；布局不对（没有合法的 position）返回 null。
+ *
+ * **只兜底、不升级、不抛错**：缺的组给缺省值，类型不对的字段丢掉。老数据（v1 / v2）
+ * 走的也是这条路 —— 它们没有 metadata / runtime，读出来名字为空、状态为 idle，
+ * 原来混在 data 上的 label / status 留在 data 里当普通字段（产品决定不做迁移）。
+ */
+export function nodeRecordFromParts(id: string, parts: FlowNodeParts): FlowNodeRecord | null {
+  const layout = normalizeLayout(parts.layout)
+  if (!layout) return null
+  const data: Record<string, unknown> = {}
+  if (isRecord(parts.data)) {
+    for (const [key, value] of Object.entries(parts.data)) {
+      if (value !== undefined) data[key] = value
+    }
+  }
+  return {
+    id,
+    type: typeof parts.type === 'string' && parts.type ? parts.type : FALLBACK_NODE_TYPE,
+    layout,
+    metadata: normalizeMetadata(parts.metadata),
+    data,
+    runtime: normalizeRuntime(parts.runtime),
+  }
+}
+
+// —— 输入：从连线派生 ——
+
+/** 边连的是起点的哪个输出端口；没写就是 null */
+export function edgeSourcePort(edge: Pick<FlowEdge, 'data'>): string | null {
+  const port = edge.data?.sourcePort
+  return typeof port === 'string' && port ? port : null
+}
+
+/** 边连的是终点的哪个输入端口；没写就是 null */
+export function edgeTargetPort(edge: Pick<FlowEdge, 'data'>): string | null {
+  const port = edge.data?.targetPort
+  return typeof port === 'string' && port ? port : null
+}
+
+/** 一条边在目标端口里的序号；老边没有 `data.index` 就是 0 */
+export function inputIndexOf(edge: Pick<FlowEdge, 'data'>): number {
+  const index = edge.data?.index
+  return typeof index === 'number' && Number.isFinite(index) ? index : 0
+}
+
+/**
+ * 新连一条线到 `(target, targetPort)` 时该给的序号：该端口现有最大序号 + 1（从 1 起）。
+ *
+ * **删线不重排**：序号是 prompt 里「图片2」这类引用的锚点，删掉别的线不能让它漂移。
+ * 两个人同时往同一个端口连线可能拿到同一个序号 —— 排序时按边 id 兜底，结果仍然确定。
+ */
+export function nextInputIndex(
+  edges: Iterable<Pick<FlowEdge, 'target' | 'data'>>,
+  target: string,
+  targetPort: string | null | undefined,
+): number {
+  const port = targetPort ?? null
+  let max = 0
+  for (const edge of edges) {
+    if (edge.target !== target || edgeTargetPort(edge) !== port) continue
+    max = Math.max(max, inputIndexOf(edge))
+  }
+  return max + 1
+}
+
+function comparePort(a: string | null, b: string | null): number {
+  if (a === b) return 0
+  if (a === null) return -1
+  if (b === null) return 1
+  return a < b ? -1 : 1
+}
+
+/**
+ * 从「连进这个节点的边」派生它的 `inputs`：按 (端口, 序号) 排序，序号相同再按边 id，
+ * `value` 取上游 `runtime.outputs[data.sourcePort]`。
+ *
+ * @param incoming 所有 `target` 是这个节点的边（顺序无所谓，这里会排）
+ * @param recordOf 按 id 取上游节点；取不到（悬空边）的那条照样列出，只是没有 value
+ */
+export function deriveInputs(
+  incoming: readonly FlowEdge[],
+  recordOf: (id: string) => Pick<FlowNodeRecord, 'runtime'> | undefined,
+): FlowNodeInput[] {
+  const inputs = incoming.map<FlowNodeInput>((edge) => {
+    const sourcePort = edgeSourcePort(edge)
+    const input: FlowNodeInput = {
+      port: edgeTargetPort(edge),
+      index: inputIndexOf(edge),
+      edgeId: edge.id,
+      source: edge.source,
+      sourcePort,
+    }
+    if (sourcePort !== null) {
+      const value = recordOf(edge.source)?.runtime.outputs?.[sourcePort]
+      if (value !== undefined) input.value = value
+    }
+    return input
+  })
+  return inputs.sort(
+    (a, b) =>
+      comparePort(a.port, b.port) ||
+      a.index - b.index ||
+      (a.edgeId < b.edgeId ? -1 : a.edgeId > b.edgeId ? 1 : 0),
+  )
+}
+
+/** 按目标节点把边分桶 —— 派生 inputs 的前置步骤 */
+export function groupEdgesByTarget(edges: readonly FlowEdge[]): Map<string, FlowEdge[]> {
+  const byTarget = new Map<string, FlowEdge[]>()
+  for (const edge of edges) {
+    const bucket = byTarget.get(edge.target)
+    if (bucket) bucket.push(edge)
+    else byTarget.set(edge.target, [edge])
+  }
+  return byTarget
+}
+
+/**
+ * 一次性给一批节点派生 inputs（服务端、agent 用；编辑器的增量版本在前端的投影层）。
+ */
+export function withInputs(records: readonly FlowNodeRecord[], edges: readonly FlowEdge[]): FlowNode[] {
+  const byId = new Map(records.map((record) => [record.id, record]))
+  const byTarget = groupEdgesByTarget(edges)
+  return records.map((record) => ({
+    ...record,
+    inputs: deriveInputs(byTarget.get(record.id) ?? [], (id) => byId.get(id)),
+  }))
 }

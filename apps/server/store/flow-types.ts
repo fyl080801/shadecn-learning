@@ -1,12 +1,10 @@
 import {
   emptyGraph,
   GRAPH_SCHEMA_VERSION,
-  isNodeStatus,
   isTimestamp,
-  STRICT_UPGRADE,
-  upgradeEdgeData,
-  upgradeNodeData,
+  nodeRecordFromParts,
   type FlowGraph,
+  type FlowNodeRecord,
   type FlowUserState,
   type FlowViewport,
 } from '@shadecn/shared/flow-graph'
@@ -14,16 +12,17 @@ import {
 /**
  * 画布内容的服务端校验。
  *
- * 结构本身（节点 / 连线 / 视口的类型、版本号、v1 → v2 的升级函数）在
+ * 结构本身（节点 / 连线 / 视口的类型、版本号、节点五组的规范化）在
  * `@shadecn/shared/flow-graph`，前端用的是同一份 —— 这里只放只有服务端才做的事：
  * 校验客户端或库里来的 JSON、限额、按用户存的状态分区表。
  *
  * 服务端只做**结构校验**，不解释 `data` 上那些业务字段，原样透传存储。
  *
- * **v1 会被就地升级，不是拒收**（`GRAPH_SCHEMA_VERSION` 的注释讲了版本差异）。
- * 这一点是硬要求，不是客气：`Flow.graph` 里存量的全是 v1，而
- * `collab/persistence.ts` 的 `loadFlowState()` 靠 `readGraph()` 把老画布
- * 灌进 Yjs 文档 —— 那里读不出内容就返回 null，等于**第一次打开老画布就把它清空**。
+ * **老版本（v1 / v2）不升级，但也不拒收**（`GRAPH_SCHEMA_VERSION` 的注释讲了版本差异）。
+ * 拒收的代价太大：`collab/persistence.ts` 的 `loadFlowState()` 靠 `readGraph()` 把
+ * `ydoc` 为 NULL 的老画布灌进 Yjs 文档 —— 那里读不出内容就返回 null，等于
+ * **第一次打开老画布就把它清空**。所以老形状照 v3 的规范化读：布局字段当年平铺在节点顶层，
+ * 这里两处都认；没有 metadata / runtime 的退化成缺省值（名字为空、状态 idle）。
  * 比当前版本更高的仍然拒收：不猜未来的结构。
  */
 
@@ -130,8 +129,8 @@ function isFiniteNumber(value: unknown): value is number {
  * 只认结构不认内容：节点 id 不能重、边不能指向不存在的节点，
  * 其余（尤其是平铺在 `data` 上的业务字段）原样收下。
  *
- * **v1 的数据会被就地升级成 v2**（见 `GRAPH_SCHEMA_VERSION` 的注释），
- * 因此返回的 graph 一定是 v2。
+ * 节点按 v3 的五组规范化（`nodeRecordFromParts`，和读 Y.Doc 是同一份）：布局优先读 `layout`，
+ * 老版本平铺在顶层的也认；`inputs` 是派生值，收到了也不存。返回的 graph 一定是 v3。
  */
 export function parseGraph(input: unknown): ParseResult<FlowGraph> {
   if (!isRecord(input)) return { ok: false, error: 'graph 必须是对象' }
@@ -144,7 +143,6 @@ export function parseGraph(input: unknown): ParseResult<FlowGraph> {
   ) {
     return { ok: false, error: `不支持的 graph.schemaVersion：${String(version)}` }
   }
-  const needsUpgrade = version < GRAPH_SCHEMA_VERSION
 
   const viewport = parseViewport(input.viewport)
   if (!viewport.ok) return { ok: false, error: `graph.${viewport.error}` }
@@ -155,6 +153,7 @@ export function parseGraph(input: unknown): ParseResult<FlowGraph> {
   // 条数不判 —— 规模只看下面那道字节关（见 `GRAPH_LIMITS` 的注释）
 
   const nodeIds = new Set<string>()
+  const nodes: FlowNodeRecord[] = []
   for (const raw of input.nodes) {
     if (!isRecord(raw)) return { ok: false, error: '节点必须是对象' }
     if (typeof raw.id !== 'string' || raw.id === '') {
@@ -166,23 +165,25 @@ export function parseGraph(input: unknown): ParseResult<FlowGraph> {
     if (typeof raw.type !== 'string' || raw.type === '') {
       return { ok: false, error: `节点 ${raw.id} 缺少 type` }
     }
-    const position = raw.position
+    const layout = isRecord(raw.layout) ? raw.layout : raw
+    const position = layout.position
     if (!isRecord(position) || !isFiniteNumber(position.x) || !isFiniteNumber(position.y)) {
-      return { ok: false, error: `节点 ${raw.id} 的 position 必须是 { x, y }` }
+      return { ok: false, error: `节点 ${raw.id} 的 layout.position 必须是 { x, y }` }
     }
-    if (!isRecord(raw.data)) return { ok: false, error: `节点 ${raw.id} 缺少 data` }
-    if (typeof raw.data.label !== 'string') {
-      return { ok: false, error: `节点 ${raw.id} 的 data.label 必须是字符串` }
+    if (raw.data !== undefined && !isRecord(raw.data)) {
+      return { ok: false, error: `节点 ${raw.id} 的 data 必须是对象` }
     }
 
-    if (needsUpgrade) {
-      // createdAt 用服务端那套判据（见 `UpgradeOptions`）
-      raw.data = upgradeNodeData(raw.data, STRICT_UPGRADE)
-    } else if (!isNodeStatus(raw.data.status)) {
-      // v2 而没带 status：补上就是了。这是字段缺省，不是结构错误，
-      // 不值得为它把整张画布判死
-      raw.data.status = 'idle'
-    }
+    const node = nodeRecordFromParts(raw.id, {
+      type: raw.type,
+      layout,
+      metadata: raw.metadata,
+      data: raw.data,
+      runtime: raw.runtime,
+    })
+    // position 上面已经校验过，这里不会是 null；类型上兜一下
+    if (!node) return { ok: false, error: `节点 ${raw.id} 的 layout 不合法` }
+    nodes.push(node)
   }
 
   const edgeIds = new Set<string>()
@@ -203,13 +204,13 @@ export function parseGraph(input: unknown): ParseResult<FlowGraph> {
     if (!nodeIds.has(raw.target)) {
       return { ok: false, error: `连线 ${raw.id} 的 target 指向不存在的节点：${raw.target}` }
     }
-
-    if (needsUpgrade) raw.data = upgradeEdgeData(isRecord(raw.data) ? raw.data : {})
+    if (!isRecord(raw.data)) raw.data = {}
   }
 
   const graph = input as unknown as FlowGraph
+  graph.nodes = nodes
   if (!isRecord(input.meta)) graph.meta = {}
-  // 升级过的图从这里开始就是 v2 了 —— 写回版本号，否则下次读又要再升一遍
+  // 老版本读进来就按 v3 规范化过了 —— 写回版本号
   graph.schemaVersion = GRAPH_SCHEMA_VERSION
 
   const size = Buffer.byteLength(JSON.stringify(graph), 'utf8')

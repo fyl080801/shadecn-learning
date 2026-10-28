@@ -148,7 +148,7 @@ REQ-SOLO 的「两条通道互相拒绝」不变式改写为：**个人画布的
 
 - 编排器经 direct connection 的 awareness 发布：身份 `{ kind: 'agent', runId, name, initiatorId }`、
   当前处理的元素 `node:<id>`、运行状态（排队 / 思考中 / 执行中 / 已结束）、作用域（§3.7）、长任务进度（§3.6）。
-- 前端在场列表与 `FlowNodeChrome` 的占用标签区分人与 agent（图标 / 配色），作用域在画布上高亮，
+- 前端在场列表与节点上的占用标签（宿主内置的 `NodePresence`）区分人与 agent（图标 / 配色），作用域在画布上高亮，
   团队画布标出「由 某某 发起」。
 - 进度这类高频字段遵守 REQ-COLLAB 的反馈层规则：只发变了的数字、保留节流两端、run 结束必须清掉
   （y-protocols 每 15s 重放本地状态，残留条目会被永久广播）。

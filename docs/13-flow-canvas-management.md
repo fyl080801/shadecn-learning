@@ -165,16 +165,16 @@ interface FlowUserState {
 
 ```ts
 interface FlowGraph {
-  schemaVersion: 2                       // 结构版本，后续结构调整靠它做兼容读取
+  schemaVersion: 3                       // 结构版本，后续结构调整靠它做兼容读取
   viewport: { x: number; y: number; zoom: number }
-  nodes: FlowNode[]
+  nodes: FlowNodeRecord[]                // 只存节点自己的部分；派生的 inputs 不进投影
   edges: FlowEdge[]
   /** 画布级自定义数据，同样透传存储 */
   meta: Record<string, unknown>
 }
 ```
 
-> **v1 → v2 是就地升级，不是拒收。** v1 把业务种类放在 `data.kind`、业务字段裹在 `data.config` 里、`ports` 是每个节点都有的空壳；v2 把种类并进顶层 `type`、业务字段平铺到 `data` 上、每个节点带 `status`（见 3.7）。`parseGraph()` 读到 v1 会当场升级再返回，**这一条是硬要求**：存量 `Flow.graph` 全是 v1，而老画布进 Yjs 的唯一入口 `loadFlowState()` 靠 `readGraph()` —— 那里读不出内容就返回 `null`，等于第一次打开老画布就把它清空。Y.Doc 里的老节点没有版本号可查，靠形状认（同时有字符串 `kind` 和对象 `config`），只在**读**的一侧升级，纯函数、幂等、不回写文档：投影里写文档会凭空产生一次 Yjs 事务，进别人的撤销栈并广播出去。
+> **v3 不迁移、不升级老数据，但读老数据绝不抛错。** v1 把业务种类放在 `data.kind`、业务字段裹在 `data.config` 里；v2 把业务字段平铺到 `data` 上，但 `label` / `status` / `createdAt` 这些框架字段也混在 `data` 里；v3 把节点拆成 `type` / `layout` / `metadata` / `data` / `runtime` 五组（见 3.7）。**存量数据先不管**是产品决定：不写迁移、不做握手版本拒连、不加 `meta.schemaVersion`，v1→v2 的就地升级代码（`upgradeNodeData` / `STRICT_UPGRADE` 那套）也一并删掉了。老数据照 v3 的规范化读（`nodeRecordFromParts`，Y.Doc 和 `Flow.graph` 走同一个函数）：布局字段本来就在节点顶层，原样读得出；没有 `metadata` / `runtime` 的退化成缺省值 —— 名字读出来是空串（界面上显示类型的兜底名）、状态 idle；原来混在 `data` 上的 `label` / `status` / `kind` / `config` 留在 `data` 里当普通业务字段。形状不对（没有合法 `position`）的节点照旧整条跳过。**`parseGraph()` 仍然收 v1 / v2**，不拒收是硬要求：老画布进 Yjs 的唯一入口 `loadFlowState()` 靠 `readGraph()` —— 那里读不出内容就返回 `null`，等于第一次打开老画布就把它清空；v1 / v2 的 `Flow.graph` 行布局是平铺在节点顶层的，`parseGraph` 两处都认。
 
 **这个形状还在，但它的地位变了。** 原本 `graph` 是画布内容的事实源，客户端算好整份快照 `POST` 上来覆盖。
 现在事实源是 `Flow.ydoc`，`graph` 由服务端在写状态时**从文档里派生**出来（`apps/server/collab/flow-doc.ts` 的 `readGraphFromDoc`），
@@ -185,65 +185,92 @@ interface FlowGraph {
 
 **老数据的迁移就是第一次打开**：`ydoc` 为空的画布在有人进房间时，由 `bindState` 把旧的 `graph` JSON 现场灌进文档（`applyGraphToDoc`）。没有迁移脚本、没有停机窗口，没被打开过的画布原样躺着。
 
-### 3.7 节点（`FlowNode`）—— 布局层与业务层分离
+### 3.7 节点（`FlowNode`）—— 五组：type / layout / metadata / data / runtime
 
-**约定：Vue Flow 认识的字段留在顶层，业务自定义的一切都塞进 `data`。** 这样换掉渲染层（或升级 Vue Flow）时业务数据不受影响，`data` 也不会被 Vue Flow 的内部字段污染。
+**约定：按「谁在什么时候改它」分组。** 拖动只碰 layout，改名只碰 metadata，跑一次生成只碰 runtime，各节点类型的编辑入口只碰 data —— 混在一层里（v2 的 `data` 上同时住着 `label` / `status` / `prompt`）就只能靠一张「保留字清单」区分哪些是框架的、哪些是业务的。v3 起 **`data` 上没有任何保留字**。
 
 ```ts
-interface FlowNode {
-  // —— 布局层：直接喂给 Vue Flow ——
+interface FlowNode extends FlowNodeRecord {
+  inputs: FlowNodeInput[]       // 派生，不存（见下）
+}
+
+interface FlowNodeRecord {      // 存下来的部分：Y.Doc 里有的、Flow.graph 投影里存的
   id: string
-  type: string                  // 业务种类，也是节点类型注册表的键，如 'process' / 'group'
-  position: { x: number; y: number }
-  width?: number                // 手动 resize 过才有
-  height?: number
-  zIndex?: number
-  parentNode?: string           // 分组 / 子流程
-  extent?: 'parent' | null
-  sourcePosition?: 'left' | 'right' | 'top' | 'bottom'
-  targetPosition?: 'left' | 'right' | 'top' | 'bottom'
-
-  // —— 业务层：全部在 data 内 ——
-  data: FlowNodeData
+  type: string                  // 业务种类，也是节点类型注册表的键；建好不改
+  layout: {                     // Vue Flow 认识的那些
+    position: { x: number; y: number }
+    width?: number              // 手动 resize 过才有
+    height?: number
+    zIndex?: number
+    parentNode?: string         // 分组 / 子流程
+    extent?: 'parent' | null
+    sourcePosition?: 'left' | 'right' | 'top' | 'bottom'
+    targetPosition?: 'left' | 'right' | 'top' | 'bottom'
+  }
+  metadata: {
+    label: string               // 节点名；老数据没有 → 空串
+    description?: string
+    icon?: string               // lucide 图标名
+    createdAt?: number          // UTC epoch 毫秒
+    createdBy?: string          // 创建者的用户 id
+    ui?: Record<string, unknown>  // UI 状态里需要持久化的部分（折叠、备注颜色…）
+  }
+  data: Record<string, unknown> // 纯业务字段，平铺；前后端都不解释，原样透传存储
+  runtime: {
+    status: 'idle' | 'processing' | 'completed' | 'error'
+    error?: string
+    taskId?: string
+    outputs?: Record<string, unknown>  // 按输出端口 id 分键
+  }
 }
 
-interface FlowNodeData {
-  label: string                       // 节点标题
-  status: 'idle' | 'processing' | 'completed' | 'error'
-  createdAt?: number                  // UTC epoch 毫秒；老数据没有
-  description?: string
-  icon?: string                       // lucide 图标名
-  /** 显式声明的输入 / 输出端口；不声明就是默认的单进单出 */
-  ports?: { inputs: FlowPort[]; outputs: FlowPort[] }
-  /** UI 状态里需要持久化的部分（折叠、备注颜色…） */
-  ui?: Record<string, unknown>
-  /** 业务字段**平铺**在这一层，前后端都不解释，原样透传存储 */
-  [key: string]: unknown
-}
-
-interface FlowPort {
-  id: string                    // 对应 Vue Flow Handle 的 id
-  label?: string
-  /** 数据类型标记，用于将来做连线合法性校验；本期只存不校验 */
-  dataType?: string
+interface FlowNodeInput {       // 一条连进来的线
+  port: string | null           // = edge.data.targetPort
+  index: number                 // = edge.data.index；老边没有就是 0
+  edgeId: string
+  source: string
+  sourcePort: string | null     // = edge.data.sourcePort
+  value?: unknown               // = 上游 runtime.outputs[sourcePort]
 }
 ```
 
-**`type` 就是业务种类**，v1 里那个和它恒等的 `data.kind` 已经并进来了 —— 两个字段说同一件事，留着只会分叉。它同时是**节点类型注册表**（`apps/web/src/components/flow/node-types.ts`）的键：由谁渲染、菜单里叫什么、新建时铺什么默认字段，全在注册表里一处说清楚，画布和 `addNode()` 都从那儿取。加一种节点只改注册表这一个文件，既有代码一行不动。
+**Y.Doc 里的物理布局**（`@shadecn/shared/flow-doc`）：
 
-底部工具栏**不按这张表铺一排按钮**：类型会越加越多，一整排图标既认不出来也放不下。新增节点收成**一枚加号**，建哪种由 `NEW_NODE_TYPE` 说了算 —— 当前是**文本节点**（一张卡片，双击正文就地编辑；正文存在 `data.text`，自己占一个 key，所以一个人改标题、另一个人改正文不会互相盖掉）。注意它和 `FALLBACK_NODE_TYPE`（`process`，认不出的 `type` 按它渲染）是两件事，后者必须和 `fromYNode` 的兜底值一致，否则老画布会换一副样子。
+```
+nodes/<id>: Y.Map
+  type
+  position, width, height, zIndex, parentNode, extent, sourcePosition, targetPosition   ← layout 留在顶层原位，不嵌套
+  metadata: Y.Map   label, description, icon, createdAt, createdBy, ui
+  data:     Y.Map   业务字段平铺
+  runtime:  Y.Map   status, error, taskId, outputs.<portId>…
+```
+
+layout 不嵌套：拖动是最热的写路径，`position` 一直是顶层的一个 key，Vue Flow 本来也要平铺的形状 —— v3 的「归组」只发生在投影类型上，文档里的位置没动，所以老文档的位置原样读得出来。`metadata` / `runtime` 是 v3 新加的 key，从第一次写入起就是 `Y.Map`（3.7.1 那条「key 的类型首次写入即固定」不受影响）；老节点没有这两个 key，第一次写时现建（`nodeGroupMap(..., { create: true })`）。**运行态的产出按端口摊平**成 `outputs.<portId>` 一串平级的键（和 3.7.1 的平铺分键同一个思路），不存整块 `outputs` 对象 —— 一个端口出了新结果不该把另一个端口的整块盖掉。
+
+**写一律按组**：前端 `store.writeNode(id, 'metadata' | 'data' | 'runtime', { set, remove })`（走 `store.mutate`，写和删同一个事务），节点组件经 `useFlowNode(id)` 调它（`rename` 写 `metadata.label`，`draft(组, 键, …)` 在某个字段上开 `useDraftField` 草稿）。layout 不走这里，拖动 / 拉伸 / 打组 / 解组各有自己的写路径，语义不变。agent 的 `update_node` 同样按组传参（`metadata` / `data` / `removeData`）。
+
+**`type` 就是业务种类**，也是**节点类型注册表**的键。注册表分两半：**数据那一半**在 `@shadecn/shared/flow-node-types`（默认业务 `data`、默认布局、**端口声明**），前端和 agent 建节点都走 `buildNodeRecord`，默认值只有一份；**渲染那一半**在 `apps/web/src/components/flow/node-types.ts`（组件、图标、菜单名），用 `defineNodeType(type, 渲染)` 把两半拼起来。加一种节点只动这两张表，既有代码一行不动。
+
+**端口与 inputs**。端口声明在注册表里：`inputs?: PortDef[]`、`outputs?: PortDef[]`，`PortDef = { id, dataType: 'text' | 'image' | 'video' | 'audio' | 'any', label?, multiple?, max? }`。样例（`sample/画布数据参考/`）里的七种业务节点（text-input / text-config / image-source / image-config / video-source / video-config / director-console）都按样例里真实出现过的连线声明了端口；**端口不画成多个连接点**：画布上每个节点最多左边一个进、右边一个出，**都不带 id**。端口只决定这一侧有没有连接点、能连什么、连上之后是哪对：**一个端口都没声明的类型**（text / process / group）左右各一个，和谁都能连；**声明过端口、但一个输入都没有的**（text-input）不画左边，没有输出的同理不画右边（`hasSide`）。
+
+- **连线是唯一的事实源，端口存在边的 data 上**：`edge.sourceHandle` / `targetHandle` 一律为 `null`，`edge.data.sourcePort` / `targetPort` 存端口 id，多输入端口里的序号存 `edge.data.index`（`connectionEdgeData` 写这三项；两端都没声明端口的连线一项都不写，一侧没声明就只写有的那一侧）。序号取该端口现有最大 index + 1（`nextInputIndex`），**删线不重排** —— prompt 里写的「图片2」指的就是 index 为 2 的那条，删掉 1 号之后它不能漂成 1。两个人同时往同一个端口连线可能拿到同一个序号，排序时按边 id 兜底，结果仍然确定。
+- **`inputs` 是派生的，不存**：所有 `target === 该节点` 的可见边，按 (端口, 序号) 排序，`port` 取 `data.targetPort`，`value` 取上游 `runtime.outputs[data.sourcePort]`。服务端 / agent 一次性派生（`readNodes` → `withInputs`）；编辑器**增量**派生（`createNodeProjector`，见 3.7.3）。
+- **连哪对端口是自动选的，由 shared 的 `resolveConnection` 一个纯函数说了算**：前端拉线时的 `isValidConnection`（挂在 `Handle` 的 `is-valid-connection` 上）、拉线松手真正建边、点加号长出新节点、agent 的 `connect` 全部调它。规则：两端存在且不是同一个节点；这一侧要有连接点（`hasSide`）；在 **(源节点的输出端口 × 目标节点的输入端口)** 里按注册表声明顺序（源在外层）找**第一对**数据类型兼容（没声明端口的一侧算一个 `any`）、目标端口没满（单输入只接一条，`max` 限多输入）、且这对之间还没有线的；找不到就拒绝这条线，原因按「类型不兼容 / 端口已满 / 都连过了」报最接近能连上的那条。agent 可以用 `sourcePort` / `targetPort` 显式指定，指定了就只校验那一对。例：导演台（输出 image、video）→ 视频素材（只收 video）跳过 image 选 video；导演台 → 视频生成先落 image → image，那对连过之后再连一条就落 video → video。**它不能挂在 `<VueFlow>` 的全局 `isValidConnection` 上**：Vue Flow 每次同步边都会拿全局那个把所有边校验一遍，判不过的直接不渲染，而「端口已满」拿已有的边去判必然判自己不合法。
+- **从带端口的节点「长出」新节点**（点连接点上的加号 / 拉线到空白处）：取注册表里**第一个能和它连上的类型**（`findGrowType` 拿 `resolveConnection` 逐个去试；注册表的键顺序因此有意义，「加工」类型排在「素材」前面），端口也由它选；一个都连不上（例如往回长时原节点的输入都满了）就提示原因、不建节点。从无端口的节点长出来的照旧是 `NEW_NODE_TYPE`。
+
+底部工具栏**不按这张表铺一排按钮**：类型会越加越多，一整排图标既认不出来也放不下。新增节点收成**一枚加号**，建哪种由 `NEW_NODE_TYPE` 说了算 —— 当前是**文本节点**（一张卡片，双击正文就地编辑；正文存在 `data.text`，名字在 `metadata.label`，所以一个人改标题、另一个人改正文不会互相盖掉）。注意它和 `FALLBACK_NODE_TYPE`（`process`，认不出的 `type` 按它渲染）是两件事，后者必须和 `fromYNode` 的兜底值一致，否则老画布会换一副样子。
 
 **业务字段为什么平铺、不再包一层 `config`**：Y.Map 的合并粒度是 key。`config` 整块存成一个 key 时，甲改 `config.prompt`、乙同时改 `config.model`，后到的那次会把整块盖掉 —— 明明改的是不同字段。平铺之后每个业务字段各占一个 key，逐键合并才真正成立（[REQ-COLLAB](04-realtime-collab.md) 4.0 那条「该不该活过刷新」的划分不变）。代价是索引签名让拼错的字段名不再报类型错，这是弱 schema 的固有代价，换来的是加一种节点不用改类型定义。
 
-**`status` 是每个节点都有的字段，不是某一类节点的私有配置**：画布不只是画出来的图，节点将来要真的跑起来（生成、上传、转换），运行态属于框架层。
+**运行态是每个节点都有的一组，不是某一类节点的私有配置**：画布不只是画出来的图，节点将来要真的跑起来（生成、上传、转换），运行态属于框架层。`duplicateNode` 复制 type / layout / metadata / data，**runtime 重置为 idle 且不带产出**（复本还没跑过），**连线一条都不复制**。
 
 #### 3.7.1 一批会被各改各的元素：平铺分键，而不是往 Y.Doc 里加结构
 
 功能越加越复杂，迟早有节点要装**一批元素**而不是几个标量 —— 3D 场景里的一串角色和机位、时间轴上的一堆轨道和关键帧、一个资源列表。把它们塞进 `data` 的**一个**键（`data.scene = { objects: [...] }`）会让这批元素共用一个合并单位：甲摆角色 A、乙同时摆角色 B，后到的那次整块盖掉。这和 v1 把业务字段裹在 `config` 里是同一个 bug，只是下沉了一层。
 
-**做法：`data` 仍然是一层 Y.Map、值仍然全是普通 JSON，把这批元素摊成 `<前缀>.<id>` 这样一串平级的键。** 工具在 `apps/web/src/lib/flow-collection.ts`（`collectionKey` / `readCollection` / `spreadCollection` / `collectionKeys`），写和删同笔落库走 `store.writeNodeData(id, { set, remove })`。
+**做法：`data` 仍然是一层 Y.Map、值仍然全是普通 JSON，把这批元素摊成 `<前缀>.<id>` 这样一串平级的键。** 工具在 `apps/web/src/lib/flow-collection.ts`（`collectionKey` / `readCollection` / `spreadCollection` / `collectionKeys`），写和删同笔落库走 `store.writeNode(id, 'data', { set, remove })`。
 
-**为什么不是把 `scene` 变成嵌套的 `Y.Map`**（那样合并粒度最细，一次改动的 update 只有几十字节）：因为它把**结构**搬进了 CRDT 层。Y.Doc 没有版本号，新老客户端会同时往同一个 key 上写**不同的类型**——实测两个方向都跑过：赢家由 clientID 决定（等于随机），输家的整棵子树直接消失，而且输的那一方的代码当场 `TypeError`。这不是「读不懂就透传」能兜住的：读时升级（`upgradeNodeData` 那套）只对**形状**有效，对**类型**无效。平铺分键则对 CRDT 层完全不可见——`toYNode` / `fromYNode`（含服务端那份）一行不用改，`duplicateNode` 照跑，服务端连知道都不用知道，老客户端读到一堆不认识的键原样透传。所谓 schema 退化成一个**命名约定**，而命名约定的版本兼容就是普通的读时兼容（换前缀就两个都认一段时间）。
+**为什么不是把 `scene` 变成嵌套的 `Y.Map`**（那样合并粒度最细，一次改动的 update 只有几十字节）：因为它把**结构**搬进了 CRDT 层。Y.Doc 没有版本号，新老客户端会同时往同一个 key 上写**不同的类型**——实测两个方向都跑过：赢家由 clientID 决定（等于随机），输家的整棵子树直接消失，而且输的那一方的代码当场 `TypeError`。这不是「读不懂就透传」能兜住的：读时兼容只对**形状**有效，对**类型**无效。平铺分键则对 CRDT 层完全不可见——`toYNode` / `fromYNode`（含服务端那份）一行不用改，`duplicateNode` 照跑，服务端连知道都不用知道，老客户端读到一堆不认识的键原样透传。所谓 schema 退化成一个**命名约定**，而命名约定的版本兼容就是普通的读时兼容（换前缀就两个都认一段时间）。
 
 实测（导演台样例，`data` 43.7KB、15 个 3D 对象、17 条轨）：
 
@@ -275,12 +302,14 @@ interface FlowPort {
 const title = useDraftField<string>({
   current: () => props.label,                 // 当前已落库的值
   normalize: (raw) => raw.trim() || null,     // null = 放弃这次提交（标题被清空是误操作）
-  commit: (next) => store.updateNodeData(props.nodeId, { label: next }, "修改节点标题"),
+  commit: (next) => store.writeNode(props.nodeId, "metadata", { set: { label: next } }, "修改节点标题"),
   focus: () => inputRef.value?.select()       // 已经等过 nextTick，只给时机不给行为
 })
 ```
 
-它吃掉的正是那三件样板：草稿 ref、`editing` 开关、以及**提交时前后各一次 `separateUndo()`**；顺带挡住两种白写（值没变、`normalize` 判否）和一种重复提交（**回车和失焦常常连着触发**，`commit()` 第二次进来时 `editing` 已经是 false）。`TextNode.vue`（正文，不 trim、允许清空）和 `FlowNodeChrome.vue`（标题，trim、拒绝空）就是它的两个消费者。
+节点组件里不用直接写这一段：`useFlowNode(id).draft(组, 键, { fallback, normalize, focus, label })` 就是它在某组某键上的封装（改名 `RenameTitle`、文本节点的正文 `TextBody`、底部输入框 `PromptComposer` 都是这么来的）。
+
+它吃掉的正是那三件样板：草稿 ref、`editing` 开关、以及**提交时前后各一次 `separateUndo()`**；顺带挡住两种白写（值没变、`normalize` 判否）和一种重复提交（**回车和失焦常常连着触发**，`commit()` 第二次进来时 `editing` 已经是 false）。`TextBody.vue`（正文，不 trim、允许清空）、`RenameTitle.vue`（标题，trim、拒绝空）和 `PromptComposer.vue`（提示词）是它的消费者。
 
 有「松手」的那类（拖节点、将来拖滑杆）目前仍是手写的，参考 `useFlowCanvas.ts` 的 `onNodeDragStart` / `onNodeDrag` / `onNodeDragStop`：草稿由 Vue Flow 内部状态 + `dragOrigin` 承担，中间态经 `publishDrag()` → `presence.setTransform()` 发出去，落点在 `onNodeDragStop` 提交。**它和 `useDraftField` 只差一步**——把 `draft` 节流发到 awareness；那一步没有做进 composable，因为它需要一个新的 awareness 反馈字段（现有的 `transform` 只装 `{x, y}`），而目前还没有这样的消费者。真要接的时候在组件里 `watch(draft, useThrottleFn(publish, 40))` 即可，`start` / `commit` / `cancel` 三段不用改。
 
@@ -317,6 +346,16 @@ const title = useDraftField<string>({
 
 **运行时状态不落库**：`selected` / `dragging` / `dimensions`（自动测量出来的尺寸）/ 校验结果，这些由 Vue Flow 或前端自己维护，序列化时必须剔除。**边上的 `sourceX/sourceY/targetX/targetY` 尤其不能存** —— 那是 Vue Flow 每帧回写到边对象上的渲染坐标，`toObject()` 不剥它，节点一动就是过期脏数据（参考实现里它占了 edges 体积的三分之一）。本项目的投影是白名单式的（`fromYEdge` 只读认识的字段），天然不会带上它。
 
+#### 3.7.3 投影与节点组件：增量 inputs、Vue Flow 映射、基础组件
+
+**store 投影分两步**（`apps/web/src/stores/flow/`）：`projectMap` 按 `observeDeep` 点名的键增量重读出 `FlowNodeRecord`，再由 `createNodeProjector`（`apps/web/src/lib/flow-projection.ts`）补上派生的 `inputs`。节点数组在**边那一步**才定稿 —— 只改一条边时节点记录一个都没变，但下游的 inputs 变了，它得换新对象。
+
+**inputs 的失效范围**：一个节点换新对象只有两种原因 —— 它自己的记录变了（inputs 能复用就复用），或它的 inputs 变了。后者只取决于 ① 连进它的边（按目标分桶后和上一轮逐个比引用；端口和序号都在边的 data 上，改了边就是新对象 —— 增删、改端点、改端口、改序号、端点节点没了都会让桶变样）和 ② 上游的 `runtime.outputs`（只有记录真的换了、且产出**按值**变了的上游才算 —— 改上游的名字、拖上游的位置不波及下游）。所以受影响的是「变了的节点 + 入边变了的节点 + 产出变了的节点的直接下游」，其余一律原样交出上一轮的对象；每轮按 id 走一遍是 O(N + E) 的引用比较，**解析**只发生在受影响的那几个上。
+
+**交给 Vue Flow 的形状**（`apps/web/src/components/flow/node-view.ts` 的 `toVueFlowNode`）：layout 摊到顶层，其余四组装进 Vue Flow 的 `data`（`{ metadata, data, runtime, inputs }`）。映射按投影对象 WeakMap 缓存，所以投影保住的引用到 Vue Flow 这一层也还在；布局键一律显式写出（没有就是 `undefined`），因为 Vue Flow 合并节点用 `Object.assign`，缺键会留着旧值。`useFlowCanvas` 的 `localDragging` 冻结照旧：本地拖动期间整个数组原样交回上一轮的（`computed` 的 `previous`）。
+
+**节点 = 一个宿主 + 一份类型声明 + 若干能力**（详见 [REQ-NODEKIT](21-node-kit.md)）。Vue Flow 收到的每个 type 都是同一个组件 `node-kit/NodeHost.vue`；「这种节点长什么样」写在 `node-types.ts` 的类型声明里（`view`：body 组件、卡片还是框、尺寸、选中样式、底色、兜底名），「这种节点能做什么」是它按名字启用的能力（`features`）：框外名字 + 双击改名（`rename`）、复制 / 删除（`duplicate` / `delete`，单选时浮在上方的工具条）、连接点（`connectable`，挂 `FlowNodeHandles`：最多左右各一个、不带 id，按端口声明决定画不画哪一侧）、`runtime.status` 的展示（`status`：processing 一圈高亮 + 「运行中」角标；error 红框 + `runtime.error`）。宿主只管区域的几何与露出规则和选中态，**不认识任何具体类型或能力**，没有 `if (type === 'group')` —— 分组的差异全在它的声明里（`frame` 外壳、不启用连线 / 复制 / 删除、启用解组 / 拉伸 / 顶部把手）。公共逻辑在 `useFlowNode(id)`（`apps/web/src/composables/flow/useFlowNode.ts`，部件里经 `useNodePart().node` 拿到）：**直接读 store**（`store.nodeById`）而不是 Vue Flow 塞进来的 `data` prop —— 后者在本地拖动时是冻结的；按组写走 `store.writeNode`，草稿走 `useDraftField`。七种带端口的业务节点眼下没有专门界面，都用 `GenericBody.vue`（名字、关键业务字段摘要、inputs 列表），输出端口的产出由能力 `output-preview` 挂在 footer（可展开右侧大图）；生图节点另按类型注册了底部输入框。
+
 ### 3.8 边（`FlowEdge`）
 
 ```ts
@@ -324,20 +363,23 @@ interface FlowEdge {
   id: string
   source: string
   target: string
-  sourceHandle?: string | null
-  targetHandle?: string | null
+  sourceHandle?: string | null  // 一律 null：节点的连接点不带 id
+  targetHandle?: string | null  // 同上；渲染时也强制按 null 交给 Vue Flow
   type?: string                 // 'default'（贝塞尔曲线），渲染时统一按曲线走
   animated?: boolean
   label?: string
   data: {
     createdAt?: number          // UTC epoch 毫秒
+    sourcePort?: string         // 起点的输出端口 id；起点没声明端口时不写
+    targetPort?: string         // 终点的输入端口 id；终点没声明端口时不写
+    index?: number              // 在目标端口里的序号（从 1 起），有 targetPort 才有，删线不重排
     /** 和节点一样平铺 */
     [key: string]: unknown
   }
 }
 ```
 
-> v1 的边 `data` 是 `{kind?, condition?, config}`。升级时 `config` 拆平，但 **`kind` / `condition` 保留**：它们和节点的 `kind` 不一样 —— 没有别的字段与之重复，是边自己的业务语义，丢了就真丢了。
+> 边的 `data` 原样透传。v1 的边 `data`（`{kind?, condition?, config}`）不再拆平，读出来就是它存的样子。
 
 ### 3.9 没有操作日志 —— 也没有历史
 
@@ -568,7 +610,7 @@ model FlowUserState {
 - **拉框过程中只有高亮，没有工具栏**：框每长一点就重算一次命中，节点高亮**逐个实时翻转**（框住就亮、缩回去就灭）；但节点头上那条（复制/删除）和选区那条（打组）在拉框期间一律不出现 —— 框扫过第一个节点时它会短暂地成为「唯一选中」，按钮于是闪一下又消失；选区那条则会跟着还在变的外接矩形一路乱跳。**松开鼠标才出现**。
 - **框选一片时浮出的是另一条：选区工具栏**（`FlowSelectionToolbar`，浮在这片节点的外接矩形上方）。分工就是「对一个说的」和「对一片说的」：选中恰好一个 → 节点自己头上那条（复制 / 删除），选中两个及以上 → 选区那条，两者永远不会同时出现。目前上面只有一个动作：**打组**。
   - **分组是围着已经选好的一片节点长出来的**，所以底部工具栏里没有「添加分组」：先凭空建一个空框、再把节点一个个拖进去，顺序是反的，而且「拖进分组自动归属」还没做，那条路根本走不通。
-  - **分组的外壳和普通节点是同一套**（`FlowNodeChrome`）：名字贴在框**外**的左上角、双击改名，选中时工具栏浮在正上方居中 —— 和文本节点长得一模一样，只是那排按钮换成了分组自己的（没有「复制」，只有一枚**解组**）。解组拆掉的只有这个框，组里的节点原地留下 —— 所以它既不用垃圾桶图标也不用 destructive 的红色（`Ungroup` 图标 + 普通 ghost 按钮）：那两样都在说「东西要没了」，而这一下什么都没丢，撤销一次还能原样回来。名字曾经长在框**内部**的标题栏上，那让分组看着像另一种东西，可它只是个 body 不一样的节点；画布上「这块叫什么」应该只有一种表达。
+  - **分组的外壳和普通节点是同一套**（宿主 `NodeHost` + 能力 `rename`）：名字贴在框**外**的左上角、双击改名，选中时工具栏浮在正上方居中 —— 和文本节点长得一模一样，只是那排按钮换成了分组自己的（没有「复制」，只有一枚**解组**）。解组拆掉的只有这个框，组里的节点原地留下 —— 所以它既不用垃圾桶图标也不用 destructive 的红色（`Ungroup` 图标 + 普通 ghost 按钮）：那两样都在说「东西要没了」，而这一下什么都没丢，撤销一次还能原样回来。名字曾经长在框**内部**的标题栏上，那让分组看着像另一种东西，可它只是个 body 不一样的节点；画布上「这块叫什么」应该只有一种表达。
   - 名字挪出去之后，**拖动没法跟着挪**：`NodeToolbar` 是 teleport 到画布容器上的，在名字上按下鼠标不会传到节点的 d3-drag。所以分组在自己顶边留了一条**通栏 24px 的把手**（平时不画出来，指上去才浮出底色，光标是 move），位置正是原来标题栏所在的地方。代价是这条带子里起不了框选 —— 分组整块 `pointer-events-none` 换来的画布穿透，在这 24px 上要让给拖动。
   - 框的大小是选中节点的外接矩形加一圈留白（顶上多留一条给那条把手）。已经在别的分组里的节点、以及分组框本身不参与（换爹会把它从原来的框里抠出来；嵌套分组的层级和坐标要另说一套），剩不下两个就把按钮置灰。
   - **分组框和成员的归属写在同一个事务里**：分开写的话，会有一瞬间成员的 `parentNode` 指着还不存在的节点 —— Vue Flow 当场报 `NODE_MISSING_PARENT`，这些节点的位置被当成相对一个不存在的父节点，整片跳到画布原点附近；撤销也会撤出个只剩半拉的中间态。
@@ -588,11 +630,11 @@ model FlowUserState {
   | `useFlowSelection` | 「现在轮到哪个节点」（Vue Flow 选中态的**投影**，恰好选中一个时才有值，决定节点工具栏露不露） |
   | `useFlowPresence` | 反馈层：上报光标/选中/拖动几何，读别人的 |
   | `useFlowSnapping` | 拖动时的网格 / 辅助线吸附（见 4.4.3），两者都常开、无开关、无持久化状态 |
-  依赖是一条直线：`selection`/`collab` → `presence` → `canvas`，只有 `useFlowCanvas` 同时认识这三者。另有 `useFlowShortcuts(ctx)` 管快捷键和离开前的 flush。
-- **组件层（`apps/web/src/components/flow/`）** —— 一块界面一个组件，各自直接读上下文：`FlowCanvas`（画布本体，留了 `<slot/>` 给画布内浮层）、`FlowViewControls`（右上角控件 + 撤销/重做）、`FlowTitleCapsule`（左上角胶囊，自带删除确认）、`FlowToolbar`（底部工具栏）、`FlowSelectionToolbar`（框选一片时浮在选区上方的工具栏，目前放「打组」）、`ProcessNode` / `TextNode` / `GroupNode`（节点本体，只管自己长什么样）、`FlowNodeChrome`（每种节点共用的外壳：外部名字标签 + 单独选中时浮在正上方的工具栏，写一遍就够；按钮不一样的节点用 `#actions` 插槽换掉那一排，位置和露出时机仍由外壳说了算），`FlowSnapGuides`（拖动时的对齐辅助线），以及协同带来的三个：`FlowPresenceBar`（头像栏）、`FlowPresenceAvatar`、`FlowPresenceCursors`（别人的光标与正在拉的线）。
+  依赖是一条直线：`selection`/`collab` → `presence` → `canvas`，只有 `useFlowCanvas` 同时认识这三者。另有 `useFlowShortcuts(ctx)` 管快捷键和离开前的 flush；上下文里还带着节点扩展协议的运行时 `nodeKit`（注册表、编辑模式、动作执行器）。
+- **组件层（`apps/web/src/components/flow/`）** —— 一块界面一个组件，各自直接读上下文：`FlowCanvas`（画布本体，留了 `<slot/>` 给画布内浮层）、`FlowViewControls`（右上角控件 + 撤销/重做）、`FlowTitleCapsule`（左上角胶囊，自带删除确认）、`FlowToolbar`（底部工具栏）、`FlowSelectionToolbar`（框选一片时浮在选区上方的工具栏，目前放「打组」）、`node-kit/NodeHost.vue`（每种节点共用的宿主：外部名字标签、单独选中时浮在正上方的工具栏、底部输入框、右侧预览等区域的位置和露出时机都由它说了算；各区域里挂什么由类型声明和能力注册，见 [REQ-NODEKIT](21-node-kit.md)）、`TextBody` / `GenericBody`（类型的 body，只管自己长什么样），`FlowSnapGuides`（拖动时的对齐辅助线），以及协同带来的三个：`FlowPresenceBar`（头像栏）、`FlowPresenceAvatar`、`FlowPresenceCursors`（别人的光标与正在拉的线）。
 
 判据：**加一块新面板 / 新工具按钮，不应该需要改 `FlowEditor.vue` 或任何中间层** —— 新建组件、`useFlowEditor()` 取上下文、挂到模板上即可。
-- 快捷键：`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Delete` / `Backspace` 删除选中。**`Ctrl/Cmd+S` 只是拦住浏览器的「保存网页」对话框**，本身不再有任何含义 —— 没有要保存的东西。
+- 快捷键：`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Delete` / `Backspace` 删除选中。单独选中一个节点时，它工具条上动作的快捷键也生效（复制 `Ctrl/Cmd+D`、解组 `Ctrl/Cmd+Shift+G`，写在按钮的提示里）；编辑器自己的这几个键先判，节点动作抢不走。**`Ctrl/Cmd+S` 只是拦住浏览器的「保存网页」对话框**，本身不再有任何含义 —— 没有要保存的东西。
 - 删除键必须自己接：Vue Flow 的 `deleteKeyCode` 在 `applyDefault: true` 下直接改它内部的 nodes/edges，绕开 store，删掉的东西既不进撤销也不同步更不落库。所以 `FlowCanvas` 传 `:delete-key-code="null"`，`canvas.deleteSelection()` 是唯一的删除路径。
 - 离开页面时**没有未保存的内容可丢**，所以不再有 `beforeunload` 拦截。`onBeforeRouteLeave` 里只做一件事：把攒着的视图状态 flush 掉。
 
@@ -765,8 +807,12 @@ store 的职责边界：
 - [x] 同一条 Yjs 更新被应用两次，画布上不会出现第二个节点。（apps/web/src/test/stores/flow.test.ts）
 - [x] 删除键删掉的节点会同步给对方、也会落库（即没有绕开 store）。（浏览器回归）
 - [x] 节点 `data` 上平铺的任意业务字段，存取一字不差。（apps/server/test/routes/flows.test.ts）
-- [x] v1 的节点（`kind` + `config`）与连线在读出来时就地升级成 v2：`config` 拆平、空壳 `ports` 丢掉、`status` 补上，边的 `kind` / `condition` 保留。（apps/server/test/collab/flow-doc.test.ts）
-- [x] 两个人同时改同一个节点的不同业务字段，两边的改动都留下 —— 平铺之后才成立的合并粒度。（apps/web/src/test/stores/flow.test.ts）
+- [x] v1 / v2 写的老节点读出来不抛错：没有 metadata / runtime 的退化成缺省值（名字为空、状态 idle），老字段原样留在 `data` 里；`parseGraph` 照收布局平铺在顶层的老行。（apps/server/test/collab/flow-doc.test.ts、apps/server/test/store/flow-types.test.ts、packages/shared/test/flow-doc.test.ts）
+- [x] 五组往返无损：`toYNode` → `fromYNode`，含 `runtime.outputs` 摊成 `outputs.<portId>` 扁平键、两个端口的产出并发更新互不覆盖。（packages/shared/test/flow-doc.test.ts）
+- [x] 两个人同时改同一个节点的不同业务字段，两边的改动都留下 —— 平铺之后才成立的合并粒度；一人改 `metadata.label`、一人改 `data.prompt`，两边都留。（apps/web/src/test/stores/flow.test.ts）
+- [x] `inputs` 派生：按 (端口, 序号) 排序、value 取上游产出、删线不重排；增量投影里只有受影响的节点换对象。（packages/shared/test/flow-graph.test.ts、apps/web/src/test/stores/flow.test.ts）
+- [x] 自动选端口前后端同一套（`resolveConnection`）：声明顺序、数据类型、容量、已连过的跳过、无端口类型照旧可连；端口写在 `edge.data` 上、handle 为空。（packages/shared/test/flow-node-types.test.ts、apps/web/src/test/composables/flowCanvasPorts.test.ts、packages/agent/test/tools.test.ts）
+- [x] 节点（宿主 + 默认注册表）：processing / error 的展示、分组不画连接点、改名经 `useFlowNode` 写到 `metadata.label`、分组解组、文本就地编辑。（apps/web/src/test/components/FlowNodes.test.ts、apps/web/src/test/components/node-kit/）
 - [ ] 平移/缩放后刷新，视口回到离开时的位置；撤销按钮不会因为只挪了画布而变亮，撤销也拽不回视野。
 - [x] **只平移不编辑时一个写请求都不发**；发生一次编辑后，攒着的视口立刻被顺路 PATCH 上去，之后的连续编辑合成一发在手停时补齐（一直不停手由 `maxWait` 顶上）。（apps/web/src/test/stores/flow.test.ts）
 - [ ] 同一张画布两个人各自平移到不同位置，互不影响；第三个人第一次打开时按投影里的兜底视口（或 fitView）。

@@ -7,7 +7,7 @@
 /* addon styles (Controls / MiniMap / NodeResizer) */
 @import "@vue-flow/controls/dist/style.css";
 @import "@vue-flow/minimap/dist/style.css";
-/* 分组框的拉伸手柄（GroupNode.vue）；不引这份样式，手柄是看不见的 */
+/* 拉伸手柄（能力 resizable，node-kit/features/NodeResizerPart.vue）；不引这份样式，手柄是看不见的 */
 @import "@vue-flow/node-resizer/dist/style.css";
 
 /*
@@ -35,7 +35,7 @@
 /*
  * 分组框的拉伸手柄。
  *
- * 分组整块是 `pointer-events-none`（背景板不该挡住框选和平移，见 GroupNode.vue），
+ * 分组整块是 `pointer-events-none`（背景板不该挡住框选和平移，见 node-types.ts 的分组声明），
  * 而手柄是它的子元素 —— 官方样式里没写 pointer-events，于是继承下来也是 none，
  * 手柄看得见却按不动。这里把它要回来。
  */

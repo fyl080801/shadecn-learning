@@ -18,9 +18,9 @@ afterEach(() => {
   resetRooms()
 })
 
-/** 取某个节点的 data 那层 Y.Map —— 并发合并的粒度就在这一层 */
-function dataOf(doc: Y.Doc, nodeId: string): Y.Map<unknown> {
-  return nodesMap(doc).get(nodeId)!.get('data') as Y.Map<unknown>
+/** 取某个节点某一组的那层 Y.Map —— 并发合并的粒度就在这一层 */
+function groupOf(doc: Y.Doc, nodeId: string, group: 'metadata' | 'data'): Y.Map<unknown> {
+  return nodesMap(doc).get(nodeId)!.get(group) as Y.Map<unknown>
 }
 
 /** 造一张有 n 个节点、n-1 条边的图 */
@@ -30,8 +30,10 @@ function graphWith(nodeCount: number): FlowGraph {
     graph.nodes.push({
       id: `n${i}`,
       type: 'process',
-      position: { x: i * 100, y: 0 },
-      data: { label: `节点 ${i}`, status: 'idle' },
+      layout: { position: { x: i * 100, y: 0 } },
+      metadata: { label: `节点 ${i}` },
+      data: {},
+      runtime: { status: 'idle' },
     })
     if (i > 0) {
       graph.edges.push({
@@ -220,8 +222,8 @@ describe('画布内容的写入路径（Yjs）', () => {
     const right = new Y.Doc()
     Y.applyUpdate(right, Y.encodeStateAsUpdate(left))
 
-    dataOf(left, 'n0').set('label', '甲改的标题')
-    dataOf(right, 'n0').set('description', '乙写的说明')
+    groupOf(left, 'n0', 'metadata').set('label', '甲改的标题')
+    groupOf(right, 'n0', 'data').set('prompt', '乙写的提示词')
 
     Y.applyUpdate(left, Y.encodeStateAsUpdate(right))
     await closeRoom(flowId)
@@ -229,8 +231,8 @@ describe('画布内容的写入路径（Yjs）', () => {
     const detail = (await (await alice.request(`/api/flows/${flowId}`)).json()) as {
       graph: FlowGraph
     }
-    expect(detail.graph.nodes[0]!.data.label).toBe('甲改的标题')
-    expect(detail.graph.nodes[0]!.data.description).toBe('乙写的说明')
+    expect(detail.graph.nodes[0]!.metadata.label).toBe('甲改的标题')
+    expect(detail.graph.nodes[0]!.data.prompt).toBe('乙写的提示词')
   })
 })
 

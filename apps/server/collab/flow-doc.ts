@@ -1,9 +1,8 @@
 import * as Y from 'yjs'
-import { edgesMap, metaMap, nodesMap, readEdges, readNodes, VIEWPORT_KEY } from '@shadecn/shared/flow-doc'
+import { edgesMap, metaMap, nodesMap, readEdges, readNodeRecords, VIEWPORT_KEY } from '@shadecn/shared/flow-doc'
 import {
   emptyGraph,
   GRAPH_SCHEMA_VERSION,
-  STRICT_UPGRADE,
   type FlowGraph,
   type FlowViewport,
 } from '@shadecn/shared/flow-graph'
@@ -11,7 +10,7 @@ import {
 /**
  * Y.Doc 的服务端专属操作：派生只读的 graph 投影、清理悬空边。
  *
- * 文档的形状本身（键名、嵌套结构、读写、v1 读时升级）在 `@shadecn/shared/flow-doc`，
+ * 文档的形状本身（键名、嵌套结构、读写、节点五组的规范化）在 `@shadecn/shared/flow-doc`，
  * 前端读写的是同一份实现 —— 这里只放只有服务端才做的事。
  */
 
@@ -30,8 +29,8 @@ export function readGraphFromDoc(doc: Y.Doc): FlowGraph {
   const graph = emptyGraph()
   graph.schemaVersion = GRAPH_SCHEMA_VERSION
 
-  // v1 升级用服务端那套 createdAt 判据（见 `UpgradeOptions`）
-  graph.nodes = readNodes(doc, STRICT_UPGRADE)
+  // 只存节点自己的部分：inputs 是派生的，不进投影
+  graph.nodes = readNodeRecords(doc)
   // 端点没了的边不进投影：parseGraph 会因为它整张图判不合法
   graph.edges = readEdges(doc, new Set(graph.nodes.map((node) => node.id)))
 

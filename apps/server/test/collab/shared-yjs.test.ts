@@ -3,8 +3,8 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import { nodeData, nodesMap, readNodes, toYNode } from '@shadecn/shared/flow-doc'
-import { defaultNodeData } from '@shadecn/shared/flow-graph'
+import { nodeGroup, nodesMap, readNodes, toYNode } from '@shadecn/shared/flow-doc'
+import { buildNodeRecord } from '@shadecn/shared/flow-node-types'
 
 /**
  * `@shadecn/shared` 里的 Y.Doc 读写和后端自己 import 的必须是**同一份 yjs**。
@@ -27,18 +27,14 @@ describe('shared 与后端共用一份 yjs', () => {
   })
 
   it('shared 造的 Y.Map 是后端这份 yjs 的实例，反过来也读得出来', () => {
-    const made = toYNode({
-      id: 'n1',
-      type: 'text',
-      position: { x: 0, y: 0 },
-      data: defaultNodeData('节点'),
-    })
+    const made = toYNode(buildNodeRecord({ id: 'n1', type: 'text', label: '节点', position: { x: 0, y: 0 } }))
     expect(made).toBeInstanceOf(Y.Map)
 
     // 后端这份 yjs 建的文档，交给 shared 读
     const doc = new Y.Doc()
     nodesMap(doc).set('n1', made)
-    expect(nodeData(doc, 'n1')).toBeInstanceOf(Y.Map)
+    expect(nodeGroup(doc, 'n1', 'data')).toBeInstanceOf(Y.Map)
+    expect(nodeGroup(doc, 'n1', 'metadata')).toBeInstanceOf(Y.Map)
     expect(readNodes(doc).map((node) => node.id)).toEqual(['n1'])
   })
 })

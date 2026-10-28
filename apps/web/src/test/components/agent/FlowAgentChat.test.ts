@@ -27,6 +27,9 @@ vi.mock("@/composables/flow/editor-context", () => ({
     store: {
       get nodes() {
         return nodes.value
+      },
+      get nodeById() {
+        return new Map(nodes.value.map((item) => [item.id, item]))
       }
     }
   })
@@ -120,7 +123,15 @@ function view(id: string, overrides: Partial<AgentConversationView> = {}): Agent
 }
 
 function node(id: string, label: string): FlowNode {
-  return { id, type: "text", position: { x: 0, y: 0 }, data: { label, status: "idle", text: "" } } as FlowNode
+  return {
+    id,
+    type: "text",
+    layout: { position: { x: 0, y: 0 } },
+    metadata: { label },
+    data: { text: "" },
+    runtime: { status: "idle" },
+    inputs: []
+  }
 }
 
 type SendOptions = { onEvent: (event: AgentStreamEvent) => void; onOpen?: () => void }

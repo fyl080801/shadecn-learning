@@ -19,7 +19,7 @@ import { useFlowStore } from "@/stores/flow"
  * const title = useDraftField({
  *   current: () => props.label,
  *   normalize: (raw) => raw.trim() || null,      // 空标题 = 放弃这次提交
- *   commit: (next) => store.updateNodeData(props.nodeId, { label: next }, "修改节点标题"),
+ *   commit: (next) => store.writeNode(props.nodeId, "metadata", { set: { label: next } }, "修改节点标题"),
  *   focus: () => inputRef.value?.select()
  * })
  * ```

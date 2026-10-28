@@ -51,13 +51,18 @@ function oneLine(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : ""
 }
 
-/** 节点在列表 / badge 里露出来的那两样：名字 + 一行摘要 */
+/** 节点的正文：文本节点是 `data.text`，生成类节点退而取 `data.prompt` */
+function bodyOf(node: FlowNode): string {
+  return oneLine(node.data.text) || oneLine(node.data.prompt)
+}
+
+/** 节点在列表 / badge 里露出来的那两样：名字（`metadata.label`）+ 一行摘要 */
 export function describeNode(node: FlowNode): NodeMentionCandidate {
-  const body = oneLine(node.data.text) || oneLine(node.data.description)
+  const body = bodyOf(node) || oneLine(node.metadata.description)
   return {
     id: node.id,
     type: node.type ?? "",
-    label: oneLine(node.data.label),
+    label: oneLine(node.metadata.label),
     excerpt: body.length > EXCERPT_LENGTH ? `${body.slice(0, EXCERPT_LENGTH)}…` : body
   }
 }
@@ -82,7 +87,7 @@ export function nodeMentionCandidates(
     const item = describeNode(node)
     const label = item.label.toLowerCase()
     // 摘要被截断过，匹配要看完整正文
-    const body = oneLine(node.data.text).toLowerCase()
+    const body = bodyOf(node).toLowerCase()
     let rank = -1
     if (label.startsWith(keyword)) rank = 0
     else if (label.includes(keyword)) rank = 1

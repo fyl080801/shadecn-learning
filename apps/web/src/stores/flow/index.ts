@@ -1,4 +1,4 @@
-import { ref, shallowRef } from "vue"
+import { computed, ref, shallowRef } from "vue"
 import { defineStore } from "pinia"
 import { useDebounceFn } from "@vueuse/core"
 import * as Y from "yjs"
@@ -8,21 +8,27 @@ import {
   fromYEdge,
   fromYNode,
   metaMap,
-  nodeData,
+  nodeGroupMap,
   nodesMap,
   toYEdge,
   toYNode,
-  VIEWPORT_KEY
+  VIEWPORT_KEY,
+  type FlowNodeGroup
 } from "@shadecn/shared/flow-doc"
 import type { FlowDetail, FlowSummary } from "@shadecn/shared/canvas"
 import type {
   FlowEdge,
   FlowNode,
-  FlowNodeData,
+  FlowNodeRecord,
   FlowUserState,
   FlowViewport
 } from "@shadecn/shared/flow-graph"
-import { changedTopLevelKeys, projectMap, readFallbackViewport } from "@/lib/flow-projection"
+import {
+  changedTopLevelKeys,
+  createNodeProjector,
+  projectMap,
+  readFallbackViewport
+} from "@/lib/flow-projection"
 
 /**
  * 画布编辑器的状态中枢。
@@ -78,9 +84,17 @@ export const useFlowStore = defineStore("flow", () => {
   /** 按用户存的状态（视口…）；每人一份，跟画布内容分开走 */
   const userState = ref<FlowUserState>({})
 
-  /** Y.Doc 的响应式投影。**只读** —— 要改内容走 mutate() */
+  /**
+   * Y.Doc 的响应式投影。**只读** —— 要改内容走 mutate()。
+   *
+   * 节点带着派生的 `inputs`（连进来的线 + 上游对应端口的产出），由投影层增量算出；
+   * 没受影响的节点保持上一轮的对象引用（见 `createNodeProjector`）。
+   */
   const nodes = shallowRef<FlowNode[]>([])
   const edges = shallowRef<FlowEdge[]>([])
+
+  /** 按 id 查节点。节点组件（`useFlowNode`）靠它 O(1) 取自己那一份，而不是每个都扫一遍数组 */
+  const nodeById = computed(() => new Map(nodes.value.map((node) => [node.id, node])))
   const graphMeta = shallowRef<Record<string, unknown>>({})
 
   const canUndo = ref(false)
@@ -100,8 +114,11 @@ export const useFlowStore = defineStore("flow", () => {
    * 复用对象引用还有第二重好处 —— Vue Flow 靠引用判断节点要不要重新同步，
    * 没变的节点它连碰都不碰。
    */
-  const nodeCache = new Map<string, FlowNode>()
+  const nodeCache = new Map<string, FlowNodeRecord>()
   const edgeCache = new Map<string, FlowEdge>()
+  /** 存下来的节点（不含 inputs），`projectMap` 的产物；inputs 由下面的投影器补上 */
+  let records: FlowNodeRecord[] = []
+  const projector = createNodeProjector()
 
   /**
    * @param changed 这一轮变了哪些顶层键；`null` = 说不清，全量重算
@@ -109,25 +126,34 @@ export const useFlowStore = defineStore("flow", () => {
   function syncNodes(changed: Set<string> | null = null) {
     if (!doc) {
       nodeCache.clear()
-      nodes.value = []
+      records = []
       syncEdges(null)
       return
     }
-    nodes.value = projectMap(nodesMap(doc), nodeCache, changed, fromYNode)
+    records = projectMap(nodesMap(doc), nodeCache, changed, fromYNode)
     // 节点增删会让边变成悬空 / 不再悬空，所以边跟着重算一遍可见性
     syncEdges(changed === null ? null : new Set())
   }
 
+  /**
+   * 边变了（或者节点变了、顺路过来）：重算可见的边，再把节点连同 inputs 投影一遍。
+   *
+   * inputs 依赖边，所以**节点数组在这里才定稿**，而不是在 `syncNodes` 里 ——
+   * 只改一条边时节点的记录一个都没变，但下游那个节点的 inputs 变了，它得换新对象。
+   */
   function syncEdges(changed: Set<string> | null = null) {
     if (!doc) {
       edgeCache.clear()
+      projector.reset()
       edges.value = []
+      nodes.value = []
       return
     }
-    const alive = new Set(nodes.value.map((node) => node.id))
+    const alive = new Set(records.map((node) => node.id))
     const projected = projectMap(edgesMap(doc), edgeCache, changed, fromYEdge)
     // 端点没了的边不进画面（文档里那条由服务端的 gc 清）
     edges.value = projected.filter((edge) => alive.has(edge.source) && alive.has(edge.target))
+    nodes.value = projector.project(records, edges.value)
   }
 
   function syncMeta() {
@@ -213,6 +239,8 @@ export const useFlowStore = defineStore("flow", () => {
     detachDoc?.()
     nodeCache.clear()
     edgeCache.clear()
+    records = []
+    projector.reset()
     nodes.value = []
     edges.value = []
     graphMeta.value = {}
@@ -268,7 +296,7 @@ export const useFlowStore = defineStore("flow", () => {
 
   // —— 内容操作（都建立在 mutate 之上）——
 
-  function addNode(node: FlowNode) {
+  function addNode(node: FlowNodeRecord) {
     mutate(({ nodes: map }) => map.set(node.id, toYNode(node)), "新增节点")
   }
 
@@ -282,7 +310,7 @@ export const useFlowStore = defineStore("flow", () => {
    * 和分别调 `addNode` / `addEdge` 的区别在于它只有**一个** Y 事务：
    * 一条撤销、一条操作日志、一次广播 —— 不会出现「节点到了、线还没到」的中间态。
    */
-  function addElements(newNodes: FlowNode[], newEdges: FlowEdge[], label = "新增元素") {
+  function addElements(newNodes: FlowNodeRecord[], newEdges: FlowEdge[], label = "新增元素") {
     if (newNodes.length === 0 && newEdges.length === 0) return
     mutate(({ nodes: nodeMap, edges: edgeMap }) => {
       for (const node of newNodes) nodeMap.set(node.id, toYNode(node))
@@ -307,7 +335,7 @@ export const useFlowStore = defineStore("flow", () => {
    * 见 `useFlowCanvas` 的 `extentReady`。
    */
   function groupNodes(
-    group: FlowNode,
+    group: FlowNodeRecord,
     children: Map<string, { x: number; y: number }>,
     label = "打组"
   ) {
@@ -354,32 +382,35 @@ export const useFlowStore = defineStore("flow", () => {
   }
 
   /**
-   * 改一个节点 `data` 上的若干键 —— **写和删在同一个事务里**。
+   * 改一个节点**某一组**（metadata / data / runtime）上的若干键 —— **写和删在同一个事务里**。
    *
    * 逐个 key 写，不整块替换：Y.Map 的合并粒度就是 key，整块替换会把别人同时改的字段盖掉。
+   * 甲改 `metadata.label`、乙同时改 `data.prompt`，两边都留。
+   *
+   * layout 不走这里：位置、尺寸、分组归属各有自己的写路径（`moveNodes` / `resizeNode` /
+   * `groupNodes` / `removeElements`），语义不同（拖动的提交时机、打组的同笔事务）。
    *
    * `remove` 是「平铺分键」（`apps/web/src/lib/flow-collection.ts`）用得上的那一半：一批元素摊成
    * `<前缀>.<id>` 之后，删掉其中一个元素就是删掉一个键，而不是改写某个数组。
-   * 删和写必须同笔 —— 「删掉角色 A、同时删掉它名下的轨」要一步撤干净，
-   * 分两次写别人会看到一个只剩半拉的中间态。
+   * 删和写必须同笔 —— 「删掉角色 A、同时删掉它名下的轨」要一步撤干净。
+   *
+   * 老节点（v1 / v2 写的）没有 metadata / runtime 这一组，第一次写时现建（`nodeGroupMap`）；
+   * 这一组的 key 上已经是别的类型时什么都不写 —— key 的类型首次写入即固定，不能换。
    */
-  function writeNodeData(
+  function writeNode(
     nodeId: string,
-    changes: { set?: Partial<FlowNodeData>; remove?: Iterable<string> },
+    group: FlowNodeGroup,
+    changes: { set?: Record<string, unknown>; remove?: Iterable<string> },
     label = "修改节点"
   ) {
-    mutate(({ doc: target }) => {
-      const data = nodeData(target, nodeId)
-      if (!data) return
-      for (const key of changes.remove ?? []) data.delete(key)
+    mutate(({ nodes: map }) => {
+      const target = nodeGroupMap(map.get(nodeId), group, { create: true })
+      if (!target) return
+      for (const key of changes.remove ?? []) target.delete(key)
       for (const [key, value] of Object.entries(changes.set ?? {})) {
-        if (value !== undefined) data.set(key, value)
+        if (value !== undefined) target.set(key, value)
       }
     }, label)
-  }
-
-  function updateNodeData(nodeId: string, patch: Partial<FlowNodeData>, label = "修改节点") {
-    writeNodeData(nodeId, { set: patch }, label)
   }
 
   /**
@@ -398,7 +429,7 @@ export const useFlowStore = defineStore("flow", () => {
     // 不解除的话它们的 parentNode 指向一个不存在的节点，位置会被当成相对坐标
     // 去加一个不存在的父节点，整组节点瞬间跳到画布原点附近。
     const orphaned = nodes.value.filter(
-      (node) => node.parentNode !== undefined && doomedNodes.has(node.parentNode)
+      (node) => node.layout.parentNode !== undefined && doomedNodes.has(node.layout.parentNode)
     )
 
     mutate(({ nodes: nodeMap, edges: edgeMap }) => {
@@ -410,11 +441,11 @@ export const useFlowStore = defineStore("flow", () => {
         target.delete("extent")
         // parentNode 下的 position 是相对父节点的，脱离分组之后得换算回画布坐标，
         // 否则节点会跳到画布原点那一带
-        const parent = nodes.value.find((item) => item.id === node.parentNode)
+        const parent = nodeById.value.get(node.layout.parentNode!)
         if (parent) {
           target.set("position", {
-            x: parent.position.x + node.position.x,
-            y: parent.position.y + node.position.y
+            x: parent.layout.position.x + node.layout.position.x,
+            y: parent.layout.position.y + node.layout.position.y
           })
         }
       }
@@ -570,6 +601,7 @@ export const useFlowStore = defineStore("flow", () => {
     // 状态
     meta,
     nodes,
+    nodeById,
     edges,
     graphMeta,
     viewport,
@@ -591,8 +623,7 @@ export const useFlowStore = defineStore("flow", () => {
     groupNodes,
     moveNodes,
     resizeNode,
-    writeNodeData,
-    updateNodeData,
+    writeNode,
     removeElements,
     // 视图状态
     setViewport,

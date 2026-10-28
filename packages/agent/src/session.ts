@@ -278,7 +278,17 @@ const isTerminal = (event: AgentStreamEvent) =>
   event.type === AgentEventType.RUN_FINISHED || event.type === AgentEventType.RUN_ERROR
 
 /** 工具日志里的参数摘要：id 类字段照写，字符串只记长度 —— 不把用户内容写进日志 */
-const ID_KEYS = new Set(['id', 'ids', 'source', 'target', 'connectFrom', 'type', 'command'])
+const ID_KEYS = new Set([
+  'id',
+  'ids',
+  'source',
+  'target',
+  'connectFrom',
+  'sourcePort',
+  'targetPort',
+  'type',
+  'command',
+])
 
 export function digestArgs(args: unknown): string {
   if (typeof args !== 'object' || args === null) return ''
@@ -289,6 +299,8 @@ export function digestArgs(args: unknown): string {
     else if (typeof value === 'string') parts.push(`${key}(${value.length}字)`)
     else if (Array.isArray(value)) parts.push(`${key}[${value.length}]`)
     else if (typeof value === 'number' || typeof value === 'boolean') parts.push(`${key}=${value}`)
+    // 按组传的对象（metadata / data）只记**字段名**，值一个字都不记
+    else if (typeof value === 'object' && value !== null) parts.push(`${key}{${Object.keys(value).slice(0, 20).join(',')}}`)
     else if (value !== undefined) parts.push(key)
   }
   return parts.join(' ')

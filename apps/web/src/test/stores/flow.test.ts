@@ -7,14 +7,14 @@ import {
   USER_STATE_FLUSH_MAX_WAIT,
   useFlowStore
 } from "@/stores/flow"
-import { metaMap, nodesMap, toYNode } from "@shadecn/shared/flow-doc"
+import { metaMap, nodeGroup, nodesMap, outputKey, toYNode } from "@shadecn/shared/flow-doc"
 import type { FlowDetail } from "@shadecn/shared/canvas"
 import {
-  defaultNodeData,
   GRAPH_SCHEMA_VERSION,
   type FlowEdge,
-  type FlowNode
+  type FlowNodeRecord
 } from "@shadecn/shared/flow-graph"
+import { buildNodeRecord } from "@shadecn/shared/flow-node-types"
 import { collectionKey, readCollection, spreadCollection } from "@/lib/flow-collection"
 
 /**
@@ -22,15 +22,22 @@ import { collectionKey, readCollection, spreadCollection } from "@/lib/flow-coll
  * 改动进得去、别人的改动看得到、撤销只撤自己的、视口不进内容。
  */
 
-function node(id: string, x = 0, y = 0, business?: Record<string, unknown>): FlowNode {
-  return { id, type: "process", position: { x, y }, data: defaultNodeData(`节点 ${id}`, business) }
+function node(id: string, x = 0, y = 0, business?: Record<string, unknown>): FlowNodeRecord {
+  const record = buildNodeRecord({ id, type: "process", label: `节点 ${id}`, position: { x, y } })
+  return { ...record, data: { ...record.data, ...business } }
+}
+
+/** 一个带端口的业务节点（端口声明见 shared 的注册表） */
+function typed(id: string, type: string, outputs?: Record<string, unknown>): FlowNodeRecord {
+  const record = buildNodeRecord({ id, type, label: id, position: { x: 0, y: 0 } })
+  return outputs ? { ...record, runtime: { status: "completed", outputs } } : record
 }
 
 /** 「平铺分键」用例里那批元素的前缀 */
 const OBJ = "dc.obj"
 
-function edge(id: string, source: string, target: string): FlowEdge {
-  return { id, source, target, sourceHandle: null, targetHandle: null, data: {} }
+function edge(id: string, source: string, target: string, extra: Partial<FlowEdge> = {}): FlowEdge {
+  return { id, source, target, sourceHandle: null, targetHandle: null, data: {}, ...extra }
 }
 
 function detail(overrides: Partial<FlowDetail> = {}): FlowDetail {
@@ -111,20 +118,52 @@ describe("内容读写", () => {
     store.addNode(node("n1"))
     store.moveNodes(new Map([["n1", { x: 99, y: 88 }]]))
 
-    expect(store.nodes[0]!.position).toEqual({ x: 99, y: 88 })
-    expect(store.nodes[0]!.data.label).toBe("节点 n1")
+    expect(store.nodes[0]!.layout.position).toEqual({ x: 99, y: 88 })
+    expect(store.nodes[0]!.metadata.label).toBe("节点 n1")
   })
 
-  it("改节点数据是按 key 合并，没提到的字段保持原样", () => {
+  it("按组写、按 key 合并：改名只碰 metadata.label，别的组和字段原样", () => {
     const { store } = setup()
     store.addNode(node("n1", 0, 0, { prompt: "一只猫", steps: 30 }))
-    store.updateNodeData("n1", { label: "改过的" })
+    store.writeNode("n1", "metadata", { set: { label: "改过的" } })
 
-    expect(store.nodes[0]!.data.label).toBe("改过的")
-    expect(store.nodes[0]!.data.status).toBe("idle")
-    // 平铺的业务字段各占一个 key，改标题碰不到它们 —— v1 那个整块 config 做不到这点
-    expect(store.nodes[0]!.data.prompt).toBe("一只猫")
-    expect(store.nodes[0]!.data.steps).toBe(30)
+    expect(store.nodes[0]!.metadata.label).toBe("改过的")
+    expect(typeof store.nodes[0]!.metadata.createdAt).toBe("number")
+    expect(store.nodes[0]!.runtime.status).toBe("idle")
+    // 业务字段在 data 组里各占一个 key，改标题碰不到它们
+    expect(store.nodes[0]!.data).toEqual({ prompt: "一只猫", steps: 30 })
+  })
+
+  it("runtime 也按组写：产出按端口摊成 outputs.<port> 键，投影里读回成 outputs 对象", () => {
+    const { store, doc } = setup()
+    store.addNode(typed("cfg", "image-config"))
+    store.writeNode("cfg", "runtime", { set: { status: "completed", [outputKey("image")]: "a.png" } })
+
+    expect(store.nodes[0]!.runtime).toEqual({ status: "completed", outputs: { image: "a.png" } })
+    expect(nodeGroup(doc, "cfg", "runtime")!.get(outputKey("image"))).toBe("a.png")
+  })
+
+  it("老节点（没有 metadata 组）第一次改名时现建这一组；写不存在的节点什么都不发生", () => {
+    const { store, doc } = setup()
+    doc.transact(() => {
+      const old = new Y.Map<unknown>()
+      nodesMap(doc).set("old", old)
+      old.set("type", "text")
+      old.set("position", { x: 0, y: 0 })
+      const data = new Y.Map<unknown>()
+      old.set("data", data)
+      data.set("label", "v2 时代的名字")
+    })
+    // 读老节点不抛错：名字退化为空，老的 label 留在 data 里
+    expect(store.nodes[0]!.metadata.label).toBe("")
+    expect(store.nodes[0]!.data.label).toBe("v2 时代的名字")
+
+    store.writeNode("old", "metadata", { set: { label: "新名字" } })
+    expect(store.nodes[0]!.metadata.label).toBe("新名字")
+    expect(nodeGroup(doc, "old", "metadata")).toBeInstanceOf(Y.Map)
+
+    expect(() => store.writeNode("ghost", "data", { set: { x: 1 } })).not.toThrow()
+    expect(nodesMap(doc).has("ghost")).toBe(false)
   })
 
   it("写和删在同一个事务里，撤销一次两边都回来", () => {
@@ -133,8 +172,9 @@ describe("内容读写", () => {
     store.separateUndo() // 否则新建和下面这次改动会并进同一条撤销
 
     // 删掉一个元素、同时补上另一个 —— 一步撤干净，不能撤出个只剩半拉的中间态
-    store.writeNodeData(
+    store.writeNode(
       "n1",
+      "data",
       { set: { [collectionKey(OBJ, "a3")]: { uuid: "a3" } }, remove: [collectionKey(OBJ, "a1")] },
       "改场景"
     )
@@ -154,7 +194,7 @@ describe("内容读写", () => {
     sync(doc, remote)
 
     // 甲改 a1、乙改 a2。整批塞进一个键的话这里必然只剩一边
-    store.updateNodeData("n1", { [collectionKey(OBJ, "a1")]: { uuid: "a1", pose: 111 } })
+    store.writeNode("n1", "data", { set: { [collectionKey(OBJ, "a1")]: { uuid: "a1", pose: 111 } } })
     const remoteData = remote.getMap<Y.Map<unknown>>("nodes").get("n1")!.get("data") as Y.Map<unknown>
     remoteData.set(collectionKey(OBJ, "a2"), { uuid: "a2", pose: 222 })
 
@@ -173,7 +213,7 @@ describe("内容读写", () => {
     const peer = new Y.Doc()
     Y.applyUpdate(peer, Y.encodeStateAsUpdate(doc))
 
-    store.updateNodeData("n1", { prompt: "一只狗" })
+    store.writeNode("n1", "data", { set: { prompt: "一只狗" } })
     const peerData = peer.getMap<Y.Map<unknown>>("nodes").get("n1")!.get("data") as Y.Map<unknown>
     peer.transact(() => peerData.set("model", "v2"))
 
@@ -211,12 +251,15 @@ describe("内容读写", () => {
   it("分组 / 层级字段（zIndex、parentNode、extent）写得进也读得出", () => {
     const { store } = setup()
     store.addNode(node("group"))
-    store.addNode({ ...node("n1"), zIndex: 3, parentNode: "group", extent: "parent" })
+    store.addNode({
+      ...node("n1"),
+      layout: { position: { x: 0, y: 0 }, zIndex: 3, parentNode: "group", extent: "parent" }
+    })
 
     const projected = store.nodes.find((item) => item.id === "n1")!
-    expect(projected.zIndex).toBe(3)
-    expect(projected.parentNode).toBe("group")
-    expect(projected.extent).toBe("parent")
+    expect(projected.layout.zIndex).toBe(3)
+    expect(projected.layout.parentNode).toBe("group")
+    expect(projected.layout.extent).toBe("parent")
   })
 
   it("打组：新建分组框，成员挂到它下面，位置换成相对分组的", () => {
@@ -224,14 +267,9 @@ describe("内容读写", () => {
     store.addNode(node("n1", 100, 100))
     store.addNode(node("n2", 300, 200))
 
-    const group: FlowNode = {
-      id: "g1",
-      type: "group",
-      position: { x: 60, y: 60 },
-      width: 400,
-      height: 300,
-      zIndex: -1,
-      data: defaultNodeData("分组 1")
+    const group: FlowNodeRecord = {
+      ...buildNodeRecord({ id: "g1", type: "group", label: "分组 1", position: { x: 60, y: 60 } }),
+      layout: { position: { x: 60, y: 60 }, width: 400, height: 300, zIndex: -1 }
     }
     store.groupNodes(
       group,
@@ -243,9 +281,9 @@ describe("内容读写", () => {
 
     const members = ["n1", "n2"].map((id) => store.nodes.find((item) => item.id === id)!)
     expect(store.nodes.find((item) => item.id === "g1")!.type).toBe("group")
-    expect(members.map((item) => item.parentNode)).toEqual(["g1", "g1"])
-    expect(members[0]!.position).toEqual({ x: 40, y: 40 })
-    expect(members.map((item) => item.extent)).toEqual(["parent", "parent"])
+    expect(members.map((item) => item.layout.parentNode)).toEqual(["g1", "g1"])
+    expect(members[0]!.layout.position).toEqual({ x: 40, y: 40 })
+    expect(members.map((item) => item.layout.extent)).toEqual(["parent", "parent"])
   })
 
   it("打组是**一个**事务：撤销一次就全撤回去，不会剩下认不到爹的孤儿", () => {
@@ -254,15 +292,15 @@ describe("内容读写", () => {
     store.separateUndo()
 
     store.groupNodes(
-      { id: "g1", type: "group", position: { x: 0, y: 0 }, data: defaultNodeData("分组 1") },
+      buildNodeRecord({ id: "g1", type: "group", label: "分组 1", position: { x: 0, y: 0 } }),
       new Map([["n1", { x: 100, y: 100 }]])
     )
     store.undo()
 
     const restored = store.nodes.find((item) => item.id === "n1")!
     expect(store.nodes.map((item) => item.id)).toEqual(["n1"])
-    expect(restored.parentNode).toBeUndefined()
-    expect(restored.position).toEqual({ x: 100, y: 100 })
+    expect(restored.layout.parentNode).toBeUndefined()
+    expect(restored.layout.position).toEqual({ x: 100, y: 100 })
   })
 })
 
@@ -280,22 +318,24 @@ describe("协同合并", () => {
     expect(store.nodes.map((item) => item.id)).toEqual(["n-remote"])
   })
 
-  it("两人同时改同一个节点的不同字段，两边的改动都留下", () => {
+  it("一人改 metadata.label、一人改 data.prompt，两边的改动都留下", () => {
     const { store, doc } = setup()
-    store.addNode(node("n1"))
+    store.addNode(node("n1", 0, 0, { prompt: "原提示词" }))
 
     const remote = new Y.Doc()
     sync(doc, remote)
 
-    // 各自从同一份状态出发离线改
-    store.updateNodeData("n1", { label: "我改的标题" })
-    const remoteData = remote.getMap<Y.Map<unknown>>("nodes").get("n1")!.get("data") as Y.Map<unknown>
-    remoteData.set("description", "他写的说明")
+    // 各自从同一份状态出发离线改，改的是不同的组
+    store.writeNode("n1", "metadata", { set: { label: "我改的标题" } })
+    nodeGroup(remote, "n1", "data")!.set("prompt", "他改的提示词")
 
     sync(remote, doc)
+    sync(doc, remote)
 
-    expect(store.nodes[0]!.data.label).toBe("我改的标题")
-    expect(store.nodes[0]!.data.description).toBe("他写的说明")
+    expect(store.nodes[0]!.metadata.label).toBe("我改的标题")
+    expect(store.nodes[0]!.data.prompt).toBe("他改的提示词")
+    // 远端那边也收敛到同一个结果
+    expect(nodeGroup(remote, "n1", "metadata")!.get("label")).toBe("我改的标题")
   })
 
   it("同一条改动应用两次不会变成两个节点（更新是幂等的）", () => {
@@ -534,12 +574,12 @@ describe("增量投影", () => {
     store.addNode(node("n3"))
 
     const before = new Map(store.nodes.map((n) => [n.id, n]))
-    store.updateNodeData("n2", { label: "只改了我" })
+    store.writeNode("n2", "metadata", { set: { label: "只改了我" } })
 
     const after = new Map(store.nodes.map((n) => [n.id, n]))
     // 变的那个是新对象
     expect(after.get("n2")).not.toBe(before.get("n2"))
-    expect(after.get("n2")!.data.label).toBe("只改了我")
+    expect(after.get("n2")!.metadata.label).toBe("只改了我")
     // 没变的还是原来那个对象 —— Vue Flow 靠引用判断要不要重新同步
     expect(after.get("n1")).toBe(before.get("n1"))
     expect(after.get("n3")).toBe(before.get("n3"))
@@ -554,7 +594,7 @@ describe("增量投影", () => {
     store.moveNodes(new Map([["n1", { x: 500, y: 500 }]]))
 
     const after = new Map(store.nodes.map((n) => [n.id, n]))
-    expect(after.get("n1")!.position).toEqual({ x: 500, y: 500 })
+    expect(after.get("n1")!.layout.position).toEqual({ x: 500, y: 500 })
     expect(after.get("n2")).toBe(before.get("n2"))
   })
 
@@ -567,12 +607,11 @@ describe("增量投影", () => {
     sync(doc, remote)
     const before = new Map(store.nodes.map((n) => [n.id, n]))
 
-    const data = remote.getMap<Y.Map<unknown>>("nodes").get("n1")!.get("data") as Y.Map<unknown>
-    data.set("label", "远端改的")
+    nodeGroup(remote, "n1", "metadata")!.set("label", "远端改的")
     sync(remote, doc)
 
     const after = new Map(store.nodes.map((n) => [n.id, n]))
-    expect(after.get("n1")!.data.label).toBe("远端改的")
+    expect(after.get("n1")!.metadata.label).toBe("远端改的")
     expect(after.get("n2")).toBe(before.get("n2"))
   })
 
@@ -581,7 +620,7 @@ describe("增量投影", () => {
     for (const id of ["a", "b", "c", "d"]) store.addNode(node(id))
     expect(store.nodes.map((n) => n.id)).toEqual(["a", "b", "c", "d"])
 
-    store.updateNodeData("b", { label: "改了 b" })
+    store.writeNode("b", "metadata", { set: { label: "改了 b" } })
     expect(store.nodes.map((n) => n.id)).toEqual(["a", "b", "c", "d"])
 
     store.removeElements(["b"], [])
@@ -598,7 +637,7 @@ describe("增量投影", () => {
 
     store.addNode(node("n1", 99, 99))
     expect(store.nodes[0]).not.toBe(first)
-    expect(store.nodes[0]!.position).toEqual({ x: 99, y: 99 })
+    expect(store.nodes[0]!.layout.position).toEqual({ x: 99, y: 99 })
   })
 
   it("删掉端点后那条边从投影里消失，加回端点又出现", () => {
@@ -614,5 +653,113 @@ describe("增量投影", () => {
 
     store.mutate(({ nodes: map }) => map.set("n2", toYNode(node("n2"))))
     expect(store.edges.map((e) => e.id)).toEqual(["e1"])
+  })
+})
+
+describe("inputs 派生（增量）", () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  /** 上游图片素材 → 下游图生图，外加一个毫不相干的节点 */
+  function wired() {
+    const ctx = setup()
+    ctx.store.addNode(typed("src", "image-source", { image: "a.png" }))
+    ctx.store.addNode(typed("cfg", "image-config"))
+    ctx.store.addNode(typed("other", "image-config"))
+    ctx.store.addEdge(
+      edge("e1", "src", "cfg", { data: { sourcePort: "image", targetPort: "image", index: 1 } })
+    )
+    return ctx
+  }
+
+  const byId = (store: ReturnType<typeof useFlowStore>) => new Map(store.nodes.map((n) => [n.id, n]))
+
+  it("连线后下游的 inputs 出现，value 是上游对应端口的产出；inputs 不进文档", () => {
+    const { store, doc } = wired()
+    expect(byId(store).get("cfg")!.inputs).toEqual([
+      { port: "image", index: 1, edgeId: "e1", source: "src", sourcePort: "image", value: "a.png" }
+    ])
+    expect(byId(store).get("src")!.inputs).toEqual([])
+    expect(nodesMap(doc).get("cfg")!.has("inputs")).toBe(false)
+  })
+
+  it("加一条边：只有目标节点换对象，上游和无关节点引用不变", () => {
+    const { store } = wired()
+    store.addNode(typed("src2", "image-source", { image: "b.png" }))
+    const before = byId(store)
+
+    store.addEdge(
+      edge("e2", "src2", "cfg", { data: { sourcePort: "image", targetPort: "image", index: 2 } })
+    )
+
+    const after = byId(store)
+    expect(after.get("cfg")).not.toBe(before.get("cfg"))
+    expect(after.get("cfg")!.inputs.map((input) => input.value)).toEqual(["a.png", "b.png"])
+    expect(after.get("src")).toBe(before.get("src"))
+    expect(after.get("src2")).toBe(before.get("src2"))
+    expect(after.get("other")).toBe(before.get("other"))
+  })
+
+  it("上游的产出变了：下游 inputs 跟着变；无关节点引用不变", () => {
+    const { store } = wired()
+    const before = byId(store)
+
+    store.writeNode("src", "runtime", { set: { [outputKey("image")]: "a2.png" } })
+
+    const after = byId(store)
+    expect(after.get("cfg")).not.toBe(before.get("cfg"))
+    expect(after.get("cfg")!.inputs[0]!.value).toBe("a2.png")
+    expect(after.get("other")).toBe(before.get("other"))
+  })
+
+  it("只改上游的名字 / 位置（产出没变）：下游保持原对象", () => {
+    const { store } = wired()
+    const before = byId(store)
+
+    store.writeNode("src", "metadata", { set: { label: "改名" } })
+    store.moveNodes(new Map([["src", { x: 300, y: 300 }]]))
+
+    const after = byId(store)
+    expect(after.get("src")).not.toBe(before.get("src"))
+    expect(after.get("cfg")).toBe(before.get("cfg"))
+    expect(after.get("cfg")!.inputs).toBe(before.get("cfg")!.inputs)
+  })
+
+  it("删线不重排：删掉 1 号，2 号的 index 还是 2", () => {
+    const { store } = wired()
+    store.addNode(typed("src2", "image-source", { image: "b.png" }))
+    store.addEdge(
+      edge("e2", "src2", "cfg", { data: { sourcePort: "image", targetPort: "image", index: 2 } })
+    )
+
+    store.removeElements([], ["e1"])
+    expect(byId(store).get("cfg")!.inputs.map((input) => [input.edgeId, input.index])).toEqual([
+      ["e2", 2]
+    ])
+  })
+
+  it("改了边上的端口（data.targetPort）：下游 inputs 跟着变", () => {
+    const { store } = wired()
+    store.mutate(({ edges: map }) => {
+      const target = map.get("e1")!
+      target.set("data", { ...(target.get("data") as object), targetPort: "text" })
+    })
+    expect(byId(store).get("cfg")!.inputs.map((input) => input.port)).toEqual(["text"])
+  })
+
+  it("删掉上游节点：连着的边一起没了，下游 inputs 清空", () => {
+    const { store } = wired()
+    store.removeElements(["src"], [])
+    expect(byId(store).get("cfg")!.inputs).toEqual([])
+  })
+
+  it("远端改了上游的产出，本地下游的 inputs 同样更新", () => {
+    const { store, doc } = wired()
+    const remote = new Y.Doc()
+    sync(doc, remote)
+
+    nodeGroup(remote, "src", "runtime")!.set(outputKey("image"), "远端.png")
+    sync(remote, doc)
+
+    expect(byId(store).get("cfg")!.inputs[0]!.value).toBe("远端.png")
   })
 })

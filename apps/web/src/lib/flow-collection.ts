@@ -1,4 +1,5 @@
-import type { FlowNodeData } from "@shadecn/shared/flow-graph"
+/** 节点的业务 `data`（平铺的业务字段；v3 起这里没有任何框架字段） */
+type FlowNodeData = Record<string, unknown>
 
 /**
  * 「平铺分键」—— 一批会被各人各改各的元素，怎么放进节点的 `data`。
@@ -23,7 +24,7 @@ import type { FlowNodeData } from "@shadecn/shared/flow-graph"
  *
  * 第二条对 CRDT 层完全不可见：`toYNode` / `fromYNode`（前后端共用 `@shadecn/shared/flow-doc` 那一份）一行不用改，
  * `duplicateNode` 的「投影 → structuredClone → toYNode」照跑，服务端连知道都不用知道。
- * 老客户端读到一堆不认识的键，`normalizeNodeData` 原样透传 —— 现有代码已经是这个行为。
+ * 老客户端读到一堆不认识的键，原样透传 —— `data` 本来就是开放的业务字段。
  * 所谓 schema 退化成一个**命名约定**，而命名约定的版本兼容就是普通的读时兼容
  * （换了前缀就两个都认一段时间），和 v1→v2 用的是同一套办法。
  *
@@ -86,7 +87,7 @@ export function readCollection<T = unknown>(
   return out
 }
 
-/** `data` 上属于该集合的所有键 —— 整批删除时喂给 `store.writeNodeData({ remove })` */
+/** `data` 上属于该集合的所有键 —— 整批删除时喂给 `store.writeNode(id, "data", { remove })` */
 export function collectionKeys(data: Readonly<FlowNodeData>, prefix: string): string[] {
   return Object.keys(data).filter((key) => isCollectionKey(prefix, key))
 }
@@ -95,7 +96,7 @@ export function collectionKeys(data: Readonly<FlowNodeData>, prefix: string): st
  * 把一批元素摊成可以直接并进 `data` 的键值对。
  *
  * 建新节点时喂给注册表的 `defaultData()`，或者整批写入时喂给
- * `store.writeNodeData(id, { set: spreadCollection(...) })`。
+ * `store.writeNode(id, "data", { set: spreadCollection(...) })`。
  *
  * @param idOf 从元素上取稳定 id。取不出来（返回空串）的元素会被跳过 ——
  *   宁可少一个也不要拿下标顶上，那正是这套约定要避免的东西。

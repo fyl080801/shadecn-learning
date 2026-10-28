@@ -3,7 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { isAgentOrigin } from '@shadecn/shared/agent'
 import { nodesMap, toYNode } from '@shadecn/shared/flow-doc'
-import { defaultNodeData } from '@shadecn/shared/flow-graph'
+import { buildNodeRecord } from '@shadecn/shared/flow-node-types'
 import { createCanvasTools } from '@shadecn/agent/tools'
 import { ACCESS_LOST, openAgentCanvas } from '../../agent/canvas-access.ts'
 import { attachCollabServer, collabInstance } from '../../collab/hocuspocus.ts'
@@ -33,7 +33,7 @@ afterEach(async () => {
 
 function addNode(id: string) {
   return (doc: Y.Doc) => {
-    nodesMap(doc).set(id, toYNode({ id, type: 'text', position: { x: 0, y: 0 }, data: defaultNodeData(id) }))
+    nodesMap(doc).set(id, toYNode(buildNodeRecord({ id, type: 'text', label: id, position: { x: 0, y: 0 } })))
   }
 }
 
@@ -134,7 +134,7 @@ describe('openAgentCanvas', () => {
 
     // 用一份超大的替身文档把这个房间名标成硬限锁定（判定按房间名记，和哪份文档无关）
     const huge = new Y.Doc()
-    nodesMap(huge).set('big', toYNode({ id: 'big', type: 'text', position: { x: 0, y: 0 }, data: defaultNodeData('x') }))
+    nodesMap(huge).set('big', toYNode(buildNodeRecord({ id: 'big', type: 'text', label: 'x', position: { x: 0, y: 0 } })))
     ;(nodesMap(huge).get('big')!.get('data') as Y.Map<unknown>).set(
       'text',
       'x'.repeat(Math.ceil(COLLAB_LIMITS.document * HARD_LIMIT_FACTOR) + 1),

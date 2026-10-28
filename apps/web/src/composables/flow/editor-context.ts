@@ -1,5 +1,6 @@
 import { inject, type InjectionKey, type toRef } from "vue"
 
+import type { NodeKitRuntime } from "@/components/flow/node-kit/context"
 import type { useFlowStore } from "@/stores/flow"
 import type { useFlowCanvas } from "./useFlowCanvas"
 import type { useFlowDocument } from "./useFlowDocument"
@@ -48,6 +49,11 @@ export interface FlowEditorContext {
   selection: ReturnType<typeof useFlowSelection>
   /** 多人在场：谁在线、光标在哪、哪些元素被别人占住 */
   presence: ReturnType<typeof useFlowPresence>
+  /**
+   * 节点扩展协议的编辑器级运行时（注册表、模式状态机、动作执行器）。节点里用 `useNodePart()` 就够了，
+   * 这一项是给编辑器根上的东西用的（快捷键要把按键交给选中节点的动作）—— 同一个组件里 provide 的值 inject 不到。
+   */
+  nodeKit: NodeKitRuntime
 }
 
 export const FLOW_EDITOR_KEY: InjectionKey<FlowEditorContext> = Symbol("flow-editor")

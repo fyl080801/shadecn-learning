@@ -4,7 +4,8 @@ import * as Y from "yjs"
 import { useFlowStore } from "@/stores/flow"
 import { useDraftField } from "@/composables/flow/useDraftField"
 import type { FlowDetail } from "@shadecn/shared/canvas"
-import { defaultNodeData, GRAPH_SCHEMA_VERSION, type FlowNode } from "@shadecn/shared/flow-graph"
+import { GRAPH_SCHEMA_VERSION, type FlowNodeRecord } from "@shadecn/shared/flow-graph"
+import { buildNodeRecord } from "@shadecn/shared/flow-node-types"
 
 /**
  * 「本地草稿 + 一次提交」的样板（docs/13 §3.7.2）。
@@ -38,8 +39,8 @@ function detail(): FlowDetail {
   }
 }
 
-function node(id: string, text: string): FlowNode {
-  return { id, type: "text", position: { x: 0, y: 0 }, data: defaultNodeData("节点", { text }) }
+function node(id: string, text: string): FlowNodeRecord {
+  return { ...buildNodeRecord({ id, type: "text", label: "节点", position: { x: 0, y: 0 } }), data: { text } }
 }
 
 function setup() {
@@ -60,7 +61,7 @@ function textField(store: ReturnType<typeof useFlowStore>, nodeId: string) {
     current,
     field: useDraftField<string>({
       current,
-      commit: (next) => store.updateNodeData(nodeId, { text: next }, "修改文本")
+      commit: (next) => store.writeNode(nodeId, "data", { set: { text: next } }, "修改文本")
     })
   }
 }
@@ -142,7 +143,7 @@ describe("useDraftField", () => {
     const field = useDraftField<string>({
       current: () => "原文",
       normalize: (raw) => raw.trim() || null,
-      commit: (next) => store.updateNodeData("n1", { text: next }, "修改文本")
+      commit: (next) => store.writeNode("n1", "data", { set: { text: next } }, "修改文本")
     })
 
     let updates = 0

@@ -15,13 +15,13 @@ const props = defineProps<{ nodeId: string }>()
 
 const { store } = useFlowEditor()
 
-const node = computed(() => store.nodes.find((item) => item.id === props.nodeId) ?? null)
+const node = computed(() => store.nodeById.get(props.nodeId) ?? null)
 
 const typeDef = computed(() => (node.value ? flowNodeTypeOf(node.value.type ?? "") : null))
 
 const label = computed(() => {
   if (!node.value) return "已删除的节点"
-  const name = typeof node.value.data.label === "string" ? node.value.data.label.trim() : ""
+  const name = node.value.metadata.label.trim()
   return name || `未命名${typeDef.value?.label ?? "节点"}`
 })
 </script>

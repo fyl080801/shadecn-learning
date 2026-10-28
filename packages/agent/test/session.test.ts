@@ -10,7 +10,7 @@ import {
 } from '@mariozechner/pi-ai'
 import { AgentEventType, formatNodeMention, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { nodesMap, toYNode } from '@shadecn/shared/flow-doc'
-import { defaultNodeData } from '@shadecn/shared/flow-graph'
+import { buildNodeRecord } from '@shadecn/shared/flow-node-types'
 import { createDocCanvasHandle } from '../src/canvas.ts'
 import {
   conversationSummary,
@@ -93,7 +93,7 @@ async function runOnce(
 describe('一轮跑通', () => {
   it('模型调 add_node → 文档里出现节点 → 事件流 TOOL_CALL_START/RESULT → RUN_FINISHED', async () => {
     const runtime = runtimeWith([
-      fauxAssistantMessage([fauxText('我来加'), fauxToolCall('add_node', { type: 'text', label: '新想法', text: '内容' })], {
+      fauxAssistantMessage([fauxText('我来加'), fauxToolCall('add_node', { type: 'text', metadata: { label: '新想法' }, data: { text: '内容' } })], {
         stopReason: 'toolUse',
       }),
       fauxAssistantMessage('加好了'),
@@ -110,7 +110,7 @@ describe('一轮跑通', () => {
 
     const nodes = [...nodesMap(doc).values()]
     expect(nodes).toHaveLength(1)
-    expect((nodes[0]!.get('data') as Y.Map<unknown>).get('label')).toBe('新想法')
+    expect((nodes[0]!.get('metadata') as Y.Map<unknown>).get('label')).toBe('新想法')
 
     const types = out.types()
     expect(types[0]).toBe(AgentEventType.RUN_STARTED)
@@ -176,7 +176,7 @@ describe('提及展开', () => {
       },
     ])
     const doc = new Y.Doc()
-    nodesMap(doc).set('n_a', toYNode({ id: 'n_a', type: 'text', position: { x: 0, y: 0 }, data: defaultNodeData('需求', { text: '正文内容' }) }))
+    nodesMap(doc).set('n_a', toYNode({ ...buildNodeRecord({ id: 'n_a', type: 'text', label: '需求', position: { x: 0, y: 0 } }), data: { text: '正文内容' } }))
     const canvas = canvasOf(doc)
     const text = `改一下 ${formatNodeMention('n_a')} 和 ${formatNodeMention('n_gone')}`
     const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text, openCanvas: canvas.open, emit: () => {} })
@@ -316,7 +316,7 @@ function pausedMidRun() {
   let reach!: () => void
   const reached = new Promise<void>((resolve) => (reach = resolve))
   const steps: FauxResponseStep[] = [
-    fauxAssistantMessage([fauxText('先说一段比较长的话，'.repeat(6)), fauxToolCall('add_node', { type: 'text', label: '中途' })], {
+    fauxAssistantMessage([fauxText('先说一段比较长的话，'.repeat(6)), fauxToolCall('add_node', { type: 'text', metadata: { label: '中途' } })], {
       stopReason: 'toolUse',
     }),
     (_context, options) =>
@@ -529,7 +529,7 @@ describe('持久化的失败语义', () => {
     }
     const runtime = runtimeWith(
       [
-        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', label: '留下' })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', metadata: { label: '留下' } })], { stopReason: 'toolUse' }),
         fauxAssistantMessage('好了'),
       ],
       { store: failing },
@@ -586,7 +586,7 @@ describe('持久化的失败语义', () => {
     }
     const runtime = runtimeWith(
       [
-        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', label: 'x' })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', metadata: { label: 'x' } })], { stopReason: 'toolUse' }),
         fauxAssistantMessage('好了'),
       ],
       { runLog: broken },
@@ -600,8 +600,8 @@ describe('持久化的失败语义', () => {
     const runtime = runtimeWith([
       fauxAssistantMessage(
         [
-          fauxToolCall('add_node', { type: 'text', label: '机密标题', text: '机密正文内容' }),
-          fauxToolCall('update_node', { id: 'n_missing', label: '另一个机密' }),
+          fauxToolCall('add_node', { type: 'text', metadata: { label: '机密标题' }, data: { text: '机密正文内容' } }),
+          fauxToolCall('update_node', { id: 'n_missing', metadata: { label: '另一个机密' } }),
         ],
         { stopReason: 'toolUse' },
       ),
@@ -613,7 +613,7 @@ describe('持久化的失败语义', () => {
     const calls = runtime.runLog.toolCalls
     expect(calls).toHaveLength(2)
     expect(calls[0]).toMatchObject({ runId, name: 'add_node', ok: true, error: null })
-    expect(calls[0]!.args).toBe('type=text label(4字) text(6字)')
+    expect(calls[0]!.args).toBe('type=text metadata{label} data{text}')
     expect(calls[0]!.elementIds).toHaveLength(1)
     expect(calls[1]).toMatchObject({ runId, name: 'update_node', ok: false, elementIds: [] })
     expect(calls[1]!.error).toContain('n_missing')

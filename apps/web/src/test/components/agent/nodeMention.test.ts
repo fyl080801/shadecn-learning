@@ -30,6 +30,9 @@ vi.mock("@/composables/flow/editor-context", () => ({
     store: {
       get nodes() {
         return nodes.value
+      },
+      get nodeById() {
+        return new Map(nodes.value.map((item) => [item.id, item]))
       }
     }
   })
@@ -39,9 +42,12 @@ function node(id: string, type: string, label: string, text?: string): FlowNode 
   return {
     id,
     type,
-    position: { x: 0, y: 0 },
-    data: { label, status: "idle", ...(text !== undefined ? { text } : {}) }
-  } as FlowNode
+    layout: { position: { x: 0, y: 0 } },
+    metadata: { label },
+    data: text !== undefined ? { text } : {},
+    runtime: { status: "idle" },
+    inputs: []
+  }
 }
 
 const plugin = createNodeMentionPlugin()

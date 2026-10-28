@@ -7,7 +7,6 @@ import {
   readCollection,
   spreadCollection
 } from "@/lib/flow-collection"
-import { defaultNodeData } from "@shadecn/shared/flow-graph"
 
 /**
  * 「平铺分键」的纯函数半边 —— 一批会被各改各的元素怎么摊进 `data`。
@@ -16,8 +15,9 @@ import { defaultNodeData } from "@shadecn/shared/flow-graph"
 
 const PREFIX = "dc.obj"
 
-function data(extra: Record<string, unknown>) {
-  return { ...defaultNodeData("导演台"), ...extra }
+/** 一个节点的业务 data：几个普通字段 + 要测的那批 */
+function data(extra: Record<string, unknown>): Record<string, unknown> {
+  return { aspectRatio: "16:9", activeView: "camera", ...extra }
 }
 
 describe("flow-collection", () => {

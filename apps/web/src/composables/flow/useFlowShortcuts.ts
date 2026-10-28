@@ -9,7 +9,7 @@ import { isEditableTarget } from "./editable"
  * 只在编辑器根组件调用一次。
  */
 export function useFlowShortcuts(context: FlowEditorContext) {
-  const { store, canvas, document: doc } = context
+  const { store, canvas, document: doc, selection, nodeKit } = context
 
   useEventListener(window, "keydown", (event: KeyboardEvent) => {
     if (isEditableTarget(event.target)) return
@@ -34,7 +34,14 @@ export function useFlowShortcuts(context: FlowEditorContext) {
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault()
       canvas.deleteSelection()
+      return
     }
+
+    // 剩下的交给**单独选中**的那个节点上的动作（`defineNodeAction` 的 `shortcut`）。
+    // 排在编辑器自己的那几条之后：节点动作抢不走撤销、删除这些全局键。
+    // 多选时没有「当前节点」，节点动作的快捷键不生效 —— 和节点工具条只在单选时出现一致。
+    const nodeId = selection.selectedNodeId.value
+    if (nodeId && nodeKit.dispatchShortcut(nodeId, event)) event.preventDefault()
   })
 
   // SPA 内部跳走同理：先把待提交的落库再放行

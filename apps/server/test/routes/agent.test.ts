@@ -93,7 +93,7 @@ function pausedMidRun() {
   let reach!: () => void
   const reached = new Promise<void>((resolve) => (reach = resolve))
   const steps: FauxResponseStep[] = [
-    fauxAssistantMessage([fauxText('先说一段比较长的话，'.repeat(6)), fauxToolCall('add_node', { type: 'text', label: '中途' })], {
+    fauxAssistantMessage([fauxText('先说一段比较长的话，'.repeat(6)), fauxToolCall('add_node', { type: 'text', metadata: { label: '中途' } })], {
       stopReason: 'toolUse',
     }),
     (_context, options) =>
@@ -147,7 +147,7 @@ async function storedNodeLabels(flowId: string): Promise<string[]> {
   const state = await loadFlowState(roomOf(flowId))
   const doc = new Y.Doc()
   if (state) Y.applyUpdate(doc, state)
-  return [...nodesMap(doc).values()].map((node) => (node.get('data') as Y.Map<unknown>).get('label') as string)
+  return [...nodesMap(doc).values()].map((node) => (node.get('metadata') as Y.Map<unknown>).get('label') as string)
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 20))
@@ -210,7 +210,7 @@ describe('鉴权与参数', () => {
 describe('跑一轮', () => {
   it('模型调 add_node → 画布里出现节点 → SSE 收到工具事件和 RUN_FINISHED；帧里没有 event: 行', async () => {
     useFaux([
-      fauxAssistantMessage([fauxText('好的'), fauxToolCall('add_node', { type: 'text', label: 'Agent 加的' })], {
+      fauxAssistantMessage([fauxText('好的'), fauxToolCall('add_node', { type: 'text', metadata: { label: 'Agent 加的' } })], {
         stopReason: 'toolUse',
       }),
       fauxAssistantMessage('加好了'),
@@ -257,7 +257,7 @@ describe('跑一轮', () => {
 
   it('个人画布也能跑', async () => {
     useFaux([
-      fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', label: '私人' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', metadata: { label: '私人' } })], { stopReason: 'toolUse' }),
       fauxAssistantMessage('好'),
     ])
     const alice = await actor()
@@ -578,7 +578,7 @@ describe('运行日志', () => {
     useFaux([
       fauxAssistantMessage(
         [
-          fauxToolCall('add_node', { type: 'text', label: '机密标题', text: '机密正文' }),
+          fauxToolCall('add_node', { type: 'text', metadata: { label: '机密标题' }, data: { text: '机密正文' } }),
           fauxToolCall('delete_elements', { ids: ['n_missing'] }),
         ],
         { stopReason: 'toolUse' },
@@ -606,7 +606,7 @@ describe('运行日志', () => {
       ['add_node', true],
       ['delete_elements', false],
     ])
-    expect(calls[0]!.args).toBe('type=text label(4字) text(4字)')
+    expect(calls[0]!.args).toBe('type=text metadata{label} data{text}')
     expect(JSON.parse(calls[0]!.elementIds)).toHaveLength(1)
     expect(calls[1]!.args).toBe('ids=[n_missing]')
     expect(calls[1]!.error).toContain('n_missing')
@@ -627,7 +627,7 @@ describe('运行日志', () => {
     }
     useFaux(
       [
-        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', label: '照样加' })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', metadata: { label: '照样加' } })], { stopReason: 'toolUse' }),
         fauxAssistantMessage('好'),
       ],
       { runLog: broken },
@@ -651,7 +651,7 @@ describe('运行日志', () => {
     }
     useFaux(
       [
-        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', label: '已经加上' })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', metadata: { label: '已经加上' } })], { stopReason: 'toolUse' }),
         fauxAssistantMessage('好'),
       ],
       { store: failingSave },

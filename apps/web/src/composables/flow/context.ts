@@ -1,4 +1,6 @@
 import { computed, provide, toRef, watch } from "vue"
+import { provideNodeKit } from "@/components/flow/node-kit/context"
+import { createDefaultNodeKit } from "@/components/flow/node-kit/install"
 import { useFlowStore } from "@/stores/flow"
 import { FLOW_EDITOR_KEY, type FlowEditorContext } from "./editor-context"
 import { useFlowCanvas } from "./useFlowCanvas"
@@ -73,7 +75,9 @@ export function provideFlowEditor(props: { flowId: string }): FlowEditorContext 
     document: useFlowDocument(flowId, store, sync),
     canvas: useFlowCanvas(store, presence, selection),
     selection,
-    presence
+    presence,
+    // 节点扩展协议（REQ-NODEKIT）：注册表 + 模式状态机 + 动作执行器，整张画布一份，所有节点的宿主共用
+    nodeKit: provideNodeKit(createDefaultNodeKit(), selection.selectedNodeId)
   }
 
   provide(FLOW_EDITOR_KEY, context)

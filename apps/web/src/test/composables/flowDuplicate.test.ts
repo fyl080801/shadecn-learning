@@ -9,10 +9,15 @@ import type { FlowPresence } from "@/composables/flow/useFlowPresence"
 import type { FlowSelection } from "@/composables/flow/useFlowSelection"
 import { collectionKey, readCollection, spreadCollection } from "@/lib/flow-collection"
 import type { FlowDetail } from "@shadecn/shared/canvas"
-import { defaultNodeData, GRAPH_SCHEMA_VERSION, type FlowNode } from "@shadecn/shared/flow-graph"
+import { outputKey } from "@shadecn/shared/flow-doc"
+import { GRAPH_SCHEMA_VERSION, type FlowNodeRecord } from "@shadecn/shared/flow-graph"
+import { buildNodeRecord } from "@shadecn/shared/flow-node-types"
 
 /**
- * 复制节点这条路径盯的是一件事：**「平铺分键」经得起复制**。
+ * 复制节点这条路径盯的是两件事：
+ *
+ * 1. **复制什么**：type / layout / metadata / data 照抄，runtime 重置为空闲且不带产出，连线不复制；
+ * 2. **「平铺分键」经得起复制**。
  *
  * `duplicateNode` 走的是「投影 → structuredClone → toYNode」，也就是说副本是从
  * *读出来的* 数据重建的，而不是把 Y 结构拷一份。平铺分键的值全是普通 JSON，
@@ -99,7 +104,7 @@ function setup() {
 }
 
 /** 一个「导演台」形状的节点：一批角色 + 一批轨，全部平铺成独立的键 */
-function directorNode(id: string): FlowNode {
+function directorNode(id: string): FlowNodeRecord {
   const objects = Array.from({ length: 15 }, (_, i) => ({
     uuid: `obj-${i}`,
     name: `角色 ${i}`,
@@ -114,14 +119,12 @@ function directorNode(id: string): FlowNode {
   }))
 
   return {
-    id,
-    type: "director-console",
-    position: { x: 0, y: 0 },
-    data: defaultNodeData("导演台", {
+    ...buildNodeRecord({ id, type: "director-console", label: "导演台", position: { x: 0, y: 0 } }),
+    data: {
       ...spreadCollection(OBJ, objects, (o) => o.uuid),
       ...spreadCollection(TRACK, tracks, (t) => t.id),
       aspectRatio: "16:9"
-    })
+    }
   }
 }
 
@@ -132,7 +135,38 @@ describe("复制节点与平铺分键", () => {
     wrapper = null
   })
 
-  it("42 个平铺键一个不少地进入副本", async () => {
+  it("复制 type / layout / metadata / data；runtime 重置为空闲且不带产出；连线不复制", async () => {
+    const { store, canvas } = setup()
+    store.addNode({
+      ...buildNodeRecord({ id: "src", type: "image-source", label: "素材", position: { x: 10, y: 20 } }),
+      metadata: { label: "素材", description: "说明", createdAt: 1_700_000_000_000 },
+      data: { sourceType: "image" },
+      runtime: { status: "completed", taskId: "t1", outputs: { image: "a.png" } }
+    })
+    store.addNode(buildNodeRecord({ id: "cfg", type: "image-config", label: "生图", position: { x: 0, y: 0 } }))
+    store.addEdge({
+      id: "e1",
+      source: "src",
+      target: "cfg",
+      sourceHandle: null,
+      targetHandle: null,
+      data: { sourcePort: "image", targetPort: "image", index: 1 }
+    })
+    store.writeNode("src", "runtime", { set: { [outputKey("image")]: "a.png" } })
+
+    const copyId = (await canvas.duplicateNode("src"))!
+    const copy = store.nodes.find((node) => node.id === copyId)!
+
+    expect(copy.type).toBe("image-source")
+    expect(copy.layout.position).toEqual({ x: 34, y: 44 })
+    expect(copy.metadata).toMatchObject({ label: "素材", description: "说明" })
+    expect(copy.metadata.createdAt).toBeGreaterThan(1_700_000_000_000)
+    expect(copy.data).toEqual({ sourceType: "image" })
+    expect(copy.runtime).toEqual({ status: "idle" })
+    expect(store.edges.map((item) => item.id)).toEqual(["e1"])
+  })
+
+  it("20 个平铺键一个不少地进入副本", async () => {
     const { store, canvas } = setup()
     const source = directorNode("n1")
     store.addNode(source)
@@ -141,8 +175,8 @@ describe("复制节点与平铺分键", () => {
     expect(copyId).toBeTruthy()
 
     const copy = store.nodes.find((node) => node.id === copyId)!
-    // 15 个角色 + 4 条轨 + label/status/createdAt/aspectRatio
-    expect(Object.keys(source.data)).toHaveLength(23)
+    // 15 个角色 + 4 条轨 + aspectRatio（v3 起名字、状态、创建时刻都不在 data 里了）
+    expect(Object.keys(source.data)).toHaveLength(20)
     expect(Object.keys(copy.data).sort()).toEqual(Object.keys(source.data).sort())
     expect(readCollection(copy.data, OBJ).size).toBe(15)
     expect(readCollection(copy.data, TRACK).size).toBe(4)
@@ -155,8 +189,8 @@ describe("复制节点与平铺分键", () => {
     const copyId = (await canvas.duplicateNode("n1"))!
 
     // 只改副本里的一个角色
-    store.updateNodeData(copyId, {
-      [collectionKey(OBJ, "obj-3")]: { uuid: "obj-3", poseValues: { leftElbow_bend: 999 } }
+    store.writeNode(copyId, "data", {
+      set: { [collectionKey(OBJ, "obj-3")]: { uuid: "obj-3", poseValues: { leftElbow_bend: 999 } } }
     })
 
     const origin = store.nodes.find((node) => node.id === "n1")!
@@ -182,7 +216,9 @@ describe("复制节点与平铺分键", () => {
     // 远端改原节点的 obj-1，本地改副本的 obj-1
     const remoteData = remote.getMap<Y.Map<unknown>>("nodes").get("n1")!.get("data") as Y.Map<unknown>
     remote.transact(() => remoteData.set(collectionKey(OBJ, "obj-1"), { uuid: "obj-1", tag: "远端" }))
-    store.updateNodeData(copyId, { [collectionKey(OBJ, "obj-1")]: { uuid: "obj-1", tag: "本地" } })
+    store.writeNode(copyId, "data", {
+      set: { [collectionKey(OBJ, "obj-1")]: { uuid: "obj-1", tag: "本地" } }
+    })
 
     Y.applyUpdate(doc, Y.encodeStateAsUpdate(remote), "remote")
 

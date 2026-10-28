@@ -1,9 +1,9 @@
 /**
  * 节点类型的**纯常量**——这个文件不 import 任何组件，也不 import 任何 composable。
  *
- * 为什么不直接写在 `node-types.ts` 里：那份注册表要 import 每种节点的组件
- * （`GroupNode.vue` 等），而节点组件反过来又要读这里的常量。两边写在同一个文件里
- * 就成了环：`node-types` → `GroupNode` → `node-types`。
+ * 为什么不直接写在 `node-types.ts` 里：那份注册表要 import 节点的组件
+ * （宿主 `NodeHost`、各类型的 body），而组件反过来又要读这里的常量（`FlowToolbar` 读 `NEW_NODE_TYPE`）。
+ * 两边写在同一个文件里就成了环：`node-types` → 组件 → `node-types`。
  *
  * 环在 `pnpm dev` 下看不出来（原生 ESM 有 live binding，用到的时候早初始化完了），
  * 但 rollup 打包会把它们摊平进不同 chunk 并**自己挑一个求值顺序**，挑错就是线上那句
@@ -16,7 +16,7 @@
 
 /**
  * 分组框的 `type` / 默认底色 / 默认尺寸 / 层级 —— **定义挪进了 `@shadecn/shared/flow-node-types`**，
- * 这里转出去，`GroupNode.vue` 等照旧从本文件取。
+ * 这里转出去，组件照旧从本文件取。
  *
  * 挪走的理由：它们是「新建一个分组长什么样」的一部分，而服务端（agent 的画布工具）
  * 也要按同一份默认值建节点（REQ-AGENT §3.2）。shared 那个文件同样是叶子

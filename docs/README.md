@@ -29,6 +29,7 @@
 | REQ-GALSTORY | GalStory 控制台：故事管理与模型配置 | [18-galstory-console.md](18-galstory-console.md) | 部分实现 |
 | REQ-RESILIENCE | 协同服务端容灾 | [19-collab-resilience.md](19-collab-resilience.md) | 部分实现 |
 | REQ-AGENT | 画布 Agent：服务端 agent 编辑画布，客户端实时可见 | [20-agent-canvas.md](20-agent-canvas.md) | 规划中 |
+| REQ-NODEKIT | 节点扩展协议：部件 / 动作 / 模式 / 事件注册表 | [21-node-kit.md](21-node-kit.md) | 已实现 |
 
 ## 状态口径
 

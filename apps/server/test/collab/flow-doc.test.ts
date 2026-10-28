@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import { applyGraphToDoc } from '@shadecn/shared/flow-doc'
+import { applyGraphToDoc, outputKey } from '@shadecn/shared/flow-doc'
 import { readGraphFromDoc } from '../../collab/flow-doc.ts'
-import { emptyGraph, type FlowNode, type FlowNodeData } from '@shadecn/shared/flow-graph'
+import { emptyGraph, type FlowNodeRecord } from '@shadecn/shared/flow-graph'
 
 /**
  * graph JSON ↔ Y.Doc 的往返。legacy 迁移（applyGraphToDoc）写进文档的每个字段，
@@ -10,14 +10,14 @@ import { emptyGraph, type FlowNode, type FlowNodeData } from '@shadecn/shared/fl
  * 永久消失，而迁移分支在 ydoc 非空后不再运行，没有第二次机会。
  */
 
-function graphWith(nodes: FlowNode[]) {
+function graphWith(nodes: FlowNodeRecord[]) {
   const graph = emptyGraph()
   graph.nodes = nodes
   return graph
 }
 
-function nodeData(label: string, patch?: Record<string, unknown>): FlowNodeData {
-  return { label, status: 'idle', ...patch }
+function node(id: string, type: string, layout: FlowNodeRecord['layout'], extra: Partial<FlowNodeRecord> = {}): FlowNodeRecord {
+  return { id, type, layout, metadata: { label: id }, data: {}, runtime: { status: 'idle' }, ...extra }
 }
 
 describe('graph ↔ Y.Doc 往返', () => {
@@ -26,125 +26,84 @@ describe('graph ↔ Y.Doc 往返', () => {
     applyGraphToDoc(
       doc,
       graphWith([
-        {
-          id: 'group',
-          type: 'group',
-          position: { x: 0, y: 0 },
-          data: nodeData('组'),
-        },
-        {
-          id: 'n1',
-          type: 'process',
-          position: { x: 10, y: 20 },
-          zIndex: 5,
-          parentNode: 'group',
-          extent: 'parent',
-          data: nodeData('子'),
-        },
+        node('group', 'group', { position: { x: 0, y: 0 } }),
+        node('n1', 'process', { position: { x: 10, y: 20 }, zIndex: 5, parentNode: 'group', extent: 'parent' }),
       ]),
     )
 
-    const projected = readGraphFromDoc(doc).nodes.find((node) => node.id === 'n1')!
-    expect(projected.zIndex).toBe(5)
-    expect(projected.parentNode).toBe('group')
-    expect(projected.extent).toBe('parent')
+    const projected = readGraphFromDoc(doc).nodes.find((item) => item.id === 'n1')!
+    expect(projected.layout).toEqual({ position: { x: 10, y: 20 }, zIndex: 5, parentNode: 'group', extent: 'parent' })
   })
 
   it('width / height 同样往返无损', () => {
     const doc = new Y.Doc()
-    applyGraphToDoc(
-      doc,
-      graphWith([
-        {
-          id: 'n1',
-          type: 'process',
-          position: { x: 1, y: 2 },
-          width: 200,
-          height: 100,
-          data: nodeData('n'),
-        },
-      ]),
-    )
+    applyGraphToDoc(doc, graphWith([node('n1', 'process', { position: { x: 1, y: 2 }, width: 200, height: 100 })]))
 
     const projected = readGraphFromDoc(doc).nodes[0]!
-    expect(projected.width).toBe(200)
-    expect(projected.height).toBe(100)
+    expect(projected.layout.width).toBe(200)
+    expect(projected.layout.height).toBe(100)
   })
 
-  it('平铺在 data 上的业务字段往返无损', () => {
+  it('五组都往返无损：metadata、平铺的业务字段、runtime 的产出', () => {
     const doc = new Y.Doc()
     const business = { prompt: '一只猫', model: 'v2', steps: 30, 嵌套: { 数组: [1, '二', null] } }
-    applyGraphToDoc(
-      doc,
-      graphWith([
-        {
-          id: 'n1',
-          type: 'image-config',
-          position: { x: 0, y: 0 },
-          sourcePosition: 'right',
-          targetPosition: 'left',
-          data: nodeData('生图', business),
-        },
-      ]),
+    const original = node(
+      'n1',
+      'image-config',
+      { position: { x: 0, y: 0 }, sourcePosition: 'right', targetPosition: 'left' },
+      {
+        metadata: { label: '生图', description: '说明', createdAt: 1_700_000_000_000 },
+        data: business,
+        runtime: { status: 'completed', taskId: 't', outputs: { image: 'https://x/1.png' } },
+      },
     )
+    applyGraphToDoc(doc, graphWith([original]))
 
     const projected = readGraphFromDoc(doc).nodes[0]!
-    expect(projected.type).toBe('image-config')
-    expect(projected.sourcePosition).toBe('right')
-    expect(projected.targetPosition).toBe('left')
-    expect(projected.data).toMatchObject(business)
+    expect(projected).toEqual(original)
+    // 投影里不存派生的 inputs
+    expect(projected).not.toHaveProperty('inputs')
+    // 文档里产出是按端口摊平的
+    const runtime = doc.getMap<Y.Map<unknown>>('nodes').get('n1')!.get('runtime') as Y.Map<unknown>
+    expect(runtime.get(outputKey('image'))).toBe('https://x/1.png')
   })
 
-  it('v1 的节点（kind + config）在读出来时就地升级成 v2', () => {
-    // 直接按 v1 的形状铺进文档 —— 存量 Y.Doc 里就是长这样，
-    // 它们不会再走一遍 applyGraphToDoc，只能靠读的那一侧认出来
+  it('v1 / v2 写的老节点读出来不抛错：名字退化为空，老字段留在 data 里', () => {
+    // 直接按老形状铺进文档 —— 存量 Y.Doc 里就是长这样（产品决定不迁移、不升级）
     const doc = new Y.Doc()
     doc.transact(() => {
-      const node = new Y.Map<unknown>()
-      node.set('type', 'process')
-      node.set('position', { x: 0, y: 0 })
+      const old = new Y.Map<unknown>()
+      old.set('type', 'process')
+      old.set('position', { x: 0, y: 0 })
       const data = new Y.Map<unknown>()
       data.set('label', '老节点')
       data.set('kind', 'process')
-      data.set('config', { prompt: '一只猫', steps: 30 })
-      data.set('ports', { inputs: [], outputs: [] })
-      node.set('data', data)
-      doc.getMap<Y.Map<unknown>>('nodes').set('n1', node)
+      data.set('config', { prompt: '一只猫' })
+      old.set('data', data)
+      doc.getMap<Y.Map<unknown>>('nodes').set('n1', old)
     })
 
     const projected = readGraphFromDoc(doc).nodes[0]!
-    expect(projected.data.label).toBe('老节点')
-    // config 拆平到 data 上
-    expect(projected.data.prompt).toBe('一只猫')
-    expect(projected.data.steps).toBe(30)
-    // kind 并进了顶层 type，空壳 ports 丢掉，status 补上
-    expect(projected.data.kind).toBeUndefined()
-    expect(projected.data.config).toBeUndefined()
-    expect(projected.data.ports).toBeUndefined()
-    expect(projected.data.status).toBe('idle')
+    expect(projected.metadata.label).toBe('')
+    expect(projected.runtime.status).toBe('idle')
+    expect(projected.data).toEqual({ label: '老节点', kind: 'process', config: { prompt: '一只猫' } })
   })
 
-  it('v1 的连线 data（config + kind）拆平，kind / condition 保留', () => {
+  it('连线 data 原样透传（不再有 v1 的拆平）', () => {
     const doc = new Y.Doc()
     doc.transact(() => {
-      const node = new Y.Map<unknown>()
-      node.set('type', 'process')
-      node.set('position', { x: 0, y: 0 })
-      node.set('data', new Y.Map<unknown>())
-      doc.getMap<Y.Map<unknown>>('nodes').set('n1', node)
+      const one = new Y.Map<unknown>()
+      one.set('type', 'process')
+      one.set('position', { x: 0, y: 0 })
+      doc.getMap<Y.Map<unknown>>('nodes').set('n1', one)
 
       const edge = new Y.Map<unknown>()
       edge.set('source', 'n1')
       edge.set('target', 'n1')
-      edge.set('data', { kind: 'image-input', condition: '有图', config: { 权重: 1 } })
+      edge.set('data', { kind: 'image-input', index: 2 })
       doc.getMap<Y.Map<unknown>>('edges').set('e1', edge)
     })
 
-    const projected = readGraphFromDoc(doc).edges[0]!
-    expect(projected.data.权重).toBe(1)
-    expect(projected.data.config).toBeUndefined()
-    // 边的 kind / condition 没有别的字段与之重复，是真业务语义，不该丢
-    expect(projected.data.kind).toBe('image-input')
-    expect(projected.data.condition).toBe('有图')
+    expect(readGraphFromDoc(doc).edges[0]!.data).toEqual({ kind: 'image-input', index: 2 })
   })
 })
