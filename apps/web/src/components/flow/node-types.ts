@@ -62,8 +62,8 @@ export {
  * 全在一处说清楚。画布（`FlowCanvas.vue`）、工具栏（`FlowToolbar.vue`）和
  * 新建逻辑（`useFlowCanvas.addNode`）都从这里取，没有第二处硬编码。
  *
- * 工具栏**不再按这张表铺一排按钮**：加号只建 `NEW_NODE_TYPE` 那一种，
- * `label` / `icon` 留给节点自己和将来的类型菜单用。
+ * 工具栏**不按这张表铺一排按钮**：加号弹出一个类型菜单（`ADDABLE_NODE_TYPES`），
+ * 每一项就是这里的 `label` + `icon`。
  *
  * 示例数据（`sample/画布数据参考/`）里有 8 种节点，形状彼此完全不同 ——
  * 这张表就是让它们能共存的地方：`process` 是内容自适应的普通节点，
@@ -206,6 +206,16 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
   "video-source": genericType("video-source", "视频素材", Video),
   "director-console": genericType("director-console", "导演台", Clapperboard)
 }
+
+/**
+ * 工具栏「添加节点」菜单里列出的类型，顺序即注册表顺序。
+ *
+ * 分组不在里面：分组是**把已经选中的一片节点圈起来**，入口在 `FlowSelectionToolbar`，
+ * 凭空建一个空框再把节点拖进去是反的。
+ */
+export const ADDABLE_NODE_TYPES: readonly FlowNodeTypeDef[] = Object.values(FLOW_NODE_TYPES).filter(
+  (def) => def.type !== GROUP_NODE_TYPE
+)
 
 /**
  * 喂给 `<VueFlow :node-types>` 的组件表。
