@@ -1,0 +1,35 @@
+{
+  /*
+   * 画布 Agent 包是**纯服务端**的：它会被 apps/server 以源码形式 import、再由 esbuild 内联进 bundle。
+   * 所以配置照 apps/server 的来（Node 类型 + ES2023），而不是 packages/shared 那套「两边交集」的护栏 ——
+   * 沙箱要 spawn 子进程、读写文件，本来就离不开 Node API。
+   * 前端永远不 import 这个包：前后端契约在 `@shadecn/shared/agent`。
+   *
+   * 测试和源码共用一份：这里本来就开着 Node 类型，没有 shared 那种「vitest 把 Node 类型拖进来、
+   * 护栏失效」的问题。
+   */
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.agent.tsbuildinfo",
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}

@@ -132,18 +132,25 @@ export const flows = {
    * 只取归属信息，给鉴权用 —— 不读 graph。
    *
    * 连 `kind` 一起给：调用方除了「谁能进」还要知道「这是不是个人画布」
-   * （协同握手要据此拒掉 solo 画布，路由要据此拒掉走错通道的写入）。
+   * （路由要据此拒掉走错通道的写入）；个人画布再带上所有者 —— 协同握手只放所有者本人进房间
+   * （REQ-AGENT §3.3.2，`auth/ws.ts`）。所有者认的是 `Project.personalOwner`，不是成员表：
+   * 那一列有唯一约束、是个人空间身份的定义本身。
    */
-  async locate(flowId: string): Promise<{ projectId: string; kind: ProjectKind } | null> {
+  async locate(
+    flowId: string,
+  ): Promise<{ projectId: string; kind: ProjectKind; personalOwnerId: string | null } | null> {
     const row = await db().findOne(
       Flow,
       { id: flowId, deletedAt: null, project: { deletedAt: null } },
       { populate: ['project'] },
     )
     if (!row) return null
+    const kind: ProjectKind = row.project.kind === 'personal' ? 'personal' : 'team'
     return {
       projectId: row.project.id,
-      kind: row.project.kind === 'personal' ? 'personal' : 'team',
+      kind,
+      // 外键引用不 populate 也带着 id
+      personalOwnerId: kind === 'personal' ? (row.project.personalOwner?.id ?? null) : null,
     }
   },
 

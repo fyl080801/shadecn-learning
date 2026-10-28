@@ -4,6 +4,7 @@ import { useRouter } from "vue-router"
 import { Button } from "@/components/ui/button"
 
 import FlowCanvas from "@/components/flow/FlowCanvas.vue"
+import FlowAgentChat from "@/components/flow/agent/FlowAgentChat.vue"
 import FlowConnectionEndedDialog from "@/components/flow/FlowConnectionEndedDialog.vue"
 import FlowPresenceBar from "@/components/flow/FlowPresenceBar.vue"
 import FlowTitleCapsule from "@/components/flow/FlowTitleCapsule.vue"
@@ -66,7 +67,10 @@ const ready = computed(() => {
     </div>
 
     <template v-else>
-      <FlowCanvas />
+      <!-- 画布 Agent 的悬浮对话框用 Vue Flow 的 <Panel> 定位，所以放进 VueFlow 的插槽里 -->
+      <FlowCanvas>
+        <FlowAgentChat />
+      </FlowCanvas>
 
       <!-- 左上角一排：标题胶囊 + 在场头像栏。定位只写在这一层，两枚胶囊各自不管位置 -->
       <div class="absolute left-4 top-4 z-10 flex items-center gap-2">

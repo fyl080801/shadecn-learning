@@ -1,4 +1,4 @@
-import { computed, shallowRef, watch } from "vue"
+import { computed, shallowRef, watch, type Ref } from "vue"
 import { useThrottleFn } from "@vueuse/core"
 
 import { useAuth } from "@/lib/auth"
@@ -18,6 +18,7 @@ import {
   type PresencePeer,
   type PresencePoint
 } from "@/lib/presence"
+import type { FlowMode } from "@shadecn/shared/canvas"
 import type { FlowSync } from "./sync"
 
 /**
@@ -37,14 +38,26 @@ import type { FlowSync } from "./sync"
  * 真正的边界在握手那一步：`apps/server/auth/ws.ts` 只放项目成员进这个房间。
  */
 
-export function useFlowPresence(sync: FlowSync) {
+export function useFlowPresence(sync: FlowSync, mode?: Ref<FlowMode | null>) {
   const { user, displayName } = useAuth()
 
   const peers = shallowRef<PresencePeer[]>([])
   const localClientId = shallowRef(-1)
 
+  /**
+   * 在场这一层开不开，看的是**画布类型**，不是传输。
+   *
+   * 个人画布也走 WebSocket（docs/16），于是手里也有 awareness ——
+   * 但它仍是一张个人画布：没有协作者可看，也不该把自己的光标广播出去。
+   * 只看「有没有 awareness」的话，同一个人的另一个窗口、连同自己，都会被当成协作者
+   * 摆进左上角的头像堆和节点的占用标签里。
+   *
+   * 不传 `mode`（老调用方 / 测试）时退回「有 awareness 就开」。
+   */
+  const active = computed(() => !mode || mode.value === "collab")
+
   function awareness() {
-    return sync.session.value?.awareness ?? null
+    return active.value ? (sync.session.value?.awareness ?? null) : null
   }
 
   // —— 上报 ——
@@ -173,14 +186,23 @@ export function useFlowPresence(sync: FlowSync) {
 
   // 换画布 / 重连都会给出新的 session，钩子跟着重挂一遍
   watch(
-    () => sync.session.value,
-    (next, _prev, onCleanup) => {
+    [() => sync.session.value, active],
+    ([next, enabled], _prev, onCleanup) => {
       /*
-       * 没有 awareness 就没有在场这一层 —— 个人画布（`mode: 'solo'`）走的是
-       * HTTP 通道，房间里只有自己一个人，没有谁的光标可看。上面那些 `setXxx`
-       * 也因此全都变成空动作（`awareness()` 返回 null），画布那边一行都不用改。
+       * 没有 awareness、或这是张个人画布，就没有在场这一层 —— 房间里只有自己一个人，
+       * 没有谁的光标可看。上面那些 `setXxx` 也因此全都变成空动作（`awareness()` 返回 null），
+       * 画布那边一行都不用改。
+       *
+       * 个人画布走 WebSocket 时 awareness 是有的：把本地状态清成**空对象**，不是 null。
+       *
+       * 空对象不带身份也不带光标（服务端对个人房间还会整帧丢掉 awareness 的内容），
+       * 但它让 y-protocols 每 15s 的本地状态重放继续跑 —— 那是这条连接**唯一的心跳**：
+       * 服务端只看「多久没收到这个客户端的消息」（`timeout: 30_000`），自己不发 ping。
+       * 清成 null 的话重放就停了，一张只看不改的个人画布每 30s 被服务端超时掐断一次、
+       * 重连一次，状态栏跟着闪「已离线」。
        */
-      if (!next?.awareness) {
+      if (next?.awareness && !enabled) next.awareness.setLocalState({})
+      if (!next?.awareness || !enabled) {
         localClientId.value = -1
         peers.value = []
         return
@@ -198,7 +220,9 @@ export function useFlowPresence(sync: FlowSync) {
   )
 
   // 会话是异步拿回来的，登录态先到先空着，回来了再补一次身份
-  watch([user, displayName], publishUser)
+  watch([user, displayName], () => {
+    if (active.value) publishUser()
+  })
 
   // —— 派生 ——
 

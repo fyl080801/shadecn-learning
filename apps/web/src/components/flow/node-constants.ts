@@ -8,28 +8,26 @@
  * 环在 `pnpm dev` 下看不出来（原生 ESM 有 live binding，用到的时候早初始化完了），
  * 但 rollup 打包会把它们摊平进不同 chunk 并**自己挑一个求值顺序**，挑错就是线上那句
  * `ReferenceError: Cannot access 'XX' before initialization` —— 整个画布编辑器白屏。
- * 所以常量单独放一层叶子：谁都可以引它，它只引 `@shadecn/shared/flow-graph` ——
- * 那也是一片不 import 任何东西的叶子，环带不进来。
+ * 所以常量单独放一层叶子：谁都可以引它，它只引 `@shadecn/shared` 里的模块 ——
+ * 那些也是不 import 任何组件的叶子，环带不进来。
  *
  * 对外仍然从 `node-types.ts` re-export，「加一种节点只动注册表那一个文件」这条不变。
  */
 
-/** 分组框的 `type`。打组（`useFlowCanvas.groupSelection`）建的就是它 */
-export const GROUP_NODE_TYPE = "group"
-
-/** 分组框的默认底色。半透明，因为它是背景板不是卡片 */
-export const GROUP_DEFAULT_BACKGROUND = "rgba(120, 120, 140, 0.10)"
-
-/** 分组框的默认尺寸：够放下两三个节点，剩下的自己拉 */
-export const GROUP_DEFAULT_SIZE = { width: 520, height: 360 }
-
 /**
- * 分组框的层级。
+ * 分组框的 `type` / 默认底色 / 默认尺寸 / 层级 —— **定义挪进了 `@shadecn/shared/flow-node-types`**，
+ * 这里转出去，`GroupNode.vue` 等照旧从本文件取。
  *
- * 必须是负数：分组是**背景板**，画在所有节点下面。Vue Flow 的节点默认 zIndex 为 0，
- * 给 0 或不给的话，后建的分组会盖住先建的节点，把它们整片挡掉。
+ * 挪走的理由：它们是「新建一个分组长什么样」的一部分，而服务端（agent 的画布工具）
+ * 也要按同一份默认值建节点（REQ-AGENT §3.2）。shared 那个文件同样是叶子
+ * （只引 `./flow-graph.ts`），上面说的环带不进来。
  */
-export const GROUP_Z_INDEX = -1
+export {
+  GROUP_DEFAULT_BACKGROUND,
+  GROUP_DEFAULT_SIZE,
+  GROUP_NODE_TYPE,
+  GROUP_Z_INDEX
+} from "@shadecn/shared/flow-node-types"
 
 /**
  * 工具栏那枚加号建出来的节点类型。

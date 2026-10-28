@@ -100,14 +100,13 @@ describe("同步状态的文案", () => {
     mode: "collab" as const,
     connected: true,
     synced: true,
-    pending: false,
     saveFailed: false,
     cacheFailed: false
   }
 
-  it("一切正常：项目画布说「已同步」，个人画布说「已保存」", () => {
+  it("一切正常：两种画布都走 WebSocket，都说「已同步」", () => {
     expect(syncTextOf(base)).toBe("已同步")
-    expect(syncTextOf({ ...base, mode: "solo" })).toBe("已保存")
+    expect(syncTextOf({ ...base, mode: "solo" })).toBe("已同步")
   })
 
   /** 两种画布的说法不能混：跟个人画布的用户说「协作会话」，他会去找不存在的协作者 */
@@ -119,6 +118,17 @@ describe("同步状态的文案", () => {
   ] as const)("终局失败 %s 有自己的说法，且优先于其它一切", (fatal, text) => {
     // 连断线都盖不过它 —— 那些原因不会自己好，说「恢复连接后自动同步」就是骗人
     expect(syncTextOf({ ...base, fatal, connected: false })).toBe(text)
+  })
+
+  /** 个人画布也会被「新窗口顶掉旧窗口」，但那里没有协作者 —— 照抄「协作会话」他会去找不存在的人 */
+  it("个人画布上提到协作的句子换一种说法", () => {
+    const superseded = syncTextOf({ ...base, mode: "solo", fatal: "superseded" })
+    expect(superseded).not.toContain("协作")
+    expect(superseded).toContain("另一个窗口")
+
+    const saveFailed = syncTextOf({ ...base, mode: "solo", saveFailed: true })
+    expect(saveFailed).toContain("无法保存")
+    expect(saveFailed).not.toContain("协作者")
   })
 
   /**

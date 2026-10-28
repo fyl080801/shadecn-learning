@@ -15,6 +15,8 @@
     "@hocuspocus/extension-redis": "^4.6.0",
     "@hocuspocus/server": "^4.6.0",
     "@hono/node-server": "^2.1.1",
+    "@mariozechner/pi-agent-core": "0.73.1",
+    "@mariozechner/pi-ai": "0.73.1",
     "@mikro-orm/core": "7.2.5",
     "@mikro-orm/postgresql": "7.2.5",
     "@mikro-orm/sqlite": "7.2.5",
@@ -26,6 +28,7 @@
     "yjs": "^13.6.32"
   },
   "devDependencies": {
+    "@shadecn/agent": "workspace:*",
     "@shadecn/shared": "workspace:*",
     "@types/node": "^24.10.1",
     "esbuild": "^0.28.2",

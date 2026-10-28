@@ -72,6 +72,12 @@ export { COLLAB_PATH }
 export interface CollabContext {
   /** 服务端在握手时认定的用户；客户端伪造不了。未启用登录时为 null */
   identity: CollabIdentity | null
+  /**
+   * 个人画布的房间。它走 WebSocket 只是为了让 agent 的改动实时到达（docs/20 §3.3.2），
+   * **不是协作**：awareness 一律丢弃，不转发、不记账 —— 同一个人开着的另一个窗口
+   * 不该在这边冒出一个「协作者」头像和光标。前端在场层也按画布类型关着，这里是兜底。
+   */
+  personal?: boolean
 }
 
 export interface CollabOptions {
@@ -374,7 +380,7 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
         // 原因要挂在错误的 `reason` 上带给客户端 —— 这条路不发关闭码，见 `close.ts`
         throw denialError(result.reason === 'unauthorized' ? CLOSE_UNAUTHORIZED : CLOSE_REVOKED)
       }
-      return { identity: result.identity } satisfies CollabContext
+      return { identity: result.identity, personal: result.personal === true } satisfies CollabContext
     },
 
     /**
@@ -506,6 +512,10 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
      * 超限帧（beforeHandleMessage 标记的）整帧丢弃 —— readOnly 拦不住 awareness。
      */
     async beforeHandleAwareness(data) {
+      if ((data.context as CollabContext | undefined)?.personal) {
+        data.states.clear()
+        return
+      }
       if (data.connection && oversizedFrame.has(data.connection)) {
         data.states.clear()
         return
@@ -726,6 +736,16 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
 
   instance = hocuspocus
   return hocuspocus
+}
+
+/**
+ * 当前进程的协同实例 —— 画布 Agent 拿它开 direct connection（`agent/canvas-access.ts`）。
+ *
+ * 只暴露实例本身、不在这里包一层「agent 写入」：怎么写（origin、权限复核、配额）是 agent 那边的规矩，
+ * 协同层不该知道上面坐着谁。还没 `attachCollabServer`（测试里多数用例）时为 null。
+ */
+export function collabInstance(): Hocuspocus | null {
+  return instance
 }
 
 /** 监控端点用：现在有哪些房间、各自几条连接 */

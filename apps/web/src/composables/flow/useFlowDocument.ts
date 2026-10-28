@@ -56,10 +56,10 @@ export function useFlowDocument(
    */
   const syncInput = computed(() => ({
     fatal: sync.fatal.value,
+    // 两种画布都走 WebSocket，状态语义一样；mode 只用来挑措辞（个人画布上不提「协作」）
     mode: store.meta?.mode ?? null,
     connected: sync.connected.value,
     synced: sync.session.value?.synced.value ?? false,
-    pending: sync.pending.value,
     saveFailed: sync.saveFailed.value,
     cacheFailed: sync.cacheFailed.value
   }))
@@ -71,13 +71,12 @@ export function useFlowDocument(
   // —— 文档动作 ——
 
   /**
-   * 离开这张画布之前，把还没送出去的都送走：「我怎么看」（视口）——
-   * 以及个人画布那边可能还攒着的内容改动。
+   * 离开这张画布之前，把还没送出去的都送走：「我怎么看」（视口）。
    *
-   * 项目画布的内容不用管，它一直是同步的；`sync.flush()` 在那边是个空动作。
+   * 内容不用管：它走 WebSocket，一进 Y.Doc 就顺着连接走了，没有攒着没发的东西。
    */
   async function flushBeforeLeave() {
-    await Promise.all([store.saveNow(), sync.flush()])
+    await store.saveNow()
   }
 
   /**

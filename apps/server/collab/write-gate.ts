@@ -98,10 +98,10 @@ export type WriteVerdict = CollabDenialReason | null
  * 闸门本身（缓存、TTL、事件失效、「拒绝长什么样」）对两种画布是同一套，
  * 但「查什么」不是：
  *
- * - **项目画布**：登录态 + 房间归属 + 项目成员身份（{@link collabWriteAuthorize}）。
- *   它走 WebSocket，一条连接握手一次、之后长期复用，所以才需要这道闸门。
- * - **个人画布**：只有登录态（{@link sessionWriteAuthorize}）—— 它没有成员这回事，
- *   归属就是「是不是我的」。
+ * - **协同房间**（项目画布与个人画布，两者都走 WebSocket）：登录态 + 房间归属 +
+ *   进房资格（{@link collabWriteAuthorize}）。它走 WebSocket，一条连接握手一次、之后长期复用，
+ *   所以才需要这道闸门。个人画布的「进房资格」就是「是所有者本人」，判定在 `authorizeCollab` 里。
+ * - **只查登录态**（{@link sessionWriteAuthorize}）：通用的那一半，目前没有通道用它（见下）。
  *
  * 把它做成参数而不是在实现里 `if (personal)` 分叉，是因为那个 `if` 会让闸门知道
  * 「什么是项目」。通道的形状本来就该由**调用方**声明：谁挂这道闸门，谁说清楚它查什么。
@@ -215,16 +215,22 @@ export const collabWriteAuthorize: AuthorizeWrite = async (cookie, room) => {
 }
 
 /**
- * **只查登录态**的检查 —— 通用的那一半，个人画布要的就是这个。
+ * **只查登录态**的检查 —— 通用的那一半。
  *
- * 它现在没有调用方，这是有意留的形状而不是死代码：个人画布的写入走 REST
- * （`POST /api/flows/:id/doc`），而那条路上的**每一个请求**都完整过一遍
- * `withSession` → `requireAuth` → `requireFlowMember`（`routes/flows.ts`），
- * 逐请求鉴权，根本没有「握手过一次就长期复用」的窗口，也就不需要闸门。
+ * 它现在仍然没有调用方，这是有意留的形状而不是死代码。
  *
- * 换句话说：个人画布的闸门就是 HTTP 中间件链本身。等哪天它换成长连接
- * （或者要给它加同样的判定缓存），注入这个就行，闸门的其余部分一行都不用改。
- * 房间名在这里用不上 —— 「是不是我的画布」由调用方那层管，这里只回答「人还在不在」。
+ * 个人画布的写入路：
+ * - **协同房间**（打开即走，REQ-AGENT §3.3.2）：和项目画布共用 `hocuspocus.ts` 里那**一个**
+ *   闸门实例，注入的是 {@link collabWriteAuthorize}。docs/20 当初设想给个人画布房间装这个
+ *   「只查登录态」的版本，实际没这么做：`authorizeCollab` 已经把个人画布的规则改成
+ *   「只有所有者本人」，于是 `collabWriteAuthorize` 对个人画布查的是「会话 + 画布还在 + 是所有者」，
+ *   严格强于这里的「会话还在」—— 换成这个反而会让画布被删之后还能写一阵。
+ *   按房间类型分别注入还得给闸门开第二个实例、在 `beforeSync` 里按房间挑，换来的只是更弱的检查。
+ * - **REST**（`POST /api/flows/:id/doc`）：服务端暂时保留、前端已不再调用；每个请求都完整过一遍
+ *   `withSession` → `requireAuth` → `requireFlowMember`（`routes/flows.ts`），HTTP 中间件链本身就是闸门。
+ *
+ * 等哪天真有一条「只需要登录态」的长连接通道，注入这个就行，闸门的其余部分一行都不用改。
+ * 房间名在这里用不上 —— 这里只回答「人还在不在」。
  */
 export const sessionWriteAuthorize: AuthorizeWrite = async (cookie) => {
   // 空房间名：`authorizeCollab` 只有在房间名以 `flow:` 开头时才去查画布和成员，

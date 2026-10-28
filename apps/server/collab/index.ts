@@ -8,6 +8,7 @@
  */
 export {
   attachCollabServer,
+  collabInstance,
   collabStats,
   COLLAB_PATH,
   flushAllRoomsToDatabase,

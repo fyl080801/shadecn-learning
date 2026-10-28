@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { computed, effectScope, shallowRef } from "vue"
+import { computed, effectScope, ref, shallowRef } from "vue"
 import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
 import { useFlowPresence } from "@/composables/flow/useFlowPresence"
@@ -90,5 +90,44 @@ describe("在场上报节流", () => {
     expect(awareness.getLocalState()?.transform).toEqual({})
     vi.advanceTimersByTime(FEEDBACK_THROTTLE * 2)
     expect(awareness.getLocalState()?.transform).toEqual({})
+  })
+})
+
+describe("在场层按画布类型开关", () => {
+  /** 一张画布上的两个「窗口」：同一个 doc 的两份 awareness，互相同步状态 */
+  function mount(mode: "solo" | "collab") {
+    const local = new Awareness(new Y.Doc())
+    const remote = new Awareness(new Y.Doc())
+    remote.setLocalState({ user: { id: "u2", name: "乙", avatarUrl: null }, cursor: { x: 1, y: 1 } })
+    local.states.set(remote.clientID, remote.getLocalState()!)
+    local.emit("change", [{ added: [remote.clientID], updated: [], removed: [] }, "remote"])
+
+    const sync = {
+      connected: computed(() => true),
+      session: shallowRef({ awareness: local, clientId: local.clientID })
+    } as unknown as FlowSync
+    const inner = effectScope()
+    const view = inner.run(() => useFlowPresence(sync, ref(mode))) as ReturnType<typeof useFlowPresence>
+    return { local, view, stop: () => { inner.stop(); local.destroy(); remote.destroy() } }
+  }
+
+  it("个人画布走 WebSocket 时不显示任何在场的人，也不广播自己的状态", () => {
+    const { local, view, stop } = mount("solo")
+    view.setCursor({ x: 10, y: 10 })
+    vi.advanceTimersByTime(FEEDBACK_THROTTLE * 2)
+
+    expect(view.members.value).toEqual([])
+    expect(view.cursors.value).toEqual([])
+    expect(view.occupantsOf("node", "n1")).toEqual([])
+    // 本地状态是空对象：不带身份、不带光标，但 y-protocols 的 15s 重放照常跑 ——
+    // 那是这条连接唯一的心跳，停了服务端会每 30s 超时掐一次
+    expect(local.getLocalState()).toEqual({})
+    stop()
+  })
+
+  it("项目画布照常显示协作者", () => {
+    const { view, stop } = mount("collab")
+    expect(view.others.value.map((peer) => peer.user.id)).toEqual(["u2"])
+    stop()
   })
 })

@@ -37,18 +37,21 @@ export function provideFlowEditor(props: { flowId: string }): FlowEditorContext 
   const selection = useFlowSelection()
 
   /**
-   * 这张画布走哪条同步通道 —— 服务端说了算，跟着元信息一起回来（REQ-SOLO）。
+   * 这张画布是什么（项目画布 / 个人画布）—— 服务端说了算，跟着元信息一起回来（REQ-SOLO）。
+   *
+   * 传输两种画布一样（都是 WebSocket），`mode` 决定的是「画布是什么」：在场层开不开、
+   * 返回落点、终局文案。同步层也等它 —— 元信息到了才挂传输（原因见 `sync/index.ts`）。
    *
    * **必须比对 id**：换画布时 `store.meta` 会在新元信息到达之前继续留着上一张的，
-   * 拿它去挂通道就会用旧画布的模式连新画布 —— 个人画布连上协同房间会被服务端拒掉，
-   * 项目画布走 HTTP 会拿到 409。对不上就是「还不知道」，等着。
+   * 拿它去判断就会把上一张的种类套到新画布上（比如在个人画布上开出在场层）。
+   * 对不上就是「还不知道」，等着。
    */
   const mode = computed(() =>
     store.meta && store.meta.id === flowId.value ? store.meta.mode : null
   )
 
   const sync = useFlowSync(flowId, mode)
-  const presence = useFlowPresence(sync)
+  const presence = useFlowPresence(sync, mode)
 
   /**
    * 文档建好之后交给 store —— **画布内容从这一刻起就是它了**。

@@ -42,8 +42,9 @@ export default defineConfig(
   // Global language options — browser globals
   // packages/shared 除外：它前后端都要跑，不该假设浏览器（也不该假设 Node，所以下面的 Node 块也没有它）。
   // 「不许用 DOM / Node 专属 API」真正的护栏是它自己 tsconfig 的 lib: ES2020 + types: []，这里只是不给错觉。
+  // packages/agent 也除外：它是纯服务端包（画布 Agent），归下面的 Node 块。
   {
-    ignores: ["packages/shared/**"],
+    ignores: ["packages/shared/**", "packages/agent/**"],
     languageOptions: {
       globals: {
         ...globals.browser
@@ -63,6 +64,8 @@ export default defineConfig(
       "apps/web/vite.config.ts",
       "apps/web/vitest.config.ts",
       "packages/shared/vitest.config.ts",
+      // 画布 Agent 包整个是 node 环境（沙箱要 spawn 子进程、读写文件）
+      "packages/agent/**/*.ts",
       "vitest.config.ts",
       "eslint.config.ts"
     ],

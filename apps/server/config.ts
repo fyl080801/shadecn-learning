@@ -79,6 +79,37 @@ export const galStoryTimeoutMs = Number(process.env.GAL_STORY_API_TIMEOUT_MS ?? 
  */
 export const galStoryGatewayToken = (process.env.GAL_STORY_GATEWAY_TOKEN ?? '').trim()
 
+/**
+ * 画布 Agent 的模型配置（REQ-AGENT，`docs/20-agent-canvas.md`）。
+ *
+ * 这里只做**环境变量 → 参数对象**这一步；拿它选模型（注册表 / 自定义端点 / 缺 key）是
+ * `@shadecn/agent/model` 的事，没给 `AGENT_API_KEY` 时退回 pi 自己的环境变量约定
+ * （`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`…）在 `apps/server/agent/index.ts`。
+ * 那个包刻意不读 `process.env`，环境约定只在宿主这一处。
+ *
+ * **拿不到模型或 key = agent 没开**，不是配错了：`GET …/agent` 回 `enabled: false`，
+ * 发消息 503，**不影响启动** —— 这个仓库里大多数人不会配 LLM key。
+ *
+ * - `AGENT_PROVIDER` / `AGENT_MODEL`：pi 注册表里的提供方与模型 id；`ollama` 是内置预设
+ *   （本机 `/v1`、不要 key），模型名照 `ollama list`；
+ * - `AGENT_BASE_URL` + `AGENT_API`：自建 / 代理端点（`openai-completions` | `anthropic-messages`），
+ *   此时按这两项构造一个自定义模型，`AGENT_PROVIDER` 只当名字用；
+ * - `AGENT_API_KEY`：显式的 key，优先于 pi 的环境变量约定；
+ * - `AGENT_SANDBOX=local`：给模型暴露本机子进程沙箱里的 `run_media_command`（ffmpeg / ffprobe）。
+ *   **默认不开**：本地实现不是强隔离（见 `@shadecn/agent/sandbox` 的 local.ts）。
+ */
+export const agentConfig = {
+  provider: process.env.AGENT_PROVIDER?.trim() || 'anthropic',
+  model: process.env.AGENT_MODEL?.trim() || 'claude-sonnet-4-6',
+  baseUrl: process.env.AGENT_BASE_URL?.trim() ?? '',
+  api: process.env.AGENT_API?.trim() ?? '',
+  apiKey: process.env.AGENT_API_KEY?.trim() ?? '',
+  sandbox: process.env.AGENT_SANDBOX?.trim() === 'local' ? 'local' : 'none',
+} as const
+
+/** 沙箱工作目录的根：`<dataDir>/agent-workspaces/<flowId>/<runId>`，一张画布一个项目目录 */
+export const agentWorkspaceDir = path.join(dataDir, 'agent-workspaces')
+
 /** 支持的两种库 */
 export type DbProvider = 'sqlite' | 'postgresql'
 

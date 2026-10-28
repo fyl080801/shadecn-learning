@@ -67,6 +67,18 @@ describe("协同通道终局提示", () => {
     expect(button("知道了，先去删内容")).toBeUndefined()
   })
 
+  it("个人画布被另一个窗口顶掉 → 同样关不掉，但不提「协作」：那里没有协作者", async () => {
+    meta.value = { mode: "solo" }
+    fatal.value = "superseded"
+    mount(FlowConnectionEndedDialog)
+    await flushPromises()
+
+    expect(shown()).toContain("这张画布已在另一个窗口打开")
+    expect(shown()).not.toContain("协作")
+    expect(button("刷新页面")).toBeTruthy()
+    expect(button("知道了，先去删内容")).toBeUndefined()
+  })
+
   it("登录态过期 → 这里不弹，交给全站的会话过期框（免得两个模态叠着）", async () => {
     fatal.value = "unauthorized"
     mount(FlowConnectionEndedDialog)

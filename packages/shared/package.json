@@ -8,7 +8,10 @@
     "./flow-doc": "./src/flow-doc.ts",
     "./canvas": "./src/canvas.ts",
     "./auth": "./src/auth.ts",
-    "./collab": "./src/collab.ts"
+    "./collab": "./src/collab.ts",
+    "./agent": "./src/agent.ts",
+    "./flow-node-types": "./src/flow-node-types.ts",
+    "./id": "./src/id.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"

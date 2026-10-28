@@ -4,6 +4,7 @@ import './env.ts'
 // 而写成副作用 import 而不是函数调用的理由见该文件
 import './logger/install.ts'
 import { createAdaptorServer } from '@hono/node-server'
+import { abortAgentRuns } from './agent/index.ts'
 import { app } from './app.ts'
 import { enabledProviders } from './auth/providers/index.ts'
 import { sweepExpired } from './auth/session.ts'
@@ -91,6 +92,9 @@ const orphanTimer = watchForOrphan()
  */
 const SHUTDOWN_FLUSH_TIMEOUT = 20_000
 
+/** 等在跑的 agent 收尾（对话落库）的上限 —— 和上面那 20 秒一起仍在 60 秒宽限期之内 */
+const AGENT_STOP_TIMEOUT = 5_000
+
 /** 给一段收尾工作加个上限；超时只记一笔，不阻断后面的步骤 */
 async function withDeadline(task: Promise<void>, ms: number, label: string): Promise<void> {
   let timer: NodeJS.Timeout | undefined
@@ -122,6 +126,11 @@ async function shutdown() {
   // 最后一个防抖窗口内的改动。不靠 flushPendingStores() —— 它触发的落库要过一段
   // 微任务链才入队，同步往下走会在入队前就采样到空队列（见 flushAllRoomsToDatabase）。
   // 断连 → 逐房间直接落库并 await → 再把剩余写库排空
+  // 在跑的 agent 先叫停，并等它们收尾：已经写进画布的改动保留（各自是独立的 Y 事务），
+  // 房间随下面的落库一起存；这一轮的对话和运行日志要赶在下面关数据库之前写进去。
+  // 中止是立刻的，收尾只是几次写库，给个上限免得卡住整个退出
+  await withDeadline(abortAgentRuns('服务正在重启'), AGENT_STOP_TIMEOUT, 'agent 收尾')
+
   try {
     collab.closeConnections()
     await withDeadline(

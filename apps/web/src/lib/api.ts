@@ -14,9 +14,19 @@ import type {
   ProjectMemberView,
   ProjectSummary
 } from "@shadecn/shared/canvas"
-import { FLOW_STATE_VECTOR_HEADER } from "@shadecn/shared/collab"
+import {
+  agentApiPath,
+  agentConversationPath,
+  agentRunEventsPath,
+  type AgentConversationSummary,
+  type AgentConversationView,
+  type AgentPromptRequest,
+  type AgentSessionView,
+  type AgentStreamEvent
+} from "@shadecn/shared/agent"
 import type { FlowUserState } from "@shadecn/shared/flow-graph"
 import { apiFetch } from "@/lib/auth"
+import { readSseStream } from "@/lib/sse"
 
 /**
  * 后端接口的薄封装。
@@ -66,30 +76,18 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 const json = (body: unknown) => JSON.stringify(body)
 
 /**
- * 二进制接口（个人画布的内容通道）用的错误分支。
+ * 非 JSON 接口（Agent 的事件流）用的错误分支。
  *
- * 不能走 `request()`：那条路把响应体当 JSON 解，而这两个接口成功时给的是
- * `application/octet-stream`。失败时服务端仍然回 JSON，所以只有这一半是共用的。
+ * 不能走 `request()`：那条路把响应体当 JSON 解，而这几个接口成功时给的是
+ * `text/event-stream`。失败时服务端仍然回 JSON，所以只有这一半是共用的。
  */
-async function binaryFailure(res: Response): Promise<ApiError> {
+async function streamFailure(res: Response): Promise<ApiError> {
   const body: unknown = await res.json().catch(() => null)
   const message =
     res.status === 401
       ? "登录状态已失效，请重新登录"
       : ((body as { error?: string } | null)?.error ?? `请求失败（${res.status}）`)
   return new ApiError(message, res.status, body)
-}
-
-/** 状态向量走 URL 和 JSON，得是文本；它只有几十字节，这点开销无所谓 */
-function toBase64Url(bytes: Uint8Array): string {
-  let binary = ""
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
-}
-
-function fromBase64Url(text: string): Uint8Array {
-  const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"))
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0))
 }
 
 function query(params: Record<string, string | number | undefined>) {
@@ -301,55 +299,109 @@ export const flowApi = {
       body: json(patch)
     })
   },
+}
 
-  /**
-   * 个人画布的内容通道（REQ-SOLO）：拉一次基线。
-   *
-   * 带上自己的状态向量就只拿差量。**项目画布走这条会得到 409** ——
-   * 它的内容在 WebSocket 上，两条通道各自只服务自己的模式。
-   */
-  async pullDoc(
-    flowId: string,
-    since?: Uint8Array
-  ): Promise<{ update: Uint8Array; stateVector: Uint8Array }> {
-    const suffix = since ? `?sv=${toBase64Url(since)}` : ""
-    const res = await apiFetch(`/api/flows/${flowId}/doc${suffix}`, {
-      headers: { accept: "application/octet-stream" }
-    })
-    if (!res.ok) throw await binaryFailure(res)
+// —— 画布 Agent（REQ-AGENT，docs/20）——
 
-    // 响应头里那份是**服务端自己的**进度，不是「我合并完会变成什么样」——
-    // 拿本地状态当基线的话，离线时攒的改动会被算成已同步，从此推不出去
-    const header = res.headers.get(FLOW_STATE_VECTOR_HEADER)
-    return {
-      update: new Uint8Array(await res.arrayBuffer()),
-      stateVector: header ? fromBase64Url(header) : new Uint8Array()
-    }
+/**
+ * 一帧 `data:` 解成事件。解不出来、或者不像个事件，就返回 null 丢掉这一帧 ——
+ * 服务端以后多发一种事件、或者某一帧被代理弄坏了，都不该把整条流带崩。
+ */
+export function parseAgentEvent(data: string): AgentStreamEvent | null {
+  try {
+    const value: unknown = JSON.parse(data)
+    if (typeof value !== "object" || value === null) return null
+    if (typeof (value as { type?: unknown }).type !== "string") return null
+    return value as AgentStreamEvent
+  } catch {
+    return null
+  }
+}
+
+/** 两条事件流（发起 / 接回）共用的那一半：查状态码、逐帧解成事件 */
+async function readAgentStream(
+  res: Response,
+  options: { onEvent: (event: AgentStreamEvent) => void; onOpen?: () => void }
+): Promise<void> {
+  if (!res.ok) throw await streamFailure(res)
+  if (!res.body) throw new ApiError("服务端没有返回事件流", res.status, null)
+  options.onOpen?.()
+
+  await readSseStream(res.body, (frame) => {
+    const event = parseAgentEvent(frame.data)
+    if (event) options.onEvent(event)
+  })
+}
+
+export const agentApi = {
+  /** 服务端有没有配模型 + 此刻有没有一轮在跑（`activeRun`）+ 默认打开的会话（含消息） */
+  session(flowId: string) {
+    return request<AgentSessionView>(agentApiPath(flowId))
   },
 
   /**
-   * 推一段 Yjs 增量上去，拿回服务端合并之后的状态向量。
+   * 发一条 prompt，**响应体就是这一轮的事件流**（AG-UI，见 `@shadecn/shared/agent`）。
    *
-   * 下一次就以它为基线算差量（`Y.encodeStateAsUpdate(doc, stateVector)`）——
-   * 客户端因此不用维护「待确认队列」：Yjs 的合并是幂等的，重发天然安全。
+   * 不能用 `EventSource`（它只会 GET），所以 `fetch` 之后自己读流、自己解 SSE。
+   * 非 2xx 时流根本没开始，抛 `ApiError`：409 = 这张画布有一轮正在跑，
+   * 503 = 服务端没配模型，400 = 参数不对；401 由 `apiFetch` 弹重新登录框。
+   *
+   * resolve 的时机是**流结束**（服务端关流 / `signal` 中止），不是收到最后一个事件。
    */
-  async pushDoc(
+  async send(
     flowId: string,
-    update: Uint8Array
-  ): Promise<{ stateVector: Uint8Array; revision: number; noop: boolean }> {
-    const res = await apiFetch(`/api/flows/${flowId}/doc`, {
-      method: "POST",
-      headers: { "content-type": "application/octet-stream", accept: "application/json" },
-      // 切出自己那段 buffer：Yjs 给的可能是共享 buffer 上的一个视图
-      body: update.slice().buffer as ArrayBuffer
-    })
-    if (!res.ok) throw await binaryFailure(res)
-
-    const body = (await res.json()) as { stateVector: string; revision: number; noop: boolean }
-    return {
-      stateVector: fromBase64Url(body.stateVector),
-      revision: body.revision,
-      noop: body.noop
+    body: AgentPromptRequest,
+    options: {
+      onEvent: (event: AgentStreamEvent) => void
+      /** 响应是 2xx、流开始了 —— 从这一刻起这一轮就算服务端接下了，之后断开也不是「没发出去」 */
+      onOpen?: () => void
+      signal?: AbortSignal
     }
+  ): Promise<void> {
+    const res = await apiFetch(`${agentApiPath(flowId)}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: json(body),
+      signal: options.signal
+    })
+    await readAgentStream(res, options)
+  },
+
+  /**
+   * 接回一轮正在跑的（`agentRunEventsPath`）：服务端先从 RUN_STARTED 起补发这一轮的全部事件，
+   * 再接着推后续的，收尾后关流 —— 和 `send` 的流一模一样，所以 resolve 时机也一样（流结束）。
+   *
+   * 非 2xx 抛 `ApiError`：404 = 这一轮已经结束 / 不是你的，410 = 补发缓冲溢出、接不回来了。
+   */
+  async runEvents(
+    flowId: string,
+    runId: string,
+    options: { onEvent: (event: AgentStreamEvent) => void; signal?: AbortSignal }
+  ): Promise<void> {
+    const res = await apiFetch(agentRunEventsPath(flowId, runId), {
+      headers: { accept: "text/event-stream" },
+      signal: options.signal
+    })
+    await readAgentStream(res, options)
+  },
+
+  /** 停掉这张画布上正在跑的那一轮；已经提交到画布上的改动保留 */
+  abort(flowId: string) {
+    return request<void>(`${agentApiPath(flowId)}/abort`, { method: "POST" })
+  },
+
+  /** 「我」在这张画布上的会话列表（已按更新时间倒序） */
+  conversations(flowId: string) {
+    return request<AgentConversationSummary[]>(agentConversationPath(flowId))
+  },
+
+  /** 一个会话的全部内容 */
+  conversation(flowId: string, conversationId: string) {
+    return request<AgentConversationView>(agentConversationPath(flowId, conversationId))
+  },
+
+  /** 删除一个会话（它正在跑时 409，不存在 404） */
+  deleteConversation(flowId: string, conversationId: string) {
+    return request<void>(agentConversationPath(flowId, conversationId), { method: "DELETE" })
   }
 }

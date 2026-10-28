@@ -1,18 +1,29 @@
-# REQ-SOLO 个人画布（不走协同的画布）
+# REQ-SOLO 个人画布（只属于我一个人的画布）
 
-> 状态：**已实现** —— 数据模型、`applyFlowUpdate` 写入通道、两条 REST、两处互拒、
-> 前端同步层（`useFlowSync` + 两种 transport）、`/personal` 界面均已落地（界面为画布工作区，见 §4.8），
-> 测试见第 5 节。
+> 状态：**已实现** —— 数据模型、`/personal` 界面（画布工作区，见 §4.8）、
+> 个人画布的 WebSocket 房间（只对所有者开放、无在场层），测试见第 5 节。
 >
 > 前置：[REQ-CANVAS](13-flow-canvas-management.md)（项目 / 画布 / 成员 / 分享链接）与
 > [REQ-COLLAB](04-realtime-collab.md)（Yjs 实时协同）。本需求在两者之上补一件事：
-> **有些画布只属于我一个人，不该为它开一条 WebSocket、一间房、一套在场与踢人逻辑。**
+> **有些画布只属于我一个人** —— 没有成员、没有分享、没有协作者。
+>
+> **修订（REQ-AGENT 之后）：个人画布一律走 WebSocket。** 最初的设计是「个人画布不开房间、
+> 走 HTTP 增量推拉」（§4.1–§4.2、§5.1 里还留着那一版的服务端细节），画布 Agent 介入时再把它切到
+> WebSocket。现在改成**打开就进房间**：agent 写的是服务端的活房间，不在房间里就看不见 agent 的改动；
+> 而「平时 HTTP、用 agent 时切 WebSocket」要一整套交接协议（先推完 HTTP 那边、同一个文档上换挂、
+> 切换瞬间不能掉回未同步……），换来的只是省一条连接，不值。
+> 前端的 HTTP 传输（`sync/solo.ts`）和它的接口封装已删除；服务端的 `GET/POST /api/flows/:id/doc`
+> 这一期保留不动，只是没有前端调用了。
+>
+> 「个人」的含义没有变，只是从「没有房间」变成了「房间只有我」：
+> **房间只对所有者开放（§4.4）、没有在场层（§4.6）**，返回落点和文案照旧按 `mode` 走。
 
 ## 1. 目标
 
-1. 引入**个人画布**：只有创建者本人能看能改，没有成员、没有分享链接、没有实时协同。
+1. 引入**个人画布**：只有创建者本人能看能改，没有成员、没有分享链接、没有协作者。
 2. **内容模型不分叉** —— 个人画布和项目画布的内容都是 Y.Doc，库里都是 `Flow.ydoc` 字节。
-   分叉只发生在**传输**这一层：项目画布走 Hocuspocus WebSocket，个人画布走 HTTP 增量推拉。
+   传输也不再分叉（见文首修订）：两种画布都走 Hocuspocus WebSocket，个人画布的房间只有所有者进得来、
+   没有在场层。两者的差别只剩「画布是什么」—— 归属、权限、返回落点、文案。
 3. 编辑器**只有一个**。`stores/flow`、`useFlowCanvas`、吸附、快捷键、工具栏、节点组件全部原样复用，
    两种画布的差别对它们不可见。
 4. 因为字节格式一致，将来「把个人画布移进项目」只是改一个 `projectId`（本期不做，但模型要支持）。
@@ -24,17 +35,17 @@
 两套撤销（`Y.UndoManager` vs 手写栈）、两套投影；而且个人画布从此**无法**变成项目画布 ——
 两种格式之间的转换是有损的（JSON 快照里没有 CRDT 的因果信息，转过去等于所有历史归零）。
 
-个人画布真正缺的只有「把改动发给别人」这一件事。缺的是传输，不是模型。
+个人画布真正缺的只有「把改动发给别人」这一件事。缺的是协作者，不是模型。
 
 ## 2. 名词
 
 | 名词 | 含义 |
 |---|---|
 | 个人空间 / Personal space | 每个用户一个的私人容器。它**就是一个 `Project`**，只是 `kind = 'personal'`、成员只有自己 |
-| 个人画布 / Solo flow | 个人空间里的画布。`mode = 'solo'`，不进协同层 |
+| 个人画布 / Solo flow | 个人空间里的画布。`mode = 'solo'`：房间只对所有者开放，没有在场层 |
 | 项目画布 / Collab flow | 团队项目里的画布。`mode = 'collab'`，行为与今天完全一致 |
-| 传输 / Transport | 把本地 Y.Doc 的改动送出去、把别处的改动收回来的那一层。协同是 WebSocket，个人是 HTTP |
-| 状态向量 / State vector | Yjs 的「我已经知道到哪儿了」摘要，几十字节。个人画布的推拉协议以它为准 |
+| 传输 / Transport | 把本地 Y.Doc 的改动送出去、把别处的改动收回来的那一层。两种画布都是 WebSocket |
+| 状态向量 / State vector | Yjs 的「我已经知道到哪儿了」摘要，几十字节。重连时 Hocuspocus 按它双向补差量；（已无前端调用的）REST 推拉协议也以它为准 |
 
 ## 3. 数据结构设计
 
@@ -105,9 +116,9 @@ interface ProjectSummary {
 | `FlowUserState`（视口） | 照旧，一人一行 | 照旧 |
 | `revision` | 服务端写状态的计数 | 同左 |
 
-只有一处粒度差别：个人画布的推送是**防抖后的一段合并增量**（一串编辑一次），
-项目画布是**每次 Y 事务一次**。落库结果一样 —— `applyUpdate` 是合并语义，
-顺序无关、幂等，合成一段推还是拆开推收敛到同一个文档。
+两种画布现在连写入路径都一样：每次 Y 事务经 WebSocket 进房间，由 `persistence.ts` 防抖落库。
+（HTTP 推拉那一版是「防抖后的一段合并增量」；落库结果本来就一样 —— `applyUpdate` 是合并语义，
+顺序无关、幂等，合成一段推还是拆开推收敛到同一个文档。）
 
 ## 4. 功能需求
 
@@ -184,11 +195,26 @@ POST /api/flows/:id/doc                 ← application/octet-stream（Yjs updat
 
 | 试图做的事 | 结果 | 为什么 |
 |---|---|---|
-| solo 画布连 `/ws/collaboration` | `authorizeCollab` 拒，reason `forbidden` | 否则客户端手搓一个 provider 就绕过了 `mode`，个人画布上就出现了别人的光标 |
+| solo 画布连 `/ws/collaboration`，**连的人不是所有者** | `authorizeCollab` 拒，reason `forbidden` | 否则客户端手搓一个 provider 就绕过了 `mode`，个人画布上就出现了别人的光标 |
+| solo 画布连 `/ws/collaboration`，**所有者本人** | 放行 | 个人画布打开即进房间（文首修订）；房间里的 awareness 帧服务端整帧清空（`beforeHandleAwareness`），没有在场可看 |
 | collab 画布 `POST /doc` | **409** | 否则绕过独占、awareness 身份改写和内存里的活房间；写进去的东西会被房间的下一次落库覆盖掉 |
 
-这是本需求唯一的安全面：`mode` 由服务端判定，且**两边都要主动拒绝对方的通道**，
+这是本需求唯一的安全面：`mode` 由服务端判定，且**两边都要主动拒绝不该来的通道**，
 只在客户端分流不算数。
+
+> **REQ-AGENT 修订（原「两条通道互相拒绝」）**：个人画布的 WebSocket 房间**只对所有者本人开放**
+> （认 `Project.personalOwner`，不认成员表），其他任何人仍是 `forbidden`；写入闸门走的是同一个
+> `authorizeCollab`，所以所有者能写、画布删掉后谁都写不了。agent 自己不走 WebSocket，而是用服务端的
+> direct connection 写活房间（`apps/server/agent/canvas-access.ts`），个人画布和项目画布同一条路。
+>
+> 前端不再走 REST `/doc`（文首修订），「还停在 HTTP 那条路上的旧标签页看不到 agent 的改动」这个缺口
+> 也就随之消失了。REST `/doc` 服务端仍保留、照旧直写库；万一有旧客户端还在用，它和活房间之间经
+> `persistence.ts` 的「读 → 合并 → CAS」在库里收敛，内容不丢。
+>
+> 既然是一间正常的协同房间，**协同那几条规则对个人画布同样生效**：独占（同一个人同一张画布只留最新的
+> 窗口，`exclusive.ts`）、权限复验、写入闸门、内容配额。其中独占是用户看得见的 —— 在第二个标签页打开
+> 同一张个人画布，第一个会下线并弹出不可关闭的提示。文案按 `mode` 换：个人画布上说
+> 「这张画布已在另一个窗口打开」，不说「协作会话已过期」（那里没有协作者）。
 
 ### 4.5 项目侧要堵住的口子
 
@@ -207,60 +233,59 @@ POST /api/flows/:id/doc                 ← application/octet-stream（Yjs updat
 个人空间是自己的草稿箱，给它设一个会在某天挡住自己的上限没有意义。
 （`PROJECT_LIMITS.members` 对它天然无关：永远只有一行。）
 
-### 4.6 前端：把 Y.Doc 的生命周期和传输拆开
-
-今天 `useFlowCollab` 一手包办 doc、IndexedDB、provider、终局关闭。拆成：
+### 4.6 前端：Y.Doc 的生命周期和传输拆开，传输只有一种
 
 ```
 apps/web/src/composables/flow/sync/
-  useFlowSync.ts        // 唯一出口，对上层的形状 = 今天的 FlowCollab
-  transport-collab.ts   // 今天 provider 那部分，原样搬过去
-  transport-solo.ts     // 拉一次 + 防抖推
+  index.ts    // useFlowSync：doc + IndexedDB 缓存 + 挂传输 + 终局状态，唯一出口
+  collab.ts   // Hocuspocus provider，两种画布共用
+  types.ts    // FlowTransport 接口（留着这条边界：测试能换假的，将来加只读预览只是多一个实现）
 ```
 
-`FlowSyncSession` 就是今天的 `CollabSession`，只有一处变化：`awareness: Awareness | null`。
+（最初还有一个 `solo.ts`：拉一次 + 防抖推。见文首修订，已删除。）
 
-**关键点：doc 和 IndexedDB 立刻建，transport 等 `mode` 到达再挂。**
+**关键点：doc 和 IndexedDB 立刻建，传输等元信息到达再挂。**
 `mode` 来自 `GET /api/flows/:id`（异步），而 Y.Doc 与传输本来就是解耦的。这样既保住了
 「先从本地缓存画出来」的离线体验（[REQ-COLLAB §3.8](04-realtime-collab.md)），
 又不用把 `FlowEditor.vue` 拆成「外层先 await meta、内层才 provide」的两层组件。
-`mode` 未知期间状态是 `connecting`，编辑器现有的加载门槛不变。
+传输现在不看 `mode` 选哪一种了，但仍等它到了再连：不等也连得上，可一张进不去的画布就会同时报两次错
+（页面的加载失败 + 房间握手被拒的终局框）。元信息未知期间状态是「同步中」，编辑器现有的加载门槛不变。
 
-状态收敛成一个枚举，文案由 `useFlowDocument.syncText` 按 `mode` 出：
+**`mode` 只决定「画布是什么」**，不再决定「内容走哪条路」：
 
-```ts
-type FlowSyncStatus =
-  | 'connecting' | 'live' | 'pending' | 'offline'
-  | { fatal: 'superseded' | 'unauthorized' | 'forbidden' | 'too-large' }
-```
+- **在场层**：`useFlowPresence(sync, mode)` 在 `solo` 下关掉 —— 不显示任何在场的人
+  （否则自己的另一个标签页、连同自己，都会被当成协作者摆进头像堆和节点的占用标签），
+  也不广播自己的光标。但本地 awareness 状态清成**空对象 `{}`，不是 `null`**：
+  y-protocols 每 15s 重放一次本地状态，那是这条连接**唯一的客户端心跳**（服务端只看
+  「多久没收到消息」，`timeout: 30_000`，自己不发 ping）；清成 `null` 重放就停了，
+  一张只看不改的个人画布会每 30s 被超时掐断、重连一次。空对象不带身份也不带光标，
+  服务端对个人房间还会把 awareness 内容整帧清空，所以什么都传不出去。
+- **返回落点**：solo 回 `/personal`（§4.8）。
+- **文案**：状态和语义两种画布一套（都是「同步」，没有「保存」这一步）；只有提到协作的句子按 `mode` 换说法 ——
 
-- `superseded` / `forbidden` 在 solo 下**不可达**（没有别的窗口来顶，没有成员身份可撤）。
-- `unauthorized` 两边都可达（会话过期），继续走全站的 `SessionExpiredDialog`。
-- `too-large` 是第四种终局：提示「画布太大，改动已停止保存」。**它不是 solo 独有的** ——
-  项目画布顶到内容硬限时，服务端会锁写清场并送 `4413` / `quota-exceeded`
-  （[REQ-COLLAB §4.4](04-realtime-collab.md)），前端归到同一个状态、同一份文案。
-  两边也共用同一条出路：这个框**可以关掉**，因为自救办法就是在这一页上删内容再刷新。
-- solo 下**绝不能**出现「协作会话已过期，请刷新页面」这类文案。
+| 状态 | 项目画布 | 个人画布 |
+|---|---|---|
+| 正常 | 已同步 | 已同步 |
+| 服务器写库失败 | 服务器暂时无法保存，改动已同步给协作者 | 服务器暂时无法保存，先别关闭页面 |
+| 被新窗口顶掉（状态栏） | 协作会话已过期，请刷新页面 | 已在另一个窗口打开，请刷新页面 |
+| 被新窗口顶掉（终局框） | 协作会话已过期 | 这张画布已在另一个窗口打开 |
+| `forbidden`（终局框） | 已失去这张画布的访问权限（被移出项目 / 画布已删） | 这张画布已经不在了 |
 
-推送节奏照抄 store 里已经验证过的形状（[REQ-CANVAS §4.6](13-flow-canvas-management.md)）：
-**首次立刻推 + 防抖尾 + `maxWait`**，由 `doc.on('update')` 触发；
-`flushBeforeLeave()` 在原有的 user-state 之外多推一发 doc。
-推失败**不弹 toast**（改动还在 IndexedDB 里，没丢），只把状态显示成 `pending` / `offline`。
-
-在场层：`useFlowPresence` 见到 `awareness === null` 就返回空集合、`publish*` 变 no-op，
-`FlowPresenceBar` 自然渲染为空，`useFlowCanvas` 不需要知道这件事。
+  终局原因四种两边都可达：`superseded`（独占）、`unauthorized`（会话过期，走全站的 `SessionExpiredDialog`）、
+  `forbidden`（个人画布上只可能是画布被删）、`too-large`（顶到内容硬限，服务端锁写清场送 `4413` /
+  `quota-exceeded`，[REQ-COLLAB §4.4](04-realtime-collab.md)；这个框**可以关掉**，因为自救办法就是在这一页上删内容再刷新）。
+  **个人画布上绝不能出现「协作会话」「协作者」这类文案** —— 用户会去找那个根本不存在的协作者。
 
 **验收这次改动切得对不对，看 diff 落在哪里**：不应该出现在 `apps/web/src/stores/flow/`、
 `useFlowCanvas.ts`、`useFlowSnapping.ts`、`useFlowShortcuts.ts`、`apps/web/src/components/flow/*`
-（在场栏空态与文案除外）。改到了这些文件，说明抽象切错了层。
+（终局框文案除外）。改到了这些文件，说明抽象切错了层。
 
 ### 4.7 会话心跳
 
 项目画布那套「编辑 = 一次 user-state PATCH = 会话续期，只看不改 = 该超时就超时」
-（[REQ-CANVAS §4.6](13-flow-canvas-management.md)）原样保留。
-
-个人画布的 `POST /doc` 本身就是真实 HTTP 请求，顺带把心跳问题消掉了 ——
-它没有一条长连接可以自己养活自己。
+（[REQ-CANVAS §4.6](13-flow-canvas-management.md)）现在对个人画布同样适用：内容走 WebSocket，
+不产生任何 HTTP 请求，续期靠的就是那一发 user-state PATCH。
+（HTTP 推拉那一版里 `POST /doc` 本身就是真实请求、顺带续期，这个差别随文首修订消失了。）
 
 ### 4.8 界面：个人画布是工作区的第一项、独立的一页
 
@@ -298,7 +323,7 @@ type FlowSyncStatus =
   所以它挂在这一页的加载上，没进过 `/personal` 的人不会被凭空建出一个空间。
 
 编辑器（`/flows/:id`）两种模式共用一个路由和一个组件：solo 下在场栏为空、
-`FlowConnectionEndedDialog` 只在 collab 的终局原因下出现、标题胶囊的状态文案按 §4.6 走。
+`FlowConnectionEndedDialog` 和标题胶囊的状态文案按 §4.6 的表换说法。
 
 **胶囊左上角那个「回去」按钮按 `mode` 决定落点，不按 `projectId`**：solo 回 `/personal`，
 collab 回 `/projects/:projectId`。个人空间是个项目，这是存储上的事实，不是用户看到的事实 ——
@@ -349,7 +374,8 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
 
 **服务端**
 
-1. solo 画布连 `/ws/collaboration` 被拒，reason 为 `forbidden`；客户端不重连。
+1. 非所有者连 solo 画布的 `/ws/collaboration` 被拒，reason 为 `forbidden`；客户端不重连。
+   所有者本人放行（REQ-AGENT §3.3.2）。
 2. collab 画布 `POST /doc` 返回 409。
 3. `POST /doc` 幂等：同一段 update 推两次，画布里的节点不重复，第二次是 `noop`。
 4. 并发合并：两个「标签页」各自基于同一 `lastAckSV` 推不同的改动，两边的改动都在，谁都没被抹掉。
@@ -367,8 +393,11 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
 
 **前端**
 
-11. `useFlowSync` 在 `mode = 'solo'` 时不创建 `HocuspocusProvider`。
-12. `syncText` 文案矩阵：solo 下不会出现任何协同专属文案；`too-large` 有独立提示。
+11. `useFlowSync` 在 `mode = 'solo'` 时元信息一到就挂协同传输（文首修订；
+    `apps/web/src/test/composables/flowSyncTransport.test.ts`）；在场层在 solo 下不显示任何人、
+    本地 awareness 状态是 `{}` 而不是 `null`（`flowPresence.test.ts`）。
+12. `syncText` 文案矩阵：solo 下不会出现任何协同专属文案（「协作会话」「协作者」）；`too-large` 有独立提示；
+    独占顶下线的终局框在 solo 下换成「这张画布已在另一个窗口打开」。
 13. `stores/flow` 的既有测试**一行不改**照常通过 —— 这本身就是「模型没分叉」的证据。
 14. `/personal` 与 `/projects/:id` 是两个路由，各自独占一份 `page` / `keyword`，互不串。
 
@@ -383,16 +412,16 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
 3. **服务端必须把自己的状态向量给出来**（`x-flow-state-vector` 响应头）。
    客户端拿「合并之后的本地状态」当基线的话，离线期间攒在 IndexedDB 里的改动会被算成
    「服务端已经知道了」，差量恒为空 —— 那些改动再也推不出去，而界面一直显示「已保存」。
-   前端对这一条有专门的回归测试。
+   （这一条连同前端那份回归测试随 HTTP 传输一起删除了，见文首修订；服务端的 REST 测试还在。）
 
 ## 6. 本期不做
 
 - **个人画布 ↔ 项目画布互转**。模型已经支持（字节格式一致，转换 = 改 `projectId` + 让最后一发落地），
   但没有入口。这是选「归属决定模式」而不是「两套存储」的最大红利，留给下一期。
-- **个人画布的多标签页实时同步**。同一个人开两个标签页看同一张个人画布是**最终一致**：
-  两边各自本地编辑，服务端按 CRDT 合并，但对方的改动要刷新才看得到。
-  这就是「个人画布不带协同」的定义本身 —— 不是缺陷，不要当 bug 修。
-- 个人画布的在场、独占、权限复验、只读分享 —— 没有第二个人，全部不适用。
+- **个人画布的多标签页同时编辑**。走了 WebSocket 之后两个标签页本来可以实时同步，但独占规则
+  （同一个人同一张画布只留最新的窗口）对个人画布同样生效：后打开的那个把先打开的顶下线。
+  这是有意保留的，不是缺陷 —— 和项目画布的口径一致，也免得两个窗口各自的撤销栈互相打架。
+- 个人画布的在场、只读分享 —— 没有第二个人，不适用（独占、权限复验随房间一起生效，见 §4.4）。
 - 个人空间的重命名 / 多个人空间 / 空间级设置。
 - 个人画布的历史版本（和项目画布同一个缺口，见 [REQ-COLLAB §9](04-realtime-collab.md)）。
 
@@ -402,6 +431,6 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
    两条通道都只写 `ydoc` + 投影（[REQ-DATA §5](05-data-persistence.md)）。
 2. ~~**侧栏是否要给个人画布一个独立入口。**~~ —— 已定：给。个人画布已经提到侧栏一级
    （`/personal`），后来又与项目合并进同一个工作区界面（页内侧栏），理由见 §4.8。
-3. **推送防抖的窗口取值。** 暂定沿用 user-state 那组（2s / 10s `maxWait`），
-   但那组是为「视口 + 心跳」调的；个人画布推的是内容，丢窗口的代价更大（只在本地留着），
-   可能应该更短。
+3. ~~**推送防抖的窗口取值。**~~ —— 不再适用：前端不再走 HTTP 推送（文首修订）。
+4. **服务端 `GET/POST /api/flows/:id/doc` 何时删。** 这一期保留不动；已经没有前端调用，
+   留着只为可能还开着的旧版本页面。下一期可以删掉它和 `flow-writer.ts` 的 REST 入口。

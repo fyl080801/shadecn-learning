@@ -16,27 +16,32 @@ import type { FatalClose } from "./sync"
 export interface SyncTextInput {
   /** 终局失败（不会自己好），`null` = 没有 */
   fatal: FatalClose | null
-  /** 项目画布还是个人画布 —— 两边的说法不一样，见下 */
+  /**
+   * 项目画布还是个人画布。两边走的是同一条 WebSocket、状态语义完全一样，
+   * 只是有几句话提到了「协作」—— 个人画布上没有协作者，那几句得换个说法，见下
+   */
   mode: FlowMode | null
   /** 通道是通的吗（传输连着 **且** 网卡说在线） */
   connected: boolean
   /** 和服务端的首次同步完成了没 */
   synced: boolean
-  /** 有没有还没送出去的本地改动（只有个人画布会为真） */
-  pending: boolean
-  /** 服务端收到了但存不进库（只有协同画布会为真） */
+  /** 服务端收到了但存不进库 */
   saveFailed: boolean
   /** 本地缓存（IndexedDB）用不了 —— 「断网不丢」在这台浏览器上不成立 */
   cacheFailed: boolean
 }
 
 /**
- * **两种画布这里的说法不一样，而且不能混**（REQ-SOLO §4.6）：
- * 项目画布是「同步」（改动进 Y.Doc 就走了，没有保存这一步），
- * 个人画布是「保存」（推一次 HTTP 才算落地）。跟个人画布的用户说
- * 「协作会话已过期」，他会去找那个根本不存在的协作者。
+ * 两种画布走的是同一条 WebSocket，所以**状态和语义只有一套**：改动进 Y.Doc 就走了，
+ * 没有「保存」这一步，说的都是「同步」。
+ *
+ * 但**措辞不能混**（REQ-SOLO §4.6）：跟个人画布的用户说「协作会话已过期」
+ * 「已同步给协作者」，他会去找那个根本不存在的协作者。凡是提到协作的句子，
+ * 个人画布都换一句只讲「这个窗口」「服务器」的。
  */
 export function syncTextOf(input: SyncTextInput): string {
+  const personal = input.mode === "solo"
+
   /*
    * 终局失败要**先判、且分开判**。这些都不会自己好，套用下面那句
    * 「恢复连接后自动同步」就是在骗人：用户会照着继续画，而那些改动进得了本地
@@ -44,7 +49,8 @@ export function syncTextOf(input: SyncTextInput): string {
    */
   switch (input.fatal) {
     case "superseded":
-      return "协作会话已过期，请刷新页面"
+      // 两种画布都会遇到：同一个人同一张画布只留最新的那个窗口（服务端 exclusive.ts）
+      return personal ? "已在另一个窗口打开，请刷新页面" : "协作会话已过期，请刷新页面"
     case "unauthorized":
       return "登录态已过期，请重新登录"
     case "forbidden":
@@ -67,15 +73,6 @@ export function syncTextOf(input: SyncTextInput): string {
     ? "已离线，且这台浏览器存不下草稿 —— 刷新会丢失未同步的改动"
     : null
 
-  if (input.mode === "solo") {
-    // 断网时改的东西存在本地 IndexedDB 里，刷新也不丢，恢复后自动补发
-    if (!input.connected) {
-      if (offlineText) return offlineText
-      return input.synced ? "已离线，改动存在本地，恢复网络后自动保存" : "连不上服务器，改动只存在本地"
-    }
-    return input.pending ? "保存中…" : "已保存"
-  }
-
   if (!input.connected) return offlineText ?? "已离线，改动存在本地，恢复连接后自动同步"
 
   /*
@@ -86,7 +83,9 @@ export function syncTextOf(input: SyncTextInput): string {
    * （恢复后会再广播一次，这行字自己就消失了）。它要传达的只有一件事 ——
    * **现在别关页面**。
    */
-  if (input.saveFailed) return "服务器暂时无法保存，改动已同步给协作者"
+  if (input.saveFailed) {
+    return personal ? "服务器暂时无法保存，先别关闭页面" : "服务器暂时无法保存，改动已同步给协作者"
+  }
   return input.synced ? "已同步" : "同步中…"
 }
 

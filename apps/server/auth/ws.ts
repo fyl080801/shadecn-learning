@@ -2,6 +2,7 @@ import { FLOW_ROOM_PREFIX } from '@shadecn/shared/collab'
 import { authConfig, authEnabled, isAllowedOrigin } from '../config.ts'
 import { flows } from '../store/flows.ts'
 import { projects } from '../store/projects.ts'
+import { displayNameOf } from '../store/users.ts'
 import { loadSession } from './session.ts'
 
 function cookieValue(header: string | null | undefined, name: string) {
@@ -81,7 +82,12 @@ export type CollabDenialReason = 'unauthorized' | 'forbidden'
 /** 放行时带上是谁；没启用登录时 identity 为 null */
 export type CollabAuthorization =
   | { ok: false; reason: CollabDenialReason }
-  | { ok: true; identity: CollabIdentity | null }
+  | {
+      ok: true
+      identity: CollabIdentity | null
+      /** 个人画布的房间（只有所有者进得来）：没有协作者，在场层整个关掉 —— 见 `hocuspocus.ts` 的 awareness 钩子 */
+      personal?: boolean
+    }
 
 const UNAUTHORIZED: CollabAuthorization = { ok: false, reason: 'unauthorized' }
 const FORBIDDEN: CollabAuthorization = { ok: false, reason: 'forbidden' }
@@ -97,15 +103,6 @@ export interface CollabAuthorizeOptions {
   refresh?: boolean
 }
 
-/** 显示名的取值顺序要和前端 `useAuth().displayName` 一致，否则改写前后名字会跳 */
-function displayNameOf(user: {
-  name: string | null
-  username: string | null
-  email: string | null
-}): string {
-  return user.name ?? user.username ?? user.email ?? '匿名用户'
-}
-
 /**
  * 协同连接的鉴权。
  *
@@ -119,7 +116,7 @@ function displayNameOf(user: {
  *
  * 房间即资源：`flow:<flowId>` 这类画布房间还要再判一次**项目成员身份**，
  * 规则和 `auth/project.ts` 的 `requireFlowMember` 一致 —— 否则任何登录用户
- * 都能连进别人项目的画布，看见在场的人和他们的光标。
+ * 都能连进别人项目的画布，看见在场的人和他们的光标。个人画布只认所有者本人。
  * 其余房间（演示用）保持「登录即可」。
  */
 export async function authorizeCollab(
@@ -149,13 +146,25 @@ export async function authorizeCollab(
   if (!target) return FORBIDDEN
 
   /*
-   * **个人画布没有房间**（REQ-SOLO）：它的内容走 HTTP 增量推拉，不进协同层。
+   * **个人画布的房间只对所有者本人开放**（REQ-AGENT §3.3.2）。
    *
-   * 这道拒绝不是多余的 —— `mode` 是服务端算的、前端照着分流，但前端的分流拦不住
-   * 任何人手搓一个 provider 直接连过来。少了这一句，别人的个人画布上就会冒出
-   * 光标和在场头像，而那正是「个人」这个词要排除的东西。
+   * 个人画布的内容也走 WebSocket（打开即连，见 docs/20 §3.3.2）—— agent 的改动经活房间
+   * 实时推过来。所以所有者得进得来；但这不是协作：放行结果带 `personal`，`hocuspocus.ts`
+   * 据此把这个房间的 awareness 整帧丢弃。
+   *
+   * **除所有者以外的人一律拒**，这一句仍然不是多余的：`mode` 是服务端算的、前端照着分流，
+   * 但前端的分流拦不住任何人手搓一个 provider 直接连过来。少了它，别人的个人画布上就会
+   * 冒出光标和在场头像，而那正是「个人」这个词要排除的东西。所有者认 `personalOwner` 列，
+   * 不认成员表：个人空间不该有第二个成员，但万一有了（手工改库、将来的 bug），也进不来。
+   *
+   * 写入闸门（`write-gate.ts` 的 `collabWriteAuthorize`）走的就是这个函数，所以
+   * 所有者能写、画布被删之后写不了，两条都自然成立。
    */
-  if (target.kind === 'personal') return FORBIDDEN
+  if (target.kind === 'personal') {
+    return target.personalOwnerId === session.user.id
+      ? { ok: true, identity, personal: true }
+      : FORBIDDEN
+  }
 
   const role = await projects.roleOf(target.projectId, session.user.id)
   return role ? { ok: true, identity } : FORBIDDEN

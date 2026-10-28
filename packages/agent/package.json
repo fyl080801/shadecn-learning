@@ -1,0 +1,31 @@
+{
+  "name": "@shadecn/agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./canvas": "./src/canvas.ts",
+    "./tools": "./src/tools.ts",
+    "./events": "./src/events.ts",
+    "./model": "./src/model.ts",
+    "./session": "./src/session.ts",
+    "./store": "./src/store.ts",
+    "./sandbox": "./src/sandbox/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-agent-core": "0.73.1",
+    "@mariozechner/pi-ai": "0.73.1",
+    "yjs": "^13.6.32"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-agent-core": "0.73.1",
+    "@mariozechner/pi-ai": "0.73.1",
+    "@shadecn/shared": "workspace:*",
+    "@types/node": "^24.10.1",
+    "typescript": "~5.9.3",
+    "yjs": "^13.6.32"
+  }
+}

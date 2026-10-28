@@ -13,7 +13,8 @@ import { requestReLogin } from "@/lib/auth"
 import type { FatalClose, FlowTransport, TransportContext } from "./types"
 
 /**
- * 项目画布的传输：一张画布一个房间、一条 WebSocket（REQ-COLLAB）。
+ * 画布的传输：一张画布一个房间、一条 WebSocket（REQ-COLLAB）。项目画布和个人画布都走它 ——
+ * 个人画布的房间只对所有者开放（服务端 `authorizeCollab`），在场层不开（`useFlowPresence`）。
  *
  * 这条连接上驮着两件互不相干的事 —— 内容（Y.Doc）和在场（awareness），
  * 所以连接的建立 / 销毁只写在这一处。
@@ -83,7 +84,7 @@ export function classifyClose(
   /*
    * 4413 / "quota-exceeded"：画布顶到内容硬限，服务端锁写并清了场。
    * 和另外三种不同，它**跟人无关**（房间里每个人都会收到），出路也不是重连或重新登录，
-   * 而是删掉一些内容再刷新 —— 归到 `too-large`，和个人画布那边的 413 共用同一套文案。
+   * 而是删掉一些内容再刷新 —— 归到 `too-large`。
    */
   if (code === CLOSE_QUOTA_LOCKED.code || reason === CLOSE_QUOTA_LOCKED.reason) return "too-large"
   return null
@@ -98,8 +99,6 @@ function collabUrl(): string {
 export function createCollabTransport(context: TransportContext): FlowTransport {
   const synced = ref(false)
   const linked = ref(false)
-  /** 协同没有「未保存」这回事：改动一进 Y.Doc 就顺着连接走了 */
-  const pending = ref(false)
   /** 服务端说它写库失败了（见 `onStateless`）。连接是好的，内容悬在服务器内存里 */
   const saveFailed = ref(false)
 
@@ -182,11 +181,8 @@ export function createCollabTransport(context: TransportContext): FlowTransport 
   return {
     synced,
     linked,
-    pending,
     saveFailed,
     awareness,
-    // 内容一直是同步的，没有「攒着没发」的东西可以 flush
-    flush: () => Promise.resolve(),
     destroy: () => {
       provider?.destroy()
       provider = null

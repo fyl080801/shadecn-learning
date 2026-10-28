@@ -11,8 +11,9 @@ import { actor, createFlow, createProject, type Actor } from '../helpers/project
 /**
  * 个人画布的内容通道（REQ-SOLO §4.2 / §4.4）。
  *
- * 重点不在「能存能取」，而在**两条通道不许串台**：个人画布不许连协同房间，
- * 项目画布不许走这个接口。任何一头漏了，用户都会以为自己存上了而其实没有。
+ * 重点不在「能存能取」，而在**两条通道不许串台**：个人画布的协同房间只对所有者开放
+ * （agent 介入时用，REQ-AGENT §3.3.2），项目画布不许走这个接口。
+ * 任何一头漏了，用户都会以为自己存上了而其实没有。
  */
 
 const OCTET = { 'content-type': 'application/octet-stream' }
@@ -97,18 +98,34 @@ describe('个人画布的内容通道', () => {
     await forgetFlow(roomOf(flowId))
   })
 
-  it('个人画布连协同房间 → 拒掉（reason 是 forbidden）', async () => {
+  it('个人画布的协同房间：所有者本人放行，其他人 forbidden', async () => {
+    const alice = await actor('alice')
+    const bob = await actor('bob')
+    const space = await personalSpace(alice)
+    const soloId = await createFlow(alice, space.id)
+
+    // agent 介入后前端把个人画布切到 WebSocket（REQ-AGENT §3.3.2），所有者得进得来
+    const owner = await authorizeCollab(alice.cookie, roomOf(soloId))
+    // 带上 personal 标记：这个房间不是协作，awareness 在服务端整个丢掉（hocuspocus.ts）
+    expect(owner).toMatchObject({ ok: true, identity: { id: alice.userId }, personal: true })
+
+    // 前端会按 mode 分流，但拦不住有人手搓一个 provider 直接连过来：别人一律进不来
+    expect(await authorizeCollab(bob.cookie, roomOf(soloId))).toEqual({
+      ok: false,
+      reason: 'forbidden',
+    })
+  })
+
+  it('个人画布删掉之后，所有者也进不了它的房间', async () => {
     const alice = await actor()
     const space = await personalSpace(alice)
     const soloId = await createFlow(alice, space.id)
-    const collabId = await createFlow(alice, await createProject(alice))
+    expect((await alice.request(`/api/flows/${soloId}`, { method: 'DELETE' })).status).toBe(204)
 
-    const solo = await authorizeCollab(alice.cookie, roomOf(soloId))
-    const collab = await authorizeCollab(alice.cookie, roomOf(collabId))
-
-    // 前端会按 mode 分流，但拦不住有人手搓一个 provider 直接连过来
-    expect(solo).toEqual({ ok: false, reason: 'forbidden' })
-    expect(collab.ok).toBe(true)
+    expect(await authorizeCollab(alice.cookie, roomOf(soloId))).toEqual({
+      ok: false,
+      reason: 'forbidden',
+    })
   })
 
   it('不是成员 → 404，和画布不存在同一个口径', async () => {

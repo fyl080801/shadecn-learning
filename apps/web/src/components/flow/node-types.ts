@@ -6,11 +6,10 @@ import ProcessNode from "@/components/flow/ProcessNode.vue"
 import TextNode from "@/components/flow/TextNode.vue"
 import { defaultNodeData, type FlowNode, type FlowNodeData } from "@shadecn/shared/flow-graph"
 import {
-  FALLBACK_NODE_TYPE,
-  GROUP_DEFAULT_BACKGROUND,
-  GROUP_DEFAULT_SIZE,
-  GROUP_Z_INDEX
-} from "./node-constants"
+  FLOW_NODE_TYPE_DEFAULTS,
+  type FlowNodeTypeDefaults
+} from "@shadecn/shared/flow-node-types"
+import { FALLBACK_NODE_TYPE, GROUP_NODE_TYPE } from "./node-constants"
 
 /**
  * 常量在 `./node-constants.ts` 里定义、从这里 re-export —— 对外仍然「注册表一个文件」。
@@ -27,7 +26,13 @@ export {
 } from "./node-constants"
 
 /**
- * 节点类型注册表 —— **加一种节点只动这一个文件**。
+ * 节点类型注册表 —— **加一种节点只动这一个文件**（有默认值的话，再加
+ * `@shadecn/shared/flow-node-types` 里的一条）。
+ *
+ * **默认值那一半在 shared**：`type`、默认业务 `data`、默认顶层字段由
+ * `FLOW_NODE_TYPE_DEFAULTS` 给，这里只补渲染那一半（组件、图标、菜单名）。
+ * 服务端的 agent 画布工具建节点也读 shared 那一份，所以人建的和 agent 建的长得一样
+ * （REQ-AGENT §3.2）。
  *
  * 节点的业务种类就是它顶层的 `type`（v2 起 `data.kind` 已经并进来了，见
  * `@shadecn/shared/flow-graph`），这张表的键即是它：由谁渲染、菜单里叫什么、新建时长什么样，
@@ -41,44 +46,31 @@ export {
  * 这张表就是让它们能共存的地方：`process` 是内容自适应的普通节点，
  * `group` 是带固定尺寸、压在所有节点之下的分组框，两者除了 `type` 之外没有共同点。
  */
-export interface FlowNodeTypeDef {
-  /** 顶层 `type`，也是这张表的键 */
-  type: string
+export interface FlowNodeTypeDef extends FlowNodeTypeDefaults {
   /** 菜单里显示的名字 */
   label: string
   icon: Component
   component: Component
-  /**
-   * 新建时铺在 `data` 上的**业务字段**。
-   * 框架字段（label / status / createdAt）由 `defaultNodeData()` 保证，这里不用管。
-   */
-  defaultData?: () => Record<string, unknown>
-  /** 新建时的顶层字段（尺寸、层级…） */
-  defaultNode?: () => Partial<Omit<FlowNode, "id" | "type" | "position" | "data">>
 }
 
 export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
   text: {
-    type: "text",
+    ...FLOW_NODE_TYPE_DEFAULTS.text!,
     label: "文本",
     icon: Type,
-    component: TextNode,
-    // 正文单独占一个 key（平铺在 data 上）：两个人一个改标题一个改正文才不会互相盖掉
-    defaultData: () => ({ text: "" })
+    component: TextNode
   },
   process: {
-    type: "process",
+    ...FLOW_NODE_TYPE_DEFAULTS.process!,
     label: "流程节点",
     icon: Box,
     component: ProcessNode
   },
-  group: {
-    type: "group",
+  [GROUP_NODE_TYPE]: {
+    ...FLOW_NODE_TYPE_DEFAULTS[GROUP_NODE_TYPE]!,
     label: "分组",
     icon: Frame,
-    component: GroupNode,
-    defaultData: () => ({ background: GROUP_DEFAULT_BACKGROUND }),
-    defaultNode: () => ({ ...GROUP_DEFAULT_SIZE, zIndex: GROUP_Z_INDEX })
+    component: GroupNode
   }
 }
 
@@ -99,7 +91,10 @@ export function flowNodeTypeOf(type: string): FlowNodeTypeDef {
   return FLOW_NODE_TYPES[type] ?? FLOW_NODE_TYPES[FALLBACK_NODE_TYPE]!
 }
 
-/** 按注册表拼一个新节点的 data —— 框架字段 + 该类型自己的业务字段 */
+/**
+ * 按注册表拼一个新节点的 data —— 框架字段 + 该类型自己的业务字段。
+ * 读的是本表（默认值是从 shared 铺进来的那一份），和 shared 的同名函数结果一致。
+ */
 export function buildNodeData(type: string, label: string): FlowNodeData {
   return defaultNodeData(label, flowNodeTypeOf(type).defaultData?.())
 }

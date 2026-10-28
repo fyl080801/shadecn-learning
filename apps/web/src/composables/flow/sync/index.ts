@@ -8,27 +8,27 @@ import { nodesMap } from "@shadecn/shared/flow-doc"
 import { useAuth } from "@/lib/auth"
 import type { FlowMode } from "@shadecn/shared/canvas"
 import { createCollabTransport } from "./collab"
-import { createSoloTransport } from "./solo"
 import type { FatalClose, FlowTransport } from "./types"
 
 export { classifyClose, parseStoreState } from "./collab"
 export type { FatalClose, FlowTransport } from "./types"
 
 /**
- * 画布内容的同步层 —— **文档的生命周期在这里，传输是可换的**。
+ * 画布内容的同步层 —— **文档的生命周期在这里，传输挂在它上面**。
  *
- * 一张画布 = 一个 `Y.Doc` + 一份 IndexedDB 本地缓存 + 一条传输通道。
- * 前两样两种画布完全一样，只有第三样按 `mode` 分叉（见 `./types.ts`）：
- * 项目画布走 WebSocket，个人画布走 HTTP 增量推拉。
+ * 一张画布 = 一个 `Y.Doc` + 一份 IndexedDB 本地缓存 + 一条 WebSocket（见 `./types.ts`）。
+ * 两种画布在这一层**完全一样**：个人画布也走协同房间，只是房间只对所有者开放、
+ * 没有在场层（在场层按 `mode` 开关，见 `useFlowPresence`）。`mode` 在这里只当
+ * 「元信息到了没有」用 —— 它决定的是「画布是什么」，不再决定「内容走哪条路」。
  *
- * **文档立刻建，传输等 `mode` 到了再挂。** `mode` 得先向服务端问一次
+ * **文档立刻建，传输等元信息到了再挂。** 元信息得先向服务端问一次
  * （`GET /api/flows/:id`），而文档和传输本来就是解耦的 —— 这样「先从本地缓存
  * 把上次看到的画出来」不用等网络，也不必把编辑器拆成「外层先取元信息、内层才渲染」
- * 的两层组件。`mode` 未知的那一小段时间里状态是「连接中」。
+ * 的两层组件。不等元信息直接连也连得上，但一张进不去的画布就会同时冒出两种报错
+ * （页面的加载失败 + 房间握手被拒的终局框）；等它回来，没权限的画布只报一次。
  *
  * 同一个 `Y.Doc` 上挂的 **IndexedDB 缓存**带来两件事：打开画布时先从本地渲染，
- * 以及**断网时改的东西不会随刷新丢掉** —— 恢复后由各自的传输补发出去
- * （协同靠 CRDT 重连补发，个人画布靠状态向量重算差量）。
+ * 以及**断网时改的东西不会随刷新丢掉** —— 恢复后重连，Hocuspocus 按状态向量双向补差量。
  */
 
 /**
@@ -44,7 +44,7 @@ export interface FlowSyncSession {
   clientId: number
   /** 画布内容就住在这里；`stores/flow` 接管它 */
   doc: Y.Doc
-  /** 在场用的 awareness；个人画布没有这一层，为 null */
+  /** 在场用的 awareness；传输挂上之前为 null（个人画布也有，只是在场层不用它） */
   awareness: Awareness | null
   /** 和**服务端**的首次同步是否完成。到这一刻文档才保证是最新的 */
   synced: Ref<boolean>
@@ -61,7 +61,8 @@ export interface FlowSyncSession {
 }
 
 /**
- * @param mode 这张画布走哪条通道；`null` = 还不知道（元信息没回来 / 换画布中）
+ * @param mode 这张画布是什么；`null` = 还不知道（元信息没回来 / 换画布中）。
+ *   传输一律是协同的，这里只等它从 `null` 变成有值再挂上去
  */
 export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
   let doc: Y.Doc | null = null
@@ -72,7 +73,6 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
   /** 传输自己报的状态，镜像到这里，这样上层不用关心当前挂的是哪一种 */
   const synced = ref(false)
   const linked = ref(false)
-  const pending = ref(false)
   const saveFailed = ref(false)
 
   const cached = ref(false)
@@ -127,7 +127,6 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
     transport = null
     synced.value = false
     linked.value = false
-    pending.value = false
     /*
      * 换传输就把这个状态清掉：它说的是「**那台**服务器存不进去」，
      * 而重连之后是一次全新的判断 —— 服务端会在新连接接入时补发当前状态。
@@ -221,8 +220,8 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
     }
   }
 
-  /** 元信息回来了，知道该走哪条通道 —— 挂上去 */
-  function attachTransport(kind: FlowMode) {
+  /** 元信息回来了 —— 挂上协同传输（重新登录之后就地重连也走这里） */
+  function attachTransport() {
     if (!doc || !CAN_CONNECT) return
     dropTransport()
 
@@ -237,19 +236,18 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
       }
     }
 
-    transport = kind === "solo" ? createSoloTransport(context) : createCollabTransport(context)
+    transport = createCollabTransport(context)
 
     const current = transport
     stopMirror = watchEffect(() => {
       synced.value = current.synced.value
       linked.value = current.linked.value
-      pending.value = current.pending.value
       saveFailed.value = current.saveFailed.value
     })
 
-    // 协同才有 awareness，而在场层是靠 session 的变化重挂钩子的，所以换一个新对象
+    // 在场层是靠 session 的变化重挂钩子的，所以换一个新对象把 awareness 交出去
     const opened = session.value
-    if (current.awareness && opened) {
+    if (opened) {
       session.value = {
         ...opened,
         clientId: current.awareness.clientID,
@@ -263,17 +261,21 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
     flowId,
     (id) => {
       openDocument(id)
-      if (mode.value) attachTransport(mode.value)
+      if (mode.value) attachTransport()
     },
     { immediate: true }
   )
 
-  // 元信息到达（或换了画布之后重新到达）：挂上对应的通道。
-  // `null` 表示「这张画布的元信息还没回来」，此时不该猜，等着就是
-  watch(mode, (next) => {
-    if (next) attachTransport(next)
-    else dropTransport()
-  })
+  // 元信息到达（或换了画布之后重新到达）：挂上传输。
+  // `null` 表示「这张画布的元信息还没回来」，此时不该猜，等着就是。
+  // 只看「有没有」：同一张画布的 mode 不会在 collab / solo 之间变
+  watch(
+    () => mode.value !== null,
+    (known) => {
+      if (known) attachTransport()
+      else dropTransport()
+    }
+  )
 
   /**
    * 重新登录成功之后就地重连 —— 用户不用刷新，画布上的东西一样不动。
@@ -287,7 +289,7 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
   watch(sessionExpired, (expired) => {
     if (expired || fatal.value !== "unauthorized" || !isAuthenticated.value) return
     fatal.value = null
-    if (mode.value) attachTransport(mode.value)
+    if (mode.value) attachTransport()
   })
 
   onBeforeUnmount(teardown)
@@ -296,12 +298,10 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
     connected,
     session,
     fatal,
-    /** 有没有还没送出去的本地改动（只有个人画布会为真） */
-    pending,
     /**
-     * 服务端收到了但**存不进库**（只有协同画布会为真）。
+     * 服务端收到了但**存不进库**。
      *
-     * 不是断线、也不是终局失败：连接好好的、改动也同步给了同房间的人，
+     * 不是断线、也不是终局失败：连接好好的、改动也到了服务端（项目画布还同步给了同房间的人），
      * 只是服务器写库失败、字节悬在它的内存里。服务器恢复后会再广播一次，自己变回 false。
      */
     saveFailed,
@@ -311,8 +311,6 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
      * 在线时无影响；它拿掉的是**断网那一档**的兜底 —— 所以只在断线时才改变状态栏文案。
      */
     cacheFailed,
-    /** 离开前把攒着的送走；协同一直是同步的，这是个空动作 */
-    flush: () => transport?.flush() ?? Promise.resolve(),
     /** 删这张画布之前打个招呼：接下来那次断开是自己招来的，别弹框（见上面 `leaving`） */
     leave: () => {
       leaving = true

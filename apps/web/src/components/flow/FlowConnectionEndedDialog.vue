@@ -52,8 +52,8 @@ const notices = {
     run: () => void router.push("/personal")
   },
   /**
-   * 两种画布共用：个人画布是推送被回了 413，项目画布是房间顶到硬限被锁写清场
-   * （服务端的 4413 / `quota-exceeded`）。发生的是同一件事，出路也一样，所以文案只写一份。
+   * 两种画布共用：房间顶到内容硬限被锁写清场（服务端的 4413 / `quota-exceeded`）。
+   * 发生的是同一件事，出路也一样，所以文案只写一份。
    */
   "too-large": {
     title: "画布太大，改动已停止保存",
@@ -68,13 +68,27 @@ const notices = {
 } as const
 
 /**
- * 个人画布的 `forbidden` 是**另一件事**：它没有项目、没有成员、没有管理员，能触发这条的
- * 只剩「这张画布已经没了」（推送被回 404，多半是在另一个窗口里删的）。
+ * 个人画布上有两种原因得换一套说法 —— 它没有项目、没有成员、没有协作者。
  *
- * 所以文案和落点都得换。落点尤其不能照抄：离开画布回哪儿**认 `mode` 不认 `projectId`**
- * （REQ-SOLO）—— 个人空间在库里确实是个项目，但把人送进项目那一栏，
- * 他会在那儿找不到自己刚才那张画布。
+ * `forbidden` 是**另一件事**：没有管理员可以联系，能触发这条的只剩「这张画布已经没了」
+ * （握手被拒或连接被踢，多半是在另一个窗口里删的）。文案和落点都得换。落点尤其不能照抄：
+ * 离开画布回哪儿**认 `mode` 不认 `projectId`**（REQ-SOLO）—— 个人空间在库里确实是个项目，
+ * 但把人送进项目那一栏，他会在那儿找不到自己刚才那张画布。
+ *
+ * `superseded` 是同一件事、换个说法：个人画布也走 WebSocket，同一个人同一张画布只留最新的
+ * 那个窗口（服务端 `exclusive.ts`），但这里没有「协作会话」也没有「其他人」——
+ * 照抄项目画布那句，他会去找一个根本不存在的协作者。
  */
+const soloSuperseded = {
+  title: "这张画布已在另一个窗口打开",
+  description:
+    "同一张画布同时只能在一个窗口里编辑，所以这个窗口已经下线，此处的改动不会再保存。" +
+    "刷新页面即可在这里重新打开（离线期间的改动会自动补发）。",
+  action: "刷新页面",
+  dismissible: false,
+  run: () => window.location.reload()
+} as const
+
 const soloForbidden = {
   title: "这张画布已经不在了",
   description:
@@ -88,7 +102,10 @@ const notice = computed(() => {
   const reason = sync.fatal.value
   // unauthorized 归全站的会话过期框管，这里不弹，免得两个模态叠在一起
   if (!reason || reason === "unauthorized") return null
-  if (reason === "forbidden" && store.meta?.mode === "solo") return soloForbidden
+  if (store.meta?.mode === "solo") {
+    if (reason === "forbidden") return soloForbidden
+    if (reason === "superseded") return soloSuperseded
+  }
   return notices[reason]
 })
 
