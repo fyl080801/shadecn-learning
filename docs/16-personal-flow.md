@@ -110,7 +110,7 @@ interface ProjectSummary {
 ### 4.1 服务端：一个写入口
 
 今天「收到一段 Yjs update 之后要做的事」散在 `hocuspocus.ts` 的 hooks 和 `persistence.ts` 里。
-把它抽成一个函数（`server/collab/flow-writer.ts`）：
+把它抽成一个函数（`apps/server/collab/flow-writer.ts`）：
 
 ```ts
 applyFlowUpdate(flowId, update: Uint8Array) → { stateVector: Uint8Array } | { denied: 'too-large' }
@@ -208,7 +208,7 @@ POST /api/flows/:id/doc                 ← application/octet-stream（Yjs updat
 今天 `useFlowCollab` 一手包办 doc、IndexedDB、provider、终局关闭。拆成：
 
 ```
-src/composables/flow/sync/
+apps/web/src/composables/flow/sync/
   useFlowSync.ts        // 唯一出口，对上层的形状 = 今天的 FlowCollab
   transport-collab.ts   // 今天 provider 那部分，原样搬过去
   transport-solo.ts     // 拉一次 + 防抖推
@@ -246,8 +246,8 @@ type FlowSyncStatus =
 在场层：`useFlowPresence` 见到 `awareness === null` 就返回空集合、`publish*` 变 no-op，
 `FlowPresenceBar` 自然渲染为空，`useFlowCanvas` 不需要知道这件事。
 
-**验收这次改动切得对不对，看 diff 落在哪里**：不应该出现在 `src/stores/flow/`、
-`useFlowCanvas.ts`、`useFlowSnapping.ts`、`useFlowShortcuts.ts`、`src/components/flow/*`
+**验收这次改动切得对不对，看 diff 落在哪里**：不应该出现在 `apps/web/src/stores/flow/`、
+`useFlowCanvas.ts`、`useFlowSnapping.ts`、`useFlowShortcuts.ts`、`apps/web/src/components/flow/*`
 （在场栏空态与文案除外）。改到了这些文件，说明抽象切错了层。
 
 ### 4.7 会话心跳
@@ -276,7 +276,7 @@ type FlowSyncStatus =
 > 「我现在在看哪一种」变成一个每次都要先看一眼才知道的问题，而且个人画布
 > 作为一个天天要用的入口，被藏在另一个入口的第二个 Tab 底下。
 
-- 列表本身是**同一个组件**（`src/components/canvas/FlowList.vue`）：搜索、排序、分页、
+- 列表本身是**同一个组件**（`apps/web/src/components/canvas/FlowList.vue`）：搜索、排序、分页、
   新建 / 重命名 / 复制 / 删除全在里面，项目主页的画布 Tab 用的也是它。
   个人空间在接口层面就是个项目，所以组件只要一个 `projectId`，
   **不需要知道自己列的是哪一种**。

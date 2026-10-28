@@ -27,12 +27,12 @@ Node 现在直接碰持久化的只有四类。
 
 | 类别 | 落点 | 代码位置 |
 |---|---|---|
-| 关系表（7 张） | `User` `Session` `AuthRequest` / `Project` `ProjectMember` `ProjectInvite` / `Flow` `FlowUserState` | `server/store/*`、`server/auth/{session,project,profile}.ts`、`server/routes/auth.ts` |
+| 关系表（7 张） | `User` `Session` `AuthRequest` / `Project` `ProjectMember` `ProjectInvite` / `Flow` `FlowUserState` | `apps/server/store/*`、`apps/server/auth/{session,project,profile}.ts`、`apps/server/routes/auth.ts` |
 | Yjs 二进制 | `Flow.ydoc`（bytes）、`Flow.graph`（JSON 投影）、`Flow.revision`（写计数 / CAS 版本号） | `collab/persistence.ts`、`collab/flow-writer.ts` |
 | 共享协调状态 | 7 张 `SharedMap` + 1 把 `SharedLock`（内存 or Redis） | `cluster/`，使用方见 §4.6 |
-| 文件存储 | **没有**。头像是 identicon 现算现返，不落盘 | `server/avatar/` |
+| 文件存储 | **没有**。头像是 identicon 现算现返，不落盘 | `apps/server/avatar/` |
 
-`server/store/notes.ts` 是内存 `Map` 的 API 样板，不在迁移范围内。
+`apps/server/store/notes.ts` 是内存 `Map` 的 API 样板，不在迁移范围内。
 
 ### 2.1 按调用频率排序的热路径
 
@@ -287,9 +287,9 @@ resolveProjectAccess(sessionId, projectId)
 
 ## 8. 验收标准
 
-1. `server/` 下除了 `store/`（重命名为 client/adapter 亦可）与一处 HTTP 客户端，
-   **没有任何文件 import `prisma`**；`server/db.ts` 与两个 driver adapter 从 `dependencies` 移除。
-2. 现有测试全绿。`server/test/` 里用 `app.request()` 驱动的路由测试**一条都不用改**
+1. `apps/server/` 下除了 `store/`（重命名为 client/adapter 亦可）与一处 HTTP 客户端，
+   **没有任何文件 import `prisma`**；`apps/server/db.ts` 与两个 driver adapter 从 `dependencies` 移除。
+2. 现有测试全绿。`apps/server/test/` 里用 `app.request()` 驱动的路由测试**一条都不用改**
    —— 这是「前端契约不变、鉴权判定留在 Node」是否真的做到了的判据。
    替换成一个假的后端客户端即可（比现在的 `prisma db push` 全量建库更快）。
 3. 两个人同时编辑同一张协同画布，落库不丢改动（CAS + 无条件写两条路都走到）。

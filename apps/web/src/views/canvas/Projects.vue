@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/table"
 
 import { projectApi } from "@/lib/api"
-import type { ProjectSummary } from "@/types/flow"
+import type { ProjectSummary } from "@shadecn/shared/canvas"
 import { formatDateTime } from "@/lib/format"
 import { useAsyncAction } from "@/composables/useAsyncAction"
 

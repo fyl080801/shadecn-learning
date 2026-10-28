@@ -51,7 +51,7 @@ import {
 import { flowApi } from "@/lib/api"
 import { useAsyncAction } from "@/composables/useAsyncAction"
 import { formatDateTime } from "@/lib/format"
-import type { FlowSummary } from "@/types/flow"
+import type { FlowSummary } from "@shadecn/shared/canvas"
 
 /**
  * 一个容器里的画布列表：搜索 / 排序 / 分页 + 新建、重命名、复制、删除。

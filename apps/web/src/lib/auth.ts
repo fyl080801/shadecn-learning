@@ -1,4 +1,5 @@
 import { computed, reactive } from "vue"
+import { LOGIN_DONE_MESSAGE, LOGIN_DONE_PATH, LOGIN_DONE_SOURCE } from "@shadecn/shared/auth"
 
 /**
  * 前端这边没有 token —— 登录态全靠后端那只 httpOnly 的 sid cookie。
@@ -126,11 +127,12 @@ export function dismissReLogin() {
 
 // ---------------------------------------------------------------- 新窗口登录
 
-/** 登录窗口走完之后落地的服务端页面，它会 postMessage 通知开它的那一页 */
-export const LOGIN_DONE_PATH = "/auth/login-done"
-
-/** 那条消息的标记；连同 origin 一起校验，别人发的不认 */
-export const LOGIN_DONE_MESSAGE = "app-auth:login-done"
+/**
+ * 登录窗口走完之后落地的服务端页面（`LOGIN_DONE_PATH`），它会 postMessage 通知开它的那一页；
+ * 那条消息的标记（`LOGIN_DONE_SOURCE` / `LOGIN_DONE_MESSAGE`）连同 origin 一起校验，别人发的不认。
+ * 三个都声明在 `@shadecn/shared/auth`，服务端渲染那张落地页用的是同一份。
+ */
+export { LOGIN_DONE_MESSAGE, LOGIN_DONE_PATH }
 
 /** 新开的登录窗口打开的地址 */
 export function loginWindowUrl() {
@@ -152,7 +154,7 @@ export function openLoginWindow(): Window | null {
 export function isLoginDone(event: MessageEvent): boolean {
   if (event.origin !== window.location.origin) return false
   const data = event.data as { source?: string; type?: string } | null
-  return data?.source === "app-auth" && data.type === LOGIN_DONE_MESSAGE
+  return data?.source === LOGIN_DONE_SOURCE && data.type === LOGIN_DONE_MESSAGE
 }
 
 /**

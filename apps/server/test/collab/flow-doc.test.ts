@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import { applyGraphToDoc, readGraphFromDoc } from '../../collab/flow-doc.ts'
-import { emptyGraph, type FlowNode, type FlowNodeData } from '../../store/flow-types.ts'
+import { applyGraphToDoc } from '@shadecn/shared/flow-doc'
+import { readGraphFromDoc } from '../../collab/flow-doc.ts'
+import { emptyGraph, type FlowNode, type FlowNodeData } from '@shadecn/shared/flow-graph'
 
 /**
  * graph JSON ↔ Y.Doc 的往返。legacy 迁移（applyGraphToDoc）写进文档的每个字段，

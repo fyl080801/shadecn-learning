@@ -54,7 +54,7 @@
 ## 3. 数据从哪来
 
 浏览器**不直连引擎**。请求打到本应用的 `/api/galstory/*`，由 Node 反代到
-`GAL_STORY_API_URL`（`server/routes/galstory.ts`）。三条理由：
+`GAL_STORY_API_URL`（`apps/server/routes/galstory.ts`）。三条理由：
 
 1. 引擎那一侧**没有任何鉴权**、缺省只听 127.0.0.1（它自己的文档开头就写着「要对外就自己挡在
    反代加鉴权后面」）。挂在这里，`/api/*` 那道 `requireAuth` 就是那层鉴权；
@@ -151,7 +151,7 @@
 
 ### 5.4 体检
 
-**判据全在引擎里，前端只渲染。** 曾经有一版在 `src/lib/galstory.ts` 里自己实现了三层优先级
+**判据全在引擎里，前端只渲染。** 曾经有一版在 `apps/web/src/lib/galstory.ts` 里自己实现了三层优先级
 与几条体检规则并配了 13 条用例 —— 那是错的：`AgentClients.binding_of` 的 docstring 明写着
 「在调用方重写一遍就等于让同一个判据有两处声明，迟早漂」，而漂了不报错，只是矩阵上显示的
 绑定与引擎实际打过去的那条不是同一个。接上真接口时那一版被整个删掉。
@@ -163,9 +163,9 @@
 
 ## 6. 验收标准
 
-- 前端：`pnpm exec vitest run --project=client src/test/lib/galstory.test.ts` 全绿（11 条，
+- 前端：`pnpm exec vitest run --project=client apps/web/src/test/lib/galstory.test.ts` 全绿（11 条，
   只验「发请求 + 把错误说清楚 + 几个纯展示的派生」）。
-- 反代：`pnpm exec vitest run --project=server server/test/routes/galstory.test.ts` 全绿（6 条，
+- 反代：`pnpm exec vitest run --project=server apps/server/test/routes/galstory.test.ts` 全绿（6 条，
   含「没配 → 503」「非 GET → 405 且不发请求」「上游状态码原样透传」「超时 → 502 带上界」）。
 - 引擎：`uv run pytest -q tests/test_server.py` 全绿，其中 7 条是这次新加的
   （剧透边界、`publicRef` 为 null、`knownBy` 不算缺省、三层来源、两条预算公式、
@@ -191,8 +191,8 @@
 1. **作者面接口没有鉴权边界**。引擎整个服务都没有鉴权，`GET /api/stories/{name}` 与
    `GET /api/config` 对玩家全是剧透。今天靠**调用方自己分清**（本应用的 `/api/*` 要登录，
    且只有作者面在用）。将来真要把对局界面开给别人，要挡的就是这一族口。
-2. **`src/types/galstory.ts` 是引擎视图模型的镜像**，两边是两个工程，**改一边要同步另一边**
-   （同 `src/types/flow.ts` ↔ `server/store/flow-types.ts`）。`src/lib/galstory-agents.ts`
+2. **`apps/web/src/types/galstory.ts` 是引擎视图模型的镜像**，两边是两个工程，**改一边要同步另一边**
+   （这是一个**没法**像本仓库前后端那样共用的镜像：另一边是 Python 工程；本仓库内的图结构类型已经统一到 `@shadecn/shared/flow-graph`）。`apps/web/src/lib/galstory-agents.ts`
    现在只剩中文显示名（纯展示）；判据那部分已经随接口下发了。
 3. **反代是「读完再转发」**，对 JSON 读口没问题，但 AG-UI 那条是 SSE —— 接对局时必须改成
    流式透传，否则整轮演完才出第一个字。

@@ -41,7 +41,7 @@ export function loginPathFor(target: string) {
  * 静态资源匿名放行 —— 光有 bundle 没有 `index.html` 渲染不出任何东西。
  *
  * 之所以必须放行，是因为**登录页本身就是前端 bundle 的一个入口**
- * （`login.html` + `src/login/`，见 vite.config.ts 的 MPA 双入口）：
+ * （`login.html` + `apps/web/src/login/`，见 vite.config.ts 的 MPA 双入口）：
  * 把资源一起挡掉，登录页自己就白屏了。
  */
 export const pageGuard: MiddlewareHandler<ServerEnv> = async (c, next) => {

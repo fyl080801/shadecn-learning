@@ -4,7 +4,7 @@ import { createMemoryHistory, createRouter, type Router } from "vue-router"
 
 import LinkedAccounts from "@/components/settings/LinkedAccounts.vue"
 import { ApiError } from "@/lib/api"
-import type { AuthIdentity, PendingLink } from "@/types/auth"
+import type { IdentityView, PendingLinkView } from "@shadecn/shared/auth"
 
 /**
  * 设置页「登录方式」那张卡片。
@@ -32,7 +32,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 
 vi.mock("vue-sonner", () => ({ toast: toasts }))
 
-const KEYCLOAK: AuthIdentity = {
+const KEYCLOAK: IdentityView = {
   id: "id_kc",
   provider: "keycloak",
   label: "Keycloak",
@@ -44,7 +44,7 @@ const KEYCLOAK: AuthIdentity = {
   primary: true
 }
 
-const GITHUB: AuthIdentity = {
+const GITHUB: IdentityView = {
   id: "id_gh",
   provider: "github",
   label: "GitHub",
@@ -79,7 +79,7 @@ beforeEach(() => {
   )
 })
 
-const PENDING: PendingLink = {
+const PENDING: PendingLinkView = {
   provider: "github",
   label: "GitHub",
   username: "octocat",
@@ -88,9 +88,9 @@ const PENDING: PendingLink = {
 }
 
 async function mountCard(
-  items: AuthIdentity[],
+  items: IdentityView[],
   query = "",
-  pending: PendingLink | null = null
+  pending: PendingLinkView | null = null
 ) {
   api.identities.mockResolvedValue({ items, pending })
 

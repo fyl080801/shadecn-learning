@@ -44,7 +44,7 @@
 
 ### 3.4 主题
 
-- 亮色 / 暗色两套主题通过 `src/style.css` 中的 CSS 变量（oklch）定义。
+- 亮色 / 暗色两套主题通过 `apps/web/src/style.css` 中的 CSS 变量（oklch）定义。
 - 新增组件必须使用语义化颜色变量（`bg-card`、`text-muted-foreground` 等），禁止写死具体色值。
 
 ### 3.5 语言
@@ -56,7 +56,7 @@
 
 - 任何会**改数据**的交互（提交、创建、删除、改名、接受邀请……）在上一次请求还没回来之前，重复触发**必须**被丢弃：不排队、不合并、不重发。
 - 反馈**不等 response**：点下去的那一刻就要看到进行中的状态（按钮转圈并禁用），而不是等接口回来才有反应。
-- 实现由 `src/composables/useAsyncAction.ts` 统一提供，守卫在 handler 里同步上锁；`:disabled` 只是视觉，要下一次渲染才生效，拦不住同一轮事件循环里的第二次点击。
+- 实现由 `apps/web/src/composables/useAsyncAction.ts` 统一提供，守卫在 handler 里同步上锁；`:disabled` 只是视觉，要下一次渲染才生效，拦不住同一轮事件循环里的第二次点击。
 - 列表里的行内操作按 `key`（一般是行 id）各锁各的，操作 A 行不影响 B 行。
 - **读取类请求不在此列**：列表加载要的是「后一次覆盖前一次」，把重复请求丢掉会让界面停在旧参数上。
 
@@ -77,10 +77,10 @@
 
 | 约束 | 说明 |
 |---|---|
-| 包管理器 | 仅使用 pnpm |
+| 包管理器 | 仅使用 pnpm（workspace：`apps/web`、`apps/server`、`packages/shared` 三个包，根命令都是 `pnpm --filter` 的委托，布局见 `CLAUDE.md` 的 Monorepo 一节） |
 | TypeScript | strict + `noUnusedLocals` + `noUnusedParameters` + `erasableSyntaxOnly`，不允许用 `// @ts-ignore` 绕过（生成代码除外） |
 | Vue | 全部组件使用 `<script setup lang="ts">` |
-| 路径别名 | 前端一律用 `@/`；`server/` 内部使用带 `.ts` 扩展名的相对导入 |
+| 路径别名 | 前端一律用 `@/`；`apps/server/` 与 `packages/shared/` 内部使用带 `.ts` 扩展名的相对导入 |
 | 新增运行时依赖 | 需要有明确理由；能用现有依赖或标准库解决的不引入新包 |
 
 ## 5. 本期不做

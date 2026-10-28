@@ -128,7 +128,7 @@ export interface LoadSessionOptions {
    * 也永远不会空闲超时，"长连接自己给自己续命"。
    *
    * 只读复验只回答「此刻还有效吗」，续期交给真实的 HTTP 请求 ——
-   * 编辑触发的那次视图状态 PATCH 就是干这个的（`src/stores/flow` 的 `noteLocalEdit`）。
+   * 编辑触发的那次视图状态 PATCH 就是干这个的（`apps/web/src/stores/flow` 的 `noteLocalEdit`）。
    */
   refresh?: boolean
 }

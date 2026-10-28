@@ -4,6 +4,8 @@
 
 代码实现细节请看 `CLAUDE.md`（架构说明）与源码；本目录只描述**要做什么**和**做到什么程度**。
 
+文档里的代码路径按 pnpm monorepo 的现状书写：前端在 `apps/web`（`@/` → `apps/web/src`），后端在 `apps/server`，前后端共用的契约在 `packages/shared`（`@shadecn/shared/<子路径>`）；`docs/`、`k8s/`、`ci/` 仍在仓库根。历史性叙述里提到的旧位置（`src/`、`server/`）已改为对应的新路径，已不存在的文件会注明。
+
 | 编号 | 需求 | 文档 | 状态 |
 |---|---|---|---|
 | — | 项目总体定位与共性约束 | [00-project-overview.md](00-project-overview.md) | 持续 |
@@ -82,7 +84,7 @@
 
 ### 实现了但没启用
 
-- **元素占用**（谁在编辑就别人别动）：仲裁逻辑与测试都在 `src/lib/presence.ts`，
+- **元素占用**（谁在编辑就别人别动）：仲裁逻辑与测试都在 `apps/web/src/lib/presence.ts`，
   但没接进画布 —— 当前谁都能同时改同一样东西，节点标签只*显示*还有谁在碰它。
   这是产品选择，不是缺陷；要恢复见 [REQ-COLLAB §4.0.1](04-realtime-collab.md)。
   竞品 libtv 把占用接进去之后的翻车现场见 [协同案例研究 §2](15-collab-case-study.md)。
@@ -92,4 +94,4 @@
 ## 相关文档
 
 - `CLAUDE.md` — 仓库架构说明与开发约定（面向 AI/新人）。
-- `src/components/prompt-input/API.md` — PromptInput 的方法级 API 规约（属于接口契约，不在本目录）。
+- `apps/web/src/components/prompt-input/API.md` — PromptInput 的方法级 API 规约（属于接口契约，不在本目录）。

@@ -52,7 +52,7 @@
 - `redis` 配着 SQLite —— 真多副本时不成立，但**本地拿 SQLite + Redis 单进程验证 Redis 那条链路
   是合理的调试姿势**，所以开发环境只警告，生产才拒绝。
 
-### 3.2 抽象层（`server/cluster/`）
+### 3.2 抽象层（`apps/server/cluster/`）
 
 按**用途**分三个抽象类，不是按数据结构分：
 
@@ -132,7 +132,7 @@ pnpm dev          # 单副本，现状
 pnpm dev:cluster  # 按 DEV_CLUSTER_PORTS 拉起多个实例
 ```
 
-`scripts/dev-cluster.mjs` **不含任何配置**：只覆盖每实例必须不同的 `PORT` 和 `INSTANCE_ID`，
+`apps/server/scripts/dev-cluster.mjs` **不含任何配置**：只覆盖每实例必须不同的 `PORT` 和 `INSTANCE_ID`，
 其余全从 `.env` 读。本地多副本时把 `APP_ORIGIN` 注释掉，让它按各自端口推导，
 否则 3001 上登录会跳回 3000（用 Keycloak 的话两个端口的回调都要注册，或者干脆不配 Keycloak 裸跑）。
 

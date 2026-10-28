@@ -12,26 +12,31 @@
 |---|---|
 | `pnpm dev` | 开发（Node/Hono + Vite 中间件，watch 模式），http://127.0.0.1:3000 |
 | `pnpm build` | `build:client` + `build:server`，产物全部落在 `output/` |
-| `pnpm build:client` | `vue-tsc -b` 类型检查 → `vite build` 输出 `output/public` |
-| `pnpm build:server` | `tsc --noEmit` 类型检查 → esbuild 打包出 `output/server/index.js` |
-| `pnpm start` | 生产模式启动（`NODE_ENV=production node output/server/index.js`） |
+| `pnpm build:client` | `vue-tsc -b` 类型检查 → `vite build` 输出 `output/public`（`apps/web`；不再顺带检查后端） |
+| `pnpm build:server` | `tsc --noEmit` 类型检查 → esbuild 打包出 `output/server/index.js`（`apps/server`） |
+| `pnpm start` | 本地生产模式启动（`NODE_ENV=production node --import ./apps/server/scripts/local-start.mjs output/server/index.js`）。`--import` 是兜底：产物从自己所在位置往上找 `node_modules`，而运行时依赖只声明在 `apps/server`，仓库根没有；钩子只对「找不到的裸包名」以 `apps/server/package.json` 为起点再解析一次。容器里产物旁有自己的 `node_modules`，用不到它 |
+| `pnpm test:shared` / `pnpm typecheck:shared` | 共享包 `packages/shared` 的测试 / 类型检查 |
+
+所有根命令都是 `pnpm --filter <包>` 的委托，命令名与拆 monorepo 之前一致。
 | `pnpm preview` | `build` + `start` |
 
 ### 2.2 依赖划分
 
-仓库根 `package.json` 的两组依赖是有严格含义的：
+monorepo 之后依赖分散在各个包里（`apps/web`、`apps/server`、`packages/shared`、仓库根），其中**生产运行时依赖只声明在 `apps/server/package.json`**，这一份的两组依赖有严格含义：
 
 | 组 | 含义 | 内容 |
 |---|---|---|
-| `dependencies` | **生产运行时**真正要装的 | `hono` / `@hono/node-server`、`yjs` / `y-protocols` / `lib0` / `ws`、`@prisma/client` + 两个 driver adapter（`@prisma/adapter-better-sqlite3` / `@prisma/adapter-pg`）、`prisma`（启动时跑 db push） |
-| `devDependencies` | 开发和构建期才要的 | 前端全家桶（vue、vue-router、three、tailwind、reka-ui、codemirror、vue-flow、y-websocket…）+ 工具链（vite、esbuild、tsx、vue-tsc、eslint、vitest…） |
+| `dependencies` | **生产运行时**真正要装的 | `hono` / `@hono/node-server`、`yjs`、`@hocuspocus/server` / `crossws`、`@prisma/client` + 两个 driver adapter（`@prisma/adapter-better-sqlite3` / `@prisma/adapter-pg`）、`prisma`（启动时跑 db push） |
+| `devDependencies` | 开发和构建期才要的 | 前端全家桶（vue、vue-router、three、tailwind、reka-ui、codemirror、vue-flow、`@hocuspocus/provider`、y-protocols…）+ 工具链（vite、esbuild、tsx、vue-tsc、eslint、vitest…） |
+
+其余三处：`apps/web` **只有 `devDependencies`**（整包被 `vite build` 打进 `output/public`）；`@shadecn/shared` 在 web 和 server 里都是 `workspace:*` 的 devDependency（被各自的 bundle 内联，产物运行时不需要装）；仓库根只放全仓工具（eslint 全家、typescript、vitest、coverage、jsdom）。
 
 **前端库为什么算 dev**：它们全都被 `vite build` 打进了 `output/public`，运行时一个都不用装。
 同理 `tsx` 也降级成 dev —— 生产跑的是打包后的 `server/index.js`，不再解释执行 `.ts`。
 
-这条约定由构建脚本兜底：`scripts/build-server.mjs` 会拿 esbuild 反推出来的运行时依赖去比对根
+这条约定由构建脚本兜底：`apps/server/scripts/build-server.mjs` 会拿 esbuild 反推出来的运行时依赖去比对 `apps/server/package.json` 的
 `dependencies`，只要有一个落在 `devDependencies` 里就**直接构建失败**，并提示把它挪过去。
-用 `shadcn-vue` 之类的 CLI 装完新包记得检查一下装到哪组了。
+`shadcn-vue` CLI 要在 `apps/web` 下跑，装的包进 web 的 `package.json`（只有 devDependencies），不会再混进运行时依赖。
 
 ### 2.3 产物布局
 
@@ -49,6 +54,7 @@ output/
     index.html
     assets/...
   prisma/             # schema.prisma + models/（没有 migrations），给启动时的 db push 用
+                      #（这是 output/ 里的路径；仓库里对应的是 apps/server/prisma/）
   prisma.config.js    # 产物自带的 prisma CLI 配置
   Dockerfile          # 构建上下文就是 output/ 自己
   .dockerignore
@@ -78,12 +84,12 @@ DB_PROVIDER=postgresql DATABASE_URL=postgresql://… \
 目录形状不随 provider 变；没有迁移文件，见 [REQ-DATA §3.3.1](05-data-persistence.md)），用不上的那个 driver adapter 也不会进
 `dependencies` —— PG 部署因此不必为 better-sqlite3 装一套编译工具链。
 
-- **前端静态资源直接构建进后端的静态资源目录**：`vite.config.ts` 里 `build.outDir = output/public`，后端生产模式就吐这个目录（可用 `STATIC_DIR` 覆盖）。
-- 后端由 `scripts/build-server.mjs`（esbuild）打包：仓库内的相对导入全部内联（含 `server/generated/prisma` 那份生成的 client），`node_modules` 里的包保持 external，运行时从应用根目录的 `node_modules` 解析。
+- **前端静态资源直接构建进后端的静态资源目录**：`apps/web/vite.config.ts` 里 `build.outDir = output/public`，后端生产模式就吐这个目录（可用 `STATIC_DIR` 覆盖）。
+- 后端由 `apps/server/scripts/build-server.mjs`（esbuild）打包：仓库内的相对导入全部内联（含 `apps/server/generated/prisma` 那份生成的 client），`node_modules` 里的第三方包保持 external（运行时从产物旁的 `node_modules` 解析）。**workspace 包 `@shadecn/*` 例外，一律内联**：`apps/server/scripts/build-server.mjs` 里用 `externalizePackages` 插件代替了 `packages: 'external'` —— 判据相同（不以 `.` / `/` 开头的导入路径视为 external），只是放过 `@shadecn/`，否则 `@shadecn/shared` 会留成一句运行时 import，而产物里根本没装这个包。
 - `splitting: true` 是硬要求：`frontend/index.ts` 里的 `await import('./dev.ts')` 必须留成真正的动态 import，否则 `vite` 会被提升成顶层静态依赖 —— 而 `vite` 是 devDependency，生产环境根本不会装，一启动就崩。
-- 打包时 define 了 `__APP_BUNDLE__`，`server/runtime.ts` 靠它区分「源码运行」和「产物运行」：产物运行时应用根目录取进程 cwd（容器里就是 `/app`），静态资源取产物自己旁边的 `public/`。
+- 打包时 define 了 `__APP_BUNDLE__`，`apps/server/runtime.ts` 靠它区分「源码运行」和「产物运行」：产物运行时应用根目录取进程 cwd（容器里就是 `/app`），静态资源取产物自己旁边的 `public/`。
 - 运行产物**不再需要 `tsx`**；`prisma` 进产物的 `dependencies`，因为容器启动时要跑 `prisma db push`。
-- 产物里的 `prisma.config.js` / `Dockerfile` / `.dockerignore` / `README.md` 是从 `scripts/output-image/` 原样拷进去的 —— 要改这几个文件改模板，别改产物。
+- 产物里的 `prisma.config.js` / `Dockerfile` / `.dockerignore` / `README.md` 是从 `apps/server/scripts/output-image/` 原样拷进去的 —— 要改这几个文件改模板，别改产物。
 
 ### 2.4 直接基于产物打镜像（推荐）
 
@@ -109,11 +115,15 @@ docker build -t shadecn-learning ./output
 CI 里想一条命令从源码出镜像就用它，三个阶段：
 
 1. **build** —— 全量 `pnpm install --frozen-lockfile` → `prisma generate` → `pnpm build`，产出 `/app/output`；
-   install 之前必须先把 **`prisma/`**（连同 `prisma.config.ts`）拷进去 —— `postinstall` 是
-   `prisma generate || true`，而 generate 要顺着 `prisma.config.ts` → `prisma/db-provider.mjs`
-   → `prisma/<provider>/` 这条链去找 schema 目录。少拷不会让构建失败（`|| true` 兜住），
+   install 之前**按包逐个 `COPY` `package.json`**（根的 `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml`，加 `apps/web`、`packages/shared`、`apps/server` 各自的 `package.json`），
+   这样改源码不会让依赖层失效；**以后新增 workspace 包要在 Dockerfile 里补一行 `COPY`**。
+   `.dockerignore` 必须写 `**/node_modules`（只写 `node_modules` 只排得掉根目录那一个）：每个包的 `node_modules` 是指进宿主机 `.pnpm` 的符号链接，
+   漏进构建上下文，`COPY . .` 会把镜像里刚装好的依赖盖掉。
+   除此之外还必须先把 **`apps/server/prisma/`**（连同 `apps/server/prisma.config.ts`）拷进去 —— `postinstall` 是
+   `prisma generate || true`，而 generate 要顺着 `prisma.config.ts` → `apps/server/prisma/db-provider.mjs`
+   → `apps/server/prisma/<provider>/` 这条链去找 schema 目录。少拷不会让构建失败（`|| true` 兜住），
    但这一步的 generate 会白跑（`COPY . .` 之后那句显式的 `npx prisma generate` 是为此留的保险）。
-   `prisma/<provider>/models` 是符号链接，docker 的 `COPY` 会原样保留，不用特殊处理；
+   `apps/server/prisma/<provider>/models` 是符号链接，docker 的 `COPY` 会原样保留，不用特殊处理；
 2. **deps** —— 和 `output/Dockerfile` 的 deps 阶段一样，只从 `/app/output/package.json` 装生产依赖；
 3. **运行时** —— `COPY --from=build /app/output ./`，其余同上。
 
@@ -230,7 +240,7 @@ GitHub OAuth App 的 Authorization callback URL 填 `$APP_ORIGIN/api/auth/callba
 CMD ["sh", "-c", "npx prisma db push && node server/index.js"]
 ```
 
-三处都**故意不带** `--accept-data-loss`：仓库根 `Dockerfile`、`scripts/output-image/Dockerfile`、
+三处都**故意不带** `--accept-data-loss`：仓库根 `Dockerfile`、`apps/server/scripts/output-image/Dockerfile`、
 以及产物 `package.json` 里的 `db:push`。（仓库根的 `pnpm db:push:force` 带这个 flag，但它是**开发期专用**的
 单独命令，既不在镜像里，也不挂在 `pnpm dev` 上 —— 见 [REQ-DATA §3.3](05-data-persistence.md)。）于是遇到它认为有风险的变更时，`db push` 直接以非 0 退出，
 `&&` 断掉，`node server/index.js` 根本不执行 —— **不是启动慢，是启动失败**，k8s 上表现为
@@ -250,7 +260,7 @@ CrashLoopBackOff，探针的宽限期救不了。多副本下每个 Pod 启动�
 **改完模型、上线之前，先把 DDL 打出来看一眼**：
 
 ```bash
-pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/postgresql --script
+pnpm exec prisma migrate diff --from-config-datasource --to-schema apps/server/prisma/postgresql --script
 ```
 
 只有 `ADD COLUMN` / `CREATE INDEX` / `ADD CONSTRAINT` 就是安全的；出现 `DROP` 或

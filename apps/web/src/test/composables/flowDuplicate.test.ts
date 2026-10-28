@@ -8,7 +8,8 @@ import { useFlowCanvas } from "@/composables/flow/useFlowCanvas"
 import type { FlowPresence } from "@/composables/flow/useFlowPresence"
 import type { FlowSelection } from "@/composables/flow/useFlowSelection"
 import { collectionKey, readCollection, spreadCollection } from "@/lib/flow-collection"
-import { defaultNodeData, GRAPH_SCHEMA_VERSION, type FlowDetail, type FlowNode } from "@/types/flow"
+import type { FlowDetail } from "@shadecn/shared/canvas"
+import { defaultNodeData, GRAPH_SCHEMA_VERSION, type FlowNode } from "@shadecn/shared/flow-graph"
 
 /**
  * 复制节点这条路径盯的是一件事：**「平铺分键」经得起复制**。

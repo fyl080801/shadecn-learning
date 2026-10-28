@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { flushPromises, mount } from "@vue/test-utils"
 
 import LoginPage from "@/login/LoginPage.vue"
-import type { AuthProviderView } from "@/types/auth"
+import type { ProviderView } from "@shadecn/shared/auth"
 
 /**
  * 登录页。它是 `login.html` 这个第二入口挂载的独立应用，不是 SPA 的路由 ——
@@ -12,12 +12,12 @@ import type { AuthProviderView } from "@/types/auth"
  * `?redirect=` / `?error=` 来自地址栏。
  */
 
-const KEYCLOAK: AuthProviderView = {
+const KEYCLOAK: ProviderView = {
   id: "keycloak",
   label: "Keycloak",
   buttonLabel: "使用 Keycloak 登录"
 }
-const GITHUB: AuthProviderView = {
+const GITHUB: ProviderView = {
   id: "github",
   label: "GitHub",
   buttonLabel: "使用 GitHub 登录"
@@ -41,7 +41,7 @@ function visit(search = "") {
 beforeEach(() => visit())
 afterEach(() => visit())
 
-async function mountPage(providers: AuthProviderView[] = [KEYCLOAK], enabled = true) {
+async function mountPage(providers: ProviderView[] = [KEYCLOAK], enabled = true) {
   stubConfig({ enabled, providers })
   const wrapper = mount(LoginPage)
   await flushPromises()

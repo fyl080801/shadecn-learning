@@ -5,7 +5,7 @@ import type { Router } from "vue-router"
  * 路由守卫用的是真实的 router 和真实的 lib/auth，只把 /api/auth/me 打桩，
  * 这样「登录态怎么来的」和「守卫怎么判的」是一起被约束住的。
  *
- * 注意：未登录的第一道闸门在服务端（server/frontend/guard.ts），未登录压根
+ * 注意：未登录的第一道闸门在服务端（apps/server/frontend/guard.ts），未登录压根
  * 拿不到这份 bundle。这里测的是会话中途失效的兜底：整页跳到 /login。
  */
 interface MePayload {

@@ -4,10 +4,10 @@ import type { SessionUser } from '../../auth/session.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 /**
- * GalStory 反代（server/routes/galstory.ts）。
+ * GalStory 反代（apps/server/routes/galstory.ts）。
  *
  * 地址是模块级常量（从 env 读一次），所以每个用例都要 resetModules 重新 import —— 与
- * `src/test/lib/auth.test.ts` 那边同一个手法。
+ * `apps/web/src/test/lib/auth.test.ts` 那边同一个手法。
  */
 
 type Mod = typeof import('../../routes/galstory.ts')

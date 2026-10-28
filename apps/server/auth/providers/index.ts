@@ -1,3 +1,4 @@
+import type { ProviderView } from '@shadecn/shared/auth'
 import { githubProvider } from './github.ts'
 import { keycloakProvider } from './keycloak.ts'
 import type { AuthProvider, ProviderId } from './types.ts'
@@ -37,12 +38,8 @@ export function defaultProviderId(): ProviderId | null {
   return enabledProviders()[0]?.id ?? null
 }
 
-/** 给前端 / 登录页看的那一份（不含任何配置细节） */
-export interface ProviderView {
-  id: ProviderId
-  label: string
-  buttonLabel: string
-}
+/** 给前端 / 登录页看的那一份（不含任何配置细节）；形状在 `@shadecn/shared/auth` */
+export type { ProviderView }
 
 export function providerViews(): ProviderView[] {
   return enabledProviders().map(({ id, label, buttonLabel }) => ({ id, label, buttonLabel }))

@@ -1,5 +1,14 @@
 import { ref } from "vue"
 import { HocuspocusProvider } from "@hocuspocus/provider"
+import {
+  CLOSE_QUOTA_LOCKED,
+  CLOSE_REVOKED,
+  CLOSE_SUPERSEDED,
+  CLOSE_UNAUTHORIZED,
+  COLLAB_PATH,
+  FLOW_ROOM_PREFIX,
+  STORE_STATE_MESSAGE
+} from "@shadecn/shared/collab"
 import { requestReLogin } from "@/lib/auth"
 import type { FatalClose, FlowTransport, TransportContext } from "./types"
 
@@ -10,28 +19,21 @@ import type { FatalClose, FlowTransport, TransportContext } from "./types"
  * 所以连接的建立 / 销毁只写在这一处。
  *
  * 没有「保存」这一步：改动进 Y.Doc 就会自动同步给同房间的人，
- * 服务端订阅同一条流并落库（`server/collab/persistence.ts`）。
+ * 服务端订阅同一条流并落库（`apps/server/collab/persistence.ts`）。
  *
  * 服务端是 Hocuspocus，所以必须用 `@hocuspocus/provider` 而不是 y-websocket ——
  * 两者线协议不兼容：Hocuspocus 的每条消息以文档名开头，房间名走消息不走 URL。
  * 身份也不走 `token`：我们用的是 httpOnly 的 sid cookie，握手时浏览器自动带上，
- * 服务端在 `onConnect` 里读它（见 `server/auth/ws.ts`）。
- */
-
-/** WebSocket 挂载点，和后端 `COLLAB_PATH` 一致。房间名不在路径里 */
-const COLLAB_PATH = "/ws/collaboration"
-
-/**
- * 服务端广播「我存不进库了 / 又能存了」用的 stateless 消息类型。
+ * 服务端在 `onConnect` 里读它（见 `apps/server/auth/ws.ts`）。
  *
- * **和 `server/collab/hocuspocus.ts` 里的同名常量是一对**，改一处就要改另一处 ——
- * `server/` 和 `src/` 是两个 TS 项目，共享不了这个字符串（和 `flow-doc.ts`、
- * `flow-types.ts` 那几对是同一个情况）。
+ * 挂载点（`COLLAB_PATH`）、房间名前缀（`FLOW_ROOM_PREFIX`）、落库状态的 stateless 消息类型
+ * （`STORE_STATE_MESSAGE`）和四种终局信号（`CLOSE_*`）都来自 `@shadecn/shared/collab` ——
+ * 服务端发的、这里认的是同一份常量。
  */
-const STORE_STATE_MESSAGE = "flow:store-state"
 
 /**
- * 解析一条 stateless 消息里的落库状态；不是这类消息就返回 `null`。
+ * 解析一条 stateless 消息里的落库状态（服务端广播「我存不进库了 / 又能存了」）；
+ * 不是这类消息就返回 `null`。
  *
  * 防御着写：stateless 是个通用旁路通道，将来可能驮别的东西，
  * 而一条读不懂的消息**绝不能**变成一次异常 —— 那会打断整条连接的消息处理。
@@ -48,16 +50,13 @@ export function parseStoreState(payload: string): boolean | null {
   }
 }
 
-/** 房间名前缀；服务端靠它认出「这是某张画布的房间」并去查项目成员身份 */
-const FLOW_ROOM_PREFIX = "flow:"
-
 /**
  * 判断一个终局信号是哪一种；不是终局的返回 `null`。
  *
  * **服务端有两条完全不同的路把这件事告诉我们**，而且都得认：
  *
  * 1. **连接已经建起来之后被关掉** —— 顶下线、复验没过。服务端两条腿一起发
- *    （见 `server/collab/close.ts`）：CLOSE **消息**只带 reason（code 被 provider
+ *    （见 `apps/server/collab/close.ts`）：CLOSE **消息**只带 reason（code 被 provider
  *    填成 1000），随后的 WebSocket **关闭帧**才带真正的 4xxx。
  * 2. **握手当场被拒** —— `onConnect` 抛异常。这条路**既不关 socket 也没有关闭码**：
  *    Hocuspocus 只回一条 `PermissionDenied` 消息，provider 把它变成
@@ -74,17 +73,19 @@ export function classifyClose(
 ): FatalClose | null {
   if (!event) return null
   const { code, reason } = event
-  if (code === 4409 || reason === "session-superseded") return "superseded"
+  if (code === CLOSE_SUPERSEDED.code || reason === CLOSE_SUPERSEDED.reason) return "superseded"
   // "Unauthorized" 同时是 Hocuspocus 内置的 4401 和我们握手拒绝时送的 reason
-  if (code === 4401 || reason === "Unauthorized") return "unauthorized"
+  if (code === CLOSE_UNAUTHORIZED.code || reason === CLOSE_UNAUTHORIZED.reason) {
+    return "unauthorized"
+  }
   // 4403 / "permission-revoked"：复验踢人，以及握手时判定「不是这个项目的成员」
-  if (code === 4403 || reason === "permission-revoked") return "forbidden"
+  if (code === CLOSE_REVOKED.code || reason === CLOSE_REVOKED.reason) return "forbidden"
   /*
    * 4413 / "quota-exceeded"：画布顶到内容硬限，服务端锁写并清了场。
    * 和另外三种不同，它**跟人无关**（房间里每个人都会收到），出路也不是重连或重新登录，
    * 而是删掉一些内容再刷新 —— 归到 `too-large`，和个人画布那边的 413 共用同一套文案。
    */
-  if (code === 4413 || reason === "quota-exceeded") return "too-large"
+  if (code === CLOSE_QUOTA_LOCKED.code || reason === CLOSE_QUOTA_LOCKED.reason) return "too-large"
   return null
 }
 

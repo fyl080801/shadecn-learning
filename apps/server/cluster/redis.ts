@@ -21,7 +21,7 @@ import {
  *
  * **这个模块只在 `CLUSTER_MODE=redis` 时被动态 import**（`cluster/index.ts` 的
  * `initCluster`），所以单副本进程里 ioredis 连加载都不会发生，构建产物也不带它 ——
- * 和 `server/db.ts` 对两个 Prisma adapter 的处理是同一套路数。
+ * 和 `apps/server/db.ts` 对两个 Prisma adapter 的处理是同一套路数。
  */
 
 /** 释放锁：只有还持有 token 的人才删得掉，避免删掉别人续上的那把 */

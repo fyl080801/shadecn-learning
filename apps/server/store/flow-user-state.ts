@@ -1,12 +1,13 @@
+import type { FlowUserState } from '@shadecn/shared/flow-graph'
 import { prisma } from '../db.ts'
-import { FLOW_USER_STATE_PARSERS, type FlowUserState } from './flow-types.ts'
+import { FLOW_USER_STATE_PARSERS } from './flow-types.ts'
 
 /**
  * 「每人自己一份」的画布状态（视口、以后的面板开合…）。
  *
  * 一行 = 一个人在一张画布上的一个分区（key），值是 JSON 字符串。
- * 加一种要存的东西不用改这里，也不用改表 —— 在 flow-types.ts 的
- * FLOW_USER_STATE_PARSERS 里加一行就够。
+ * 加一种要存的东西不用改这里，也不用改表 —— 在 `@shadecn/shared/flow-graph` 的
+ * `FlowUserState` 上加字段、再在 flow-types.ts 的 FLOW_USER_STATE_PARSERS 里加一行就够。
  */
 
 export const flowUserState = {
@@ -17,7 +18,8 @@ export const flowUserState = {
       select: { key: true, value: true },
     })
 
-    const state: FlowUserState = {}
+    // 库里的 key 是任意字符串，先按普通对象收，认得的才放进来
+    const state: Record<string, unknown> = {}
     for (const row of rows) {
       // 现在不认识的 key（老版本存的、或已经下线的分区）直接跳过，不回给前端
       if (!(row.key in FLOW_USER_STATE_PARSERS)) continue
@@ -27,7 +29,7 @@ export const flowUserState = {
         // 坏数据当没存过：这类状态丢了只是回到默认视图，不值得报错
       }
     }
-    return state
+    return state as FlowUserState
   },
 
   /**

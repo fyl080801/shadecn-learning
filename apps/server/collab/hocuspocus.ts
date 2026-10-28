@@ -2,6 +2,7 @@ import type { ServerType } from '@hono/node-server'
 import { Hocuspocus, type Connection, type Document, type Extension } from '@hocuspocus/server'
 import crossws from 'crossws/adapters/node'
 import * as Y from 'yjs'
+import { COLLAB_PATH, STORE_STATE_MESSAGE } from '@shadecn/shared/collab'
 
 import {
   authorizeCollab,
@@ -64,8 +65,8 @@ import { collabWriteAuthorize, createWriteGate, isWriteSync } from './write-gate
  * 这也是它和 y-websocket 线协议不兼容的地方，所以前端必须用 `@hocuspocus/provider`。
  */
 
-/** WebSocket 挂载点。房间名走消息，不走路径 */
-export const COLLAB_PATH = '/ws/collaboration'
+/** WebSocket 挂载点（前端连的是同一个常量）。房间名走消息，不走路径 */
+export { COLLAB_PATH }
 
 /** 连接上下文：`onConnect` 认定的身份。后续 hook（审计、awareness 改写）都读它 */
 export interface CollabContext {
@@ -129,9 +130,9 @@ const STORE_RETRY_INTERVAL = 30_000
  *
  * `broadcastStateless` 只发给**本实例**的连接。多副本下别的实例上的客户端收不到这一条，
  * 但那没关系：落库是各实例各自防抖触发的，那边存不进去时会广播它自己那一份。
+ *
+ * 消息类型 `STORE_STATE_MESSAGE` 来自 `@shadecn/shared/collab`，前端解析的是同一个常量。
  */
-const STORE_STATE_MESSAGE = 'flow:store-state'
-
 function storeStatePayload(ok: boolean): string {
   return JSON.stringify({ type: STORE_STATE_MESSAGE, ok })
 }
@@ -317,7 +318,7 @@ async function collabExtensions(): Promise<Extension[]> {
    * 那些 hook 写的是配额、鉴权、互斥这些规则，掺进日志就读不出规则本身了。
    * 它带 `priority`，所以永远第一个跑；而业务 hook（`new Hocuspocus({...})` 里的那些）
    * 被 Hocuspocus 固定排在最后。一头一尾正好夹住落库，于是「开始」和「完成」两个
-   * 计数的差就是失败次数 —— 详见 server/logger/collab.ts。
+   * 计数的差就是失败次数 —— 详见 apps/server/logger/collab.ts。
    */
   const extensions: Extension[] = [collabLogging()]
   if (!isClustered) return extensions
@@ -772,7 +773,7 @@ export async function flushAllRoomsToDatabase(): Promise<void> {
   /*
    * **`allSettled` 而不是 `all`**：落库失败现在是会往外抛的（见 `persistence.ts`），
    * 用 `all` 的话第一个失败就会把这个函数整个 reject，而调用方
-   * （`server/index.ts` 的 shutdown）是在一个 try 块里连着调它和 `flushCollabWrites()` 的 ——
+   * （`apps/server/index.ts` 的 shutdown）是在一个 try 块里连着调它和 `flushCollabWrites()` 的 ——
    * 一抛，后面那句排空队列就被跳过了，等于为了一个失败的房间放弃了其余所有房间的收尾。
    * 退出路径上宁可挨个试完再报告。
    */

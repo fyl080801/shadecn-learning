@@ -6,7 +6,7 @@ import { instanceId, isClustered, isDev, logDir, logFormat, logLevel } from '../
  * winston 实例本体 —— 整个进程只有这一个。
  *
  * **这个模块不认识任何业务**：它只定义「一条日志长什么样、去哪儿」。
- * 谁在什么时候写日志，由 `server/logger/` 下另外几个注入器决定，
+ * 谁在什么时候写日志，由 `apps/server/logger/` 下另外几个注入器决定，
  * 业务代码里一句 `logger.xxx` 都不该出现（见 `install.ts` 的说明）。
  */
 

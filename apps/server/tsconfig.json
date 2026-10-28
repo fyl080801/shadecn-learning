@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "tsBuildInfoFile": "../node_modules/.tmp/tsconfig.server.tsbuildinfo",
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.server.tsbuildinfo",
     "target": "ES2023",
     "lib": ["ES2023"],
     "module": "ESNext",
@@ -22,5 +22,7 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts"],
+  // prisma.config.ts 引的是 prisma/db-provider.mjs（没开 allowJs），迁移前也从不在类型检查范围里
+  "exclude": ["node_modules", "prisma.config.ts"]
 }

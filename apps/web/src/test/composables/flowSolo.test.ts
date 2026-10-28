@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import * as Y from "yjs"
 import { ApiError } from "@/lib/api"
 import { createSoloTransport } from "@/composables/flow/sync/solo"
-import { nodesMap } from "@/lib/flow-doc"
+import { nodesMap } from "@shadecn/shared/flow-doc"
 import type { FatalClose } from "@/composables/flow/sync/types"
 
 /**

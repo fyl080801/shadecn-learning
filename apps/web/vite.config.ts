@@ -6,7 +6,7 @@ import vue from '@vitejs/plugin-vue'
 /**
  * 画布编辑器的模块 —— 下面的 onwarn 只对这片代码把「循环依赖」当错误。
  *
- * 为什么不是全仓库：`src/components/ui/` 下每个 shadcn-vue 组件都和自己那个
+ * 为什么不是全仓库：`apps/web/src/components/ui/` 下每个 shadcn-vue 组件都和自己那个
  * `index.ts` 互相引（`index.ts` → `Button.vue` → `index.ts`），是 CLI 生成的形状，
  * 改不了也没必要改 —— 一个 barrel 和它自己的组件总是落在同一个 chunk 里，
  * rollup 不用跨 chunk 挑顺序，从来没出过事。真正咬人的是环**跨了 chunk**那种。
@@ -29,9 +29,13 @@ export default defineConfig({
      * （https://github.com/yjs/yjs/issues/438）。
      *
      * 这不只是告警：两份副本意味着两套类之间的 `instanceof` **永远为 false**，
-     * 而 `src/lib/flow-doc.ts` 通篇靠 `value instanceof Y.Map` 判断节点结构 ——
+     * 而 `@shadecn/shared/flow-doc`（packages/shared，以源码形式进 bundle）通篇靠
+     * `value instanceof Y.Map` 判断节点结构 ——
      * 静默失效的话，画布会变成一张空图。
      * y-protocols 同理（awareness 也做 instanceof 检查）。
+     *
+     * shared 包里的 `import 'yjs'` 是从 packages/shared/ 起解析的（yjs 在那里是 peer +
+     * dev 依赖）；dedupe 让它和这里的、provider 的一样，都落到同一份 yjs 上。
      */
     dedupe: ['yjs', 'y-protocols'],
   },
@@ -56,15 +60,17 @@ export default defineConfig({
       .filter(Boolean),
   },
   build: {
-    // 前端产物直接落进后端的静态资源目录：output/ 里就是一份完整可跑的东西
-    outDir: path.resolve(__dirname, 'output/public'),
+    // 前端产物直接落进后端的静态资源目录：output/ 里就是一份完整可跑的东西。
+    // output/ 在仓库根（不在 apps/web 下），所以往上走两层；emptyOutDir 必须显式 true，
+    // 否则 outDir 在 root 之外时 Vite 只告警、不清空旧产物
+    outDir: path.resolve(__dirname, '../../output/public'),
     emptyOutDir: true,
     rollupOptions: {
       /**
        * 两个 HTML 入口，不是一个 SPA。
        *
        * `login.html` 必须独立成一个入口，因为**未登录时后端不发 `index.html`**
-       * （页面闸门只放行 `/login` 这一次导航，见 server/frontend/guard.ts）——
+       * （页面闸门只放行 `/login` 这一次导航，见 apps/server/frontend/guard.ts）——
        * 登录页要是长在 SPA 里，就成了「要先进应用才能登录」。
        *
        * 共享部分（Vue、shadcn 组件、Tailwind 主题变量）由 rollup 提成公共 chunk，
@@ -90,7 +96,7 @@ export default defineConfig({
        *
        * 触发之后不要靠 manualChunks 去把它们塞进同一个 chunk —— 那只是把环藏起来。
        * 断环：让被引的那一侧变成不 import 任何东西的叶子模块
-       * （`src/composables/flow/editor-context.ts`、`src/components/flow/node-constants.ts`
+       * （`apps/web/src/composables/flow/editor-context.ts`、`apps/web/src/components/flow/node-constants.ts`
        * 就是这么来的）。
        */
       onwarn(warning, defaultHandler) {
@@ -106,6 +112,6 @@ export default defineConfig({
   },
 })
 
-// 注意：dev 时不再由 vite 自己起服务，而是被 server/frontend/dev.ts 以中间件模式挂到
+// 注意：dev 时不再由 vite 自己起服务，而是被 apps/server/frontend/dev.ts 以中间件模式挂到
 // Node 后端上（`pnpm dev`），所以这里不需要 proxy —— /api、/ws/collaboration 本来就同源同端口。
 // 这份配置只剩两个用途：被 `vite build` 读取，以及被中间件模式的 createServer 读取。

@@ -70,7 +70,7 @@ describe('页面闸门', () => {
 /**
  * 登录页的**页面本体**已经不在服务端了 —— 它是 `login.html` 这个 Vite 入口，
  * 由前端层（dev 的 Vite 中间件 / prod 的静态目录）发出来，内容归
- * `src/test/login/LoginPage.test.ts` 管。
+ * `apps/web/src/test/login/LoginPage.test.ts` 管。
  *
  * 这里只剩服务端那两条职责：匿名放得进去、已登录的别停在这儿。
  */

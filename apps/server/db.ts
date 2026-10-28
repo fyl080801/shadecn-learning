@@ -7,10 +7,10 @@ import { PrismaClient } from './generated/prisma/client.ts'
  * （解析规则见 config.ts），这里只负责挑对应的 adapter。
  *
  * 两个 adapter 都是**动态** import：构建产物是绑定 provider 的（生成的 client 里编译
- * 进去的查询编译器就一套），scripts/build-server.mjs 会把用不上的那个 adapter 从运行时
+ * 进去的查询编译器就一套），apps/server/scripts/build-server.mjs 会把用不上的那个 adapter 从运行时
  * 依赖里剔掉 —— 写成静态 import 的话，被剔掉的包会变成顶层依赖，生产一启动就找不到模块。
  *
- * 生成的 client 在 server/generated/prisma（gitignore 了，`pnpm db:generate` 生成）。
+ * 生成的 client 在 apps/server/generated/prisma（gitignore 了，`pnpm db:generate` 生成）。
  * 两种 provider 共用同一份模型定义，生成出来的类型一致，所以业务代码不分叉。
  *
  * dev 下 tsx watch 会反复重新加载模块，挂到 globalThis 上避免连接越开越多。

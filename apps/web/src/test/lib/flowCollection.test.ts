@@ -7,11 +7,11 @@ import {
   readCollection,
   spreadCollection
 } from "@/lib/flow-collection"
-import { defaultNodeData } from "@/types/flow"
+import { defaultNodeData } from "@shadecn/shared/flow-graph"
 
 /**
  * 「平铺分键」的纯函数半边 —— 一批会被各改各的元素怎么摊进 `data`。
- * 另一半（写和删同笔落进 Y.Doc）在 `src/test/stores/flow.test.ts`。
+ * 另一半（写和删同笔落进 Y.Doc）在 `apps/web/src/test/stores/flow.test.ts`。
  */
 
 const PREFIX = "dc.obj"

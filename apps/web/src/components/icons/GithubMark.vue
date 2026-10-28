@@ -6,7 +6,7 @@
  * github / gitlab / twitter 这类 brand 图标整类下架，只有旧的 `lucide-vue-next`
  * 还留着。为了一个图标把整个项目钉在旧包上不划算，所以这里内联一份。
  *
- * **全项目只有这一份**：登录页（`src/login/LoginPage.vue`）和设置页的
+ * **全项目只有这一份**：登录页（`apps/web/src/login/LoginPage.vue`）和设置页的
  * 「登录方式」卡片用的都是它。登录页曾经是服务端拼的 HTML 字符串、自带一份
  * 内联 SVG，搬进 `src/` 之后那处重复就没有了。
  *

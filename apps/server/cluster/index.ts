@@ -32,10 +32,10 @@ function swapBackend(next: ClusterBackend) {
 }
 
 /**
- * 挑实现。`server/index.ts` 在监听端口之前 await 它一次。
+ * 挑实现。`apps/server/index.ts` 在监听端口之前 await 它一次。
  *
  * 单副本模式下这函数什么也不做 —— Redis 那半连 import 都不会发生，
- * 所以构建产物里也不会出现 ioredis（`scripts/build-server.mjs` 从
+ * 所以构建产物里也不会出现 ioredis（`apps/server/scripts/build-server.mjs` 从
  * esbuild 的 external 反推依赖，动态 import 才有资格被摘掉）。
  */
 export async function initCluster(): Promise<void> {

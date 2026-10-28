@@ -15,7 +15,7 @@
 ### 2.1 运行方式
 
 - 开发用 `tsx watch` 直接跑 TypeScript；生产跑 esbuild 打包出来的 `output/server/index.js`，**不需要 tsx**（见 [REQ-DEPLOY](12-deployment.md)）。
-- 源码入口只有 `server/index.ts` 一个：`pnpm dev` 直接跑它，`pnpm start` 跑它的打包产物。
+- 源码入口只有 `apps/server/index.ts` 一个：`pnpm dev` 直接跑它，`pnpm start` 跑它的打包产物。
 - `NODE_ENV !== 'production'` 即视为开发环境。
 
 ### 2.2 启动顺序
@@ -61,7 +61,7 @@
 
 ### 2.7 API 路由约定
 
-- 一个资源一个 Hono 子应用，放在 `server/routes/`，统一挂到 `/api/*` 下。
+- 一个资源一个 Hono 子应用，放在 `apps/server/routes/`，统一挂到 `/api/*` 下。
 - 路由必须**链式书写**（`new Hono().get(...).post(...)`），这样导出的 `AppType` 才能被 `hc<AppType>()` 推断，前端可选地享受 RPC 类型。
 - 现有路由：
 
@@ -74,9 +74,9 @@
 
 ### 2.8 配置项
 
-`server/config.ts` 统一导出：`rootDir` / `outputDir` / `staticDir` / `isDev` / `port` / `host` / `isApiPath()` / `dataDir` / `databaseUrl` / `ensureDatabaseDir()` / `appOrigin` / `authConfig` / `authEnabled` / `assertAuthConfig()`。
+`apps/server/config.ts` 统一导出：`rootDir` / `outputDir` / `staticDir` / `isDev` / `port` / `host` / `isApiPath()` / `dataDir` / `databaseUrl` / `ensureDatabaseDir()` / `appOrigin` / `authConfig` / `authEnabled` / `assertAuthConfig()`。
 
-`rootDir`（应用根目录）来自 `server/runtime.ts`：源码运行是 `server/` 的上一级（仓库根），构建产物运行是进程 cwd —— 产物躺在 `output/` 下，拿 `output/` 当根会让 `data/` 和 prisma CLI 对不上。
+`rootDir`（应用根目录）来自 `apps/server/runtime.ts`：源码运行是 `apps/server/` 的上两级（仓库根；monorepo 之后源码挪进了 `apps/server`，但 `.env`、`data/`、`output/` 仍在仓库根），构建产物运行是进程 cwd —— 产物躺在 `output/` 下，拿 `output/` 当根会让 `data/` 和 prisma CLI 对不上。
 
 | 变量 | 默认值 |
 |---|---|
@@ -93,15 +93,15 @@
 
 ### 2.10 类型检查
 
-- `server/` 是**独立的 TS 工程**（`server/tsconfig.json`，Node 类型、无 DOM lib），由根 `tsconfig.json` 引用。
-- `server/` 内部的相对导入必须带 `.ts` 扩展名。
-- `pnpm typecheck:server` 单独检查这个工程。
+- `apps/server` 是**独立的 TS 工程**（`apps/server/tsconfig.json`，Node 类型、无 DOM lib），由根 `tsconfig.json` 引用（`apps/web`、`packages/shared` 同理）。
+- `apps/server/` 内部的相对导入必须带 `.ts` 扩展名。
+- `pnpm typecheck:server` 单独检查这个工程；共享包用 `pnpm typecheck:shared`。
 
 ## 3. 验收标准
 
 - [ ] `pnpm dev` 后只有一个进程、一个端口；`lsof` 看不到 24678。
 - [ ] 开发环境改前端源码触发 HMR，无需刷新页面。
-- [ ] 开发环境改 `server/` 源码触发进程重启。
+- [ ] 开发环境改 `apps/server/` 源码触发进程重启（`tsx watch` 带 `--exclude '../web/node_modules/.vite-temp/**'`，否则 Vite 打包配置的临时文件会触发无限重启）。
 - [ ] `pnpm preview`（build + 生产模式启动）后，直接访问 `/three-editor` 这类深层路由能正确返回页面而不是 404。
 - [ ] 生产模式下进程内没有加载 Vite（依赖被 prune 掉也能启动）。
 - [ ] `GET /api/health` 免登录可访问；`GET /api/notes` 未登录返回 401。

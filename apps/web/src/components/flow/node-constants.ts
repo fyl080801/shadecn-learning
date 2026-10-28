@@ -8,7 +8,8 @@
  * 环在 `pnpm dev` 下看不出来（原生 ESM 有 live binding，用到的时候早初始化完了），
  * 但 rollup 打包会把它们摊平进不同 chunk 并**自己挑一个求值顺序**，挑错就是线上那句
  * `ReferenceError: Cannot access 'XX' before initialization` —— 整个画布编辑器白屏。
- * 所以常量单独放一层叶子：谁都可以引它，它谁都不引。
+ * 所以常量单独放一层叶子：谁都可以引它，它只引 `@shadecn/shared/flow-graph` ——
+ * 那也是一片不 import 任何东西的叶子，环带不进来。
  *
  * 对外仍然从 `node-types.ts` re-export，「加一种节点只动注册表那一个文件」这条不变。
  */
@@ -44,7 +45,8 @@ export const NEW_NODE_TYPE = "text"
 /**
  * 认不出 `type` 时按哪种节点渲染。
  *
- * 必须和 `fromYNode` 里那个兜底值一致（都是 `process`）—— 老画布里的节点写的就是它，
- * 换成别的会让既有内容换一副样子。
+ * 必须和 `fromYNode` 读到缺失 `type` 时给的兜底值是同一个（`process`）—— 老画布里的
+ * 节点写的就是它，换成别的会让既有内容换一副样子。所以不在这里另写字面量，
+ * 直接转出 shared 里 `fromYNode` 用的那一个。
  */
-export const FALLBACK_NODE_TYPE = "process"
+export { FALLBACK_NODE_TYPE } from "@shadecn/shared/flow-graph"

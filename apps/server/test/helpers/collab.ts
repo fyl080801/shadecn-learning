@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { applyGraphToDoc } from '../../collab/flow-doc.ts'
+import { applyGraphToDoc } from '@shadecn/shared/flow-doc'
 import {
   flushCollabWrites,
   forgetFlow,
@@ -7,7 +7,7 @@ import {
   roomOf,
   storeFlowState,
 } from '../../collab/persistence.ts'
-import type { FlowGraph } from '../../store/flow-types.ts'
+import type { FlowGraph } from '@shadecn/shared/flow-graph'
 
 /**
  * 画布内容的测试入口。

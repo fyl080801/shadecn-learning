@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { authorizeCollab } from '../../auth/ws.ts'
-import { nodesMap } from '../../collab/flow-doc.ts'
+import { nodesMap } from '@shadecn/shared/flow-doc'
 import { forgetFlow, roomOf } from '../../collab/persistence.ts'
 import { COLLAB_LIMITS } from '../../collab/quota.ts'
 import type { ProjectSummary } from '../../store/projects.ts'

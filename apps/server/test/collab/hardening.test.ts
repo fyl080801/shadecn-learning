@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { edgesMap, nodesMap, pruneDanglingEdges } from '../../collab/flow-doc.ts'
+import { edgesMap, nodesMap } from '@shadecn/shared/flow-doc'
+import { pruneDanglingEdges } from '../../collab/flow-doc.ts'
 import {
   BYTES_CHECK_INTERVAL_OVERSIZED,
   COLLAB_LIMITS,

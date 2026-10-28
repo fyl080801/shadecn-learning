@@ -16,8 +16,10 @@ import { TEST_DATABASE_URL, TEST_DATA_DIR, TEST_DB_PROVIDER } from './paths.ts'
  *   所以 `TEST_DATABASE_URL` 必须指向专用测试库，别指生产。
  */
 export default function setup() {
-  const repoRoot = path.resolve(import.meta.dirname, '../..')
-  const prismaBin = path.join(repoRoot, 'node_modules/.bin/prisma')
+  // prisma CLI 装在后端包里，也在后端包目录下跑（prisma.config.ts 在那儿；
+  // 它自己会去仓库根读 .env、按仓库根解析相对路径）
+  const serverDir = path.resolve(import.meta.dirname, '..')
+  const prismaBin = path.join(serverDir, 'node_modules/.bin/prisma')
 
   if (TEST_DB_PROVIDER === 'sqlite') {
     rmSync(TEST_DATA_DIR, { recursive: true, force: true })
@@ -33,7 +35,7 @@ export default function setup() {
 
   const run = (args: string[]) => {
     try {
-      execFileSync(prismaBin, args, { cwd: repoRoot, stdio: 'pipe', env })
+      execFileSync(prismaBin, args, { cwd: serverDir, stdio: 'pipe', env })
     } catch (err) {
       const detail = err as { stdout?: Buffer; stderr?: Buffer }
       console.error(detail.stdout?.toString(), detail.stderr?.toString())
@@ -44,7 +46,7 @@ export default function setup() {
   // 生成的 client 跟 provider 绑定（连查询编译器都是 sqlite / postgres 两套 wasm）：
   // 上一轮如果在另一种库上跑过，这里躺着的就是另一种 client。只在对不上时重新生成，
   // 免得每轮测试都白等一次 generate。
-  const providerBefore = generatedProvider(repoRoot)
+  const providerBefore = generatedProvider(serverDir)
   if (providerBefore !== TEST_DB_PROVIDER) run(['generate'])
 
   // Prisma 7 的 db push 不再自动 generate（也没有 --skip-generate 这个选项了），
@@ -57,7 +59,7 @@ export default function setup() {
   if (TEST_DB_PROVIDER !== 'sqlite') args.push('--accept-data-loss')
   run(args)
 
-  // 上面那次 generate 是**破坏性**的：server/generated/prisma 只有一份，改成测试用的
+  // 上面那次 generate 是**破坏性**的：apps/server/generated/prisma 只有一份，改成测试用的
   // provider 之后，.env 配的是另一种库的开发者就没法跑了 —— `pnpm dev` 会按 .env 挑
   // adapter，撞上另一种 provider 的 client，直接 PrismaClientInitializationError
   // （"The Driver Adapter `@prisma/adapter-pg` … is not compatible with the provider
@@ -70,7 +72,7 @@ export default function setup() {
       delete devEnv.DATABASE_URL
       delete devEnv.DB_PROVIDER
       try {
-        execFileSync(prismaBin, ['generate'], { cwd: repoRoot, stdio: 'pipe', env: devEnv })
+        execFileSync(prismaBin, ['generate'], { cwd: serverDir, stdio: 'pipe', env: devEnv })
       } catch (err) {
         // 还原失败不该让整轮测试变红（测试本身已经跑完了），提示一句让人手动补上
         console.error(
@@ -83,10 +85,10 @@ export default function setup() {
 }
 
 /** 现在生成出来的 client 是哪种库的；没生成过就返回 null */
-function generatedProvider(repoRoot: string): string | null {
+function generatedProvider(serverDir: string): string | null {
   try {
     const source = readFileSync(
-      path.join(repoRoot, 'server/generated/prisma/internal/class.ts'),
+      path.join(serverDir, 'generated/prisma/internal/class.ts'),
       'utf8',
     )
     return /"activeProvider":\s*"([^"]+)"/.exec(source)?.[1] ?? null

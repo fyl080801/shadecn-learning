@@ -24,7 +24,7 @@ import type { FlowPresence } from "./useFlowPresence"
 import type { FlowSelection } from "./useFlowSelection"
 import { useFlowSnapping } from "./useFlowSnapping"
 import type { useFlowStore } from "@/stores/flow"
-import { defaultEdgeData, type FlowEdge, type FlowNode } from "@/types/flow"
+import { defaultEdgeData, type FlowEdge, type FlowNode } from "@shadecn/shared/flow-graph"
 
 type FlowStore = ReturnType<typeof useFlowStore>
 
@@ -53,7 +53,7 @@ const CASCADE_COUNT = 6
  *   翻译成 Vue Flow 认得的只读标记。
  *
  * 占用（谁选中了就归谁）的规则对**节点和边完全一致**，差异只在各自多挡一样东西：
- * 节点多挡「从它连出线」，边多挡「改端点」。规则本身在 `src/lib/presence.ts`。
+ * 节点多挡「从它连出线」，边多挡「改端点」。规则本身在 `apps/web/src/lib/presence.ts`。
  *
  * `useVueFlow()` 在这里调用（即编辑器根组件的 setup），后面渲染的 `<VueFlow>`
  * 会接管同一个实例 —— 所以工具栏、胶囊这些不在画布内部的组件也能拿到
@@ -588,7 +588,7 @@ export function useFlowCanvas(
   /**
    * 在画布中心加一个节点，返回它的 id（画布还没挂载好时返回 null）。
    *
-   * 长什么样由**节点类型注册表**说了算（`src/components/flow/node-types.ts`）——
+   * 长什么样由**节点类型注册表**说了算（`apps/web/src/components/flow/node-types.ts`）——
    * 这里不认识任何具体类型，加一种节点不用改这个函数。
    */
   async function addNode(type: string = NEW_NODE_TYPE): Promise<string | null> {

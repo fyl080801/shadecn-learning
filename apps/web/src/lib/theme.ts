@@ -4,7 +4,7 @@ import { useColorMode } from "@vueuse/core"
 /**
  * 主题：深色 / 浅色 / 跟随系统。
  *
- * 配色本身早就齐了 —— `src/styles/tailwind.css` 里 `:root` 和 `.dark` 两套变量是
+ * 配色本身早就齐了 —— `apps/web/src/styles/tailwind.css` 里 `:root` 和 `.dark` 两套变量是
  * shadcn 带来的，`@custom-variant dark (&:is(.dark *))` 也在。缺的只是**没人往
  * `<html>` 上加那个 `.dark` 类**，所以这里做的就是这一件事。
  *

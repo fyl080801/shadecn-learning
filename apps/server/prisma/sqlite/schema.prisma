@@ -5,7 +5,7 @@
 // 改模型改 ../models/*.prisma，这里永远不用动。
 //
 // datasource 里没有 url：Prisma 7 不允许把连接串写在 schema 里，
-// CLI 的连接串来自 prisma.config.ts，运行时来自 server/db.ts 的 driver adapter。
+// CLI 的连接串来自 prisma.config.ts，运行时来自 apps/server/db.ts 的 driver adapter。
 //
 // 为什么必须是两份而不是一份：Prisma 的 datasource.provider 只接受字面量
 // （`env()` 被明确禁止，2.2 的 `provider = [...]` 数组写法已废弃），
@@ -13,7 +13,7 @@
 
 generator client {
   provider = "prisma-client"
-  output   = "../../server/generated/prisma"
+  output   = "../../generated/prisma"
 }
 
 datasource db {

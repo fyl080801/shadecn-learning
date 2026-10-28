@@ -1,4 +1,4 @@
-import type { FlowNodeData } from "@/types/flow"
+import type { FlowNodeData } from "@shadecn/shared/flow-graph"
 
 /**
  * 「平铺分键」—— 一批会被各人各改各的元素，怎么放进节点的 `data`。
@@ -21,7 +21,7 @@ import type { FlowNodeData } from "@/types/flow"
  * 2. **key 更细**（本模块）—— `data` 仍然是**一层** Y.Map、值仍然全是普通 JSON，
  *    只是把一批元素摊成 `<前缀>.<id>` 这样一串平级的键。
  *
- * 第二条对 CRDT 层完全不可见：`toYNode` / `fromYNode`（含服务端那份）一行不用改，
+ * 第二条对 CRDT 层完全不可见：`toYNode` / `fromYNode`（前后端共用 `@shadecn/shared/flow-doc` 那一份）一行不用改，
  * `duplicateNode` 的「投影 → structuredClone → toYNode」照跑，服务端连知道都不用知道。
  * 老客户端读到一堆不认识的键，`normalizeNodeData` 原样透传 —— 现有代码已经是这个行为。
  * 所谓 schema 退化成一个**命名约定**，而命名约定的版本兼容就是普通的读时兼容
@@ -42,7 +42,7 @@ import type { FlowNodeData } from "@/types/flow"
  * ## 粒度到哪儿为止
  *
  * 拆到「一个元素一个键」就够，不必再往元素内部拆。两个人同时改**同一个元素**
- * 仍然只剩一边 —— 那一格靠占用锁（`src/lib/presence.ts`，已实现未启用），不靠 CRDT：
+ * 仍然只剩一边 —— 那一格靠占用锁（`apps/web/src/lib/presence.ts`，已实现未启用），不靠 CRDT：
  * 两人同时摆同一个 3D 角色，就算合并得再干净，交互本身也是混乱的，那里要的是排他。
  *
  * 同理，**拖动中的中间态不要往这里写**，和节点拖动一条规矩（见 `useFlowCanvas`）：

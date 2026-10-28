@@ -1,8 +1,10 @@
 import * as Y from 'yjs'
+import { applyGraphToDoc } from '@shadecn/shared/flow-doc'
+import { FLOW_ROOM_PREFIX } from '@shadecn/shared/collab'
 import { bytesCodec, sharedMap } from '../cluster/index.ts'
 import { prisma } from '../db.ts'
 import { GRAPH_LIMITS, readGraph } from '../store/flow-types.ts'
-import { applyGraphToDoc, readGraphFromDoc } from './flow-doc.ts'
+import { readGraphFromDoc } from './flow-doc.ts'
 
 /**
  * 把画布房间的 Yjs 状态落到应用自己的库里（SQLite / PostgreSQL 都行）。
@@ -16,10 +18,10 @@ import { applyGraphToDoc, readGraphFromDoc } from './flow-doc.ts'
  * 我们只负责「存什么、怎么存」。
  */
 
-/** 画布房间的前缀；别的房间（演示用）不落库 */
-const FLOW_ROOM_PREFIX = 'flow:'
-
-/** 房间名 → 画布 id；不是画布房间返回 null */
+/**
+ * 房间名 → 画布 id；不是画布房间返回 null。
+ * 前缀 `FLOW_ROOM_PREFIX` 和前端拼房间名用的是同一个常量；别的房间（演示用）不落库。
+ */
 export function flowIdOf(documentName: string): string | null {
   return documentName.startsWith(FLOW_ROOM_PREFIX)
     ? documentName.slice(FLOW_ROOM_PREFIX.length)

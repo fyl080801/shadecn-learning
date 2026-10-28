@@ -6,7 +6,7 @@
 
 核心命题：不引入 Slate / ProseMirror / Tiptap，自己实现一套够用的编辑内核，并把所有"能插什么、怎么渲染、怎么序列化"的决定权交给**插件**。
 
-演示页：`/richeditor`。方法级接口契约见 `src/components/prompt-input/API.md`（**新增或修改导出必须同步更新该文档**）。
+演示页：`/richeditor`。方法级接口契约见 `apps/web/src/components/prompt-input/API.md`（**新增或修改导出必须同步更新该文档**）。
 
 ## 2. 关键设计约束
 
@@ -54,7 +54,7 @@
 
 ### 3.5 可编辑内联块
 
-内联 void 节点可以声明 `data-inline-editable`，表示"我自己处理输入"，外层引擎跳过默认处理。行内代码插件（`src/components/inline-code/`）就是这个能力的样例：
+内联 void 节点可以声明 `data-inline-editable`，表示"我自己处理输入"，外层引擎跳过默认处理。行内代码插件（`apps/web/src/components/inline-code/`）就是这个能力的样例：
 
 - 文本形态是 Markdown 风格的 `` `code` ``；
 - 块内可直接点击编辑，但**禁止换行**；

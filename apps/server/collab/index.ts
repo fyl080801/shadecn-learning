@@ -23,4 +23,5 @@ export {
   roomOf,
   storeFlowState,
 } from './persistence.ts'
-export { applyGraphToDoc, readGraphFromDoc } from './flow-doc.ts'
+export { readGraphFromDoc } from './flow-doc.ts'
+export { applyGraphToDoc } from '@shadecn/shared/flow-doc'

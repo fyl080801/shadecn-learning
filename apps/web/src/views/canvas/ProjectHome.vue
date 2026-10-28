@@ -49,7 +49,7 @@ import { useAuth } from "@/lib/auth"
 import { usePageTitle } from "@/composables/usePageTitle"
 import { useAsyncAction } from "@/composables/useAsyncAction"
 import { formatDateTime } from "@/lib/format"
-import type { ProjectInviteView, ProjectMemberView, ProjectSummary } from "@/types/flow"
+import type { ProjectInviteView, ProjectMemberView, ProjectSummary } from "@shadecn/shared/canvas"
 
 /**
  * 项目主页 —— **一个路由搞定**：固定的项目头部 + 同页 Tab（画布 / 成员）。

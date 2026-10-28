@@ -25,7 +25,7 @@ import type { FlowSync } from "./sync"
  *
  * 这一层只管「谁在、在哪、在动谁」：光标、选中、拖动中的几何、正在拉的线。
  * 它们全都易失、断线即消失、丢一帧无所谓（下一帧覆盖），因此**绝不落库**。
- * 画布内容是另一层，直接住在 Y.Doc 里（见 `src/lib/presence.ts` 顶部的两层对照表）。
+ * 画布内容是另一层，直接住在 Y.Doc 里（见 `apps/web/src/lib/presence.ts` 顶部的两层对照表）。
  *
  * 这个 composable **不认识 selection、也不认识 Vue Flow**：它只提供
  * 「上报」和「读别人」两组能力，本地状态怎么接进来由 `useFlowCanvas` 负责。
@@ -34,7 +34,7 @@ import type { FlowSync } from "./sync"
  *
  * awareness 的内容完全由客户端自己写、服务端只做转发，因此对收到的数据一律当
  * 不可信输入解析（`readPeer`），颜色也在本地按 id 重算而不是照抄对方上报的。
- * 真正的边界在握手那一步：`server/auth/ws.ts` 只放项目成员进这个房间。
+ * 真正的边界在握手那一步：`apps/server/auth/ws.ts` 只放项目成员进这个房间。
  */
 
 export function useFlowPresence(sync: FlowSync) {
@@ -208,7 +208,7 @@ export function useFlowPresence(sync: FlowSync) {
    *
    * ⚠️ **画布当前没有接这条线** —— 占用（一个人在编辑时别人不能碰）已经从交互上摘掉，
    * 谁都可以同时改同一样东西，由 CRDT 负责合并。仲裁逻辑保留在这里和
-   * `src/lib/presence.ts`（有测试），要恢复限制只需在 `useFlowCanvas` 重新接上。
+   * `apps/web/src/lib/presence.ts`（有测试），要恢复限制只需在 `useFlowCanvas` 重新接上。
    */
   const lockedKeys = computed(() => computeLockedKeys(peers.value, localClientId.value))
 

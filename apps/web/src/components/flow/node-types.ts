@@ -4,7 +4,7 @@ import { Box, Frame, Type } from "@lucide/vue"
 import GroupNode from "@/components/flow/GroupNode.vue"
 import ProcessNode from "@/components/flow/ProcessNode.vue"
 import TextNode from "@/components/flow/TextNode.vue"
-import { defaultNodeData, type FlowNode, type FlowNodeData } from "@/types/flow"
+import { defaultNodeData, type FlowNode, type FlowNodeData } from "@shadecn/shared/flow-graph"
 import {
   FALLBACK_NODE_TYPE,
   GROUP_DEFAULT_BACKGROUND,
@@ -30,7 +30,7 @@ export {
  * 节点类型注册表 —— **加一种节点只动这一个文件**。
  *
  * 节点的业务种类就是它顶层的 `type`（v2 起 `data.kind` 已经并进来了，见
- * `src/types/flow.ts`），这张表的键即是它：由谁渲染、菜单里叫什么、新建时长什么样，
+ * `@shadecn/shared/flow-graph`），这张表的键即是它：由谁渲染、菜单里叫什么、新建时长什么样，
  * 全在一处说清楚。画布（`FlowCanvas.vue`）、工具栏（`FlowToolbar.vue`）和
  * 新建逻辑（`useFlowCanvas.addNode`）都从这里取，没有第二处硬编码。
  *

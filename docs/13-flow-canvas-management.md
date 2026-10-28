@@ -29,7 +29,7 @@
 | 分享链接 / Invite | 一个带随机 token 的链接，是加入项目的唯一入口；一个项目只有一条 |
 | 画布 / Flow | 一张图，列表里的一行，编辑器里的一个文档 |
 | 图内容 / Graph | 画布的全量内容：`nodes` + `edges` + `viewport`。现在它是 **Y.Doc 的只读投影**，不再是事实源 |
-| 文档 / Y.Doc | 画布内容的唯一事实源，形状见 `src/lib/flow-doc.ts`（服务端镜像在 `server/collab/flow-doc.ts`） |
+| 文档 / Y.Doc | 画布内容的唯一事实源，形状见 `@shadecn/shared/flow-doc`（`packages/shared`，前后端共用一份；前端增量投影在 `apps/web/src/lib/flow-projection.ts`，服务端专属操作在 `apps/server/collab/flow-doc.ts`） |
 | 更新 / Update | Yjs 的一段增量二进制。它是可交换、可结合、幂等的 —— 这正是不需要乐观锁的原因 |
 | 事务 / Transaction | 一次 `Y.Doc.transact()`。带 `LOCAL_ORIGIN` 的才进撤销栈，别人同步过来的不进 |
 | 修订号 / revision | 服务端写过多少次全量状态的计数。**不是乐观锁**，没有人拿它做冲突判断 |
@@ -92,7 +92,7 @@ interface ProjectInvite {
 }
 ```
 
-**未登录用户点开分享链接是可用的**：`/invite/<token>` 是普通页面路径，会被 `server/frontend/guard.ts` 拦下并 302 到 `/login?redirect=/invite/<token>`，登录完自动跳回，落在「确认加入」界面上。这条路径不需要额外开白名单。
+**未登录用户点开分享链接是可用的**：`/invite/<token>` 是普通页面路径，会被 `apps/server/frontend/guard.ts` 拦下并 302 到 `/login?redirect=/invite/<token>`，登录完自动跳回，落在「确认加入」界面上。这条路径不需要额外开白名单。
 
 ### 3.4 画布列表项（`FlowSummary`）
 
@@ -155,7 +155,7 @@ interface FlowUserState {
 }
 ```
 
-加一个分区要动三处、都不改表：`src/types/flow.ts` 的 `FlowUserState` 加字段、服务端 `server/store/flow-types.ts` 的 `FLOW_USER_STATE_PARSERS` 加一条校验（**不认识的 key 一律 400** —— 这张表不是任意 KV）、前端 `store.setUserState('新字段', 值)`（攒批、失败重试、离开前落库都是现成的）。
+加一个分区要动三处、都不改表：`@shadecn/shared/flow-graph` 的 `FlowUserState` 加字段（前后端共用一份）、服务端 `apps/server/store/flow-types.ts` 的 `FLOW_USER_STATE_PARSERS` 加一条校验（它按 `FlowUserState` 的键做映射类型，漏加编译不过；**不认识的 key 一律 400** —— 这张表不是任意 KV）、前端 `store.setUserState('新字段', 值)`（攒批、失败重试、离开前落库都是现成的）。
 
 **视图状态自己不发请求。** `setUserState` 只把值记在本地队列里，真正落库由 `noteLocalEdit()` 触发 —— 每次本地编辑（`mutate` / `undo` / `redo`）都会叫它一声，节奏是**先立刻发一次，再防抖收尾**：空闲之后的第一次编辑当场就走（leading，不等窗口），这之后的改动交给 `useDebounceFn`，手停下来 `USER_STATE_FLUSH_DELAY`（2s）补齐最后的状态，一直不停手则由 `maxWait`（`USER_STATE_FLUSH_MAX_WAIT`，10s）顶上去。于是：只看不改的一次访问**零写流量**；一串连续操作合成开头一发加收尾一发；**没有哪次改动被丢掉**。纯防抖不行是因为它有滞后（手不停就一直不发，而这趟还兼着会话心跳，见下），纯节流又会把窗口内最后那截改动整个丢掉。只有一次编辑时收尾那发发现没东西可送，不会白跑一趟。这条设计的由来：画布内容改走 Yjs 之后，视口若还自己起定时器，它就成了整个编辑器**唯一**的周期性 HTTP 请求 —— 看一眼画布就一路 PATCH 上去。
 
@@ -177,7 +177,7 @@ interface FlowGraph {
 > **v1 → v2 是就地升级，不是拒收。** v1 把业务种类放在 `data.kind`、业务字段裹在 `data.config` 里、`ports` 是每个节点都有的空壳；v2 把种类并进顶层 `type`、业务字段平铺到 `data` 上、每个节点带 `status`（见 3.7）。`parseGraph()` 读到 v1 会当场升级再返回，**这一条是硬要求**：存量 `Flow.graph` 全是 v1，而老画布进 Yjs 的唯一入口 `loadFlowState()` 靠 `readGraph()` —— 那里读不出内容就返回 `null`，等于第一次打开老画布就把它清空。Y.Doc 里的老节点没有版本号可查，靠形状认（同时有字符串 `kind` 和对象 `config`），只在**读**的一侧升级，纯函数、幂等、不回写文档：投影里写文档会凭空产生一次 Yjs 事务，进别人的撤销栈并广播出去。
 
 **这个形状还在，但它的地位变了。** 原本 `graph` 是画布内容的事实源，客户端算好整份快照 `POST` 上来覆盖。
-现在事实源是 `Flow.ydoc`，`graph` 由服务端在写状态时**从文档里派生**出来（`server/collab/flow-doc.ts` 的 `readGraphFromDoc`），
+现在事实源是 `Flow.ydoc`，`graph` 由服务端在写状态时**从文档里派生**出来（`apps/server/collab/flow-doc.ts` 的 `readGraphFromDoc`），
 只服务于三件事：列表页的节点/连线计数、缩略图、将来的只读预览。**编辑器一行都不读它**，
 任何写接口也都不接受它 —— 客户端手里那份始终只是某一时刻的快照，拿它覆盖就会抹掉并发的编辑。
 
@@ -229,7 +229,7 @@ interface FlowPort {
 }
 ```
 
-**`type` 就是业务种类**，v1 里那个和它恒等的 `data.kind` 已经并进来了 —— 两个字段说同一件事，留着只会分叉。它同时是**节点类型注册表**（`src/components/flow/node-types.ts`）的键：由谁渲染、菜单里叫什么、新建时铺什么默认字段，全在注册表里一处说清楚，画布和 `addNode()` 都从那儿取。加一种节点只改注册表这一个文件，既有代码一行不动。
+**`type` 就是业务种类**，v1 里那个和它恒等的 `data.kind` 已经并进来了 —— 两个字段说同一件事，留着只会分叉。它同时是**节点类型注册表**（`apps/web/src/components/flow/node-types.ts`）的键：由谁渲染、菜单里叫什么、新建时铺什么默认字段，全在注册表里一处说清楚，画布和 `addNode()` 都从那儿取。加一种节点只改注册表这一个文件，既有代码一行不动。
 
 底部工具栏**不按这张表铺一排按钮**：类型会越加越多，一整排图标既认不出来也放不下。新增节点收成**一枚加号**，建哪种由 `NEW_NODE_TYPE` 说了算 —— 当前是**文本节点**（一张卡片，双击正文就地编辑；正文存在 `data.text`，自己占一个 key，所以一个人改标题、另一个人改正文不会互相盖掉）。注意它和 `FALLBACK_NODE_TYPE`（`process`，认不出的 `type` 按它渲染）是两件事，后者必须和 `fromYNode` 的兜底值一致，否则老画布会换一副样子。
 
@@ -241,7 +241,7 @@ interface FlowPort {
 
 功能越加越复杂，迟早有节点要装**一批元素**而不是几个标量 —— 3D 场景里的一串角色和机位、时间轴上的一堆轨道和关键帧、一个资源列表。把它们塞进 `data` 的**一个**键（`data.scene = { objects: [...] }`）会让这批元素共用一个合并单位：甲摆角色 A、乙同时摆角色 B，后到的那次整块盖掉。这和 v1 把业务字段裹在 `config` 里是同一个 bug，只是下沉了一层。
 
-**做法：`data` 仍然是一层 Y.Map、值仍然全是普通 JSON，把这批元素摊成 `<前缀>.<id>` 这样一串平级的键。** 工具在 `src/lib/flow-collection.ts`（`collectionKey` / `readCollection` / `spreadCollection` / `collectionKeys`），写和删同笔落库走 `store.writeNodeData(id, { set, remove })`。
+**做法：`data` 仍然是一层 Y.Map、值仍然全是普通 JSON，把这批元素摊成 `<前缀>.<id>` 这样一串平级的键。** 工具在 `apps/web/src/lib/flow-collection.ts`（`collectionKey` / `readCollection` / `spreadCollection` / `collectionKeys`），写和删同笔落库走 `store.writeNodeData(id, { set, remove })`。
 
 **为什么不是把 `scene` 变成嵌套的 `Y.Map`**（那样合并粒度最细，一次改动的 update 只有几十字节）：因为它把**结构**搬进了 CRDT 层。Y.Doc 没有版本号，新老客户端会同时往同一个 key 上写**不同的类型**——实测两个方向都跑过：赢家由 clientID 决定（等于随机），输家的整棵子树直接消失，而且输的那一方的代码当场 `TypeError`。这不是「读不懂就透传」能兜住的：读时升级（`upgradeNodeData` 那套）只对**形状**有效，对**类型**无效。平铺分键则对 CRDT 层完全不可见——`toYNode` / `fromYNode`（含服务端那份）一行不用改，`duplicateNode` 照跑，服务端连知道都不用知道，老客户端读到一堆不认识的键原样透传。所谓 schema 退化成一个**命名约定**，而命名约定的版本兼容就是普通的读时兼容（换前缀就两个都认一段时间）。
 
@@ -269,7 +269,7 @@ interface FlowPort {
 
 **规则：本地草稿全程接管画面；想让别人看见就把草稿节流发到 awareness；只在手势结束时写一次文档，前后 `separateUndo()` 夹住。**
 
-**没有「松手」的那类（就地改标题、写正文）不用自己写这套样板**，用 `useDraftField`（`src/composables/flow/useDraftField.ts`）：
+**没有「松手」的那类（就地改标题、写正文）不用自己写这套样板**，用 `useDraftField`（`apps/web/src/composables/flow/useDraftField.ts`）：
 
 ```ts
 const title = useDraftField<string>({
@@ -295,7 +295,7 @@ const title = useDraftField<string>({
 3. **手势结束必须清干净。** awareness 的 local state 每 15s 会被 y-protocols 全量重播一次（`outdatedTimeout / 2`，也正是靠它撑住连接不超时），草稿留着不清就是每人每 15 秒重播一份废数据，人越多越贵。`clearTransform()` 除了清还**绕过节流立刻发一次**，这个细节也要照抄。
 4. **节流两端都要开。** `useThrottleFn(fn, ms, trailing, leading)` —— leading 保证第一帧立刻发、跟手，trailing 保证窗口末尾补发。**trailing 不能省**：awareness 是 last-writer-wins 的**状态**而不是事件流，所以丢中间的包完全无害（最后一包携带完整当前状态），但**丢最后一包就是错的**。
 
-   也正因为是状态而非事件，降帧率**只损失流畅度、不损失正确性** —— 真正不能丢的那些（落定的位置、提交的值）根本不走这条路，走的是 Y.Doc。这条性质就是「窗口跟着人数走」能成立的前提：`ms` 是个 getter（`feedbackThrottle(roomSize)`，在 `src/lib/presence.ts`），VueUse 的过滤器每次调用都 `toValue(ms)` 重读，所以人进人出时窗口自动跟着变、不用重建节流函数。`FEEDBACK_THROTTLE_ROOM`（6 人）以内返回原来那个 40ms —— 真实房间基本都在这一档，**行为和以前完全一样**；再多就阶梯放大，封顶在 `FEEDBACK_THROTTLE_MAX`（约 6fps，再稀对方的光标看着就像卡死了，那还不如别发）。
+   也正因为是状态而非事件，降帧率**只损失流畅度、不损失正确性** —— 真正不能丢的那些（落定的位置、提交的值）根本不走这条路，走的是 Y.Doc。这条性质就是「窗口跟着人数走」能成立的前提：`ms` 是个 getter（`feedbackThrottle(roomSize)`，在 `apps/web/src/lib/presence.ts`），VueUse 的过滤器每次调用都 `toValue(ms)` 重读，所以人进人出时窗口自动跟着变、不用重建节流函数。`FEEDBACK_THROTTLE_ROOM`（6 人）以内返回原来那个 40ms —— 真实房间基本都在这一档，**行为和以前完全一样**；再多就阶梯放大，封顶在 `FEEDBACK_THROTTLE_MAX`（约 6fps，再稀对方的光标看着就像卡死了，那还不如别发）。
 
    ⚠️ **这条曲线是判断，不是实测出来的**，而且如上一条所说它是**二阶**的 —— 包大小的影响能压过它一个量级。真要调，改那三个常量一处即可。
 
@@ -366,7 +366,7 @@ interface FlowEdge {
 
 仍然成立的两条约定：
 
-- 客户端生成的 id（节点 / 连线）统一走 `src/lib/id.ts` 的 `createId(prefix)`，形如 `<前缀>_<时间戳 base36>_<随机段>`。随机段不能省：两个客户端可能在同一毫秒各加一个节点，只靠时间戳会撞出同一个 id，在 CRDT 里就会被合并成同一个对象。
+- 客户端生成的 id（节点 / 连线）统一走 `apps/web/src/lib/id.ts` 的 `createId(prefix)`，形如 `<前缀>_<时间戳 base36>_<随机段>`。随机段不能省：两个客户端可能在同一毫秒各加一个节点，只靠时间戳会撞出同一个 id，在 CRDT 里就会被合并成同一个对象。
 - **拖动的中间态不进文档**：一次拖拽只在 `onNodeDragStop` 提交落点，途中的位置走反馈层（awareness）。否则拖一下就是几十次更新。
 - `viewport` 的变化**不是内容**：不进文档、不进撤销、不涨 `revision`，走的是 3.5.1 那条「按用户存」的路。
 
@@ -458,7 +458,7 @@ model Flow {
 
 /// 画布上「属于某个人」的视图状态：视口，以后还有面板开合、个人偏好…
 /// 按 key 分区存 JSON 字符串 —— 加一种要存的东西 = 加一个 key，不用改表。
-/// 合法的 key 与各自的校验在 server/store/flow-types.ts 的 FLOW_USER_STATE_PARSERS。
+/// 合法的 key 与各自的校验在 apps/server/store/flow-types.ts 的 FLOW_USER_STATE_PARSERS。
 model FlowUserState {
   id        String   @id @default(cuid())
   flowId    String
@@ -573,7 +573,7 @@ model FlowUserState {
 
 **编辑器不是一个大组件**：`FlowEditor.vue` 只负责建上下文和摆组件，功能分在两层。
 
-- **hooks 层（`src/composables/flow/`）** —— `provideFlowEditor(props)` 建一份共享 payload 并 `provide` 出去，子组件 `useFlowEditor()` 取用，**不逐层传 props**。里面是三个各管一摊的 composable：
+- **hooks 层（`apps/web/src/composables/flow/`）** —— `provideFlowEditor(props)` 建一份共享 payload 并 `provide` 出去，子组件 `useFlowEditor()` 取用，**不逐层传 props**。里面是三个各管一摊的 composable：
   | composable | 管什么 |
   |---|---|
   | `useFlowDocument` | 加载元信息、改名、新建/复制/删除、同步状态文案、离开前 flush 视图状态 |
@@ -583,7 +583,7 @@ model FlowUserState {
   | `useFlowPresence` | 反馈层：上报光标/选中/拖动几何，读别人的 |
   | `useFlowSnapping` | 拖动时的网格 / 辅助线吸附（见 4.4.3），两者都常开、无开关、无持久化状态 |
   依赖是一条直线：`selection`/`collab` → `presence` → `canvas`，只有 `useFlowCanvas` 同时认识这三者。另有 `useFlowShortcuts(ctx)` 管快捷键和离开前的 flush。
-- **组件层（`src/components/flow/`）** —— 一块界面一个组件，各自直接读上下文：`FlowCanvas`（画布本体，留了 `<slot/>` 给画布内浮层）、`FlowViewControls`（右上角控件 + 撤销/重做）、`FlowTitleCapsule`（左上角胶囊，自带删除确认）、`FlowToolbar`（底部工具栏）、`FlowSelectionToolbar`（框选一片时浮在选区上方的工具栏，目前放「打组」）、`ProcessNode` / `TextNode` / `GroupNode`（节点本体，只管自己长什么样）、`FlowNodeChrome`（每种节点共用的外壳：外部名字标签 + 单独选中时浮在正上方的工具栏，写一遍就够；按钮不一样的节点用 `#actions` 插槽换掉那一排，位置和露出时机仍由外壳说了算），`FlowSnapGuides`（拖动时的对齐辅助线），以及协同带来的三个：`FlowPresenceBar`（头像栏）、`FlowPresenceAvatar`、`FlowPresenceCursors`（别人的光标与正在拉的线）。
+- **组件层（`apps/web/src/components/flow/`）** —— 一块界面一个组件，各自直接读上下文：`FlowCanvas`（画布本体，留了 `<slot/>` 给画布内浮层）、`FlowViewControls`（右上角控件 + 撤销/重做）、`FlowTitleCapsule`（左上角胶囊，自带删除确认）、`FlowToolbar`（底部工具栏）、`FlowSelectionToolbar`（框选一片时浮在选区上方的工具栏，目前放「打组」）、`ProcessNode` / `TextNode` / `GroupNode`（节点本体，只管自己长什么样）、`FlowNodeChrome`（每种节点共用的外壳：外部名字标签 + 单独选中时浮在正上方的工具栏，写一遍就够；按钮不一样的节点用 `#actions` 插槽换掉那一排，位置和露出时机仍由外壳说了算），`FlowSnapGuides`（拖动时的对齐辅助线），以及协同带来的三个：`FlowPresenceBar`（头像栏）、`FlowPresenceAvatar`、`FlowPresenceCursors`（别人的光标与正在拉的线）。
 
 判据：**加一块新面板 / 新工具按钮，不应该需要改 `FlowEditor.vue` 或任何中间层** —— 新建组件、`useFlowEditor()` 取上下文、挂到模板上即可。
 - 快捷键：`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Delete` / `Backspace` 删除选中。**`Ctrl/Cmd+S` 只是拦住浏览器的「保存网页」对话框**，本身不再有任何含义 —— 没有要保存的东西。
@@ -605,12 +605,12 @@ model FlowUserState {
 - **辅助线画在画布坐标系里**，放在 `<VueFlow>` 的 `#zoom-pane` 插槽（和别人的光标同一层），跟随缩放平移是 Vue Flow 自己的变换负责的；只有线宽和虚线疏密做反向缩放，因为它是界面不是内容。线的长度覆盖**所有**压在这条线上的节点，而不只是吸中的那一个 —— 三个节点左边对齐时，一条贯穿三者的线才说明发生了什么。
 - **两种吸附同时命中时辅助线赢**：先按网格量化，再让对齐把位置拉到线上。对齐是更明确的意图，被网格拽回去反而是错的 —— 也就是说，只要吸上了辅助线，落点通常就不在格点上。
 - **多选拖动按外接矩形吸附**，算出的位移原样施加到每个被拖节点，相对位置不会被拆散。
-- **吸附只作用在拖动上，不去动已经摆好的节点。** 所以没有用 Vue Flow 自带的 `:snap-to-grid`：它除了拖动，还会在**节点挂载时**（`NodeWrapper` 的 `clampPosition`）把位置对到格子上 —— 那是一次只发生在本地视图、不进文档的位移，开着吸附的人和没开的人看到的画布从此不一样。两种吸附收在同一个函数（`src/lib/flow-snap.ts`，纯几何、可单测）里算，结果只有一个位移。
+- **吸附只作用在拖动上，不去动已经摆好的节点。** 所以没有用 Vue Flow 自带的 `:snap-to-grid`：它除了拖动，还会在**节点挂载时**（`NodeWrapper` 的 `clampPosition`）把位置对到格子上 —— 那是一次只发生在本地视图、不进文档的位移，开着吸附的人和没开的人看到的画布从此不一样。两种吸附收在同一个函数（`apps/web/src/lib/flow-snap.ts`，纯几何、可单测）里算，结果只有一个位移。
 - 吸附发生在 `onNodeDrag` 里、Vue Flow 写完位置之后：它每帧都从**指针位置**重新算一遍节点位置，所以这一下修正不会累加到下一帧 —— 手移开对齐线，吸附自然松开。落点仍然只在 `onNodeDragStop` 一次性进文档，中间态照旧不落库（见 4.5）；上报给协作者的拖动几何是**吸附之后**的位置，否则别人看到的是没吸住的那个。
 
-### 4.5 Pinia store（`src/stores/flow/`）
+### 4.5 Pinia store（`apps/web/src/stores/flow/`）
 
-pinia 已装在 `devDependencies`（前端整体被打包进 `output/public`，服务端 runtime 不 import 它，符合仓库的依赖切分约定）。需要在 `src/main.ts` 里 `app.use(createPinia())`。
+pinia 已装在 `devDependencies`（前端整体被打包进 `output/public`，服务端 runtime 不 import 它，符合仓库的依赖切分约定）。需要在 `apps/web/src/main.ts` 里 `app.use(createPinia())`。
 
 > **store 是 Y.Doc 的投影，不是内容的持有者。** 原本它是事实源：自己维护 `nodes`/`edges`、
 > 两个历史栈、一个 `pending` 提交队列和 `baseRevision`。现在内容住在 Y.Doc 里，
@@ -621,7 +621,7 @@ store 的职责边界：
 
 - **状态**：`meta`（FlowSummary 部分）、`nodes` / `edges` / `graphMeta`（**Y.Doc 的只读投影**，`observeDeep` 一变就重算）、`viewport`、`userState`、`canUndo` / `canRedo`、`lastLabel`。
 - **唯一写入口**：所有内容变更都通过 `mutate(change, label?)`，它把改动包进一个带 `LOCAL_ORIGIN` 的 `doc.transact()`。组件**不许直接碰 Y.Map** —— 绕过去的改动既不进撤销、也不同步、更不落库。`label` 只给界面反馈用，CRDT 不需要它。
-- **文档形状**（`src/lib/flow-doc.ts`，服务端镜像 `server/collab/flow-doc.ts`，改一边要改另一边）：`nodes` / `edges` 是 `Y.Map<id, Y.Map>`，每个节点的 `data` 又是一层嵌套的 `Y.Map`。**这样分层是为了让 Y.Map 按 key 合并** —— 一个人改标题、另一个人同时拖位置能干净地合并；整个节点存成一个 JSON blob 的话，后写的那次会把先写的整体盖掉。
+- **文档形状**（`@shadecn/shared/flow-doc`，前后端共用一份；服务端专属的只有 `apps/server/collab/flow-doc.ts` 里的 `readGraphFromDoc` / `pruneDanglingEdges`）：`nodes` / `edges` 是 `Y.Map<id, Y.Map>`，每个节点的 `data` 又是一层嵌套的 `Y.Map`。**这样分层是为了让 Y.Map 按 key 合并** —— 一个人改标题、另一个人同时拖位置能干净地合并；整个节点存成一个 JSON blob 的话，后写的那次会把先写的整体盖掉。
 - **撤销 / 重做**：`Y.UndoManager`，`trackedOrigins: [LOCAL_ORIGIN]`。就是这一个选项让 `Ctrl+Z` **只撤自己的**，不碰协作者的改动。`separateUndo()`（`stopCapturing`）把本会并进 400ms 捕获窗口的两次操作拆成两条记录。
 - **历史仍然只在内存里**：刷新即清空，撤销不跨会话；内容本身当然不丢。
 - **没有保存、没有 revision、没有 409、没有 dirty state**：改动即刻广播，服务端订阅同一个文档并落库（[REQ-COLLAB §3.7](04-realtime-collab.md)）。
@@ -630,7 +630,7 @@ store 的职责边界：
 - Vue Flow 的双向绑定不能绕开 store：拖动结束（`nodeDragStop`）、连线建立（`connect`）、删除，都转成对 `mutate` 的调用。
 - **拖动期间不许重建 `:nodes` 数组** —— Vue Flow 按数组引用决定要不要重新同步，而重新同步走的是 `Object.assign(existing, incoming)`；拖动中间态既然不进文档，`incoming.position` 就是拖动前的位置，节点会在手底下弹回去。`useFlowCanvas` 为此留了一个 `localDragging` 标志，详见 [REQ-COLLAB §4.0.2](04-realtime-collab.md)。
 
-另有 `src/stores/project.ts` 持有当前项目与成员列表（供项目主页三个区域共享），职责简单，不涉及历史。
+另有 `stores/project.ts`（当时的路径，现已不存在）持有当前项目与成员列表（供项目主页三个区域共享），职责简单，不涉及历史。
 
 ### 4.6 内容是怎么落库的
 
@@ -692,16 +692,16 @@ store 的职责边界：
 | PATCH | `/api/flows/:id/user-state` | member | 存**我自己**的视图状态（视口…），body 只带要改的分区，204。不涨 `revision`、不写更新流、没有乐观锁 |
 | — | ~~`POST /api/flows/:id/commit`~~ | — | **已删除**，见 4.6。内容不再经过 HTTP |
 
-**画布内容走的不是 HTTP**：`ws://<host>/ws/collaboration`（房间 `flow:<flowId>` 走消息，不在路径里），握手时按项目成员身份鉴权（`server/auth/ws.ts`），此后服务端还会持续确认这条连接的权限还在：**移除成员 / 删项目 / 删画布这三个接口会当场把受影响的 WebSocket 踢掉**（本实例立即，其它实例 ≤3 秒），另有每 20 秒一轮的复验兜底。所以「移除成员」对正在编辑的人不再有可观的窗口期——这很要紧，因为他在窗口期里改的东西会被 CRDT 合并落库，而留下的人**撤销不回来**（撤销只跟踪自己的操作）。踢下线时会区分「会话过期」和「不是成员了」，两者给用户的出路不同。协议与运行参数见 [REQ-COLLAB](04-realtime-collab.md)。
+**画布内容走的不是 HTTP**：`ws://<host>/ws/collaboration`（房间 `flow:<flowId>` 走消息，不在路径里），握手时按项目成员身份鉴权（`apps/server/auth/ws.ts`），此后服务端还会持续确认这条连接的权限还在：**移除成员 / 删项目 / 删画布这三个接口会当场把受影响的 WebSocket 踢掉**（本实例立即，其它实例 ≤3 秒），另有每 20 秒一轮的复验兜底。所以「移除成员」对正在编辑的人不再有可观的窗口期——这很要紧，因为他在窗口期里改的东西会被 CRDT 合并落库，而留下的人**撤销不回来**（撤销只跟踪自己的操作）。踢下线时会区分「会话过期」和「不是成员了」，两者给用户的出路不同。协议与运行参数见 [REQ-COLLAB](04-realtime-collab.md)。
 
-约定沿用 [REQ-DATA](05-data-persistence.md)：错误响应统一 `{ error: string }`；请求体非法 JSON → 400；参数校验在路由层，数据访问全在 `server/store/projects.ts` 与 `server/store/flows.ts`，路由文件里不出现 `prisma`。
+约定沿用 [REQ-DATA](05-data-persistence.md)：错误响应统一 `{ error: string }`；请求体非法 JSON → 400；参数校验在路由层，数据访问全在 `apps/server/store/projects.ts` 与 `apps/server/store/flows.ts`，路由文件里不出现 `prisma`。
 
 所有端点在 `/api/*` 之下，因此默认需要登录（[REQ-AUTH](02-auth-keycloak.md)）。
 
 ### 4.8 鉴权规则
 
 - **画布的访问权完全由项目成员身份决定**，与 `Flow.createdById` 无关。
-- `/api/flows/:id` 系列先按 id 查出 `projectId`，再查请求者是不是该项目成员 —— 这段判断收敛到一个中间件（如 `server/auth/project.ts` 的 `requireProjectMember` / `requireProjectAdmin`），路由里不重复写。
+- `/api/flows/:id` 系列先按 id 查出 `projectId`，再查请求者是不是该项目成员 —— 这段判断收敛到一个中间件（如 `apps/server/auth/project.ts` 的 `requireProjectMember` / `requireProjectAdmin`），路由里不重复写。
 - **非成员访问一律 404，不是 403**（不泄露项目/画布是否存在）。成员但权限不足（member 干 admin 的事）才是 **403**。
 - 软删的项目 / 画布对所有人都等同于不存在（404）。**软删就到此为止**：不清理、不物理删除、不提供恢复入口 —— `deletedAt` 只是一道过滤条件，数据留在库里当兜底，真要捞得手工进库。
 - 唯一的例外是 `/api/invites/:token` 两个端点：它们按 token 鉴权而非成员身份，只要求登录。
@@ -712,7 +712,7 @@ store 的职责边界：
 - `pageSize`：1..100 的整数，越界 → 400。
 - 分享链接 `expiresInDays` 只接受 1 / 7 / 30。
 - 单项目成员上限 200、画布上限 500，超出 → 400 并给出明确文案。
-- `graph`：**没有任何接口接受它了**，所以不存在请求体校验。`parseGraph` 仍在 `server/store/flow-types.ts` 里，用途变成两处**读**：把库里的老 `graph` JSON 灌进 Y.Doc 时（`bindState` 的迁移），以及列表页读投影时。读到坏数据的策略是**跳过而不是报错** —— 那是历史数据，拒绝它只会让画布打不开。
+- `graph`：**没有任何接口接受它了**，所以不存在请求体校验。`parseGraph` 仍在 `apps/server/store/flow-types.ts` 里，用途变成两处**读**：把库里的老 `graph` JSON 灌进 Y.Doc 时（`bindState` 的迁移），以及列表页读投影时。读到坏数据的策略是**跳过而不是报错** —— 那是历史数据，拒绝它只会让画布打不开。
 - `user-state`：body 必须是非空对象；**未登记的分区 key → 400**；每个分区按 `FLOW_USER_STATE_PARSERS` 里自己的规则校验（视口要求 `x`/`y`/`zoom` 都是有限数字且 `zoom > 0`）；单个分区序列化后 16KB 封顶。任一分区不合法就整体拒绝，不「对一半存一半」。
 - 单个画布上限：**文档 20MB、单条消息 1MB**，拦在 WebSocket 那一层
   （见 [REQ-COLLAB §4.2](04-realtime-collab.md)）。**节点数和连线数不设上限** —— 那是产品判断不是护栏，
@@ -743,7 +743,7 @@ store 的职责边界：
 **画布与历史**
 
 - [x] 画布列表能翻页，页码与关键字反映在 URL 上，刷新后状态不变。
-- [x] 列表接口的响应体里没有 `graph` 字段。（server/test/routes/flows.test.ts）
+- [x] 列表接口的响应体里没有 `graph` 字段。（apps/server/test/routes/flows.test.ts）
 - [ ] 从画布列表点开一张画布，落到 `/flows/:id` 独立整页：**没有侧边栏**、没有项目主页的分区，画布占满视口；退回项目主页后侧边栏恢复。
 - [ ] 左上角悬浮胶囊显示 logo + 画布名 + 菜单按钮；点 logo，项目画布回所属项目主页、个人画布回 `/personal`。
 - [ ] 胶囊菜单四项都可用：新建画布落到同一项目下的新画布、复制落到副本、删除后回项目主页、「返回画布首页」与点 logo 去到同一处。
@@ -754,31 +754,31 @@ store 的职责边界：
 - [ ] 撤销之后再做新操作，重做栈被清空（重做按钮变灰）。
 - [ ] 刷新页面后撤销栈为空、撤销按钮变灰，但画布内容完好。
 - [ ] 断网时继续编辑不报错；恢复连接后改动自动补同步，不需要用户做任何事。
-- [x] 同项目两个成员同时打开同一张画布，**两边的改动都留下**（不同字段真合并），没有 409、没有「请重新加载」。（浏览器回归 + src/test/stores/flow.test.ts）
+- [x] 同项目两个成员同时打开同一张画布，**两边的改动都留下**（不同字段真合并），没有 409、没有「请重新加载」。（浏览器回归 + apps/web/src/test/stores/flow.test.ts）
 - [x] 一方拖动节点时另一方在场：拖动过程中本地节点不会弹回原位（`localDragging`）。（浏览器回归）
-- [x] 同一条 Yjs 更新被应用两次，画布上不会出现第二个节点。（src/test/stores/flow.test.ts）
+- [x] 同一条 Yjs 更新被应用两次，画布上不会出现第二个节点。（apps/web/src/test/stores/flow.test.ts）
 - [x] 删除键删掉的节点会同步给对方、也会落库（即没有绕开 store）。（浏览器回归）
-- [x] 节点 `data` 上平铺的任意业务字段，存取一字不差。（server/test/routes/flows.test.ts）
-- [x] v1 的节点（`kind` + `config`）与连线在读出来时就地升级成 v2：`config` 拆平、空壳 `ports` 丢掉、`status` 补上，边的 `kind` / `condition` 保留。（server/test/collab/flow-doc.test.ts）
-- [x] 两个人同时改同一个节点的不同业务字段，两边的改动都留下 —— 平铺之后才成立的合并粒度。（src/test/stores/flow.test.ts）
+- [x] 节点 `data` 上平铺的任意业务字段，存取一字不差。（apps/server/test/routes/flows.test.ts）
+- [x] v1 的节点（`kind` + `config`）与连线在读出来时就地升级成 v2：`config` 拆平、空壳 `ports` 丢掉、`status` 补上，边的 `kind` / `condition` 保留。（apps/server/test/collab/flow-doc.test.ts）
+- [x] 两个人同时改同一个节点的不同业务字段，两边的改动都留下 —— 平铺之后才成立的合并粒度。（apps/web/src/test/stores/flow.test.ts）
 - [ ] 平移/缩放后刷新，视口回到离开时的位置；撤销按钮不会因为只挪了画布而变亮，撤销也拽不回视野。
-- [x] **只平移不编辑时一个写请求都不发**；发生一次编辑后，攒着的视口立刻被顺路 PATCH 上去，之后的连续编辑合成一发在手停时补齐（一直不停手由 `maxWait` 顶上）。（src/test/stores/flow.test.ts）
+- [x] **只平移不编辑时一个写请求都不发**；发生一次编辑后，攒着的视口立刻被顺路 PATCH 上去，之后的连续编辑合成一发在手停时补齐（一直不停手由 `maxWait` 顶上）。（apps/web/src/test/stores/flow.test.ts）
 - [ ] 同一张画布两个人各自平移到不同位置，互不影响；第三个人第一次打开时按投影里的兜底视口（或 fitView）。
-- [x] 一张 `ydoc` 为空的老画布被打开后，旧 `graph` JSON 的内容原样出现在画布上，且此后以 Y.Doc 为准。（server/test/routes/flows.test.ts）
-- [x] A 项目的成员访问 B 项目的画布 id 返回 404；未登录访问任一 `/api/projects*` / `/api/flows*` 返回 401；非项目成员连 `flow:<id>` 房间的 WebSocket 被拒。（server/test/auth/ws.test.ts + routes 测试）
-- [x] 一方伪造 awareness 里的身份，另一方看到的仍是服务端认定的真身；光标位置不受影响。（浏览器实测 + server/test/collab/hardening.test.ts）
-- [x] 节点 / 连线数超过上限后，房间被标记为拒绝写入；散场后重新判定。（server/test/collab/hardening.test.ts）
-- [x] 并发「删节点 + 连线」留下的悬空边在落库前被清掉，且不进任何人的撤销栈。（server/test/collab/hardening.test.ts）
+- [x] 一张 `ydoc` 为空的老画布被打开后，旧 `graph` JSON 的内容原样出现在画布上，且此后以 Y.Doc 为准。（apps/server/test/routes/flows.test.ts）
+- [x] A 项目的成员访问 B 项目的画布 id 返回 404；未登录访问任一 `/api/projects*` / `/api/flows*` 返回 401；非项目成员连 `flow:<id>` 房间的 WebSocket 被拒。（apps/server/test/auth/ws.test.ts + routes 测试）
+- [x] 一方伪造 awareness 里的身份，另一方看到的仍是服务端认定的真身；光标位置不受影响。（浏览器实测 + apps/server/test/collab/hardening.test.ts）
+- [x] 节点 / 连线数超过上限后，房间被标记为拒绝写入；散场后重新判定。（apps/server/test/collab/hardening.test.ts）
+- [x] 并发「删节点 + 连线」留下的悬空边在落库前被清掉，且不进任何人的撤销栈。（apps/server/test/collab/hardening.test.ts）
 
 **测试覆盖**
 
-- [x] `server/test/routes/projects.test.ts` —— 创建即 admin、成员隔离 404、admin/member 权限分界 403。
-- [x] `server/test/routes/invites.test.ts` —— 幂等取链接、过期自动换新、改有效期不换 token、重置、预览、接受、多人复用、失效文案。
-- [x] `server/test/routes/flows.test.ts` —— 分页、校验、跨项目 404、**画布内容的写入路径（Yjs）**、duplicate、`user-state` 各存各的 / 覆盖 / 不涨 revision / 校验 / 非成员 404 / 随画布级联删除、`operations` 分页。
-- [x] `server/test/auth/ws.test.ts` —— WebSocket 握手鉴权：匿名拒、登录但非项目成员拒、成员放行并带出 `actorId`。
-- [x] `src/test/stores/flow.test.ts` —— Y.Doc 投影（写进得去、读得出来）、用第二个 `Y.Doc` 扮演协作者验证**同一节点不同字段的并发编辑真合并**、撤销只撤自己的、视口不进文档、视口只在本地编辑后才落库（五种请求形态）。
-- [x] `src/test/lib/presence.test.ts` —— 反馈层的纯逻辑：颜色哈希、防御式解析对端状态、占用仲裁（不带 socket）。
-- ~~`src/test/stores/flow-commands.test.ts` / `flow-sync.test.ts`~~ —— 随命令注册表与提交队列一起删除。
+- [x] `apps/server/test/routes/projects.test.ts` —— 创建即 admin、成员隔离 404、admin/member 权限分界 403。
+- [x] `apps/server/test/routes/invites.test.ts` —— 幂等取链接、过期自动换新、改有效期不换 token、重置、预览、接受、多人复用、失效文案。
+- [x] `apps/server/test/routes/flows.test.ts` —— 分页、校验、跨项目 404、**画布内容的写入路径（Yjs）**、duplicate、`user-state` 各存各的 / 覆盖 / 不涨 revision / 校验 / 非成员 404 / 随画布级联删除、`operations` 分页。
+- [x] `apps/server/test/auth/ws.test.ts` —— WebSocket 握手鉴权：匿名拒、登录但非项目成员拒、成员放行并带出 `actorId`。
+- [x] `apps/web/src/test/stores/flow.test.ts` —— Y.Doc 投影（写进得去、读得出来）、用第二个 `Y.Doc` 扮演协作者验证**同一节点不同字段的并发编辑真合并**、撤销只撤自己的、视口不进文档、视口只在本地编辑后才落库（五种请求形态）。
+- [x] `apps/web/src/test/lib/presence.test.ts` —— 反馈层的纯逻辑：颜色哈希、防御式解析对端状态、占用仲裁（不带 socket）。
+- ~~`apps/web/src/test/stores/flow-commands.test.ts` / `flow-sync.test.ts`~~ —— 随命令注册表与提交队列一起删除。
 
 ## 6. 本期不做
 

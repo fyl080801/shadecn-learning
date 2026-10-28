@@ -5,13 +5,21 @@ description: How to build, launch, and drive this app to verify a change end-to-
 
 # Verifying changes in this repo
 
-Vue 3 + Vite SPA; no tests. Verification = drive the page in headless Chromium.
+Vue 3 SPA served by a Node/Hono server (pnpm monorepo: `apps/web`, `apps/server`, `packages/shared`).
+Unit tests: `pnpm test` (projects `server` / `client` / `shared`). End-to-end verification =
+drive the page in headless Chromium.
 
 ## Launch
 
 ```bash
-pnpm dev   # Vite; picks next port if 5173 busy — read the port from stdout
+cp -n .env.example .env   # first run only
+pnpm dev                  # ONE process, ONE port: Hono + Vite as middleware, watch mode
 ```
+
+The port is `PORT` from the repo-root `.env` (default 3000), e.g. http://127.0.0.1:3000 —
+there is no separate Vite dev server (no 5173) and no proxy. With no Keycloak/GitHub configured,
+auth is off in dev and every page is reachable; otherwise log in via `/login` first.
+`pnpm dev` runs `db:push` first (SQLite under the repo-root `data/`).
 
 ## Drive (Python Playwright)
 

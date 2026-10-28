@@ -3,7 +3,8 @@ import { createPinia, setActivePinia } from "pinia"
 import * as Y from "yjs"
 import { useFlowStore } from "@/stores/flow"
 import { useDraftField } from "@/composables/flow/useDraftField"
-import { defaultNodeData, GRAPH_SCHEMA_VERSION, type FlowDetail, type FlowNode } from "@/types/flow"
+import type { FlowDetail } from "@shadecn/shared/canvas"
+import { defaultNodeData, GRAPH_SCHEMA_VERSION, type FlowNode } from "@shadecn/shared/flow-graph"
 
 /**
  * 「本地草稿 + 一次提交」的样板（docs/13 §3.7.2）。

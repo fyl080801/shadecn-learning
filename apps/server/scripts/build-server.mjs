@@ -11,29 +11,60 @@
  *   output/.dockerignore、output/README.md
  *
  * 打包要点：
- * - 只内联仓库里的相对导入（含 server/generated/prisma 那份生成的 client），
- *   node_modules 里的包全部 external，运行时依赖清单就是从这些 external 反推出来的；
+ * - 内联仓库里的相对导入（含 apps/server/generated/prisma 那份生成的 client）
+ *   和 workspace 包（`@shadecn/*`，见下面的 externalizePackages），
+ *   其余 node_modules 里的包全部 external，运行时依赖清单就是从这些 external 反推出来的；
  * - splitting: true —— frontend/index.ts 里那句 `await import('./dev.ts')` 必须留成
  *   真正的动态 import 切到独立 chunk，否则 vite 会被提升成顶层静态依赖，
  *   生产环境根本没装 vite，一启动就崩；
- * - define __APP_BUNDLE__ —— server/runtime.ts 靠它区分「源码运行」和「产物运行」。
+ * - define __APP_BUNDLE__ —— apps/server/runtime.ts 靠它区分「源码运行」和「产物运行」。
+ *
+ * 两个基准目录（monorepo 之后分开了）：
+ *   serverDir = apps/server  —— 入口、schema、产物模板、依赖清单和已装的包都从这里取；
+ *   rootDir   = 仓库根       —— output/ 落在这里，output/package.json 的 name / version 也取根的，
+ *                              好让产物和迁移前逐字节一致。
  */
 import { readFileSync } from 'node:fs'
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { build } from 'esbuild'
-import { resolveProvider, schemaDirOf } from '../prisma/db-provider.mjs'
+import { resolveProvider, rootDir, schemaDirOf, serverDir } from '../prisma/db-provider.mjs'
 
-const rootDir = path.resolve(import.meta.dirname, '..')
 const outDir = path.join(rootDir, 'output')
 const serverOutDir = path.join(outDir, 'server')
-const templateDir = path.join(rootDir, 'scripts/output-image')
+const templateDir = path.join(serverDir, 'scripts/output-image')
 
 /**
  * 只在 dev 分支（output/server/dev-*.js）里用到的包，不进运行时依赖。
  * 那个 chunk 在生产永远不会被 import —— isDev 为 false 时压根走不到那句动态 import。
  */
 const DEV_ONLY = new Set(['vite'])
+
+/**
+ * workspace 里的包（packages/*）。它们是 **source-only 的 TS**：没有构建产物、不发 npm，
+ * 产物目录里也装不上 —— 所以必须内联进 bundle，不能 external。
+ */
+const WORKSPACE_SCOPE = '@shadecn/'
+
+/**
+ * 「包路径一律 external」，workspace 包除外。
+ *
+ * 等价于 esbuild 的 `packages: 'external'`（判据一样：不以 `.` / `/` 开头的导入路径），
+ * 只是给 `@shadecn/*` 开了个口子 —— `packages: 'external'` 本身没有例外可配，
+ * 用它的话 `@shadecn/shared` 会被留成一句运行时 import，产物一启动就找不到模块。
+ *
+ * workspace 包里再 import 的第三方包（比如 shared 里的 yjs）走回这条规则，照样 external，
+ * 也就照样进下面那份运行时依赖清单。
+ */
+const externalizePackages = {
+  name: 'externalize-packages',
+  setup(pluginBuild) {
+    pluginBuild.onResolve({ filter: /^[^./]/ }, (args) => {
+      if (args.path.startsWith(WORKSPACE_SCOPE)) return undefined
+      return { path: args.path, external: true }
+    })
+  },
+}
 
 /** 打包产物本身不 import、但运行时确实要有的包 */
 const EXTRA_DEPS = ['prisma'] // 容器启动时跑 `prisma db push`
@@ -64,14 +95,14 @@ await rm(serverOutDir, { recursive: true, force: true })
 await mkdir(serverOutDir, { recursive: true })
 
 const result = await build({
-  entryPoints: [path.join(rootDir, 'server/index.ts')],
+  entryPoints: [path.join(serverDir, 'index.ts')],
   outdir: serverOutDir,
   bundle: true,
   splitting: true,
   format: 'esm',
   platform: 'node',
   target: 'node22',
-  packages: 'external',
+  plugins: [externalizePackages],
   sourcemap: true,
   minify: false,
   logLevel: 'info',
@@ -88,13 +119,13 @@ await writeOutputPackageJson(collectRuntimeDeps(result.metafile))
  * schema，目录形状不随 provider 变（永远是 `prisma/schema.prisma` + `prisma/models/`），
  * output/prisma.config.js 不用关心自己面对的是哪种库。
  *
- * **`dereference: true` 是必须的**：仓库里 `prisma/<provider>/models` 是指向
- * `prisma/models/` 的符号链接（两个 provider 共用一份模型文件）。照原样拷过去，
+ * **`dereference: true` 是必须的**：仓库里 `apps/server/prisma/<provider>/models` 是指向
+ * `apps/server/prisma/models/` 的符号链接（两个 provider 共用一份模型文件）。照原样拷过去，
  * 产物里那条链接会指向 `output/prisma/../models`，那儿什么都没有 —— 容器一启动
  * db push 就会说找不到模型。解引用之后产物里是真实文件，自带自足。
  */
 await rm(path.join(outDir, 'prisma'), { recursive: true, force: true })
-await cp(path.join(rootDir, schemaDirOf(buildProvider)), path.join(outDir, 'prisma'), {
+await cp(path.join(serverDir, schemaDirOf(buildProvider)), path.join(outDir, 'prisma'), {
   recursive: true,
   dereference: true,
 })
@@ -129,17 +160,20 @@ function packageName(specifier) {
 }
 
 async function writeOutputPackageJson(deps) {
-  const source = JSON.parse(await readFile(path.join(rootDir, 'package.json'), 'utf8'))
+  const source = JSON.parse(await readFile(path.join(serverDir, 'package.json'), 'utf8'))
+  // 产物的 name / version 沿用仓库根的 —— 产物身份不随 monorepo 改造变化
+  const identity = JSON.parse(await readFile(path.join(rootDir, 'package.json'), 'utf8'))
 
   /**
-   * 仓库根的 dependencies 就该正好是「运行时要的东西」，devDependencies 是构建期的。
-   * 打包反推出来的依赖如果跑到 devDependencies 里去了，说明这条约定被破坏了，直接构建失败 ——
-   * 否则产物的 package.json 会悄悄多出一个没人当它是运行时依赖的包。
+   * 后端包（apps/server）的 dependencies 就该正好是「运行时要的东西」，devDependencies 是构建期的。
+   * 打包反推出来的依赖如果跑到 devDependencies 里去了（或者根本没在后端包里声明），
+   * 说明这条约定被破坏了，直接构建失败 —— 否则产物的 package.json 会悄悄多出一个
+   * 没人当它是运行时依赖的包。
    */
   const misplaced = deps.filter((name) => !source.dependencies?.[name])
   if (misplaced.length > 0) {
     throw new Error(
-      `这些包是运行时依赖，请从 devDependencies 挪到 package.json 的 dependencies：${misplaced.join(', ')}`,
+      `这些包是运行时依赖，请挪到 apps/server/package.json 的 dependencies：${misplaced.join(', ')}`,
     )
   }
 
@@ -150,8 +184,8 @@ async function writeOutputPackageJson(deps) {
   }
 
   const pkg = {
-    name: source.name,
-    version: source.version,
+    name: identity.name,
+    version: identity.version,
     private: true,
     type: 'module',
     engines: { node: '>=22' },
@@ -179,7 +213,7 @@ async function writeOutputPackageJson(deps) {
  * 否则产物会带着 sqlite 的查询编译器去连 postgres，跑起来才发现。
  */
 function assertClientMatchesProvider() {
-  const file = path.join(rootDir, 'server/generated/prisma/internal/class.ts')
+  const file = path.join(serverDir, 'generated/prisma/internal/class.ts')
   let active
   try {
     active = /"activeProvider":\s*"([^"]+)"/.exec(readFileSync(file, 'utf8'))?.[1]
@@ -188,14 +222,15 @@ function assertClientMatchesProvider() {
   }
   if (active !== buildProvider) {
     throw new Error(
-      `构建目标是 ${buildProvider}，但 server/generated/prisma 里是 ${active} 的 client。\n` +
+      `构建目标是 ${buildProvider}，但 apps/server/generated/prisma 里是 ${active} 的 client。\n` +
         `先跑 \`DB_PROVIDER=${buildProvider} pnpm db:generate\` 再构建。`,
     )
   }
 }
 
 async function installedVersion(name) {
-  const manifest = path.join(rootDir, 'node_modules', name, 'package.json')
+  // pnpm workspace 下包装在声明它的那个包的 node_modules 里（符号链接进 .pnpm），不是仓库根
+  const manifest = path.join(serverDir, 'node_modules', name, 'package.json')
   const { version } = JSON.parse(await readFile(manifest, 'utf8'))
   return version
 }

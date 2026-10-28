@@ -9,11 +9,13 @@
  * `/api/auth/me` 就行（前端还有一条轮询兜底，见 SessionExpiredDialog.vue）。
  */
 
-/** 登录完成后落地的路径；前端 `src/lib/auth.ts` 有一份同名常量 */
-export const LOGIN_DONE_PATH = '/auth/login-done'
+import { LOGIN_DONE_MESSAGE, LOGIN_DONE_PATH, LOGIN_DONE_SOURCE } from '@shadecn/shared/auth'
 
-/** 消息标记，原页面靠它 + origin 两道校验认这条消息 */
-export const LOGIN_DONE_MESSAGE = 'app-auth:login-done'
+/**
+ * 登录完成后落地的路径、消息的 source / type 标记 —— 声明在 `@shadecn/shared/auth`，
+ * 前端（`apps/web/src/lib/auth.ts`）开窗口、认消息用的是同一份。原页面靠标记 + origin 两道校验认这条消息。
+ */
+export { LOGIN_DONE_MESSAGE, LOGIN_DONE_PATH }
 
 export function renderLoginDonePage(): string {
   return `<!doctype html>
@@ -32,7 +34,7 @@ export function renderLoginDonePage(): string {
     </main>
     <script>
       (function () {
-        var message = { source: "app-auth", type: ${JSON.stringify(LOGIN_DONE_MESSAGE)} }
+        var message = { source: ${JSON.stringify(LOGIN_DONE_SOURCE)}, type: ${JSON.stringify(LOGIN_DONE_MESSAGE)} }
         var origin = window.location.origin
         // 开这个窗口的那一页在等这条消息；opener 有可能被中间页面切断，
         // 那边还有一条 /api/auth/me 轮询兜底，所以这里失败也不必补救

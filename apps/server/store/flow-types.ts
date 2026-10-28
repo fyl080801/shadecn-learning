@@ -1,26 +1,31 @@
-/**
- * 画布内容的数据结构与校验。
- *
- * 约定（见 docs/13-flow-canvas-management.md）：Vue Flow 认识的字段留在节点顶层，
- * 业务自定义的一切都塞进 `data` —— 换渲染层时业务数据不受影响。
- *
- * 服务端只做**结构校验**，不解释 `data` 上那些业务字段，原样透传存储。
- * 前端侧的同名类型在 `src/types/flow.ts`，改这里记得同步。
- */
+import {
+  emptyGraph,
+  GRAPH_SCHEMA_VERSION,
+  isNodeStatus,
+  isTimestamp,
+  STRICT_UPGRADE,
+  upgradeEdgeData,
+  upgradeNodeData,
+  type FlowGraph,
+  type FlowUserState,
+  type FlowViewport,
+} from '@shadecn/shared/flow-graph'
 
 /**
- * 当前的图结构版本。
+ * 画布内容的服务端校验。
  *
- * - v1：业务种类在 `data.kind`，业务字段裹在 `data.config` 里，`ports` 必填空壳；
- * - v2：业务种类**并入顶层 `type`**，业务字段直接平铺在 `data` 上，每个节点带 `status`。
+ * 结构本身（节点 / 连线 / 视口的类型、版本号、v1 → v2 的升级函数）在
+ * `@shadecn/shared/flow-graph`，前端用的是同一份 —— 这里只放只有服务端才做的事：
+ * 校验客户端或库里来的 JSON、限额、按用户存的状态分区表。
  *
- * **v1 会被就地升级，不是拒收**（见 `upgradeNodeData` / `upgradeEdgeData`）。
+ * 服务端只做**结构校验**，不解释 `data` 上那些业务字段，原样透传存储。
+ *
+ * **v1 会被就地升级，不是拒收**（`GRAPH_SCHEMA_VERSION` 的注释讲了版本差异）。
  * 这一点是硬要求，不是客气：`Flow.graph` 里存量的全是 v1，而
- * `server/collab/persistence.ts` 的 `loadFlowState()` 靠 `readGraph()` 把老画布
+ * `collab/persistence.ts` 的 `loadFlowState()` 靠 `readGraph()` 把老画布
  * 灌进 Yjs 文档 —— 那里读不出内容就返回 null，等于**第一次打开老画布就把它清空**。
- * 比这更高的版本仍然拒收：不猜未来的结构。
+ * 比当前版本更高的仍然拒收：不猜未来的结构。
  */
-export const GRAPH_SCHEMA_VERSION = 2
 
 /** 还认得的最低版本 */
 const GRAPH_SCHEMA_MIN_VERSION = 1
@@ -57,116 +62,6 @@ export const GRAPH_LIMITS = {
   /** 单次 commit 的事务条数上限 */
   transactions: 200,
 } as const
-
-export interface FlowPort {
-  id: string
-  label?: string
-  /** 数据类型标记，将来做连线合法性校验用；本期只存不判 */
-  dataType?: string
-}
-
-/** 连接点贴在节点的哪一边（Vue Flow 的 Position，服务端不依赖 vue-flow，自己写一份） */
-export type FlowHandlePosition = 'left' | 'right' | 'top' | 'bottom'
-
-/** 节点的运行态 */
-export type FlowNodeStatus = 'idle' | 'processing' | 'completed' | 'error'
-
-/**
- * 节点的业务数据。
- *
- * **框架字段之外，业务字段直接平铺在这一层**（v1 那个 `config` 包装没有了）——
- * Y.Map 的合并粒度是 key，整块 `config` 会让「两人改不同字段」退化成互相覆盖。
- * 服务端一如既往**不解释**这些字段，只做结构校验后原样透传。
- */
-export interface FlowNodeData {
-  label: string
-  status: FlowNodeStatus
-  /** 创建时刻，UTC epoch 毫秒。老数据没有这个字段，所以可选 */
-  createdAt?: number
-  description?: string
-  icon?: string
-  ports?: { inputs: FlowPort[]; outputs: FlowPort[] }
-  /** 需要持久化的 UI 状态（折叠、颜色…） */
-  ui?: Record<string, unknown>
-  /** 业务字段平铺在这里 */
-  [key: string]: unknown
-}
-
-/** `data` 上属于框架的键；升级 v1 数据时用它区分框架字段与平铺的业务字段 */
-export const NODE_DATA_RESERVED_KEYS = [
-  'label',
-  'status',
-  'createdAt',
-  'description',
-  'icon',
-  'ports',
-  'ui',
-] as const
-
-/** **`type` 就是业务种类**（v1 那个和它恒等的 `data.kind` 已并入） */
-export interface FlowNode {
-  id: string
-  type: string
-  position: { x: number; y: number }
-  width?: number
-  height?: number
-  zIndex?: number
-  /** 分组 / 子流程 */
-  parentNode?: string
-  extent?: 'parent' | null
-  sourcePosition?: FlowHandlePosition
-  targetPosition?: FlowHandlePosition
-  data: FlowNodeData
-}
-
-/** 连线的业务数据，和节点一样平铺 */
-export interface FlowEdgeData {
-  /** 连线建立的时刻，UTC epoch 毫秒 */
-  createdAt?: number
-  [key: string]: unknown
-}
-
-export interface FlowEdge {
-  id: string
-  source: string
-  target: string
-  sourceHandle?: string | null
-  targetHandle?: string | null
-  type?: string
-  animated?: boolean
-  label?: string
-  data: FlowEdgeData
-}
-
-/** 视口：画布看哪儿、放多大 */
-export interface FlowViewport {
-  x: number
-  y: number
-  zoom: number
-}
-
-export interface FlowGraph {
-  schemaVersion: number
-  /**
-   * 画布级的兜底视口。真正生效的是**每人自己的**视口（见 FlowUserState），
-   * 这里这份只在某人第一次打开、还没有自己的记录时用。
-   */
-  viewport: FlowViewport
-  nodes: FlowNode[]
-  edges: FlowEdge[]
-  /** 画布级自定义数据，同样透传 */
-  meta: Record<string, unknown>
-}
-
-export function emptyGraph(): FlowGraph {
-  return {
-    schemaVersion: GRAPH_SCHEMA_VERSION,
-    viewport: { x: 0, y: 0, zoom: 1 },
-    nodes: [],
-    edges: [],
-    meta: {},
-  }
-}
 
 /** 操作类型 —— 一次可撤销的最小语义变更 */
 export type FlowOpType =
@@ -219,11 +114,6 @@ export interface FlowTransaction {
   ops: FlowOp[]
 }
 
-/** 时间戳字段的统一判定：UTC epoch 毫秒，正整数 */
-export function isTimestamp(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-}
-
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -232,73 +122,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
-}
-
-// —— v1 → v2 的就地升级 ——
-
-/**
- * 把 v1 的节点 `data` 升级成 v2：`config` 拆平、`kind` 丢掉、补上 `status`。
- *
- * `kind` 直接丢：v1 里它和顶层 `type` 恒等（两者都只可能是 `'process'`），
- * 留着就是两个字段说同一件事。
- *
- * **框架字段压在业务字段之上**：`config` 里万一有个叫 `label` 的键，
- * 它是业务数据，不该顶掉节点真正的标题。
- *
- * 前端有一份等价实现（`src/lib/flow-doc.ts` 的 `upgradeNodeData`）—— 改一处改两处。
- */
-export function upgradeNodeData(raw: Record<string, unknown>): FlowNodeData {
-  const config = isRecord(raw.config) ? raw.config : {}
-
-  // 先铺 v1 的 config，再铺 raw 上其余的键 —— 后者包括已经平铺着的未知字段，
-  // 升级不该顺手把它们丢了
-  const data: FlowNodeData = { ...config, label: '', status: 'idle' }
-  for (const [key, value] of Object.entries(raw)) {
-    if (key === 'kind' || key === 'config' || key === 'ports') continue
-    if (value !== undefined) data[key] = value
-  }
-
-  // 框架字段最后规范化一遍，压在业务字段之上
-  data.label = typeof raw.label === 'string' ? raw.label : ''
-  data.status = isNodeStatus(raw.status) ? raw.status : 'idle'
-  if (!isTimestamp(data.createdAt)) delete data.createdAt
-  if (typeof data.description !== 'string') delete data.description
-  if (typeof data.icon !== 'string') delete data.icon
-  if (!isRecord(data.ui)) delete data.ui
-
-  // 空壳端口不留：v1 给每个节点都塞了 `{inputs:[],outputs:[]}`，那是噪声不是信息
-  const ports = raw.ports
-  if (isRecord(ports) && (asArray(ports.inputs).length > 0 || asArray(ports.outputs).length > 0)) {
-    data.ports = ports as FlowNodeData['ports']
-  }
-
-  return data
-}
-
-/**
- * 把 v1 的连线 `data`（`{kind?, condition?, config}`）升级成 v2 的平铺形状。
- *
- * `kind` / `condition` 和节点的 `kind` 不一样，它们是**边自己的**业务语义、
- * 没有别的字段与之重复，所以保留下来平铺，不丢。
- */
-export function upgradeEdgeData(raw: Record<string, unknown>): FlowEdgeData {
-  const config = isRecord(raw.config) ? raw.config : {}
-  const data: FlowEdgeData = { ...config }
-
-  for (const [key, value] of Object.entries(raw)) {
-    if (key === 'config') continue
-    if (value !== undefined) data[key] = value
-  }
-
-  return data
-}
-
-function isNodeStatus(value: unknown): value is FlowNodeStatus {
-  return value === 'idle' || value === 'processing' || value === 'completed' || value === 'error'
-}
-
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : []
 }
 
 /**
@@ -353,7 +176,8 @@ export function parseGraph(input: unknown): ParseResult<FlowGraph> {
     }
 
     if (needsUpgrade) {
-      raw.data = upgradeNodeData(raw.data)
+      // createdAt 用服务端那套判据（见 `UpgradeOptions`）
+      raw.data = upgradeNodeData(raw.data, STRICT_UPGRADE)
     } else if (!isNodeStatus(raw.data.status)) {
       // v2 而没带 status：补上就是了。这是字段缺省，不是结构错误，
       // 不值得为它把整张画布判死
@@ -426,16 +250,29 @@ export function parseViewport(input: unknown): ParseResult<FlowViewport> {
 /**
  * 「每人自己一份」的状态分区表。**这是唯一的扩展点**：
  * 以后还想按用户存别的（面板宽度、折叠了哪些节点、个人主题…），
- * 就在这里加一行 `键名: 校验函数`，再在 src/types/flow.ts 补上对应类型 —— 表结构不用动。
+ * 先在 `@shadecn/shared/flow-graph` 的 `FlowUserState` 上加一个可选字段，
+ * 再在这里加一行 `键名: 校验函数` —— 表结构不用动。
+ *
+ * 类型是按 `FlowUserState` 的键做的映射：那边加了字段、这里没加校验，**编译不过**。
  *
  * 不认识的 key 一律拒收：这张表不是任意 KV，收进来的东西必须有人负责校验。
  */
-export const FLOW_USER_STATE_PARSERS: Record<string, (input: unknown) => ParseResult<unknown>> = {
+export const FLOW_USER_STATE_PARSERS: {
+  readonly [K in keyof FlowUserState]-?: (
+    input: unknown,
+  ) => ParseResult<NonNullable<FlowUserState[K]>>
+} = {
   viewport: parseViewport,
 }
 
 export type FlowUserStateKey = keyof typeof FLOW_USER_STATE_PARSERS
-export type FlowUserState = Record<string, unknown>
+
+/** 按任意字符串查分区的校验函数（请求体 / 库里的 key 都是不可信的字符串） */
+export function userStateParserOf(
+  key: string,
+): ((input: unknown) => ParseResult<unknown>) | undefined {
+  return (FLOW_USER_STATE_PARSERS as Record<string, (input: unknown) => ParseResult<unknown>>)[key]
+}
 
 /** 单个分区序列化后的字节上限：这里存的是「我怎么看」，不是内容，不该长 */
 export const USER_STATE_VALUE_BYTES = 16 * 1024
@@ -450,9 +287,9 @@ export function parseUserStatePatch(input: unknown): ParseResult<FlowUserState> 
   const keys = Object.keys(input)
   if (keys.length === 0) return { ok: false, error: '至少要带一个状态分区' }
 
-  const value: FlowUserState = {}
+  const value: Record<string, unknown> = {}
   for (const key of keys) {
-    const parse = FLOW_USER_STATE_PARSERS[key]
+    const parse = userStateParserOf(key)
     if (!parse) return { ok: false, error: `未知的状态分区：${key}` }
 
     const parsed = parse(input[key])
@@ -466,7 +303,8 @@ export function parseUserStatePatch(input: unknown): ParseResult<FlowUserState> 
     value[key] = parsed.value
   }
 
-  return { ok: true, value }
+  // 每个键都过了 FLOW_USER_STATE_PARSERS 里对应的那条校验
+  return { ok: true, value: value as FlowUserState }
 }
 
 /** 校验一批待提交的事务 */

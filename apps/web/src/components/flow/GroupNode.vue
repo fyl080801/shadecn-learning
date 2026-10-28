@@ -22,7 +22,7 @@ import { useFlowEditor } from "@/composables/flow/editor-context"
  * 分组只是把工具栏那排按钮换成了自己的（没有「复制」）。
  *
  * 「把节点拖进已有分组」（自动 reparent）还没做：数据上 `parentNode` / `extent` 是通的
- * （`flow-doc.ts` 两侧都读写它们，Vue Flow 也认），缺的只是拖动时的命中判定。
+ * （`@shadecn/shared/flow-doc` 读写它们，前后端同一份，Vue Flow 也认），缺的只是拖动时的命中判定。
  */
 const props = defineProps<NodeProps<Record<string, unknown>>>()
 
@@ -72,7 +72,7 @@ function onResizeEnd(event: { params: { x: number; y: number; width: number; hei
       手写 absolute + transform 在缩放时必歪（见 CLAUDE.md 的画布约定）。
       只在选中时出现，否则画布上每个分组都挂着八个点。
       （它的手柄要从上面那层 pointer-events-none 里把事件要回来，
-      规则在 src/styles/vue-flow.css。）
+      规则在 apps/web/src/styles/vue-flow.css。）
     -->
     <NodeResizer
       :is-visible="selected"

@@ -5,7 +5,7 @@ import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response'
 import type { HttpServer, ViteDevServer } from 'vite'
 import { createServer as createViteServer } from 'vite'
 import type { ServerApp } from '../app.ts'
-import { isApiPath, rootDir } from '../config.ts'
+import { isApiPath, webRoot } from '../config.ts'
 import { LOGIN_PATH } from './guard.ts'
 
 /** 请求 URL 只取路径部分（`/login?redirect=/x` → `/login`） */
@@ -23,7 +23,8 @@ function pathnameOf(url: string | undefined) {
  */
 export async function attachViteDevServer(app: ServerApp, server: HttpServer) {
   const vite = await createViteServer({
-    root: rootDir,
+    // 前端包的目录：Vite 从这里找 vite.config.ts（插件也从那份配置旁边解析），HTML 入口也在这儿
+    root: webRoot,
     appType: 'custom',
     server: {
       middlewareMode: true,
@@ -84,7 +85,7 @@ async function sendIndexHtml(
   // 两个入口：`/login` 是它自己那一份 HTML，其余走 SPA fallback。
   // 只认精确路径 —— `/login` 底下没有子路由，`/loginXxx` 更不该命中
   const entry = pathnameOf(incoming.url) === LOGIN_PATH ? 'login.html' : 'index.html'
-  const raw = await fs.readFile(path.join(rootDir, entry), 'utf8')
+  const raw = await fs.readFile(path.join(webRoot, entry), 'utf8')
   const html = await vite.transformIndexHtml(incoming.url ?? '/', raw)
   outgoing.writeHead(200, {
     'content-type': 'text/html; charset=utf-8',

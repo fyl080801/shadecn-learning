@@ -1,0 +1,23 @@
+{
+  "name": "@shadecn/shared",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./flow-graph": "./src/flow-graph.ts",
+    "./flow-doc": "./src/flow-doc.ts",
+    "./canvas": "./src/canvas.ts",
+    "./auth": "./src/auth.ts",
+    "./collab": "./src/collab.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
+  },
+  "peerDependencies": {
+    "yjs": "^13.6.32"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "yjs": "^13.6.32"
+  }
+}

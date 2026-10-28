@@ -1,4 +1,6 @@
-node_modules
+# workspace 下每个包都有自己的 node_modules（apps/*/node_modules 是指进宿主机 .pnpm 的符号链接），
+# 只写 `node_modules` 只排得掉根目录那一个 —— 漏进来会在 `COPY . .` 时盖掉镜像里装好的依赖
+**/node_modules
 dist
 output
 .git
@@ -19,10 +21,13 @@ data
 **/*.db-journal
 **/*.db-wal
 **/*.db-shm
-server/generated
+apps/server/generated
 
 # 测试相关，不进镜像
-server/test
-src/test
+apps/server/test
+apps/web/src/test
+packages/*/test
 vitest.config.ts
+apps/*/vitest.config.ts
+packages/*/vitest.config.ts
 coverage

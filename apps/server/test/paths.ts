@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 
-const repoRoot = path.resolve(import.meta.dirname, '../..')
+// 本文件在 apps/server/test/ 下，往上三层才是仓库根（.env、data/ 都在那儿）
+const repoRoot = path.resolve(import.meta.dirname, '../../..')
 
 /**
  * 测试库的位置。
@@ -17,7 +18,7 @@ const repoRoot = path.resolve(import.meta.dirname, '../..')
  * 写在 .env 里也行（见下面的 loadTestEnv）。开发库本身就是 PostgreSQL 的话建议这么配：
  * 生成的 Prisma client 绑定 provider，两边 provider 一致就不用每轮测试来回 generate 两次。
  *
- * vitest.config.ts 和 global-setup.ts 都从这里取，保证 CLI 和测试进程打开的是同一个库。
+ * apps/server/vitest.config.ts 和 global-setup.ts 都从这里取，保证 CLI 和测试进程打开的是同一个库。
  */
 
 /**
@@ -28,7 +29,7 @@ const repoRoot = path.resolve(import.meta.dirname, '../..')
  * 于是写在 .env 里的那行看着生效、实际整轮测试还是跑 SQLite（表都建在别处）。
  *
  * 为什么只放 `TEST_` 前缀：测试跟开发者本地的 .env（真实 Keycloak、真实密钥、真实开发库）
- * 彻底无关是这套测试的前提 —— server/env.ts 被换成空实现、环境全由 vitest.config.ts
+ * 彻底无关是这套测试的前提 —— apps/server/env.ts 被换成空实现、环境全由 vitest.config.ts
  * 的 test.env 提供，都是为了这个。`TEST_` 开头的变量本来就是**只给测试用的**，
  * 不属于那份要隔离的开发配置，所以是这条规则唯一的例外。
  *

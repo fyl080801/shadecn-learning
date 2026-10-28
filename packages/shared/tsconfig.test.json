@@ -1,0 +1,11 @@
+{
+  /*
+   * 测试单独一份：vitest 的类型会顺带把 Node 的全局类型拖进程序里，
+   * 要是和 src 共用 tsconfig.json，那道「不许用 Node / DOM 专属 API」的护栏就失效了。
+   */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.shared-test.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}

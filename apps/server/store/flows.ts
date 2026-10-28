@@ -1,5 +1,7 @@
+import type { FlowDetail, FlowMode, FlowStatus, FlowSummary } from '@shadecn/shared/canvas'
+import { emptyGraph } from '@shadecn/shared/flow-graph'
 import { prisma } from '../db.ts'
-import { type FlowGraph, type FlowUserState, emptyGraph, readGraph } from './flow-types.ts'
+import { readGraph } from './flow-types.ts'
 import { flowUserState } from './flow-user-state.ts'
 import type { ProjectKind } from './projects.ts'
 import { nameContains } from './text.ts'
@@ -9,9 +11,13 @@ import { nameContains } from './text.ts'
  *
  * 内容的事实源是 `Flow.ydoc`（Yjs 状态）；这里读的 `graph` 是服务端从它派生的
  * 只读投影，列表计数、缩略图走它，读是 O(1)。
+ *
+ * 接口形状（`FlowSummary` / `FlowDetail` / `FlowStatus` / `FlowMode`）在
+ * `@shadecn/shared/canvas`，前端消费的是同一份；这里转出去，服务端各处照旧从本模块取。
  */
 
-export type FlowStatus = 'draft' | 'published' | 'archived'
+export type { FlowDetail, FlowMode, FlowStatus, FlowSummary }
+
 export const FLOW_STATUSES: readonly FlowStatus[] = ['draft', 'published', 'archived']
 
 export type FlowSort = 'updatedAt' | 'createdAt' | 'name'
@@ -23,37 +29,8 @@ export type FlowSort = 'updatedAt' | 'createdAt' | 'name'
  * 挪进团队项目就是 collab。存一份标记在 `Flow` 上，早晚会和归属对不上，
  * 而对不上的那一刻没人看得出是哪边错了。
  */
-export type FlowMode = 'solo' | 'collab'
-
 export function modeOfKind(kind: ProjectKind): FlowMode {
   return kind === 'personal' ? 'solo' : 'collab'
-}
-
-export interface FlowSummary {
-  id: string
-  projectId: string
-  /** solo = 不走协同（个人画布）；collab = 走 WebSocket 房间 */
-  mode: FlowMode
-  name: string
-  description: string | null
-  status: FlowStatus
-  tags: string[]
-  thumbnail: string | null
-  nodeCount: number
-  edgeCount: number
-  revision: number
-  createdById: string
-  createdAt: string
-  updatedAt: string
-}
-
-export interface FlowDetail extends FlowSummary {
-  graph: FlowGraph
-  /**
-   * 请求者**自己**的画布状态（视口等），刚建/刚复制出来的是空对象。
-   * 没有的分区前端各自回落到默认值（视口回落到 graph.viewport）。
-   */
-  userState: FlowUserState
 }
 
 export interface ListFlowsOptions {

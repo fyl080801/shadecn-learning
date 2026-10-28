@@ -4,7 +4,7 @@
 > 第 7 项（备份与恢复预案）的**规则已经定下来并实测**（§4.7.1–4.7.3），
 > 差的是定时备份本身与一次恢复演练，那是运维动作。
 >
-> **已完成**：§4.5 可观测（`server/logger/` + `GET /api/collab/health`）、
+> **已完成**：§4.5 可观测（`apps/server/logger/` + `GET /api/collab/health`）、
 > §4.1 落库失败不再丢数据（异常照抛 + 欠账登记 + 定期重试）、§4.2 a 共享层 fail-open、
 > §4.6 k8s 三项（grace / 落库超时 / readiness 拆路径）、§4.3 落库改成读-合并-CAS、
 > §4.4 「服务器存不进去」的房间广播与状态栏提示。
@@ -45,7 +45,7 @@
 | 个人画布推送失败 | 以**服务端状态向量**为基线重算差量，重发幂等，无需待确认队列 | `sync/solo.ts`、`flow-writer.ts` |
 | 会话过期 / 被移出项目 / 被顶下线 / 画布过大 | 四种终局信号分开识别，各有出路，绝不混进「已离线」 | `sync/collab.ts` 的 `classifyClose` |
 | WebSocket 假死 | `timeout: 30_000` + awareness 15s 重播，比反代的 60s 先发现 | `collab/hocuspocus.ts` |
-| 正常退出（SIGTERM / SIGINT） | 逐房间直接落库并 await，不依赖 `flushPendingStores()` | `server/index.ts`、`flushAllRoomsToDatabase` |
+| 正常退出（SIGTERM / SIGINT） | 逐房间直接落库并 await，不依赖 `flushPendingStores()` | `apps/server/index.ts`、`flushAllRoomsToDatabase` |
 | 同一行的并发写（进程内） | 按房间串行的写队列 | `persistence.ts` 的 `enqueue` |
 | 同一行的并发写（跨副本，REST 通道） | `where: { revision }` 的 CAS + 重试 | `flow-writer.ts` 的 `merge` |
 | 单张画布撑爆资源 | 软/硬两级字节配额，硬限锁房间并清场 | `collab/quota.ts` |
@@ -68,7 +68,7 @@
 ### 4.1 写队列吞掉落库异常，绕过了 Hocuspocus 的数据保护
 
 > **已修复。** `enqueue` 照实往外抛 + 欠账登记 + 定期重试；
-> 用例在 `server/test/collab/persistence.test.ts` 的「落库失败」一组。
+> 用例在 `apps/server/test/collab/persistence.test.ts` 的「落库失败」一组。
 
 **原来的现象。** 数据库写失败时内容会真的丢，且没有任何痕迹。
 
@@ -134,7 +134,7 @@
 ### 4.3 协同落库是全量覆盖写，没有 CAS；redlock 的 TTL 是 1 秒
 
 > **已修复。** 落库改成**读 → 合并 → CAS 写回**，`lockTimeout` 显式配成 10 秒。
-> 用例在 `server/test/collab/persistence.test.ts` 的「落库的跨副本并发」一组。
+> 用例在 `apps/server/test/collab/persistence.test.ts` 的「落库的跨副本并发」一组。
 
 **原来的问题。** `storeFlowState` 用 `updateMany({ where: { id } })` 把
 `Y.encodeStateAsUpdate(doc)` 整段盖进 `ydoc`。单副本下这没问题 —— 这个进程是唯一的写者，
@@ -173,8 +173,8 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
 
 > **便宜版已做。** 服务端在落库状态**翻转**时用 stateless 消息广播给房间，
 > 前端把状态栏改成「服务器暂时无法保存，改动已同步给协作者」。
-> 用例在 `server/test/collab/persistence.test.ts`（何时该说）
-> 与 `src/test/composables/flowSync.test.ts`（消息怎么解）。
+> 用例在 `apps/server/test/collab/persistence.test.ts`（何时该说）
+> 与 `apps/web/src/test/composables/flowSync.test.ts`（消息怎么解）。
 
 §4.1–4.3 的失败模式全都长成同一个样子：**界面写着已同步，字节其实只在内存里**。
 前端原本没有任何信号能区分这两者。
@@ -220,7 +220,7 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
 
 ### 4.5 发现不了就谈不上容灾
 
-> **已做** —— 日志层（`server/logger/`，winston，零入侵注入）+ `GET /api/collab/health`。
+> **已做** —— 日志层（`apps/server/logger/`，winston，零入侵注入）+ `GET /api/collab/health`。
 > 剩下的是**运维动作**：在监控系统里配一条针对这个端点的告警。
 
 原本的问题是：落库失败、写队列深度、Redis 断连、redlock 冲突全部只落在 stdout，
@@ -228,7 +228,7 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
 
 现在的形态：
 
-- **日志**（`server/logger/`）—— 落库失败、慢查询、连接进出、房间生命周期都是结构化日志。
+- **日志**（`apps/server/logger/`）—— 落库失败、慢查询、连接进出、房间生命周期都是结构化日志。
   接管 `console.*` 得来，业务代码一行没改，写法照旧是 `console.warn('[collab] …')`。
 - **端点** `GET /api/collab/health` —— **状态码本身就是结论**（200 / 503），
   最土的告警（curl 判状态码）也接得上，不必解析 JSON。响应里有：
@@ -261,7 +261,7 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
 
 ### 4.6 k8s 侧的三个具体缺口
 
-> **已修复**（三条都做了）。用例在 `server/test/routes/health.test.ts`；
+> **已修复**（三条都做了）。用例在 `apps/server/test/routes/health.test.ts`；
 > 两份清单都过了 `kubectl apply --dry-run=client`。
 
 1. **~~没有 `terminationGracePeriodSeconds`，也没有 `preStop`~~** —— 现在两份清单都有
@@ -269,7 +269,7 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
    默认的 30 秒在房间多或数据库慢时不够，超时被 SIGKILL **比不 flush 还糟**：
    既没写进去，也没干净退出。preStop 那 5 秒是为了让 endpoint 先摘干净 ——
    k8s 里 SIGTERM 和摘流是**并行**的，不睡这一下，正在死的 Pod 还会接到新的 WebSocket 握手。
-2. **~~落库没有整体超时~~** —— `server/index.ts` 的 `SHUTDOWN_FLUSH_TIMEOUT`（20 秒）
+2. **~~落库没有整体超时~~** —— `apps/server/index.ts` 的 `SHUTDOWN_FLUSH_TIMEOUT`（20 秒）
    把 `flushAllRoomsToDatabase` + `flushCollabWrites` 整段包住。
    放在这里而不是 `flushCollabWrites` 内部：**退出的时间预算是一个整体**，
    和 `terminationGracePeriodSeconds` 直接对应，拆成两个各自的超时反而说不清总账。
@@ -392,14 +392,14 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
 
 - ~~**落库失败不丢数据**~~：**已完成** —— 写库失败会往外抛（Hocuspocus 据此保住文档），
   失败登记进欠账表，数据库恢复后 `retryFailedStores()` 把完整内容补写进去、欠账归零。
-  用例在 `server/test/collab/persistence.test.ts`。（§4.1）
+  用例在 `apps/server/test/collab/persistence.test.ts`。（§4.1）
 - ~~**共享层不可用不影响持久化**~~：**已完成** —— 让共享层必然抛，
   确认 `storeFlowState` 照常写库、不记欠账。（§4.2 a）
 - ~~**副本分叉不覆盖**~~：**已完成** —— 两个 `Y.Doc` 各带一部分改动先后落库，
   库里是两者的合并；本副本的内存文档也被补上了对方的内容。（§4.3）
 - ~~**健康接口**~~：**已完成** —— `GET /api/collab/health` 报出最近一次落库成功时间、
   失败数、队列深度、共享层可用性，落库失败时翻成 503。
-  用例在 `server/test/routes/collab.test.ts` 与 `server/test/logger/collab.test.ts`。（§4.5）
+  用例在 `apps/server/test/routes/collab.test.ts` 与 `apps/server/test/logger/collab.test.ts`。（§4.5）
 - ~~**退出不超时**~~：**已完成** —— `SHUTDOWN_FLUSH_TIMEOUT` 给落库一个 20 秒上限，
   超时记一笔往下走；实测 SIGTERM 到进程退出 0.2 秒。（§4.6）
 - ~~**readiness 反映依赖**~~：**已完成** —— `/api/health/ready` 在数据库或共享层不通时 503，
@@ -408,9 +408,9 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
   状态栏改成「服务器暂时无法保存」，恢复后自动消失。（§4.4）
 - ~~**本地缓存不可用有提示**~~：**已完成** —— 构造与 `whenSynced` 两处都接住异常，
   进场 toast 一次，断线时状态栏改口成「刷新会丢失未同步的改动」。
-  用例在 `src/test/composables/flowSync.test.ts`（`syncTextOf` 是为此拆出的纯函数）。
+  用例在 `apps/web/src/test/composables/flowSync.test.ts`（`syncTextOf` 是为此拆出的纯函数）。
 
-前四条都能写成 `server/test/collab/` 下的用例（helpers 里已有 `resetDb`，
+前四条都能写成 `apps/server/test/collab/` 下的用例（helpers 里已有 `resetDb`，
 共享层有 `useBackendForTesting` 可以塞一个必然失败的实现）。
 
 ## 7. 本期不做（Out of Scope）

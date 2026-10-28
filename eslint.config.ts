@@ -15,9 +15,9 @@ export default defineConfig(
       // `pnpm build` 的产物
       "output",
       "node_modules",
-      "src/components/ui/**",
+      "apps/web/src/components/ui/**",
       // Prisma 生成的 client
-      "server/generated/**"
+      "apps/server/generated/**"
     ]
   },
   {
@@ -42,7 +42,10 @@ export default defineConfig(
   prettierConfig,
 
   // Global language options — browser globals
+  // packages/shared 除外：它前后端都要跑，不该假设浏览器（也不该假设 Node，所以下面的 Node 块也没有它）。
+  // 「不许用 DOM / Node 专属 API」真正的护栏是它自己 tsconfig 的 lib: ES2020 + types: []，这里只是不给错觉。
   {
+    ignores: ["packages/shared/**"],
     languageOptions: {
       globals: {
         ...globals.browser
@@ -53,15 +56,17 @@ export default defineConfig(
   // Node 后端 —— Node 全局变量
   {
     files: [
-      "server/**/*.ts",
+      // 后端包整个是 node 环境（含 prisma.config.ts、vitest.config.ts）
+      "apps/server/**/*.ts",
       // 构建脚本和随产物发出去的模板，都是 node 环境
-      "scripts/**/*.{js,mjs}",
+      "apps/server/scripts/**/*.{js,mjs}",
       // provider / 连接串解析，prisma.config.ts 和构建脚本共用的那份
-      "prisma/*.mjs",
-      "vite.config.ts",
+      "apps/server/prisma/*.mjs",
+      "apps/web/vite.config.ts",
+      "apps/web/vitest.config.ts",
+      "packages/shared/vitest.config.ts",
       "vitest.config.ts",
-      "eslint.config.ts",
-      "prisma.config.ts"
+      "eslint.config.ts"
     ],
     languageOptions: {
       globals: {

@@ -7,15 +7,15 @@ import {
   USER_STATE_FLUSH_MAX_WAIT,
   useFlowStore
 } from "@/stores/flow"
-import { metaMap, nodesMap, toYNode } from "@/lib/flow-doc"
-import { collectionKey, readCollection, spreadCollection } from "@/lib/flow-collection"
+import { metaMap, nodesMap, toYNode } from "@shadecn/shared/flow-doc"
+import type { FlowDetail } from "@shadecn/shared/canvas"
 import {
   defaultNodeData,
   GRAPH_SCHEMA_VERSION,
-  type FlowDetail,
   type FlowEdge,
   type FlowNode
-} from "@/types/flow"
+} from "@shadecn/shared/flow-graph"
+import { collectionKey, readCollection, spreadCollection } from "@/lib/flow-collection"
 
 /**
  * store 是 Y.Doc 的响应式投影 —— 这一组用例盯的就是这层契约：

@@ -1,3 +1,4 @@
+import type { IdentityView, PendingLinkView } from '@shadecn/shared/auth'
 import { prisma } from '../db.ts'
 import { type ProviderId, type ProviderProfile, getProvider } from '../auth/providers/index.ts'
 import type { User, UserIdentity } from '../generated/prisma/client.ts'
@@ -40,20 +41,8 @@ const GITHUB_ISSUER = 'https://github.com'
 
 const iso = (value: Date | null) => value?.toISOString() ?? null
 
-/** 设置页那张列表里的一行 */
-export interface IdentityView {
-  id: string
-  provider: ProviderId
-  /** 提供方显示名（'Keycloak' / 'GitHub'） */
-  label: string
-  username: string | null
-  email: string | null
-  avatarUrl: string | null
-  createdAt: string
-  lastLoginAt: string | null
-  /** 主身份：档案字段跟着它走。解绑它会把另一条提升上来 */
-  primary: boolean
-}
+/** 设置页那张列表里的一行；形状在 `@shadecn/shared/auth`（前端消费的是同一份） */
+export type { IdentityView }
 
 /** 这条 identity 是不是当前的主身份 */
 function isPrimary(row: Pick<UserIdentity, 'issuer' | 'subject'>, user: Pick<User, 'issuer' | 'subject'>) {
@@ -135,17 +124,9 @@ export const PENDING_LINK_TTL = 10 * 60 * 1000
 
 /**
  * 确认框上要显示的东西 —— 用户要靠它看清自己绑的是哪个账号。
- *
- * 只放**界面真的会显示**的字段。过期时刻不在里面：界面上不写倒计时，
- * 真放过期了确认接口会回 410 并说清楚，没必要多送一个没人读的值出去。
+ * 形状（以及为什么不带过期时刻）见 `@shadecn/shared/auth`。
  */
-export interface PendingLinkView {
-  provider: ProviderId
-  label: string
-  username: string | null
-  email: string | null
-  avatarUrl: string | null
-}
+export type { PendingLinkView }
 
 export type ConfirmResult =
   | { ok: true; identity: IdentityView }

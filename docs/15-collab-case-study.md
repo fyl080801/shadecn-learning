@@ -154,7 +154,7 @@ patchNodeData → requestPersist → useDebounceFn 300ms → toObject() 全量�
 
 ### 4.1 「不启用元素占用」是对的
 
-`src/lib/presence.ts` 的占用仲裁写了、测了、没接进画布，
+`apps/web/src/lib/presence.ts` 的占用仲裁写了、测了、没接进画布，
 理由记在 [REQ-COLLAB §4.0.1](04-realtime-collab.md)。libtv 正好演示了接进去会发生什么。
 
 真正要守的不是「要不要锁」，而是：**一旦拒绝写入，绝不能静默。**
@@ -167,9 +167,9 @@ patchNodeData → requestPersist → useDebounceFn 300ms → toObject() 全量�
 
 ### 4.2 「边是顶层实体」不是风格问题
 
-`src/lib/flow-doc.ts` 把 `nodes` / `edges` 放成两个平级的顶层 `Y.Map`，
+`packages/shared/src/flow-doc.ts`（当时是 `src/lib/flow-doc.ts`，现在前后端共用这一份）把 `nodes` / `edges` 放成两个平级的顶层 `Y.Map`，
 边不住在任何节点里。所以本项目的「删边」就是 `edgeMap.delete(id)`
-（`src/stores/flow/index.ts:311`），**一个字节都不碰节点**。
+（`apps/web/src/stores/flow/index.ts:311`），**一个字节都不碰节点**。
 
 甲改节点标题、乙删这条边，落在 Y.Doc 里是完全不相交的 key，CRDT 直接合并，
 没有冲突需要仲裁。**libtv 那个 bug 在这个结构下不可能复现。**
@@ -177,9 +177,9 @@ patchNodeData → requestPersist → useDebounceFn 300ms → toObject() 全量�
 ### 4.3 「悬空边交给 GC」比加锁便宜
 
 甲删节点、乙同时往它连线，CRDT 会诚实地合并出一条悬空边——这是正常产物，不是要预防的错误。
-本项目是双层防御：投影层过滤不渲染（`src/stores/flow/index.ts:133`）+
+本项目是双层防御：投影层过滤不渲染（`apps/web/src/stores/flow/index.ts:133`）+
 服务端 `pruneDanglingEdges` 真正删除，并挂 `'gc'` origin 让清理不进任何人的撤销栈
-（`server/collab/flow-doc.ts:285`）。
+（`apps/server/collab/flow-doc.ts:285`）。
 
 用锁去预防这件事，代价是冻结整片画布，收益是省掉一次 GC，不划算。
 
@@ -189,7 +189,7 @@ patchNodeData → requestPersist → useDebounceFn 300ms → toObject() 全量�
 
 调研过程中发现一处**尚未发作、但同源**的隐患。
 
-`src/lib/flow-doc.ts:63-64` 把 `config` 和 `ports` 当整块 JSON 塞进 Y.Map：
+当时的 `src/lib/flow-doc.ts:63-64`（现在是 `packages/shared/src/flow-doc.ts`；这处隐患后来已按本节思路拆平成 `data` 上的扁平 key）把 `config` 和 `ports` 当整块 JSON 塞进 Y.Map：
 
 ```ts
 data.set("config", node.data.config)
@@ -210,7 +210,7 @@ data.set("config", config)
 ```
 
 读侧不用改——`fromYNode` 的 `rawData.toJSON()` 已经是递归的。
-服务端 `server/collab/flow-doc.ts` 那份镜像要同步改。
+当时服务端 `apps/server/collab/flow-doc.ts` 那份镜像也要同步改；现在读写在 shared 里只有一份，不再有这一步。
 
 `ports` 同理：只要端口会被动态增删（可变参数节点）就得拆；
 如果永远由 `kind` 静态决定，留作 blob 反而更省事。

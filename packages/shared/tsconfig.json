@@ -1,0 +1,35 @@
+{
+  /*
+   * 前后端共用的源码，**两边都会以各自的配置再编译一遍**（它是被 import 进去的 .ts 源，
+   * 不是构建产物）。所以这份配置取的是两边的「交集」，只当护栏用：
+   *   - lib 只给 ES2020、types 为空 —— 前端是 ES2020 + DOM，后端是 ES2023 + node；
+   *     这里两样都不给，用了 DOM（window / TextEncoder…）或 Node（Buffer…）专属 API 当场报错；
+   *   - noUncheckedIndexedAccess 跟前端（@vue/tsconfig）一致，后端没开 —— 取严的那边；
+   *   - 包内相对 import 写 `.ts` 扩展名（后端的写法），两边都是 moduleResolution=bundler，都吃得下。
+   */
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.shared.tsbuildinfo",
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "module": "ESNext",
+    "types": [],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["src/**/*.ts"]
+}

@@ -4,33 +4,30 @@ import { useDebounceFn } from "@vueuse/core"
 import * as Y from "yjs"
 import { flowApi } from "@/lib/api"
 import {
-  changedTopLevelKeys,
   edgesMap,
   fromYEdge,
   fromYNode,
   metaMap,
   nodeData,
   nodesMap,
-  projectMap,
-  readFallbackViewport,
   toYEdge,
   toYNode,
   VIEWPORT_KEY
-} from "@/lib/flow-doc"
+} from "@shadecn/shared/flow-doc"
+import type { FlowDetail, FlowSummary } from "@shadecn/shared/canvas"
 import type {
-  FlowDetail,
   FlowEdge,
   FlowNode,
   FlowNodeData,
-  FlowSummary,
   FlowUserState,
   FlowViewport
-} from "@/types/flow"
+} from "@shadecn/shared/flow-graph"
+import { changedTopLevelKeys, projectMap, readFallbackViewport } from "@/lib/flow-projection"
 
 /**
  * 画布编辑器的状态中枢。
  *
- * **内容的唯一事实源是 Y.Doc**（`src/lib/flow-doc.ts` 描述了它的形状），
+ * **内容的唯一事实源是 Y.Doc**（`@shadecn/shared/flow-doc` 描述了它的形状），
  * 这里的 `nodes` / `edges` 只是它的响应式投影：Y.Map 一变就重算，组件照常用。
  *
  * 一条铁律：**所有内容变更都走 `mutate()`**。它把改动包进一个带 origin 的 Y 事务 ——
@@ -38,7 +35,7 @@ import type {
  * 才会被服务端落库。组件不许直接碰 Y.Map。
  *
  * 这里**没有**保存、提交、revision、冲突这些概念了：
- * 改动即刻广播，服务端订阅并落库（`server/collab/persistence.ts`）。
+ * 改动即刻广播，服务端订阅并落库（`apps/server/collab/persistence.ts`）。
  * CRDT 天然收敛，不需要乐观锁，也就没有 409 可言。
  *
  * 视口是唯一的例外，它不是画布内容而是「我怎么看」，按用户存 ——
@@ -361,7 +358,7 @@ export const useFlowStore = defineStore("flow", () => {
    *
    * 逐个 key 写，不整块替换：Y.Map 的合并粒度就是 key，整块替换会把别人同时改的字段盖掉。
    *
-   * `remove` 是「平铺分键」（`src/lib/flow-collection.ts`）用得上的那一半：一批元素摊成
+   * `remove` 是「平铺分键」（`apps/web/src/lib/flow-collection.ts`）用得上的那一半：一批元素摊成
    * `<前缀>.<id>` 之后，删掉其中一个元素就是删掉一个键，而不是改写某个数组。
    * 删和写必须同笔 —— 「删掉角色 A、同时删掉它名下的轨」要一步撤干净，
    * 分两次写别人会看到一个只剩半拉的中间态。
@@ -483,7 +480,7 @@ export const useFlowStore = defineStore("flow", () => {
    * **一次编辑至少产生一次 PATCH，哪怕视图没动过** —— 这一趟同时是会话的心跳。
    * 内容走 WebSocket 之后，编辑本身不再产生任何 HTTP 请求，而会话的空闲计时
    * （Keycloak 的 SSO Session Idle）只认真实请求；服务端的协同复验是只读的、
-   * 特意不续期（`server/auth/session.ts` 的 `LoadSessionOptions.refresh`），
+   * 特意不续期（`apps/server/auth/session.ts` 的 `LoadSessionOptions.refresh`），
    * 否则挂着标签页就永远不会超时。所以：在编辑 = 隔一阵一次 PATCH = 会话续着，
    * 只看不改 = 一个请求都没有 = 该超时就超时。
    *

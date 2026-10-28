@@ -21,7 +21,7 @@ import type { useFlowSync } from "./sync"
  * `ReferenceError: Cannot access 'XX' before initialization`，画布编辑器整页白屏，
  * 而且**只在生产构建里出现**。所以规矩是：
  *
- *   `src/components/flow/` 下的组件要拿上下文，一律从这个文件引，
+ *   `apps/web/src/components/flow/` 下的组件要拿上下文，一律从这个文件引，
  *   不要从 `@/composables/flow` 那个 barrel 引。
  *
  * 现在只有节点组件（会被 `node-types` 引到）才真的成环，但「哪些组件在注册表的

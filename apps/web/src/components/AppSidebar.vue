@@ -86,18 +86,24 @@ const navGroups: NavGroup[] = [
       { label: "画布项目", to: "/projects", icon: Workflow },
       { label: "个人画布", to: "/personal", icon: UserRoundPen }
     ]
-  },
-  {
-    label: "GalStory",
-    items: [
-      { label: "故事库", to: "/galstory/stories", icon: BookOpen, match: "prefix" },
-      { label: "模型配置", to: "/galstory/config", icon: SlidersHorizontal }
-    ]
   }
+  // {
+  //   label: "GalStory",
+  //   items: [
+  //     { label: "故事库", to: "/galstory/stories", icon: BookOpen, match: "prefix" },
+  //     { label: "模型配置", to: "/galstory/config", icon: SlidersHorizontal }
+  //   ]
+  // }
 ]
 
-const { user, displayName, isAuthenticated, authEnabled, startLogin, startLogout } =
-  useAuth()
+const {
+  user,
+  displayName,
+  isAuthenticated,
+  authEnabled,
+  startLogin,
+  startLogout
+} = useAuth()
 
 const route = useRoute()
 const router = useRouter()
@@ -109,12 +115,18 @@ const { isMobile, collapsed, toggleSidebar, mobileNavOpen, closeMobileNav } =
  * 是误导 —— 那是本地开发模式，不是会话没了。
  */
 const accountLabel = computed(() =>
-  isAuthenticated.value ? displayName.value : authEnabled.value ? "未登录" : "本地模式"
+  isAuthenticated.value
+    ? displayName.value
+    : authEnabled.value
+      ? "未登录"
+      : "本地模式"
 )
 
 /** 当前路由算不算落在这一项上；详情页要让它所属的入口继续亮着（见 NavItem.match） */
 function isActive(item: NavItem) {
-  return item.match === "prefix" ? route.path.startsWith(item.to) : route.path === item.to
+  return item.match === "prefix"
+    ? route.path.startsWith(item.to)
+    : route.path === item.to
 }
 
 /** 菜单项里的跳转：吞掉 router.push 的 promise，免得守卫拦下时留个未处理的 rejection */
@@ -271,18 +283,26 @@ watch(
 
             <div v-if="!collapsed" class="min-w-0 flex-1">
               <p class="truncate text-sm font-medium">{{ accountLabel }}</p>
-              <p v-if="user?.email" class="truncate text-xs text-muted-foreground">
+              <p
+                v-if="user?.email"
+                class="truncate text-xs text-muted-foreground"
+              >
                 {{ user.email }}
               </p>
             </div>
 
-            <ChevronsUpDown v-if="!collapsed" class="size-4 shrink-0 opacity-60" />
+            <ChevronsUpDown
+              v-if="!collapsed"
+              class="size-4 shrink-0 opacity-60"
+            />
           </button>
         </DropdownMenuTrigger>
 
         <!-- 菜单在侧边栏底部，往上弹 -->
         <DropdownMenuContent side="top" align="start" class="w-56">
-          <DropdownMenuLabel class="truncate">{{ accountLabel }}</DropdownMenuLabel>
+          <DropdownMenuLabel class="truncate">{{
+            accountLabel
+          }}</DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuItem @select="go('/settings')">
             <Settings />
@@ -326,7 +346,9 @@ watch(
       </AlertDialogHeader>
       <AlertDialogFooter>
         <AlertDialogCancel>取消</AlertDialogCancel>
-        <AlertDialogAction @click="startLogout(route.fullPath)">退出</AlertDialogAction>
+        <AlertDialogAction @click="startLogout(route.fullPath)"
+          >退出</AlertDialogAction
+        >
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>

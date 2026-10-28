@@ -11,14 +11,14 @@ import {
   CardTitle
 } from "@/components/ui/card"
 import GithubMark from "@/components/icons/GithubMark.vue"
-import type { AuthProviderView, ProviderId } from "@/types/auth"
+import type { ProviderView, ProviderId } from "@shadecn/shared/auth"
 
 /**
  * 登录页。**不是 SPA 的一个路由**，而是 `login.html` 这个第二入口挂载的独立应用
- * （`src/login/main.ts`）—— 未登录时后端只发 `/login`，`index.html` 根本发不出去，
+ * （`apps/web/src/login/main.ts`）—— 未登录时后端只发 `/login`，`index.html` 根本发不出去，
  * 所以登录页不能长在需要 `index.html` 才能启动的那棵树上。
  *
- * 它以前是服务端拼的一段 HTML 字符串（`server/frontend/login-page.ts`），
+ * 它以前是服务端拼的一段 HTML 字符串（`apps/server/frontend/login-page.ts`），
  * 换成这里之后消掉了两处必须手工同步的重复：深色调色板（曾经真的漂过一次，
  * `--primary` 一边 0.985 一边 0.922）和 GitHub 的 SVG。现在配色直接来自
  * `@/style.css`，图标直接来自 `@/components/icons/GithubMark.vue`。
@@ -30,7 +30,7 @@ import type { AuthProviderView, ProviderId } from "@/types/auth"
  * - 失败原因 → `?error=`，用文本插值渲染，转义交给 Vue，不再手写 escapeHtml
  */
 
-const providers = ref<AuthProviderView[]>([])
+const providers = ref<ProviderView[]>([])
 const enabled = ref(true)
 const loading = ref(true)
 
@@ -61,7 +61,7 @@ onMounted(async () => {
     })
     const data = (await res.json()) as {
       enabled: boolean
-      providers: AuthProviderView[]
+      providers: ProviderView[]
     }
     enabled.value = data.enabled
     providers.value = data.providers

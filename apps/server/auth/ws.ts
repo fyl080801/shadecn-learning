@@ -1,10 +1,8 @@
+import { FLOW_ROOM_PREFIX } from '@shadecn/shared/collab'
 import { authConfig, authEnabled, isAllowedOrigin } from '../config.ts'
 import { flows } from '../store/flows.ts'
 import { projects } from '../store/projects.ts'
 import { loadSession } from './session.ts'
-
-/** 画布房间名的前缀：`flow:<flowId>`，前端 `useFlowCollab` 拼的就是它 */
-const FLOW_ROOM_PREFIX = 'flow:'
 
 function cookieValue(header: string | null | undefined, name: string) {
   if (!header) return undefined

@@ -5,8 +5,16 @@ import { hostname } from 'node:os'
 import path from 'node:path'
 import { appRoot, isBundle, moduleDir } from './runtime.ts'
 
-/** 应用根目录：dev 下 Vite 的 root、index.html、data/ 都以它为准 */
+/** 应用根目录：.env、data/、output/ 都以它为准 */
 export const rootDir = appRoot
+
+/**
+ * 前端包的目录（apps/web）：dev 下 Vite 的 root、vite.config.ts、index.html / login.html 都在这儿。
+ *
+ * 和 rootDir 是两个基准：运行时数据跟仓库根走，前端源码跟 apps/web 走。
+ * 只有源码运行（dev）才用得到 —— 产物里没有前端源码，生产吐的是 staticDir。
+ */
+export const webRoot = path.join(rootDir, 'apps', 'web')
 
 /** 构建产物根目录：`pnpm build` 把后端和前端都放这儿 */
 export const outputDir = path.join(rootDir, 'output')
@@ -75,8 +83,8 @@ export const galStoryGatewayToken = (process.env.GAL_STORY_GATEWAY_TOKEN ?? '').
 export type DbProvider = 'sqlite' | 'postgresql'
 
 /**
- * 用哪种库。这段解析必须和 prisma/db-provider.mjs（CLI 侧：迁移、schema 选择）
- * 逐条一致 —— server/ 是独立 TS 项目，引不到仓库根的 .mjs，所以这里是手抄的一份。
+ * 用哪种库。这段解析必须和 apps/server/prisma/db-provider.mjs（CLI 侧：迁移、schema 选择）
+ * 逐条一致 —— apps/server 的 tsconfig 没开 allowJs，类型检查够不到那份 .mjs，所以这里是手抄的一份。
  *
  *   1. 显式的 DB_PROVIDER 最优先；
  *   2. 否则看 DATABASE_URL 的协议；

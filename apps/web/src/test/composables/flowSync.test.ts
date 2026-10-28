@@ -10,7 +10,7 @@ import { syncTextOf, syncWarningOf } from "@/composables/flow/sync-text"
  *   只进得了本地 IndexedDB，永远发不出去；被顶下线的那种还会反过来把用户真正在用的窗口踢掉。
  * - 错认 → 本来能自动恢复的普通断线被判死刑，弹一个关不掉的框。
  *
- * 服务端用两条腿送信号（`server/collab/close.ts`）：CLOSE 消息只带 reason
+ * 服务端用两条腿送信号（`apps/server/collab/close.ts`）：CLOSE 消息只带 reason
  * （code 被 provider 填成 1000），关闭帧才带真正的 4xxx —— 所以两种形状都得认得出。
  */
 describe("协同连接的终局关闭", () => {

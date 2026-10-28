@@ -15,8 +15,8 @@
 | SQLite（默认） | 单文件、无需额外服务；配合 PVC 就能在 k8s 上跑 |
 | PostgreSQL（可选） | 需要多副本 / 并发写 / 外部托管库时切过去 |
 | Prisma 7 | 类型安全的 client + 一条命令同步结构；7.x 强制要求 driver adapter |
-| `@prisma/adapter-better-sqlite3` / `@prisma/adapter-pg` | 两种库各自的 driver adapter，`server/db.ts` 按 provider 动态 import |
-| client 生成到 `server/generated/prisma` | 生成为 TypeScript 源码而非塞进 `node_modules`，这样 `pnpm prune --prod` 之后依然存在，能跟着 `server/` 一起进镜像 |
+| `@prisma/adapter-better-sqlite3` / `@prisma/adapter-pg` | 两种库各自的 driver adapter，`apps/server/db.ts` 按 provider 动态 import |
+| client 生成到 `apps/server/generated/prisma` | 生成为 TypeScript 源码而非塞进 `node_modules`，这样 `pnpm prune --prod` 之后依然存在，能跟着 `apps/server/` 一起进镜像 |
 
 生成目录必须 gitignore、`@ts-nocheck`、并在 eslint 中忽略。改完 schema 必须跑 `pnpm db:generate`。
 
@@ -34,7 +34,7 @@
 
 ### 3.2 数据库位置
 
-解析规则（`server/config.ts` 与 `prisma/db-provider.mjs` 必须**保持一致**，后者是 CLI 侧唯一实现）：
+解析规则（`apps/server/config.ts` 与 `apps/server/prisma/db-provider.mjs` 必须**保持一致**，后者是 CLI 侧唯一实现）：
 
 1. 设了 `DATABASE_URL` → 直接用它，覆盖一切；
 2. 否则（仅 sqlite）库文件为 `$DATA_DIR/app.db`；
@@ -53,7 +53,7 @@
 一份 schema 还只能有一个 datasource。**但模型可以只有一份物理文件**，靠多文件 schema：
 
 ```
-prisma/
+apps/server/prisma/
   models/                  ← 唯一的手写来源，按域拆：auth.prisma / canvas.prisma
   sqlite/
     schema.prisma          ← 只有 generator + datasource { provider = "sqlite" }
@@ -63,7 +63,7 @@ prisma/
     models -> ../models    ← 符号链接
 ```
 
-`prisma.config.ts` 的 `schema` 指向**目录**（`prisma/<provider>`），Prisma 把目录下所有 `.prisma`
+`prisma.config.ts` 的 `schema` 指向**目录**（`apps/server/prisma/<provider>`），Prisma 把目录下所有 `.prisma`
 合并成一份完整 schema。于是两个 provider 的差别**只剩 datasource 里的一行**。
 
 **没有生成物，也就没有漂移。** 以前是 `models.prisma` + 一个生成脚本吐出两份完整 schema，
@@ -80,10 +80,10 @@ prisma/
   两边生成的 client 类型必须一模一样 —— 这是业务代码不用分叉的前提。
   `roles` / `tags` 这类字段统一用 `String` 存 JSON 字符串。
 - **依赖符号链接**，所以不考虑原生 Windows（要在 Windows 上开发就用开发容器 / WSL）。
-  容器构建没问题：`COPY prisma ./prisma` 会原样保留相对链接，实测容器里
-  `readlink -f` 两个 provider 的 `models` 都指到同一个 `/app/prisma/models`。
-- **构建产物是例外**：`scripts/build-server.mjs` 拷 schema 目录时用 `dereference: true`
-  把链接解成真实文件（产物里是 `prisma/schema.prisma` + `prisma/models/*.prisma`），
+  容器构建没问题：`COPY apps/server/prisma ./apps/server/prisma` 会原样保留相对链接，实测容器里
+  `readlink -f` 两个 provider 的 `models` 都指到同一个 `/app/apps/server/prisma/models`。
+- **构建产物是例外**：`apps/server/scripts/build-server.mjs` 拷 schema 目录时用 `dereference: true`
+  把链接解成真实文件（产物 `output/` 里是 `prisma/schema.prisma` + `prisma/models/*.prisma`），
   否则产物里那条 `../models` 会指向 `output/prisma/../models` —— 那儿什么都没有。
 - **产物侧 `prisma.config.js` 的 `schema` 同样必须指向目录**。这里踩过一次：指到
   `prisma/schema.prisma` 那个文件时，Prisma 只读那一个文件、一个 model 都看不到，
@@ -96,7 +96,7 @@ prisma/
 
 ### 3.3.1 结构同步：`prisma db push`，**没有迁移文件**
 
-**这个项目不留迁移历史。** 没有 `prisma/migrations/`，库里没有 `_prisma_migrations` 表，
+**这个项目不留迁移历史。** 没有 `apps/server/prisma/migrations/`，库里没有 `_prisma_migrations` 表，
 `prisma.config.ts` 也不配 `migrations.path`。建表 / 改表就一条命令：
 
 ```bash
@@ -116,7 +116,7 @@ pnpm db:push        # = prisma db push（schema 目录由 prisma.config.ts 按 p
   PG 是一条 `ALTER TABLE`，SQLite 得整表重建（建 `new_` 表 → 搬数据 → `DROP` → `RENAME`）。
 
 这套双份历史的维护成本，只有在需要**照顾存量数据**时才划得来。这个项目是学习/实验性质的，
-没有要升级的生产数据，所以选了 db push：`prisma/models/` 是唯一的结构来源，
+没有要升级的生产数据，所以选了 db push：`apps/server/prisma/models/` 是唯一的结构来源，
 改完推一下就行，两种库天然一致。
 
 **代价，写在这儿别忘了：**
@@ -134,7 +134,7 @@ pnpm db:push        # = prisma db push（schema 目录由 prisma.config.ts 按 p
 
 ### 3.4 两种库的行为差异
 
-只有一处需要代码补偿：**SQLite 的 `LIKE` 对 ASCII 大小写不敏感，PostgreSQL 的不是**。`server/store/text.ts` 的 `nameContains()` 在 PG 下补 `mode: 'insensitive'`（翻成 `ILIKE`），把两边的搜索结果拉齐。新增模糊搜索一律走它，别直接写 `{ contains }`。
+只有一处需要代码补偿：**SQLite 的 `LIKE` 对 ASCII 大小写不敏感，PostgreSQL 的不是**。`apps/server/store/text.ts` 的 `nameContains()` 在 PG 下补 `mode: 'insensitive'`（翻成 `ILIKE`），把两边的搜索结果拉齐。新增模糊搜索一律走它，别直接写 `{ contains }`。
 
 ### 3.5 数据模型
 
@@ -144,11 +144,11 @@ pnpm db:push        # = prisma db push（schema 目录由 prisma.config.ts 按 p
 | `Session` | 服务端会话，存 access / refresh / id token | 主键是 Cookie 中随机 token 的 **HMAC-SHA256**（密钥 `SESSION_SECRET`），token 本身不落库；`userId` 建索引；随 User 级联删除 |
 | `AuthRequest` | 一次授权请求的临时凭据（state / nonce / PKCE verifier / redirectTo） | `state` 唯一；回调时一次性消费；过期由定时清扫回收 |
 
-字段级说明见 `prisma/models/*.prisma` 中的注释（`auth.prisma` / `canvas.prisma`）。
+字段级说明见 `apps/server/prisma/models/*.prisma` 中的注释（`auth.prisma` / `canvas.prisma`）。
 
 ### 3.6 客户端单例
 
-- `server/db.ts` 导出唯一的 `PrismaClient`，缓存在 `globalThis` 上，避免 `tsx watch` 每次热重启泄漏连接；adapter 按 provider **动态** import（构建产物里只留用得上的那个）。
+- `apps/server/db.ts` 导出唯一的 `PrismaClient`，缓存在 `globalThis` 上，避免 `tsx watch` 每次热重启泄漏连接；adapter 按 provider **动态** import（构建产物里只留用得上的那个）。
 
 ### 3.7 命令
 
@@ -158,12 +158,12 @@ pnpm db:push        # = prisma db push（schema 目录由 prisma.config.ts 按 p
 | `pnpm db:push` | 把表结构对齐到 schema（**没有迁移文件**，见 3.3.1）；`pnpm dev` 会先跑一遍 |
 | `pnpm db:studio` | 可视化查看数据 |
 
-改完模型（`prisma/models/*.prisma`）的标准动作：`pnpm db:generate`（client）+ `pnpm db:push`（库结构）。两种库各自 push 一次，
-用的是同一批 `prisma/models/` 文件，不存在「两份 schema 要对齐」这回事了。
+改完模型（`apps/server/prisma/models/*.prisma`）的标准动作：`pnpm db:generate`（client）+ `pnpm db:push`（库结构）。两种库各自 push 一次，
+用的是同一批 `apps/server/prisma/models/` 文件，不存在「两份 schema 要对齐」这回事了。
 
 ### 3.8 业务 API 样板：`/api/notes`
 
-当前是内存 `Map` 实现（`server/store/notes.ts`），进程重启即清空，启动时预置两条示例数据。它的价值是定义**业务路由应该长什么样**：
+当前是内存 `Map` 实现（`apps/server/store/notes.ts`），进程重启即清空，启动时预置两条示例数据。它的价值是定义**业务路由应该长什么样**：
 
 | 方法 | 路径 | 行为 |
 |---|---|---|
@@ -190,7 +190,7 @@ pnpm db:push        # = prisma db push（schema 目录由 prisma.config.ts 按 p
 - [ ] 未登录访问 `/api/notes` 返回 401。
 - [ ] notes 的五个端点全部符合上表的状态码与错误格式，并有对应测试覆盖。
 - [ ] 删除 `data/app.db` 后重新 `db:push` 能从零重建全部表结构。
-- [ ] 两个 provider 目录下的 `models` 符号链接都指向 `prisma/models/`；`prisma validate` 在两种 DB_PROVIDER 下都通过。
+- [ ] 两个 provider 目录下的 `models` 符号链接都指向 `apps/server/prisma/models/`；`prisma validate` 在两种 DB_PROVIDER 下都通过。
 - [ ] 设 `DB_PROVIDER=postgresql` + PG 的 `DATABASE_URL` 后，`pnpm db:generate && pnpm db:push && pnpm dev` 全流程可用，接口行为与 SQLite 一致。
 - [ ] `TEST_DATABASE_URL=postgresql://… pnpm test:server` 整套后端测试在 PG 上同样全绿。
 - [ ] `DB_PROVIDER` 与 `DATABASE_URL` 协议不一致时启动直接失败，不会连错库。
@@ -214,7 +214,7 @@ pnpm db:push        # = prisma db push（schema 目录由 prisma.config.ts 按 p
 
 - `notes` 是继续当纯样板，还是作为第一个真实持久化业务落库。
 - SQLite 单写入者模型在协同场景下是否够用。协同**已经在落盘**了（`Flow.ydoc`），
-  目前靠 `server/collab/persistence.ts` 里的按房间串行队列避开并发写，单进程下够用；
+  目前靠 `apps/server/collab/persistence.ts` 里的按房间串行队列避开并发写，单进程下够用；
   多副本就是切 PG 的时候（Yjs 的跨进程问题已经解掉了，见 [REQ-CLUSTER](14-clustering.md)）。
 - **没有任何历史了**。移除操作日志之后，误删、被移出项目的人清空画布、协作者的破坏性编辑，
   都无法恢复 —— `Y.UndoManager` 只跟踪本地来源，别人的改动进不了你的撤销栈。

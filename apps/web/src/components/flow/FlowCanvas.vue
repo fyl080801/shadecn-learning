@@ -52,7 +52,7 @@ const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
     `selection-mode=Full` 是「**完全框住才算命中**」。它同时也是 Vue Flow 的默认值，
     显式写出来是因为这是一条说得出口的产品规则，不是碰巧的默认：蹭到一个角就算选中的话，
     拉框扫过谁就选中谁，想只挑出那几个节点会非常难。命中的节点**相连的边也一并算选中**，
-    这是 Vue Flow 在框选时顺手做的（见 `src/styles/vue-flow.css` 里选中连线的样式）。
+    这是 Vue Flow 在框选时顺手做的（见 `apps/web/src/styles/vue-flow.css` 里选中连线的样式）。
   -->
   <div
     class="h-full w-full"

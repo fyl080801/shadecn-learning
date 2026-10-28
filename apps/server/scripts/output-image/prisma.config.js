@@ -1,5 +1,5 @@
 // 产物自带的 prisma CLI 配置：容器启动时 `npx prisma db push` 用它。
-// 路径解析必须和 server/runtime.ts + server/config.ts 保持一致：
+// 路径解析必须和 apps/server/runtime.ts + apps/server/config.ts 保持一致：
 // schema 跟着产物目录走，库文件跟着进程 cwd 走（产物运行时的「应用根目录」就是 cwd）。
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'

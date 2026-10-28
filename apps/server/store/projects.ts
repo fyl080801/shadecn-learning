@@ -1,24 +1,30 @@
 import crypto from 'node:crypto'
+import type {
+  InviteInvalidReason,
+  InvitePreview,
+  ProjectInviteView,
+  ProjectKind,
+  ProjectMemberView,
+  ProjectRole,
+  ProjectSummary,
+} from '@shadecn/shared/canvas'
 import { prisma } from '../db.ts'
 import { nameContains } from './text.ts'
 
 /**
  * 项目 / 成员 / 邀请的数据访问层。
  * 路由层只做参数校验和状态码，这里不返回 HTTP 概念的东西。
+ *
+ * 接口形状在 `@shadecn/shared/canvas`，前端消费的是同一份；这里转出去，服务端各处照旧从本模块取。
  */
 
-export type ProjectRole = 'admin' | 'member'
-
-/**
- * 项目的两种形态（REQ-SOLO）。
- *
- * - `team` —— 正常项目：有成员、有分享链接，里面的画布走协同。
- * - `personal` —— 每人一个的私人空间：只有自己一个成员、没有分享链接，
- *   里面的画布**不走协同**（`mode = 'solo'`）。
- *
- * 画布的 mode 由它派生，不在 `Flow` 上另存一份 —— 存两处必然漂移。
- */
-export type ProjectKind = 'team' | 'personal'
+export type {
+  InviteInvalidReason,
+  ProjectKind,
+  ProjectMemberView,
+  ProjectRole,
+  ProjectSummary,
+}
 
 /** 个人空间的名字。界面上不展示，也不给改 —— 它不是一个「项目」 */
 const PERSONAL_SPACE_NAME = '我的画布'
@@ -34,59 +40,20 @@ export const INVITE_EXPIRY_DAYS = [1, 7, 30] as const
 export type InviteExpiryDays = (typeof INVITE_EXPIRY_DAYS)[number]
 export const DEFAULT_INVITE_EXPIRY_DAYS: InviteExpiryDays = 7
 
-export interface ProjectSummary {
-  id: string
-  name: string
-  description: string | null
-  /** team | personal —— personal 里的画布不走协同 */
-  kind: ProjectKind
-  memberCount: number
-  flowCount: number
-  /** 当前请求者在这个项目里的角色 */
-  myRole: ProjectRole
-  createdById: string
-  createdAt: string
-  updatedAt: string
-}
-
 /** 一个人在某个项目里的身份 —— 角色 + 这是哪种项目，一次查询取齐 */
 export interface Membership {
   role: ProjectRole
   kind: ProjectKind
 }
 
-export interface ProjectMemberView {
-  userId: string
-  name: string | null
-  username: string | null
-  email: string | null
-  avatarUrl: string | null
-  role: ProjectRole
-  joinedAt: string
-  invitedById: string | null
-}
+/**
+ * store 层产出的分享链接：接口形状去掉 `url` —— 那个要按**这次请求的访问域名**拼，
+ * 是路由层的事（`routes/projects.ts` 的 `withUrl`）。
+ */
+export type ProjectInvite = Omit<ProjectInviteView, 'url'>
 
-export interface ProjectInviteView {
-  id: string
-  projectId: string
-  token: string
-  role: ProjectRole
-  createdById: string
-  createdAt: string
-  expiresAt: string
-}
-
-export type InviteInvalidReason = 'not_found' | 'expired' | 'project_deleted' | 'project_full'
-
-export interface InvitePreview {
-  valid: boolean
-  reason?: InviteInvalidReason
-  projectId?: string
-  projectName?: string
-  memberCount?: number
-  /** 已经是成员了 —— 前端把按钮换成「进入项目」 */
-  alreadyMember: boolean
-}
+/** store 层产出的邀请预览：接口形状去掉 `message` —— 那句话由路由层按 `reason` 配（`routes/invites.ts`） */
+export type InviteCheck = Omit<InvitePreview, 'message'>
 
 export interface ListProjectsOptions {
   page: number
@@ -118,7 +85,7 @@ function toInviteView(row: {
   createdById: string
   createdAt: Date
   expiresAt: Date
-}): ProjectInviteView {
+}): ProjectInvite {
   return {
     id: row.id,
     projectId: row.projectId,
@@ -358,7 +325,7 @@ export const projects = {
     projectId: string
     createdById: string
     expiresInDays?: InviteExpiryDays
-  }): Promise<ProjectInviteView> {
+  }): Promise<ProjectInvite> {
     const current = await prisma.projectInvite.findUnique({
       where: { projectId: input.projectId },
     })
@@ -372,7 +339,7 @@ export const projects = {
     projectId: string
     createdById: string
     expiresInDays?: InviteExpiryDays
-  }): Promise<ProjectInviteView> {
+  }): Promise<ProjectInvite> {
     const data = {
       token: crypto.randomBytes(32).toString('base64url'),
       createdById: input.createdById,
@@ -392,7 +359,7 @@ export const projects = {
     projectId: string
     createdById: string
     expiresInDays: InviteExpiryDays
-  }): Promise<ProjectInviteView> {
+  }): Promise<ProjectInvite> {
     const current = await prisma.projectInvite.findUnique({
       where: { projectId: input.projectId },
     })
@@ -407,7 +374,7 @@ export const projects = {
   },
 
   /** 分享链接预览：访问者此刻还不是成员，所以这里只按 token 判断 */
-  async previewInvite(token: string, userId: string): Promise<InvitePreview> {
+  async previewInvite(token: string, userId: string): Promise<InviteCheck> {
     const invite = await prisma.projectInvite.findUnique({
       where: { token },
       include: { project: { include: { _count: { select: { members: true } } } } },

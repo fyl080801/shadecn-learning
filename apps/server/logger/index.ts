@@ -14,10 +14,10 @@ import { installProcessLogging } from './process.ts'
  *
  * | 挂载点 | 一行改动 | 接住了什么 |
  * |---|---|---|
- * | `server/index.ts` | `installLogging()` | console 接管 + 进程级异常 |
- * | `server/app.ts` | `logger()` → `httpLogger()` | 每个请求的方法/状态/耗时 + requestId 上下文 |
- * | `server/db.ts` | `instrumentAdapter(...)` | 每条 SQL 的耗时、慢查询、失败 |
- * | `server/collab/hocuspocus.ts` | extensions 数组 +1 | 房间生命周期、连接进出、落库健康度 |
+ * | `apps/server/index.ts` | `installLogging()` | console 接管 + 进程级异常 |
+ * | `apps/server/app.ts` | `logger()` → `httpLogger()` | 每个请求的方法/状态/耗时 + requestId 上下文 |
+ * | `apps/server/db.ts` | `instrumentAdapter(...)` | 每条 SQL 的耗时、慢查询、失败 |
+ * | `apps/server/collab/hocuspocus.ts` | extensions 数组 +1 | 房间生命周期、连接进出、落库健康度 |
  *
  * 其中 **console 接管是支点**：仓库里本来就有 49 处 `console.log/warn/error`，
  * 而且基本都带好了 `[collab]` `[auth]` `[cluster]` 这样的前缀。接管之后它们
@@ -41,7 +41,7 @@ export { currentContext, contextFields } from './context.ts'
  * 装上进程级的那两样（console 接管、未捕获异常）。
  *
  * **要尽早调用** —— 在它之前发生的 `console.*` 会原样走 stdout，
- * 不带模块字段也不进文件。`server/index.ts` 里紧跟着 `./env.ts` 调用。
+ * 不带模块字段也不进文件。`apps/server/index.ts` 里紧跟着 `./env.ts` 调用。
  *
  * 幂等：dev 下 tsx watch 反复重新加载模块也只会生效一次。
  */

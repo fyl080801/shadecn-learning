@@ -125,7 +125,7 @@ galstory.all('/*', async (c) => {
     return c.json(
       {
         error: `GalStory 代理只转发 GET（收到 ${method} ${rest}）`,
-        hint: '引擎把「要花钱 / 会写」的口都放在非 GET 上；要放行就在 server/routes/galstory.ts 的 WRITE_ALLOW 里逐条加',
+        hint: '引擎把「要花钱 / 会写」的口都放在非 GET 上；要放行就在 apps/server/routes/galstory.ts 的 WRITE_ALLOW 里逐条加',
       },
       405,
     )

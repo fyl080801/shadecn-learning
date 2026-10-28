@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono'
+import { FLOW_STATE_VECTOR_HEADER } from '@shadecn/shared/collab'
 import type { AuthVariables } from '../auth/middleware.ts'
 import { currentUserId, requireFlowMember, type ProjectVariables } from '../auth/project.ts'
 import { applyFlowUpdate, decodeStateVectorParam, readFlowUpdate } from '../collab/flow-writer.ts'
@@ -43,7 +44,8 @@ function parseStateVector(
 /**
  * Yjs 的更新是二进制，别经 JSON —— base64 一趟平白涨三分之一。
  *
- * 状态向量走响应头：它是**服务端自己的进度**，客户端拿它当下次算差量的基线。
+ * 状态向量走响应头（`FLOW_STATE_VECTOR_HEADER`，前端读的是同一个常量）：
+ * 它是**服务端自己的进度**，客户端拿它当下次算差量的基线。
  * 不能让客户端用「合并之后的本地状态」代替 —— 那样离线期间攒下的改动会被算成
  * 「服务端已经知道了」，从此再也推不出去。
  */
@@ -51,7 +53,7 @@ function binary(c: Context<Env>, bytes: Uint8Array, stateVector: Uint8Array) {
   return c.body(bytes as unknown as ArrayBuffer, 200, {
     'content-type': 'application/octet-stream',
     'cache-control': 'no-store',
-    'x-flow-state-vector': Buffer.from(stateVector).toString('base64url'),
+    [FLOW_STATE_VECTOR_HEADER]: Buffer.from(stateVector).toString('base64url'),
   })
 }
 

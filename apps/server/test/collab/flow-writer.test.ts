@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { edgesMap, nodesMap } from '../../collab/flow-doc.ts'
+import { edgesMap, nodesMap } from '@shadecn/shared/flow-doc'
 import { applyFlowUpdate, readFlowUpdate } from '../../collab/flow-writer.ts'
 import { forgetFlow, roomOf } from '../../collab/persistence.ts'
 import { COLLAB_LIMITS } from '../../collab/quota.ts'

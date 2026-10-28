@@ -11,7 +11,8 @@ async function loadConfig() {
   return import('../config.ts')
 }
 
-const rootDir = path.resolve(import.meta.dirname, '..', '..')
+// apps/server/test → 仓库根：往上三层
+const rootDir = path.resolve(import.meta.dirname, '..', '..', '..')
 
 describe('isApiPath()', () => {
   it.each([

@@ -9,33 +9,22 @@
  *
  * 顺带解释了前端为什么两个信号都要认：CLOSE 消息里**只有 reason**，
  * code 是 provider 自己填的 `1000`；code 只在真正的关闭帧上。
- * 所以 reason 才是那条跨得过两条腿的判据，前端两边都匹配（`useFlowCollab` 的 `classifyClose`）。
+ * 所以 reason 才是那条跨得过两条腿的判据，前端两边都匹配（`sync/collab.ts` 的 `classifyClose`）。
  */
 
-export interface CloseReason {
-  /** 4000–4999 是应用自定义区间；只有关闭帧带得动它 */
-  code: number
-  /** CLOSE 消息和关闭帧都带，所以前端主要靠它认 */
-  reason: string
-}
-
-/** 被自己在别处开的新窗口顶下线（`exclusive.ts`）。刷新页面即可重新接管 */
-export const CLOSE_SUPERSEDED: CloseReason = { code: 4409, reason: 'session-superseded' }
-
-/** 会话没了（过期 / 登出 / 被踢）。reason 与 Hocuspocus 内置的 `Unauthorized` 一致 */
-export const CLOSE_UNAUTHORIZED: CloseReason = { code: 4401, reason: 'Unauthorized' }
-
-/** 人登着，但不该进这个房间：不是项目成员，或画布已删 */
-export const CLOSE_REVOKED: CloseReason = { code: 4403, reason: 'permission-revoked' }
+import type { CloseReason } from '@shadecn/shared/collab'
 
 /**
- * 画布顶到内容硬限、房间锁写（`quota.ts`）。
- *
- * 和前三种不同，这一种**跟人无关** —— 同一个房间里的每个人都会收到它，因为不能保存的是
- * 这张画布本身。4413 借的是 HTTP 的 413：个人画布那条 REST 通道超限回的正是 413，
- * 前端两边归成同一个终局状态（`too-large`），文案也只写一份。
+ * 四种终局信号（code + reason）声明在 `@shadecn/shared/collab` —— 前端的 `classifyClose`
+ * 认的是同一份常量。这里转出去，服务端各处照旧从本模块取。
  */
-export const CLOSE_QUOTA_LOCKED: CloseReason = { code: 4413, reason: 'quota-exceeded' }
+export {
+  CLOSE_QUOTA_LOCKED,
+  CLOSE_REVOKED,
+  CLOSE_SUPERSEDED,
+  CLOSE_UNAUTHORIZED,
+  type CloseReason,
+} from '@shadecn/shared/collab'
 
 /**
  * 握手被拒时抛给 Hocuspocus 的错误。

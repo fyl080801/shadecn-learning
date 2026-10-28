@@ -33,11 +33,11 @@ import { authApi } from "@/lib/api"
 import { fetchSession } from "@/lib/auth"
 import { formatDateTime } from "@/lib/format"
 import type {
-  AuthIdentity,
-  AuthProviderView,
-  PendingLink,
-  ProviderId
-} from "@/types/auth"
+  IdentityView,
+  PendingLinkView,
+  ProviderId,
+  ProviderView
+} from "@shadecn/shared/auth"
 
 /**
  * 「登录方式」卡片。
@@ -60,8 +60,8 @@ import type {
 const route = useRoute()
 const router = useRouter()
 
-const identities = ref<AuthIdentity[]>([])
-const providers = ref<AuthProviderView[]>([])
+const identities = ref<IdentityView[]>([])
+const providers = ref<ProviderView[]>([])
 const loading = ref(true)
 
 /**
@@ -70,7 +70,7 @@ const loading = ref(true)
  * 它跟着列表一起从服务端拿，而不是靠 URL 上的参数触发 —— 这样用户中途关了标签页
  * 再回到设置页，确认框照样会出现，不会留下一条谁也想不起来的半截绑定。
  */
-const pendingLink = ref<PendingLink | null>(null)
+const pendingLink = ref<PendingLinkView | null>(null)
 const confirmingLink = ref(false)
 
 /** 每个提供方一个图标；认不出来的用一把钥匙兜底 */
@@ -133,9 +133,9 @@ onMounted(() => {
  * 动作清掉的值，请求就悄悄没发出去（见 ProjectHome.test.ts 里钉住的那条）。
  */
 const confirming = ref(false)
-const pendingTarget = ref<AuthIdentity | null>(null)
+const pendingTarget = ref<IdentityView | null>(null)
 
-function askUnlink(item: AuthIdentity) {
+function askUnlink(item: IdentityView) {
   pendingTarget.value = item
   confirming.value = true
 }
@@ -174,7 +174,7 @@ const { run: cancelLink } = useAsyncAction(
 )
 
 const { run: unlink, isPending } = useAsyncAction(
-  async (item: AuthIdentity) => {
+  async (item: IdentityView) => {
     await authApi.unlinkIdentity(item.id)
     identities.value = identities.value.filter((row) => row.id !== item.id)
     toast.success(`已解绑 ${item.label}`)

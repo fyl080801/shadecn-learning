@@ -25,7 +25,7 @@ const app: ServerApp = new Hono<ServerEnv>()
 
 // 请求日志 + 请求上下文（requestId / userId）。顶掉 hono/logger：
 // 那个只往 console 打两行文本，这个带状态码、耗时，并且是 AsyncLocalStorage 的入口，
-// 让链路上任何深度的日志都自动带上 requestId（见 server/logger/）
+// 让链路上任何深度的日志都自动带上 requestId（见 apps/server/logger/）
 app.use('*', httpLogger())
 // 前后端同源，CORS 只放开**自己的那些域名** —— 带 cookie 的接口不能对任意站点开。
 // 一套部署可能挂在好几个域名下（APP_ORIGINS 白名单），逐个回显；名单外的一律

@@ -9,7 +9,7 @@
 ### 2.1 整体布局
 
 - 应用占满视口高度（`h-screen`）。
-- **布局是模板页，不是外壳里的条件分支。** `src/layouts/` 下一个布局一个组件，路由表里作为父级路由挂载，页面渲染在布局自己的 `<RouterView>` 上；`App.vue` 只剩一个 `<RouterView />` 和全局 `Toaster`。
+- **布局是模板页，不是外壳里的条件分支。** `apps/web/src/layouts/` 下一个布局一个组件，路由表里作为父级路由挂载，页面渲染在布局自己的 `<RouterView>` 上；`App.vue` 只剩一个 `<RouterView />` 和全局 `Toaster`。
   - `SidebarLayout` —— 左侧固定侧栏 + 右侧内容区，绝大多数页面用它。
   - `BlankLayout` —— 整屏，无侧栏，给需要独占屏幕的页面用（目前只有画布编辑器 `/flows/:id`，见 [REQ-CANVAS](13-flow-canvas-management.md)）。
 - 无侧栏**不是登录态的例外**：登录页由服务端模板渲染（见 [REQ-AUTH](02-auth-keycloak.md) 3.1.1），根本不进 SPA；`BlankLayout` 下的路由同样是登录后才进得来。
@@ -37,13 +37,13 @@
   - 仅当 `authEnabled` 时才有账号那一组：已登录是「退出登录」（destructive 样式，带当前 `fullPath` 回跳），未登录是「登录」。
   - **「退出登录」要先确认**（`AlertDialog`，取消 / 退出），确认之后才整页跳去 `/api/auth/logout`。退出是不可撤销的整页跳转，点错了得重新走一遍 Keycloak，而这一项就挨着「设置」「关于」——误点的代价和距离不成比例。
 - 「关于」不在中部导航列表里 —— 它属于「关于这个应用」而不是一个功能页。
-- **「关于」是模态窗，不是页面**（`src/components/AboutDialog.vue`，没有路由）：它只是一段项目介绍，没必要占一条路由，也没必要把人从当前页面带走 —— 看完关掉，原来那页还在。
+- **「关于」是模态窗，不是页面**（`apps/web/src/components/AboutDialog.vue`，没有路由）：它只是一段项目介绍，没必要占一条路由，也没必要把人从当前页面带走 —— 看完关掉，原来那页还在。
 - 手机端点菜单项后抽屉照常收起（靠 `route.fullPath` 的 watch，与点导航项是同一条路径）。
 
 ### 2.4 路由
 
 - 使用 vue-router 5，history 模式（无 hash）。
-- 路由表在 `src/router/index.ts` 中声明，一个视图 = 一条路由；顶层只有两条记录，就是 2.1 的两张模板页，页面都作为它们的 `children` 平铺在下面。
+- 路由表在 `apps/web/src/router/index.ts` 中声明，一个视图 = 一条路由；顶层只有两条记录，就是 2.1 的两张模板页，页面都作为它们的 `children` 平铺在下面。
 - 路由表里**只有需要登录的页面**：`/login` 不是 SPA 路由，未登录的浏览器根本拿不到这份 bundle，所以不需要 `meta.public` 这类字段；页面套哪张模板页由它挂在哪条父级路由下决定，也不需要 `meta.layout` 这类字段。
 - 体量大的页面（编辑器、导演台、流程图等）必须用动态 `import()` 懒加载；轻量页面可以静态导入。
 
@@ -55,7 +55,7 @@
 
 #### 2.4.2 视图目录
 
-**路由表平铺，视图文件按功能分目录** —— `src/router/index.ts` 是唯一 import `src/views/` 的地方，所以挪动视图只会牵动这一个文件。
+**路由表平铺，视图文件按功能分目录** —— `apps/web/src/router/index.ts` 是唯一 import `apps/web/src/views/` 的地方，所以挪动视图只会牵动这一个文件。
 
 | 目录 | 装什么 |
 |---|---|
@@ -103,11 +103,11 @@
 
 **用户信息**（只读）：头像、显示名、邮箱和用户 ID 一行，下面是显示名、用户名、邮箱。用户 ID 只是个标识符，跟在头像那一行的右侧；OIDC subject 和角色不展示（页面上没人用得着）。全部来自 `/api/auth/me` —— 前端手上没有 token，这里能看到的就是全部；要改得去账号中心（Keycloak）。后端没启用鉴权时这一块给一句说明，不假装有用户。
 
-**外观**：深色 / 浅色 / 跟随系统三档，`src/lib/theme.ts`。
+**外观**：深色 / 浅色 / 跟随系统三档，`apps/web/src/lib/theme.ts`。
 
-- 配色本身一直是齐的 —— `src/styles/tailwind.css` 里 `:root` 和 `.dark` 两套变量、`@custom-variant dark (&:is(.dark *))` 都是 shadcn 带来的，缺的只是**没人往 `<html>` 上加那个 `.dark` 类**。所以这个功能落到实处就是「谁来加这个类」：`useColorMode`（@vueuse/core）负责读写偏好、监听系统的 `prefers-color-scheme`、把结果写成 `<html>` 上的 `light` / `dark`。
+- 配色本身一直是齐的 —— `apps/web/src/styles/tailwind.css` 里 `:root` 和 `.dark` 两套变量、`@custom-variant dark (&:is(.dark *))` 都是 shadcn 带来的，缺的只是**没人往 `<html>` 上加那个 `.dark` 类**。所以这个功能落到实处就是「谁来加这个类」：`useColorMode`（@vueuse/core）负责读写偏好、监听系统的 `prefers-color-scheme`、把结果写成 `<html>` 上的 `light` / `dark`。
 - **默认「跟随系统」**，偏好存这台浏览器的 localStorage（`app:theme`），和日期偏好、侧栏收缩一个路数：它描述的是「这块屏幕上想看到什么」，跟账号无关，不为它开表。
-- **首屏闪白必须在 Vue 之前解决**：`index.html` 里有一段同步的内联脚本，先把类名按 localStorage（或系统偏好）加上。等 `src/lib/theme.ts` 跑到时 bundle 已经下完解析完，深色用户早被白底闪过一帧了。两处读的是同一个键、同一种格式（裸字符串）。
+- **首屏闪白必须在 Vue 之前解决**：`index.html` 里有一段同步的内联脚本，先把类名按 localStorage（或系统偏好）加上。等 `apps/web/src/lib/theme.ts` 跑到时 bundle 已经下完解析完，深色用户早被白底闪过一帧了。两处读的是同一个键、同一种格式（裸字符串）。
 - **`.dark` 整套比 shadcn 默认亮一档**（背景 `0.145 → 0.215`，卡片 `0.205 → 0.255`，muted/accent `0.269 → 0.315`，边框/input 的白色不透明度也跟着提）：默认那套接近纯黑，大片留白的页面上黑得发闷，卡片和背景几乎分不开。层级关系不动 —— 背景 < 侧栏 < 卡片/浮层 < muted/accent，每档差 0.04 左右；前景色仍是 `0.985`，背景提亮已经吃掉一点对比度，不能在这头再让。服务端渲染的登录页有自己一份内联 CSS，数值跟着对齐，否则从登录页进应用会明显亮一下。
 - `color-scheme` 两套都要写（`:root` 是 `light`，`.dark` 是 `dark`）：滚动条、原生下拉这些浏览器自己画的东西只认它，少了它深色页面上会挂一条白滚动条。
 - **vue-sonner 的 toast 不认 `.dark` 类**，它看自己的 `theme` prop，所以 `App.vue` 把当前解析出的主题传给 `Toaster`；不传的话深色下会弹出一个白底的 toast。
@@ -119,7 +119,7 @@
 - **默认全部是「跟随浏览器」**，也就是没人动过设置之前，显示效果和没有这个功能时**完全一致**：locale 取 `navigator.languages`，时区取 Intl 的运行时默认值。
 - 偏好只存在**这台浏览器**的 localStorage（`app:display-preferences`），不上服务端：它描述的是「在这台机器上想怎么看时间」，跟账号无关，也不值得为它开一张表。代价是换设备/换浏览器要重设一次。
 - **改完立即生效，没有「保存」按钮**：偏好是响应式的，全站的时间都从 `@/lib/format` 出去，所以已经渲染出来的列表会自己跟着变。设置页底部的预览是活的（每秒走一次），换时区能直接看出差几小时。
-- **时区那一项是能打关键字的下拉**（`src/components/settings/TimeZonePicker.vue`），不是普通 Select：全量 IANA 表四百多条，靠滚找不到。
+- **时区那一项是能打关键字的下拉**（`apps/web/src/components/settings/TimeZonePicker.vue`），不是普通 Select：全量 IANA 表四百多条，靠滚找不到。
   - 候选来自 `Intl.supportedValuesOf('timeZone')`（额外补一个 `UTC`），取不到时退回一小撮常用值。
   - 不输关键字时只摆常用的十几个（UTC、上海、香港、东京…），并说明「输入关键字可搜索全部」；开始输入才在全量里搜。
   - 四种搜法都认：IANA 名（`shanghai`）、把 `_` `/` 当空格的写法（`los angeles`）、中文别名（`上海`、`北京`）、GMT 偏移（`+8`）。空格分隔的多个词要**全部**命中，顺序不限。中文别名是一张手写小表——IANA 名里只有英文城市名，本地化全称又是「中国标准时间」这种不带城市的说法，两边都搜不到「上海」。
@@ -139,7 +139,7 @@
 - 侧栏导航列表是**手写常量**，与路由表各维护一份，容易漏配：`/demo3`、`/hic`、`/example`、`/3d-cube` 都没有出现在侧栏里，`/example` 和 `/3d-cube` 甚至已经没有对应路由（视图文件 `Example.vue` / `Emu3DView.vue` 仍在）。
 - 导航项名称大小写风格不统一（`canvas3d`、`richeditor` 对比 `Three Editor`、`3D导演台`）。
 - 两个不同的导航项复用了同一个图标（`Sun`、`Video`）。
-- `Game2048.vue` 的配色是 scoped CSS 里写死的十六进制值，不走主题变量，深色下和整站对不上；`src/styles/vue-flow.css` 里那套 `.basic-flow.dark` 规则则是从 Vue Flow 示例抄来的死代码（没有任何组件挂 `basic-flow` 类）。
+- `Game2048.vue` 的配色是 scoped CSS 里写死的十六进制值，不走主题变量，深色下和整站对不上；`apps/web/src/styles/vue-flow.css` 里那套 `.basic-flow.dark` 规则则是从 Vue Flow 示例抄来的死代码（没有任何组件挂 `basic-flow` 类）。
 - 登录页是服务端渲染的，只能跟随系统（`prefers-color-scheme`），读不到 localStorage 里的主题偏好 —— 手动设成浅色的人在登录页仍会看到深色。要修就得给那个页面加一段脚本，而它现在是刻意「零 JS」的。
 
 ## 4. 验收标准

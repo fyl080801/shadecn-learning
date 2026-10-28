@@ -1,4 +1,4 @@
-import type { FlowMode } from "@/types/flow"
+import type { FlowMode } from "@shadecn/shared/canvas"
 import type { FatalClose } from "./sync"
 
 /**
@@ -8,7 +8,7 @@ import type { FatalClose } from "./sync"
  * 那个 composable 要 router、要组件实例、`watch(flowId, …, {immediate:true})`
  * 一挂上就发请求，为了钉几句文案去搭那一整套环境不划算；
  * 而把判断抄进测试里再断言，测的是复制品，改了实现它照样绿 ——
- * 那种测试比没有更糟。`src/lib/presence.ts` 拆出纯逻辑是同一个路数。
+ * 那种测试比没有更糟。`apps/web/src/lib/presence.ts` 拆出纯逻辑是同一个路数。
  *
  * 这里管的是**说法**，不是状态。什么时候进入哪种状态由同步层决定。
  */

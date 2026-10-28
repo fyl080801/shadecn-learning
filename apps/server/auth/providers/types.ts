@@ -9,8 +9,13 @@
  * 身份要再调一次 `/user`、OAuth App 的 token 不会过期也没有 refresh_token）。
  */
 
-/** 提供方 id。同时是 `UserIdentity.provider` 的取值和登录 URL 上的 `?provider=` */
-export type ProviderId = 'keycloak' | 'github'
+import type { ProviderId } from '@shadecn/shared/auth'
+
+/**
+ * 提供方 id。同时是 `UserIdentity.provider` 的取值和登录 URL 上的 `?provider=`。
+ * 声明在 `@shadecn/shared/auth`（前端登录页认的是同一份），这里转出去。
+ */
+export type { ProviderId }
 
 /** 从提供方那边读回来的这个人是谁 */
 export interface ProviderProfile {
@@ -19,7 +24,7 @@ export interface ProviderProfile {
   /** 提供方的 issuer；GitHub 没有这个概念，用固定的 https://github.com */
   issuer: string
   username: string | null
-  /** 只是档案字段。**邮箱不参与身份判断**，理由见 `server/store/identities.ts` */
+  /** 只是档案字段。**邮箱不参与身份判断**，理由见 `apps/server/store/identities.ts` */
   email: string | null
   name: string | null
   avatarUrl: string | null

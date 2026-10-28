@@ -18,7 +18,7 @@
 
 ### 2.2 关于（模态窗，无路由）
 
-- 静态项目介绍：技术栈说明。已从 `/about` 页面改成侧栏用户菜单里弹出的模态窗（`src/components/AboutDialog.vue`），见 [REQ-SHELL](01-app-shell.md) 2.3。
+- 静态项目介绍：技术栈说明。已从 `/about` 页面改成侧栏用户菜单里弹出的模态窗（`apps/web/src/components/AboutDialog.vue`），见 [REQ-SHELL](01-app-shell.md) 2.3。
 
 ### 2.3 打砖块 Demo3 `/demo3`
 
@@ -65,7 +65,7 @@
 - canvas 带 `layoutsubtree` 属性，子树是普通 HTML（表单 + 若干 div + 一个 shadcn `Card`）。
 - 监听 canvas 的 `paint` 事件重绘，并把返回的 transform 写回子树元素。
 - 用 `ResizeObserver` 以 `device-pixel-content-box` 监听尺寸，按设备像素设置 canvas 宽高，保证高分屏不糊。
-- 类型声明放在 `src/canvas-extensions.d.ts`。
+- 类型声明放在 `apps/web/src/canvas-extensions.d.ts`。
 - **依赖实验性浏览器特性**，在不支持的浏览器上会白屏 —— 这是预期行为。
 - 当前**未挂进侧栏导航**。
 
@@ -75,8 +75,8 @@
 
 | 文件 | 内容 |
 |---|---|
-| `src/views/demos/Example.vue` | 可拖拽的点，与方块四角连线，实时显示坐标（`InteractiveSquare.vue`） |
-| `src/views/three/Emu3DView.vue` | 纯 CSS 3D transform 立方体，拖拽旋转并显示 X/Y 角度（`Cube3D.vue`） |
+| `apps/web/src/views/demos/Example.vue` | 可拖拽的点，与方块四角连线，实时显示坐标（`InteractiveSquare.vue`） |
+| `apps/web/src/views/three/Emu3DView.vue` | 纯 CSS 3D transform 立方体，拖拽旋转并显示 X/Y 角度（`Cube3D.vue`） |
 
 需要决定：恢复路由，还是删除。
 

@@ -1,7 +1,7 @@
 // 登录与会话相关的模型（REQ-AUTH）。
 //
 // 这个目录是**唯一的手写来源**，SQLite 和 PostgreSQL 共用同一批物理文件 ——
-// prisma/sqlite/ 和 prisma/postgresql/ 各有一个 `models` 符号链接指到这里，
+// apps/server/prisma/sqlite/ 和 apps/server/prisma/postgresql/ 各有一个 `models` 符号链接指到这里，
 // 两边的差别只有各自 schema.prisma 里 datasource 的那一行 provider。
 // 详见 docs/05-data-persistence.md §3.3。
 //
@@ -14,7 +14,7 @@
 /// 真正的绑定清单在 `UserIdentity` 里，一个人可以绑多条。留着这两列有三个理由：
 /// 默认头像的种子是按 (issuer, subject) 算的（换主身份不该换掉那张图）、
 /// 无 Keycloak 的本地开发用户还靠它 upsert、以及去掉列会让 `db push` 变成破坏性操作。
-/// 解绑主身份时会把另一条身份提升上来，一并改写这两列（见 server/store/identities.ts）。
+/// 解绑主身份时会把另一条身份提升上来，一并改写这两列（见 apps/server/store/identities.ts）。
 model User {
   id          String    @id @default(cuid())
   issuer      String
@@ -50,7 +50,7 @@ model User {
 model UserIdentity {
   id       String @id @default(cuid())
   userId   String
-  /// 提供方 id：`keycloak` / `github`（对应 server/auth/providers 的注册表）
+  /// 提供方 id：`keycloak` / `github`（对应 apps/server/auth/providers 的注册表）
   provider String
   /// 提供方内部的用户标识：Keycloak 的 `sub`、GitHub 的数字 id
   subject  String
@@ -160,7 +160,7 @@ model AuthRequest {
   /// 这一趟用的对外域名（`https://a.example.com`）。**必须存下来**：换 token 时带的
   /// redirect_uri 要和授权那一步逐字符相同，回调这一趟重新算一遍是不保险的
   /// （反代改了头、名单改了，都会算出另一个值，然后被提供方回绝）。
-  /// 取值只可能是 `APP_ORIGINS` 白名单里的某一个，见 `server/auth/origin.ts`
+  /// 取值只可能是 `APP_ORIGINS` 白名单里的某一个，见 `apps/server/auth/origin.ts`
   origin       String   @default("")
   createdAt    DateTime @default(now())
   expiresAt    DateTime

@@ -186,7 +186,7 @@ const router = createRouter({
 })
 
 /**
- * 兜底守卫。真正的闸门在服务端（server/frontend/guard.ts）：未登录根本拿不到
+ * 兜底守卫。真正的闸门在服务端（apps/server/frontend/guard.ts）：未登录根本拿不到
  * 这份 bundle，所以这里只处理「用着用着会话过期了」——登录页是服务端渲染的，
  * 只能整页跳，不能在 SPA 内部渲染。
  */

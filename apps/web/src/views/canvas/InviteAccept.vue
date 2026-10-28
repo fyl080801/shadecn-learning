@@ -8,13 +8,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { inviteApi } from "@/lib/api"
 import { usePageTitle } from "@/composables/usePageTitle"
 import { useAsyncAction } from "@/composables/useAsyncAction"
-import type { InvitePreview } from "@/types/flow"
+import type { InvitePreview } from "@shadecn/shared/canvas"
 
 /**
  * 邀请落地页。
  *
  * **不做点开即加入** —— 先让用户看清自己要进的是哪个项目，再点确认。
- * 未登录的访问由服务端页面网关（server/frontend/guard.ts）302 到登录页，
+ * 未登录的访问由服务端页面网关（apps/server/frontend/guard.ts）302 到登录页，
  * 登录完会带着 redirect 跳回这里，所以这里不用自己处理未登录。
  */
 

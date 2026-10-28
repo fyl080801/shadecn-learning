@@ -8,7 +8,7 @@ import { scopedSocketId } from './socket-id.ts'
  *
  * 同一个人开了第二个浏览器（或第二个标签页）连同一张画布时，**新的赢**：
  * 新连接接进来的那一刻，他自己那些旧连接全部被踢下线，前端弹出「协作会话已过期，
- * 请刷新页面」，并且**不再自动重连**（见 `src/composables/flow/useFlowCollab.ts`）。
+ * 请刷新页面」，并且**不再自动重连**（见 `apps/web/src/composables/flow/useFlowCollab.ts`）。
  *
  * **为什么是新的赢**：人在哪个窗口，哪个窗口就是新开的那个。反过来「老的赢、新的连不上」
  * 会让用户面对一张打不开的画布，而他根本不知道自己在哪儿还开着一份。

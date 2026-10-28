@@ -103,7 +103,7 @@ model Flow {
 /// 所以不进 ydoc，一人一份，互不影响。
 ///
 /// 按 key 分区存 JSON 字符串：**加一种要存的东西 = 加一个 key，不用改表**。
-/// key 的合法集合与各自的校验在 server/store/flow-types.ts 的
+/// key 的合法集合与各自的校验在 apps/server/store/flow-types.ts 的
 /// FLOW_USER_STATE_PARSERS 里，不认识的 key 一律 400，别当成任意 KV 用。
 model FlowUserState {
   id        String   @id @default(cuid())

@@ -4,7 +4,7 @@ import { createMemoryHistory, createRouter } from "vue-router"
 
 import ProjectHome from "@/views/canvas/ProjectHome.vue"
 import { flowApi, projectApi } from "@/lib/api"
-import { emptyGraph } from "@/types/flow"
+import { emptyGraph } from "@shadecn/shared/flow-graph"
 import type {
   FlowDetail,
   FlowSummary,
@@ -12,7 +12,7 @@ import type {
   ProjectInviteView,
   ProjectMemberView,
   ProjectSummary
-} from "@/types/flow"
+} from "@shadecn/shared/canvas"
 
 /**
  * 项目主页的二次确认对话框。

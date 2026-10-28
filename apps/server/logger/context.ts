@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 /**
  * 请求上下文 —— 「这条日志是哪次请求、哪个人产生的」。
  *
- * **为什么要有它**：零入侵的代价是注入器拿不到调用现场。`server/store/` 里一句
+ * **为什么要有它**：零入侵的代价是注入器拿不到调用现场。`apps/server/store/` 里一句
  * `console.warn('[flows] ...')` 被 console 接管收上来时，接管函数只看得见那行字符串，
  * 看不见它属于哪次请求。`AsyncLocalStorage` 把这层信息挂在异步调用链上 ——
  * 中间件在链的最外层 `run()` 一次，链上任何深度的日志都能读到，

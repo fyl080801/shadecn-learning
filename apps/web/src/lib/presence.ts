@@ -2,7 +2,7 @@
  * 协同「在场状态」（presence）的纯逻辑：配色、头像缩写、awareness 状态解析、元素占用仲裁。
  *
  * 单独放在这里而不是塞进 composable：这几件事全是纯函数，既不依赖 yjs 也不依赖 Vue，
- * 可以脱离 WebSocket 单独测（`src/test/lib/presence.test.ts`）。
+ * 可以脱离 WebSocket 单独测（`apps/web/src/test/lib/presence.test.ts`）。
  * `useFlowPresence` 只负责把 awareness 的数据喂进来。
  *
  * ────────────────────────────────────────────────────────────
@@ -267,7 +267,7 @@ export function readPeer(
 /**
  * 没登录时大家的 id 都是这一个（本地裸跑、没配 Keycloak）。
  * 它辨认不出「是谁」，所以**不参与下面的按人折叠** —— 否则一屋子人会被并成一个。
- * 服务端的单连接互斥出于同样的理由在这种情况下也不生效（`server/collab/exclusive.ts`）。
+ * 服务端的单连接互斥出于同样的理由在这种情况下也不生效（`apps/server/collab/exclusive.ts`）。
  */
 export const ANONYMOUS_USER_ID = "anonymous"
 

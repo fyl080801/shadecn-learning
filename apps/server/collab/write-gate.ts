@@ -63,7 +63,7 @@ import { authorizeCollab, type CollabDenialReason } from '../auth/ws.ts'
  *
  * **故意写成字面量而不是 `import { messageYjsUpdate } from 'y-protocols/sync'`**：
  * `y-protocols` 是 devDependency（前端才直接用它，服务端只是间接依赖
- * `@hocuspocus/server`），而 `scripts/build-server.mjs` 会在打包时检查
+ * `@hocuspocus/server`），而 `apps/server/scripts/build-server.mjs` 会在打包时检查
  * 「bundle 引用的包是不是都在 `dependencies` 里」，引它就会让构建失败。
  * 这三个数是线协议的一部分，改了就不兼容，不会变。
  */

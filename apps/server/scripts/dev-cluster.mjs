@@ -31,18 +31,26 @@ const RESET = '[0m'
 const children = ports.map((port, index) => {
   const label = `${COLORS[index % COLORS.length]}[:${port}]${RESET}`
 
-  const child = spawn('pnpm', ['exec', 'tsx', 'watch', 'server/index.ts'], {
-    env: {
-      ...process.env,
-      // 真实环境变量压过 .env（server/env.ts 用的 loadEnvFile 不覆盖已存在的变量），
-      // 所以这两行就是「每个实例各自不同」的全部内容
-      PORT: port,
-      INSTANCE_ID: `dev-${port}`,
-      // APP_ORIGIN 不在这里定：.env 里没设的话 config.ts 会按各自的 host:port 推导，
-      // 设了就是所有实例共用一个对外地址（前面挂了负载均衡时才该那么配）
+  // cwd 继承自 `pnpm --filter @shadecn/server dev:cluster`，也就是 apps/server。
+  // --exclude 和 package.json 里 dev 脚本那条同理：Vite 把 apps/web/vite.config.ts 打包成
+  // ../web/node_modules/.vite-temp/*.mjs 再 import、随后删掉；tsx 默认的 node_modules 忽略规则
+  // 是相对 cwd 的，管不到 ../web 下面，不排掉的话每次启动都会被这次删除触发重启，无限循环
+  const child = spawn(
+    'pnpm',
+    ['exec', 'tsx', 'watch', '--exclude', '../web/node_modules/.vite-temp/**', 'index.ts'],
+    {
+      env: {
+        ...process.env,
+        // 真实环境变量压过 .env（apps/server/env.ts 用的 loadEnvFile 不覆盖已存在的变量），
+        // 所以这两行就是「每个实例各自不同」的全部内容
+        PORT: port,
+        INSTANCE_ID: `dev-${port}`,
+        // APP_ORIGIN 不在这里定：.env 里没设的话 config.ts 会按各自的 host:port 推导，
+        // 设了就是所有实例共用一个对外地址（前面挂了负载均衡时才该那么配）
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
+  )
 
   const prefix = (stream, chunk) => {
     for (const line of String(chunk).split('\n')) {

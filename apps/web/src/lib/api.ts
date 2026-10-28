@@ -1,21 +1,22 @@
-import { apiFetch } from "@/lib/auth"
 import type {
-  AuthIdentity,
-  AuthProviderView,
-  PendingLink,
-  ProviderId
-} from "@/types/auth"
+  IdentityView,
+  PendingLinkView,
+  ProviderId,
+  ProviderView
+} from "@shadecn/shared/auth"
 import type {
   FlowDetail,
   FlowStatus,
   FlowSummary,
-  FlowUserState,
   InvitePreview,
   Paged,
   ProjectInviteView,
   ProjectMemberView,
   ProjectSummary
-} from "@/types/flow"
+} from "@shadecn/shared/canvas"
+import { FLOW_STATE_VECTOR_HEADER } from "@shadecn/shared/collab"
+import type { FlowUserState } from "@shadecn/shared/flow-graph"
+import { apiFetch } from "@/lib/auth"
 
 /**
  * 后端接口的薄封装。
@@ -108,20 +109,20 @@ export const authApi = {
     return request<{
       enabled: boolean
       provider: ProviderId | null
-      providers: AuthProviderView[]
+      providers: ProviderView[]
     }>("/api/auth/config")
   },
 
   /** 当前用户绑了哪些，外加有没有一条在等确认 */
   identities() {
-    return request<{ items: AuthIdentity[]; pending: PendingLink | null }>(
+    return request<{ items: IdentityView[]; pending: PendingLinkView | null }>(
       "/api/auth/identities"
     )
   },
 
   /** 确认那条待关联 —— 到这一步才真的写库 */
   confirmLink() {
-    return request<{ identity: AuthIdentity }>("/api/auth/link/confirm", {
+    return request<{ identity: IdentityView }>("/api/auth/link/confirm", {
       method: "POST"
     })
   },
@@ -319,7 +320,7 @@ export const flowApi = {
 
     // 响应头里那份是**服务端自己的**进度，不是「我合并完会变成什么样」——
     // 拿本地状态当基线的话，离线时攒的改动会被算成已同步，从此推不出去
-    const header = res.headers.get("x-flow-state-vector")
+    const header = res.headers.get(FLOW_STATE_VECTOR_HEADER)
     return {
       update: new Uint8Array(await res.arrayBuffer()),
       stateVector: header ? fromBase64Url(header) : new Uint8Array()

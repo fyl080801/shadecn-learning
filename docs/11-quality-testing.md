@@ -8,31 +8,32 @@
 
 ## 2. 测试需求
 
-### 2.1 双 project 结构
+### 2.1 三 project 结构
 
-一份 `vitest.config.ts`，两个 project：
+每个包一份自己的 `vitest.config.ts`（`apps/server/`、`apps/web/`、`packages/shared/`），仓库根的 `vitest.config.ts` 只是把三个列进 `projects` 并统一配置覆盖率：
 
 | project | 环境 | 覆盖范围 | 命令 |
 |---|---|---|---|
-| `server` | node | `server/test/**/*.test.ts` | `pnpm test:server` |
-| `client` | jsdom（+ vue 插件 + `@/` 别名） | `src/test/**/*.test.ts` | `pnpm test:client` |
+| `server` | node | `apps/server/test/**/*.test.ts` | `pnpm test:server` |
+| `client` | jsdom（+ vue 插件 + `@/` 别名） | `apps/web/src/test/**/*.test.ts` | `pnpm test:client` |
+| `shared` | node | `packages/shared/test/**`（前后端共用契约：图结构升级 / 解析、Y.Doc 形状、协同常量） | `pnpm test:shared` |
 
 `pnpm test` 跑全部，`pnpm test:watch` 监听模式，`pnpm test:coverage` 输出 v8 覆盖率到 `coverage/`（text + html）。
 
-覆盖率统计排除：`server/generated/**`、两个 test 目录、`src/components/ui/**`（shadcn 生成物）、`*.d.ts`。
+覆盖率统计排除：`apps/server/generated/**`、各包的 test 目录、`apps/web/src/components/ui/**`（shadcn 生成物）、`*.d.ts`。
 
 ### 2.2 密闭性（硬要求）
 
 三重隔离，缺一不可：
 
-1. **不许联网** —— 两个 project 的 setup 文件都把 `globalThis.fetch` 换成一个**直接 reject** 的桩。任何需要网络的测试必须显式 `vi.stubGlobal('fetch', …)`，不存在"不小心打到真实 Keycloak"这种可能。
-2. **不许读开发者的 `.env`** —— `server/env.ts` 在测试中被 alias 到 `server/test/stubs/env.ts`（空实现）。环境变量**全部**由 `vitest.config.ts` 的 `test.env` 提供（固定的 issuer、client id、session secret 等）。
+1. **不许联网** —— server / client 两个 project 的 setup 文件都把 `globalThis.fetch` 换成一个**直接 reject** 的桩。任何需要网络的测试必须显式 `vi.stubGlobal('fetch', …)`，不存在"不小心打到真实 Keycloak"这种可能。
+2. **不许读开发者的 `.env`** —— `apps/server/env.ts` 在测试中被 alias 到 `apps/server/test/stubs/env.ts`（空实现）。环境变量**全部**由 `apps/server/vitest.config.ts` 的 `test.env` 提供（固定的 issuer、client id、session secret 等）。
    > 这一步必须做，因为 `process.loadEnvFile()` 不覆盖已存在的变量 —— 先在 `test.env` 里占好位，本地 `.env` 就再也影响不到测试。
 3. **不许污染开发库** —— 测试库固定在 `data/test/` 下，与开发用的 `data/app.db` 分离。
 
 ### 2.3 数据库
 
-- `server/test/global-setup.ts` 在**整轮开始前**清空 `data/test/`，并执行**真实的 `prisma db push`**。
+- `apps/server/test/global-setup.ts` 在**整轮开始前**清空 `data/test/`，并执行**真实的 `prisma db push`**。
   > 用真命令而不是手写建表，是为了让测试库和生产库走同一条建表路径，schema 写错测试就会红。
   > 这个项目没有迁移文件，结构同步就是 db push 这一条（见 [REQ-DATA §3.3.1](05-data-persistence.md)）。
 - 所有测试文件共用同一个库，因此 `fileParallelism: false`，串行执行。
@@ -50,7 +51,7 @@
 
 ### 2.4 假 Keycloak
 
-`server/test/helpers/oidc.ts` 通过桩化的 `fetch` 提供完整的假 Keycloak：discovery、JWKS、token 端点、end_session，并**内置一对真实 RSA 密钥** —— 因此 `verifyIdToken` 的签名校验是真跑的，不是 mock 掉的。
+`apps/server/test/helpers/oidc.ts` 通过桩化的 `fetch` 提供完整的假 Keycloak：discovery、JWKS、token 端点、end_session，并**内置一对真实 RSA 密钥** —— 因此 `verifyIdToken` 的签名校验是真跑的，不是 mock 掉的。
 
 ### 2.5 测试方式
 
@@ -60,7 +61,7 @@
 
 ### 2.6 模块级缓存的处理
 
-`config.ts`（环境变量 → 常量）、`oidc.ts`（10 分钟 discovery / JWKS 缓存）、`src/lib/auth.ts`（会话单例）都在**模块加载时**固化状态。需要不同环境的测试必须 `vi.resetModules()` + 动态 `import()` 重新构造（参考 `server/test/routes/auth.test.ts` 的 `freshApp()`）。
+`config.ts`（环境变量 → 常量）、`oidc.ts`（10 分钟 discovery / JWKS 缓存）、`apps/web/src/lib/auth.ts`（会话单例）都在**模块加载时**固化状态。需要不同环境的测试必须 `vi.resetModules()` + 动态 `import()` 重新构造（参考 `apps/server/test/routes/auth.test.ts` 的 `freshApp()`）。
 
 ### 2.7 当前覆盖范围
 
@@ -71,7 +72,7 @@
 
 **内容写入路径怎么测**：画布内容没有 REST 写入口，唯一的写路径是「客户端改 Y.Doc → WebSocket 同步 → 落库」。
 测试不去起真的 WebSocket（线协议是 Hocuspocus 的事，我们没改），而是直接驱动同一条持久化链路
-（`server/test/helpers/collab.ts`：`openRoom` → 改文档 → `closeRoom`）—— 跑的是生产代码，不是替身。
+（`apps/server/test/helpers/collab.ts`：`openRoom` → 改文档 → `closeRoom`）—— 跑的是生产代码，不是替身。
 
 **协同的浏览器级验证不在单测里**：身份防伪、拖动不回弹、HMR 共存这类必须有真实浏览器和真实
 WebSocket 才成立的行为，靠 Playwright 脚本手工跑（不在 CI 里）。有一条经验值得记：验证 awareness
@@ -80,18 +81,18 @@ WebSocket 才成立的行为，靠 Playwright 脚本手工跑（不在 CI 里）
 
 ### 2.8 编写约定
 
-- 测试文件**镜像被测目录**：`server/test/routes/auth.test.ts` ↔ `server/routes/auth.ts`。
-- `server/test/` 内的导入保持 `.ts` 扩展名，与 `server/` 一致。
+- 测试文件**镜像被测目录**：`apps/server/test/routes/auth.test.ts` ↔ `apps/server/routes/auth.ts`。
+- `apps/server/test/` 内的导入保持 `.ts` 扩展名，与 `apps/server/` 一致。
 - **Vitest globals 未开启** —— `describe` / `it` / `expect` / `vi` 必须从 `vitest` 显式导入。
 - 测试名写**被约束的行为**（「未登录 → 401」），不写被调用的函数名（「测试 requireAuth」）。
 
 ## 3. 类型检查需求
 
-- 三个 TS 工程：`tsconfig.app.json`（前端）、`server/tsconfig.json`（后端，Node 类型无 DOM）、`tsconfig.node.json`（构建脚本）。
+- 三个包各自的 TS 工程：`apps/web`（`tsconfig.app.json` 前端 + `tsconfig.node.json` 构建脚本）、`apps/server/tsconfig.json`（后端，Node 类型无 DOM）、`packages/shared/tsconfig.json`（`lib: ES2020`、`types: []` 的护栏配置，加单独的 `tsconfig.test.json`），都由根 `tsconfig.json` 引用。
 - `pnpm build` 会先跑 `vue-tsc -b`，**类型不过就不出包**。
-- `pnpm typecheck:server` 单独检查后端。
+- `pnpm typecheck:server` / `pnpm typecheck:shared` 单独检查后端 / 共享包。
 - strict + `noUnusedLocals` + `noUnusedParameters` + `erasableSyntaxOnly`。
-- `server/generated/**` 是生成物，`@ts-nocheck`，不参与检查。
+- `apps/server/generated/**` 是生成物，`@ts-nocheck`，不参与检查。
 
 ## 4. Lint 需求
 
@@ -103,7 +104,7 @@ WebSocket 才成立的行为，靠 Playwright 脚本手工跑（不在 CI 里）
 - `eslint-plugin-security` recommended
 - `eslint-config-prettier` **必须放最后**，关掉所有格式化类规则（格式交给 Prettier）
 
-忽略：`dist`、`node_modules`、`src/components/ui/**`（shadcn 生成物）、`server/generated/**`。
+忽略：`dist`、`node_modules`、`apps/web/src/components/ui/**`（shadcn 生成物）、`apps/server/generated/**`。
 
 关键规则取舍：
 
@@ -116,7 +117,7 @@ WebSocket 才成立的行为，靠 Playwright 脚本手工跑（不在 CI 里）
 | `vue/multi-word-component-names` | off | 视图组件名就是单词 |
 | `vue/attributes-order` | off | 不强制属性顺序 |
 
-`server/**`、`vite.config.ts`、`vitest.config.ts`、`eslint.config.ts` 使用 Node 全局变量，其余用浏览器全局变量。
+`apps/server/**`、`apps/web/vite.config.ts`、各包的 `vitest.config.ts`、`eslint.config.ts` 使用 Node 全局变量，其余用浏览器全局变量。
 
 ## 5. 验收标准
 

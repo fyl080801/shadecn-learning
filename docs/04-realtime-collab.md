@@ -57,7 +57,7 @@
 ### 3.2 握手鉴权
 
 - 握手是普通 HTTP 请求，同源会自动带上 `sid` Cookie。
-- 用与 HTTP 相同的会话校验逻辑（`server/auth/ws.ts` 的 `authorizeCollab`），挂在 `onConnect` 上 ——
+- 用与 HTTP 相同的会话校验逻辑（`apps/server/auth/ws.ts` 的 `authorizeCollab`），挂在 `onConnect` 上 ——
   它对**每条**连接都跑；`onAuthenticate` 是 token 模型（"only if required"），我们用 cookie，不走它。
   抛异常即拒绝；返回值成为 `context`，后面的 hook 都读它。
 - **房间即资源**：房间名形如 `flow:<flowId>` 的，还要再判一次「请求者是不是该画布所属项目的成员」，
@@ -128,14 +128,14 @@ Hocuspocus 之后就不存在了。）
 - 使用 `@hocuspocus/provider` 的 `HocuspocusProvider`（**不能用 y-websocket**，线协议不兼容）：
   `url` 传由当前 `location` 推导出的**绝对 ws:// / wss:// 地址**（路径 `/ws/collaboration`，不要硬编码 host），
   `name` 传房间名。身份不走 `token` —— httpOnly 的 sid cookie 在握手时自动带上。
-- **`vite.config.ts` 必须 `resolve.dedupe: ['yjs', 'y-protocols']`**。
+- **`apps/web/vite.config.ts` 必须 `resolve.dedupe: ['yjs', 'y-protocols']`**。
   我们和 provider 各自 `import * as Y from 'yjs'`，Vite 预打包会把 yjs 复制一份进 provider 的产物，
   于是浏览器里有两个副本（控制台喊 "Yjs was already imported"）。这不只是告警：
-  两份副本之间 `instanceof` **永远为 false**，而 `src/lib/flow-doc.ts` 通篇靠
+  两份副本之间 `instanceof` **永远为 false**，而 `@shadecn/shared/flow-doc`（`packages/shared`，以源码形式进 bundle）通篇靠
   `value instanceof Y.Map` 判断结构 —— 静默失效的话画布会变成一张空图。
 - 画布房间（`flow:*`）已持久化到应用自己的库；其余房间仍是纯内存的，重启即丢。
 
-### 3.7 持久化（`server/collab/persistence.ts`）
+### 3.7 持久化（`apps/server/collab/persistence.ts`）
 
 **不用 y-leveldb**（原生模块），也**不用 `@hocuspocus/extension-database`` ——
 后者只是 `onLoadDocument` / `onStoreDocument` 的一层薄封装，直接实现这两个 hook 更直白。
@@ -180,7 +180,7 @@ Hocuspocus 之后就不存在了。）
 ## 4. 流程画布的协同（已实现）
 
 第一个落地场景是流程画布（REQ-CANVAS，`/flows/:flowId`），一张画布一个房间：`flow:<flowId>`。
-连接层在 `src/composables/flow/useFlowCollab.ts`，一条 WebSocket 上驮两件互不相干的事。
+连接层在 `apps/web/src/composables/flow/sync/collab.ts`（当时叫 `useFlowCollab.ts`，后来传输层拆成 `collab.ts` / `solo.ts`），一条 WebSocket 上驮两件互不相干的事。
 
 > **不是每张画布都进这一层。** 个人画布（[REQ-SOLO](16-personal-flow.md)）内容同样是 Y.Doc、
 > 同样存 `Flow.ydoc`，但传输换成 HTTP 增量推拉，不开房间、没有 awareness ——
@@ -192,13 +192,13 @@ Hocuspocus 之后就不存在了。）
 
 | | **数据层** | **反馈层** |
 |---|---|---|
-| 实现 | `stores/flow` + `src/lib/flow-doc.ts` | `useFlowPresence` + `src/lib/presence.ts` |
+| 实现 | `stores/flow` + `@shadecn/shared/flow-doc`（前端增量投影在 `apps/web/src/lib/flow-projection.ts`） | `useFlowPresence` + `apps/web/src/lib/presence.ts` |
 | 走什么 | Yjs 共享类型（`Y.Map`） | Yjs awareness |
 | 内容 | 节点、连线、图元数据 | 光标、选中、拖动中几何、正在拉的线 |
 | 生命周期 | 持久，可撤销 | 易失，断线即消失，**绝不落库** |
 | 丢一帧会怎样 | 不会丢：Yjs 的更新可交换、可结合、幂等，重连自动补 | 无所谓，下一帧覆盖 |
 | 刷新后还在吗 | 在 | 不在 |
-| 扩展方式 | 在 `flow-doc.ts` 的结构里加字段 | 加一个 awareness 字段 + 一个 computed |
+| 扩展方式 | 在 `@shadecn/shared/flow-doc` 的结构里加字段 | 加一个 awareness 字段 + 一个 computed |
 
 **画布内容就是那个 Y.Doc**，不再有「快照 + 提交 + 乐观锁」那一套：
 
@@ -216,8 +216,11 @@ ydoc
 服务端的 `Flow.graph` JSON 降级成**只读投影**：列表页的节点数、缩略图、将来的只读预览读它，
 编辑器不读（编辑器的内容直接来自 Y.Doc）。它由服务端在写状态时派生，客户端再也不提交它。
 
-⚠️ Y.Doc 的结构在前后端各写了一份（`src/lib/flow-doc.ts` / `server/collab/flow-doc.ts`）——
-两个 TS 工程互相 import 不了。**键名和嵌套结构必须完全一致**，改一处记得改另一处。
+Y.Doc 的结构（键名、嵌套、读写、v1 读时升级）现在只有**一份**，在 `packages/shared`（`@shadecn/shared/flow-doc`），
+前端和服务端 import 的是同一份实现，不再有「改一处记得改另一处」。服务端只剩 `apps/server/collab/flow-doc.ts` 里
+只有它才做的 `readGraphFromDoc`（派生只读投影）和 `pruneDanglingEdges`。
+⚠️ 前提是整个 bundle 里只有一份 yjs（`instanceof Y.Map` 跨副本恒为 false），见上文 `resolve.dedupe`，
+以及 `apps/server/test/collab/shared-yjs.test.ts` / `apps/web/src/test/lib/sharedYjs.test.ts`。
 
 **依赖方向是一条直线，不成环**（`composables/flow/context.ts`）：
 
@@ -260,7 +263,7 @@ collab ──┬──┴─→ canvas      canvas 是唯一同时认识三者�
 
 ### 4.0.1 占用规范（**已实现，当前未启用**）
 
-> 状态：仲裁逻辑和测试都在（`src/lib/presence.ts`、`src/test/lib/presence.test.ts`），
+> 状态：仲裁逻辑和测试都在（`apps/web/src/lib/presence.ts`、`apps/web/src/test/lib/presence.test.ts`），
 > 但**画布上没有接这条线** —— 谁都可以同时改同一样东西，由 CRDT 负责合并。
 > 要恢复限制，在 `useFlowCanvas` 把 `presence.lockedKeys` 重新接到节点/边的
 > `draggable` / `selectable` / `updatable` 上即可。
@@ -336,7 +339,7 @@ Vue Flow 靠 `:nodes` 的**数组引用**判断要不要重新同步节点。一
 
 awareness 的内容本来完全由客户端自己写、服务端只转发 —— 同房间的人可以把自己的 `user`
 改成别人的名字和头像。现在服务端在转发前把 `user` 覆盖成 `onConnect` 认定的那一份
-（`server/collab/awareness.ts` 的 `enforceIdentity`）。
+（`apps/server/collab/awareness.ts` 的 `enforceIdentity`）。
 
 只覆盖身份三件套（`id` / `name` / `avatarUrl`），**不动** `cursor` / `selection` / `transform` ——
 那些不是身份，报错了也只是画面不准，而且每帧都在变。
@@ -476,7 +479,7 @@ HTTP 请求：握手本身算一次，此后由编辑触发的视图状态 PATCH
 落库前清一次（`pruneDanglingEdges`），用 `'gc'` 这个 origin —— 客户端的 `UndoManager`
 只跟踪自己的 `LOCAL_ORIGIN`，所以清理不会跑进任何人的撤销栈。
 
-**④ 写入闸门（`beforeSync`，`server/collab/write-gate.ts`）**
+**④ 写入闸门（`beforeSync`，`apps/server/collab/write-gate.ts`）**
 
 前面三道守的是「内容本身可不可信」，这一道守的是「**这一帧还该不该被写进来**」。
 
@@ -546,7 +549,7 @@ access token 进入 30 秒刷新窗口之前根本不问 Keycloak），TTL 取 2
 
 同一个人开了第二个浏览器（或第二个标签页）连同一张画布时，**新的赢**：新连接接进来的
 那一刻，他自己那些旧连接全部被顶下线，旧窗口弹出不可关闭的「协作会话已过期，请刷新页面」
-（`FlowConnectionEndedDialog.vue`），并且**不再自动重连**。实现在 `server/collab/exclusive.ts`。
+（`FlowConnectionEndedDialog.vue`），并且**不再自动重连**。实现在 `apps/server/collab/exclusive.ts`。
 
 **为什么是新的赢**：人在哪个窗口，哪个窗口就是新开的那个。反过来「老的赢、新的连不上」
 会让用户对着一张打不开的画布发呆，而他根本不知道自己在哪儿还开着一份。
@@ -609,7 +612,7 @@ access token 进入 30 秒刷新窗口之前根本不问 Keycloak），TTL 取 2
 #### 服务端有两条路送这个信号，形状完全不同
 
 **① 连接已经建起来之后被关掉**（顶下线、复验没过）—— **两条腿一起关**
-（`server/collab/close.ts` 的 `closeForGood`）。只调 Hocuspocus 的 `connection.close()` 不够 ——
+（`apps/server/collab/close.ts` 的 `closeForGood`）。只调 Hocuspocus 的 `connection.close()` 不够 ——
 它把连接从文档上摘掉、给客户端发一条带原因的 CLOSE 消息，但**不关 socket**；
 客户端下一条消息（awareness 心跳 15 秒一次）会被服务端当成一次新的文档连接重新鉴权接回来。
 顶下线的那种最典型：旧窗口自己复活，回头把新窗口顶掉，两个窗口就此互相踢。
@@ -629,7 +632,7 @@ socket 继续开着；provider 收到后 `emit('authenticationFailed')` 就完�
 
 **所以 reason 才是判据，code 不是**：CLOSE 消息里只有 reason，code 被 provider 填成 `1000`；
 
-**服务端要两条腿一起关**（`server/collab/close.ts` 的 `closeForGood`）。只调 Hocuspocus 的
+**服务端要两条腿一起关**（`apps/server/collab/close.ts` 的 `closeForGood`）。只调 Hocuspocus 的
 `connection.close()` 不够 —— 它把连接从文档上摘掉、给客户端发一条带原因的 CLOSE 消息，
 但**不关 socket**；客户端下一条消息（awareness 心跳约 30 秒一次）会被服务端当成一次新的
 文档连接重新鉴权接回来。顶下线的那种最典型：旧窗口自己复活，回头把新窗口顶掉，两个窗口
@@ -695,7 +698,7 @@ socket 继续开着；provider 收到后 `emit('authenticationFailed')` 就完�
       且不再重连；旧窗口刷新后反过来接管，新窗口被顶下线。
 - [x] 同一个人同时开着两张不同的画布互不影响（互斥只在同一张画布内，`exclusive.test.ts`）。
 - [ ] 未登录直接连 `/ws/collaboration` 收到 401 并断开。
-- [x] 非项目成员连 `flow:<id>` 被拒绝（`server/test/auth/ws.test.ts`）。
+- [x] 非项目成员连 `flow:<id>` 被拒绝（`apps/server/test/auth/ws.test.ts`）。
 - [ ] 开发环境下协同连接和 Vite HMR 同时工作，互不影响。
 - [ ] 断网 / 挂起超过心跳超时后连接被回收，`/api/collab/rooms` 中的计数随之下降。
 - [ ] 客户端断线重连后能恢复到最新文档状态（前提是服务端未重启）。

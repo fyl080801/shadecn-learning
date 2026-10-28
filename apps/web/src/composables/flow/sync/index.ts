@@ -4,9 +4,9 @@ import { toast } from "vue-sonner"
 import * as Y from "yjs"
 import { IndexeddbPersistence } from "y-indexeddb"
 import type { Awareness } from "y-protocols/awareness"
-import { nodesMap } from "@/lib/flow-doc"
+import { nodesMap } from "@shadecn/shared/flow-doc"
 import { useAuth } from "@/lib/auth"
-import type { FlowMode } from "@/types/flow"
+import type { FlowMode } from "@shadecn/shared/canvas"
 import { createCollabTransport } from "./collab"
 import { createSoloTransport } from "./solo"
 import type { FatalClose, FlowTransport } from "./types"
@@ -33,7 +33,7 @@ export type { FatalClose, FlowTransport } from "./types"
 
 /**
  * 测试环境（jsdom）里没有真的服务端，连上去只会无限重连刷日志 ——
- * 和 `src/test/setup.ts` 把 fetch 换成必然 reject 的桩是同一个用意：测试不碰网络。
+ * 和 `apps/web/src/test/setup.ts` 把 fetch 换成必然 reject 的桩是同一个用意：测试不碰网络。
  * 本地缓存同理：jsdom 没有可用的 IndexedDB。
  */
 const CAN_CONNECT = typeof window !== "undefined" && import.meta.env.MODE !== "test"

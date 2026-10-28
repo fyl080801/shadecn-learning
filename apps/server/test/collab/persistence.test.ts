@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { nodesMap } from '../../collab/flow-doc.ts'
+import { nodesMap } from '@shadecn/shared/flow-doc'
 import {
   failedStoreCount,
   flushCollabWrites,

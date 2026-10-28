@@ -3,7 +3,8 @@
  *
  * **这是 gal_story HTTP 面视图模型的镜像**（`gal_story/server/models.py`，那一层
  * `alias_generator=to_camel`，所以线上格式一律 camelCase）。两边是两个工程，故类型各写一份，
- * **改一边记得同步另一边** —— 与 `src/types/flow.ts` ↔ `server/store/flow-types.ts` 同一条做法。
+ * **改一边记得同步另一边** —— 另一边是 Python 工程，没法像本仓库前后端那样共用
+ * `packages/shared`（`@shadecn/shared`），只能手抄。
  *
  * 三条边界写在类型上：
  *
