@@ -5,11 +5,16 @@ import {
   PanOnScrollMode,
   Position,
   SelectionMode,
+  useVueFlow,
   VueFlow
 } from "@vue-flow/core"
+import { computed, markRaw } from "vue"
 import { Background } from "@vue-flow/background"
 import { MiniMap } from "@vue-flow/minimap"
 
+import FlowConnectionLine from "@/components/flow/FlowConnectionLine.vue"
+import FlowEdge from "@/components/flow/FlowEdge.vue"
+import { flowHandleShift } from "@/components/flow/flow-handle"
 import FlowPresenceCursors from "@/components/flow/FlowPresenceCursors.vue"
 import FlowSelectionToolbar from "@/components/flow/FlowSelectionToolbar.vue"
 import FlowSnapGuides from "@/components/flow/FlowSnapGuides.vue"
@@ -39,6 +44,21 @@ const { canvas } = useFlowEditor()
  * 同样提到模板外面：内联字面量每次渲染都是新对象，会让边白白重算。
  */
 const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
+
+/**
+ * 连接点离节点的距离要「看上去」不随缩放变（`flow-handle.ts`）。
+ *
+ * 位移以 `--flow-handle-shift` 交给 CSS，用在圆的 `translate` 上 —— 只动 transform，
+ * 不动布局，Vue Flow 量好的连接点位置也就不会失效；连线两端由 `FlowEdge` /
+ * `FlowConnectionLine` 按同一个值补齐。
+ */
+const { viewport, connectionStartHandle } = useVueFlow()
+const handleStyle = computed(() => ({
+  "--flow-handle-shift": `${flowHandleShift(viewport.value.zoom)}px`
+}))
+
+/** 覆盖 `default` 这个类型名，而不是另起一个 —— 边的 type 照旧，文档里的数据不用动 */
+const edgeTypes = { default: markRaw(FlowEdge) }
 </script>
 
 <template>
@@ -56,7 +76,11 @@ const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
   -->
   <div
     class="h-full w-full"
-    :class="{ 'flow-canvas-panning': canvas.spacePanning.value }"
+    :class="{
+      'flow-canvas-panning': canvas.spacePanning.value,
+      'flow-canvas-connecting': connectionStartHandle !== null
+    }"
+    :style="handleStyle"
     @wheel.capture="canvas.onWheelZoom"
     @pointermove="canvas.onPointerMove"
     @pointerleave="canvas.onPointerLeave"
@@ -65,7 +89,9 @@ const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
       :nodes="canvas.nodes.value"
       :edges="canvas.edges.value"
       :node-types="flowNodeComponents"
+      :edge-types="edgeTypes"
       :connection-mode="ConnectionMode.Strict"
+      :connect-on-click="false"
       :selection-mode="SelectionMode.Full"
       :default-edge-options="defaultEdgeOptions"
       :connection-line-type="ConnectionLineType.Bezier"
@@ -86,6 +112,10 @@ const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
         zoom-pane 插槽在 .vue-flow__transformationpane 里面，和节点连线同一层，
         所以放进去的东西天然跟着缩放平移走；默认插槽在变换之外，别搞反了。
       -->
+      <template #connection-line="connectionLineProps">
+        <FlowConnectionLine v-bind="connectionLineProps" />
+      </template>
+
       <template #zoom-pane>
         <FlowSnapGuides />
         <FlowPresenceCursors />

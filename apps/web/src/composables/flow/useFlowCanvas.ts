@@ -7,8 +7,10 @@ import {
   type Connection,
   type Edge,
   type GraphNode,
+  type HandleType,
   type Node,
-  type NodeChange
+  type NodeChange,
+  type XYPosition
 } from "@vue-flow/core"
 import { createId } from "@/lib/id"
 import { elementKey, type PresencePoint } from "@/lib/presence"
@@ -384,6 +386,8 @@ export function useFlowCanvas(
    */
   onConnectStart(({ nodeId, handleId, handleType }) => {
     if (!nodeId) return
+    connectStart = { nodeId, handleType: handleType === "target" ? "target" : "source" }
+    connectedThisDrag = false
     const node = findNode(nodeId)
     if (!node) return
 
@@ -401,22 +405,70 @@ export function useFlowCanvas(
     })
   })
 
-  // 松手就收线，无论连上没连上
-  onConnectEnd(() => presence.setConnecting(null))
+  /**
+   * 这一次拉线从哪个连接点出发、有没有真的连上 —— 松手时用来判断
+   * 「拉到空白处」，那是在落点长出一个新节点（`addConnectedNode`）。
+   */
+  let connectStart: { nodeId: string; handleType: HandleType } | null = null
+  let connectedThisDrag = false
 
-  onConnect((connection: Connection) => {
-    const id = createId("e")
-    const edge: FlowEdge = {
-      id,
-      source: connection.source,
-      target: connection.target,
-      sourceHandle: connection.sourceHandle ?? null,
-      targetHandle: connection.targetHandle ?? null,
+  // 松手就收线，无论连上没连上
+  onConnectEnd((event) => {
+    presence.setConnecting(null)
+
+    const start = connectStart
+    connectStart = null
+    // Vue Flow 先发 connect 再发 connectEnd：连上了（含靠近吸附上的）就不再建节点
+    if (!start || connectedThisDrag || !event) return
+
+    const point = "changedTouches" in event ? event.changedTouches[0] : event
+    if (!point || !droppedOnPane(point)) return
+    void addConnectedNode(
+      start.nodeId,
+      start.handleType,
+      screenToFlowCoordinate({ x: point.clientX, y: point.clientY })
+    )
+  })
+
+  /**
+   * 落点是不是空白画布。看的是**落点下面的元素**，不依赖 `event.target` 指向谁。
+   * 落在节点身上不算（多半是没对准连接点，不该凭空多出一个节点），落在浮在画布上的
+   * 控件（缩放按钮、小地图、节点工具栏）上也不算。
+   */
+  function droppedOnPane(point: { clientX: number; clientY: number }): boolean {
+    const element = document.elementFromPoint(point.clientX, point.clientY)
+    if (!element || !vueFlowRef.value?.contains(element)) return false
+    return !element.closest(".vue-flow__node, .vue-flow__panel, .vue-flow__node-toolbar")
+  }
+
+  function buildEdge(
+    source: string,
+    target: string,
+    sourceHandle: string | null = null,
+    targetHandle: string | null = null
+  ): FlowEdge {
+    return {
+      id: createId("e"),
+      source,
+      target,
+      sourceHandle,
+      targetHandle,
       type: FLOW_EDGE_TYPE,
       animated: false,
       data: defaultEdgeData()
     }
-    store.addEdge(edge)
+  }
+
+  onConnect((connection: Connection) => {
+    connectedThisDrag = true
+    store.addEdge(
+      buildEdge(
+        connection.source,
+        connection.target,
+        connection.sourceHandle ?? null,
+        connection.targetHandle ?? null
+      )
+    )
   })
 
   // —— 视口 ——
@@ -636,6 +688,68 @@ export function useFlowCanvas(
     return id
   }
 
+  /** 点连接点上的加号时，新节点和原节点之间留的空隙（画布坐标） */
+  const CONNECTED_NODE_GAP = 80
+
+  /**
+   * 从某个连接点长出一个新节点并连上：点加号（不给 `drop`）或拉线到空白处松手（`drop` 是落点）。
+   *
+   * 从出口（右）长出来的新节点在右边、用它的入口接上；从入口（左）长出来的在左边、
+   * 用它的出口接上。新节点对应的那个连接点落在 `anchor` 上：点加号时是原节点同侧
+   * 再隔一段，拉线时就是落点。
+   *
+   * 节点和线进**同一个事务**（`addElements`）：一条撤销把两者一起拿掉，
+   * 别人也不会先看到一条指向不存在节点的线。摆正位置要等量出尺寸，和 `addNode` 一样
+   * 并进同一条撤销。
+   */
+  async function addConnectedNode(
+    nodeId: string,
+    handleType: HandleType,
+    drop?: XYPosition
+  ): Promise<string | null> {
+    const from = findNode(nodeId)
+    if (!from) return null
+
+    const toRight = handleType === "source"
+    const anchor = drop ?? {
+      x: toRight
+        ? from.computedPosition.x + from.dimensions.width + CONNECTED_NODE_GAP
+        : from.computedPosition.x - CONNECTED_NODE_GAP,
+      y: from.computedPosition.y + from.dimensions.height / 2
+    }
+    const place = (width: number, height: number) => ({
+      x: toRight ? anchor.x : anchor.x - width,
+      y: anchor.y - height / 2
+    })
+
+    const type = NEW_NODE_TYPE
+    const id = createId("n")
+    const node: FlowNode = {
+      id,
+      type,
+      position: place(0, 0),
+      ...buildNodeDefaults(type),
+      data: buildNodeData(type, `${flowNodeTypeOf(type).label} ${store.nodes.length + 1}`)
+    }
+    const edge = toRight ? buildEdge(nodeId, id) : buildEdge(id, nodeId)
+
+    store.separateUndo()
+    store.addElements([node], [edge], "新增相连节点")
+
+    const rendered = findNode(id)
+    if (rendered) {
+      await until(() => rendered.dimensions.width).toBeTruthy({ timeout: 1000 })
+      store.moveNodes(
+        new Map([[id, place(rendered.dimensions.width, rendered.dimensions.height)]]),
+        "摆放新节点"
+      )
+      selectOnly(id)
+    }
+    store.separateUndo()
+
+    return id
+  }
+
   // —— 打组 ——
 
   /** 分组框在被圈住的节点之外留的余量 */
@@ -741,6 +855,7 @@ export function useFlowCanvas(
     canGroupSelection,
     groupSelection,
     addNode,
+    addConnectedNode,
     duplicateNode,
     deleteNode,
     deleteSelection

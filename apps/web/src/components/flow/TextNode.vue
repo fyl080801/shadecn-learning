@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from "vue"
-import { Handle, Position, type NodeProps } from "@vue-flow/core"
+import type { NodeProps } from "@vue-flow/core"
 
 import FlowNodeChrome from "@/components/flow/FlowNodeChrome.vue"
+import FlowNodeHandles from "@/components/flow/FlowNodeHandles.vue"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 import { useDraftField } from "@/composables/flow/useDraftField"
 
@@ -81,16 +82,6 @@ function startEdit() {
       {{ text || "双击输入文本" }}
     </p>
 
-    <Handle
-      type="target"
-      :position="Position.Left"
-      class="!size-2.5 !border-2 !border-background !bg-primary"
-    />
-
-    <Handle
-      type="source"
-      :position="Position.Right"
-      class="!size-2.5 !border-2 !border-background !bg-primary"
-    />
+    <FlowNodeHandles />
   </div>
 </template>

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { Handle, Position, type NodeProps } from "@vue-flow/core"
+import type { NodeProps } from "@vue-flow/core"
 
 import FlowNodeChrome from "@/components/flow/FlowNodeChrome.vue"
+import FlowNodeHandles from "@/components/flow/FlowNodeHandles.vue"
 
 export interface ProcessNodeData {
   label: string
@@ -29,16 +30,6 @@ const props = defineProps<NodeProps<ProcessNodeData>>()
   >
     <FlowNodeChrome :node-id="props.id" :label="props.data.label" />
 
-    <Handle
-      type="target"
-      :position="Position.Left"
-      class="!size-2.5 !border-2 !border-background !bg-primary"
-    />
-
-    <Handle
-      type="source"
-      :position="Position.Right"
-      class="!size-2.5 !border-2 !border-background !bg-primary"
-    />
+    <FlowNodeHandles />
   </div>
 </template>

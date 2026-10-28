@@ -58,6 +58,97 @@
   stroke-width: 2;
 }
 
+/*
+ * 节点的连接点（FlowNodeHandles.vue 里的 `<Handle class="flow-handle">`）。
+ *
+ * 小号空心圆：填充用卡片底色、描边用主题色。手柄元素本身留在 Vue Flow 默认的位置、透明；
+ * 看得见的圆是 `::before`，加号是 `::after`（一张 mask），两者都用 `translate` 往外推
+ * `--flow-handle-shift`（FlowCanvas.vue 按缩放算好写进来，几何见 flow-handle.ts）。
+ *
+ * 几条为什么：
+ * - 只用 transform 系属性（`translate` / `scale`），缩放和悬停都不触发布局。
+ * - 用伪元素不用子元素：伪元素的命中算在手柄自己身上，按住圆拉线、松手落在圆上，
+ *   Vue Flow 认到的都是这个手柄；换成子元素，命中的就成了它。
+ * - 圆按 16px 画、平时 `scale(.5)`，悬停时放回 1 —— 放大后的加号是清晰的，不是 8px 放糊的。
+ * - `transition` 只给 `scale`，**不给 `translate`**：后者每个缩放帧都在变，带过渡就会拖影。
+ */
+.vue-flow__handle.flow-handle {
+  --flow-handle-dir: 1;
+  --flow-handle-scale: 0.5;
+  width: 8px;
+  height: 8px;
+  border: none;
+  background: transparent;
+}
+
+.vue-flow__handle-left.flow-handle {
+  --flow-handle-dir: -1;
+}
+
+.vue-flow__handle.flow-handle::before,
+.vue-flow__handle.flow-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  margin: -8px;
+  box-sizing: border-box;
+  border-radius: 100%;
+  translate: calc(var(--flow-handle-dir) * var(--flow-handle-shift, 4px)) 0;
+  scale: var(--flow-handle-scale);
+  opacity: 0;
+  transition:
+    scale 150ms,
+    opacity 150ms,
+    background-color 150ms;
+}
+
+.vue-flow__handle.flow-handle::before {
+  border: 2px solid var(--primary);
+  background: var(--card);
+}
+
+.vue-flow__handle.flow-handle::after {
+  background: var(--primary-foreground);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='M12 7v10M7 12h10'/%3E%3C/svg%3E")
+    center / 100% no-repeat;
+}
+
+/*
+ * 没接线的连接点平时藏起来，满屏空心圆只是噪音。要拉线时得找得到：
+ * 悬停或选中节点时露出这个节点的，拉线过程中（FlowCanvas 挂 `flow-canvas-connecting`）
+ * 全部露出，好看清能接到哪儿。只动 opacity —— 手柄元素一直在，热区不变。
+ */
+.vue-flow__handle.flow-handle--connected::before,
+.vue-flow__node:hover .flow-handle::before,
+.vue-flow__node.selected .flow-handle::before,
+.flow-canvas-connecting .flow-handle::before {
+  opacity: 1;
+}
+
+/* 悬停在连接点上：放大、填满，露出加号 —— 点它或从它拉线都能长出新节点 */
+.vue-flow__handle.flow-handle:hover {
+  --flow-handle-scale: 1;
+  /* Vue Flow 给可连的手柄是十字准星（`.connectable`），这里主动作是「点一下长出节点」，用手型 */
+  cursor: pointer;
+}
+
+.vue-flow__handle.flow-handle:hover::before {
+  opacity: 1;
+  background: var(--primary);
+}
+
+.vue-flow__handle.flow-handle:hover::after {
+  opacity: 1;
+}
+
+/* 拉线时作为起点 / 正被吸附的那个，填满但不放大 */
+.vue-flow__handle.flow-handle.connecting::before {
+  background: var(--primary);
+}
+
 .vue-flow__minimap {
   transform: scale(75%);
   transform-origin: bottom right;
