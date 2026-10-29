@@ -1,4 +1,3 @@
-
 import { Command } from "../Command"
 import type { Editor } from "../Editor"
 import { ObjectLoader } from "three"

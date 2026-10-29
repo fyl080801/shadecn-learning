@@ -1,11 +1,10 @@
-
 import * as THREE from "three"
 import { Command } from "../Command"
 import type { Editor } from "../Editor"
 import { SetUuidCommand } from "./SetUuidCommand"
 import { SetValueCommand } from "./SetValueCommand"
 import { AddObjectCommand } from "./AddObjectCommand"
-import * as Commands from "./Commands"
+import { createCommandByType } from "./registry"
 
 class SetSceneCommand extends Command {
   cmdArray: Command[]
@@ -57,8 +56,8 @@ class SetSceneCommand extends Command {
   execute() {
     this.editor.signals.sceneGraphChanged.active = false
 
-    for (let i = 0; i < this.cmdArray.length; i++) {
-      this.cmdArray[i]!.execute()
+    for (const cmd of this.cmdArray) {
+      cmd.execute()
     }
 
     this.editor.signals.sceneGraphChanged.active = true
@@ -80,8 +79,8 @@ class SetSceneCommand extends Command {
     const output = super.toJSON()
 
     const cmds = []
-    for (let i = 0; i < this.cmdArray.length; i++) {
-      cmds.push(this.cmdArray[i]!.toJSON())
+    for (const cmd of this.cmdArray) {
+      cmds.push(cmd.toJSON())
     }
 
     output.cmds = cmds
@@ -92,13 +91,10 @@ class SetSceneCommand extends Command {
   fromJSON(json: any) {
     super.fromJSON(json)
 
-    const CommandsByType: Record<string, new (editor: Editor) => Command> =
-      Commands as any
-
     const cmds = json.cmds
-      for (let i = 0; i < cmds.length; i++) {
-      const cmd = new CommandsByType[cmds[i].type]!(this.editor) // 创建一个 "json.type" 类型的新对象
-      cmd.fromJSON(cmds[i])
+    for (const cmdJSON of cmds) {
+      const cmd = createCommandByType(this.editor, cmdJSON.type)
+      cmd.fromJSON(cmdJSON)
       this.cmdArray.push(cmd)
     }
   }

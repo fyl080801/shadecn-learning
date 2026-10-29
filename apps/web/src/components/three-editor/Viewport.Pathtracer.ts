@@ -1,4 +1,3 @@
-
 import { WebGLPathTracer } from "three-gpu-pathtracer"
 
 interface ViewportPathtracerApi {

@@ -69,7 +69,7 @@ function Config(namespace?: string): ConfigApi {
       window.localStorage[name] = JSON.stringify(storage)
 
       console.log(
-        "[" + /\d\d\:\d\d\:\d\d/.exec(String(new Date()))![0] + "]",
+        "[" + /\d\d:\d\d:\d\d/.exec(String(new Date()))![0] + "]",
         "Saved config to LocalStorage."
       )
     },

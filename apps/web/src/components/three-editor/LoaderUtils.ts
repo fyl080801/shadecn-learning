@@ -2,8 +2,7 @@ const LoaderUtils = {
   createFilesMap: function (files: File[]) {
     const map: Record<string, File> = {}
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i]!
+    for (const file of files) {
       map[file.name] = file
     }
 
@@ -34,8 +33,8 @@ const LoaderUtils = {
       if (entry.isDirectory) {
         const reader = entry.createReader()
         reader.readEntries(function (entries: any[]) {
-          for (let i = 0; i < entries.length; i++) {
-            handleEntry(entries[i])
+          for (const entry of entries) {
+            handleEntry(entry)
           }
 
           onEntryHandled()
@@ -52,9 +51,7 @@ const LoaderUtils = {
       itemsTotal++
     }
 
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i]!
-
+    for (const item of items) {
       if (item.kind === "file") {
         handleEntry(item.webkitGetAsEntry())
       }

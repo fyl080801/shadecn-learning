@@ -61,7 +61,7 @@
 |---|---|
 | `views/` 根 | `Home.vue` / `Settings.vue` —— 不属于任何功能的外壳页 |
 | `views/canvas/` | [REQ-CANVAS](13-flow-canvas-management.md)：`Projects` / `ProjectHome` / `InviteAccept` / `FlowEditor` |
-| `views/three/` | 3D 相关：`ThreeEditor`（[REQ-3DEDITOR](06-three-editor.md)）、`3DScene`（[REQ-DIRECTOR](07-director-console.md)）、`Canvas3D` / `LightScene` 占位页、`Emu3DView` |
+| `views/three/` | 3D 相关：`Viewport3D`（[REQ-DIRECTOR](07-director-console.md)，渲染核心见 [REQ-3DEDITOR](06-three-editor.md)）、`Canvas3D` / `LightScene` 占位页、`Emu3DView` |
 | `views/games/` | 小游戏：`Demo3` / `SnakeGame` / `Game2048` |
 | `views/demos/` | 单页能力验证：`FlowChart`（[REQ-FLOW](09-flow-chart.md)）、`RichEditor`（[REQ-PROMPT](08-prompt-input.md)）、`HiC`、`Example` |
 
@@ -88,8 +88,7 @@
 | `/lightscene` | LightScene | 光源方向拖拽演示 | 静态 |
 | `/richeditor` | RichEditor | PromptInput 富文本演示 | 静态 |
 | `/hic` | HtmlInCanvas | Canvas `drawElementImage` 演示 | 懒加载 |
-| `/three-editor` | ThreeEditor | Three.js 场景编辑器 | 懒加载 |
-| `/3d-scene` | 3DScene | 3D 导演台 | 懒加载 |
+| `/3d-viewport` | Viewport3D | 3D 视口（[REQ-DIRECTOR](07-director-console.md)），不进侧栏菜单 | 懒加载 |
 | `/vue-flow` | VueFlow | 流程图画布 demo（[REQ-FLOW](09-flow-chart.md)），已从侧栏移除，仅保留路由 | 懒加载 |
 | `/projects` | — | 重定向到 `/personal`（项目列表已并入画布工作区的页内侧栏，[REQ-CANVAS](13-flow-canvas-management.md)），保留给老书签 | — |
 | `/projects/:projectId` | ProjectHome | 项目主页：画布 / 成员同页 Tab（外面套画布工作区的页内侧栏） | 懒加载 |
@@ -137,7 +136,7 @@
 ## 3. 已知缺口
 
 - 侧栏导航列表是**手写常量**，与路由表各维护一份，容易漏配：`/demo3`、`/hic`、`/example`、`/3d-cube` 都没有出现在侧栏里，`/example` 和 `/3d-cube` 甚至已经没有对应路由（视图文件 `Example.vue` / `Emu3DView.vue` 仍在）。
-- 导航项名称大小写风格不统一（`canvas3d`、`richeditor` 对比 `Three Editor`、`3D导演台`）。
+- 导航项名称大小写风格不统一（`canvas3d`、`richeditor` 对比 `Three Editor`）。
 - 两个不同的导航项复用了同一个图标（`Sun`、`Video`）。
 - `Game2048.vue` 的配色是 scoped CSS 里写死的十六进制值，不走主题变量，深色下和整站对不上；`apps/web/src/styles/vue-flow.css` 里那套 `.basic-flow.dark` 规则则是从 Vue Flow 示例抄来的死代码（没有任何组件挂 `basic-flow` 类）。
 - 登录页是服务端渲染的，只能跟随系统（`prefers-color-scheme`），读不到 localStorage 里的主题偏好 —— 手动设成浅色的人在登录页仍会看到深色。要修就得给那个页面加一段脚本，而它现在是刻意「零 JS」的。

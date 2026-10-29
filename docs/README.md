@@ -14,8 +14,8 @@
 | REQ-SERVER | 单进程单端口服务端 | [03-server-runtime.md](03-server-runtime.md) | 已实现 |
 | REQ-COLLAB | Yjs 实时协同 | [04-realtime-collab.md](04-realtime-collab.md) | 已实现 |
 | REQ-DATA | 数据存储与业务 API | [05-data-persistence.md](05-data-persistence.md) | 部分实现 |
-| REQ-3DEDITOR | Three.js 场景编辑器 | [06-three-editor.md](06-three-editor.md) | 已实现 |
-| REQ-DIRECTOR | 3D 导演台 | [07-director-console.md](07-director-console.md) | 已实现 |
+| REQ-3DEDITOR | Three.js 编辑器渲染核心（原场景编辑器页面已下线） | [06-three-editor.md](06-three-editor.md) | 已实现 |
+| REQ-DIRECTOR | 3D 导演台（现仅保留 `/3d-viewport` 视口） | [07-director-console.md](07-director-console.md) | 部分实现 |
 | REQ-PROMPT | 插件式富文本输入组件 | [08-prompt-input.md](08-prompt-input.md) | 已实现 |
 | REQ-FLOW | 流程图画布 | [09-flow-chart.md](09-flow-chart.md) | 已实现 |
 | REQ-DEMO | 演示页与小游戏 | [10-demo-pages.md](10-demo-pages.md) | 已实现 |

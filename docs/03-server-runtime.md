@@ -102,7 +102,7 @@
 - [ ] `pnpm dev` 后只有一个进程、一个端口；`lsof` 看不到 24678。
 - [ ] 开发环境改前端源码触发 HMR，无需刷新页面。
 - [ ] 开发环境改 `apps/server/` 源码触发进程重启（`tsx watch` 带 `--exclude '../web/node_modules/.vite-temp/**'`，否则 Vite 打包配置的临时文件会触发无限重启）。
-- [ ] `pnpm preview`（build + 生产模式启动）后，直接访问 `/three-editor` 这类深层路由能正确返回页面而不是 404。
+- [ ] `pnpm preview`（build + 生产模式启动）后，直接访问 `/3d-viewport` 这类深层路由能正确返回页面而不是 404。
 - [ ] 生产模式下进程内没有加载 Vite（依赖被 prune 掉也能启动）。
 - [ ] `GET /api/health` 免登录可访问；`GET /api/notes` 未登录返回 401。
 - [ ] 不存在的 `/api/xxx` 返回 JSON 格式 404，而不是 `index.html`。

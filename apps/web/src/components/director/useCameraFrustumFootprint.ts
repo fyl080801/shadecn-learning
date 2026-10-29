@@ -4,6 +4,7 @@ import { onBeforeUnmount, onMounted } from "vue"
 import {
   FRUSTUM_BASE_DISTANCE,
   FRUSTUM_BASE_HALF_HEIGHT,
+  FRUSTUM_FOOTPRINT_ASPECT,
   computeCrossDistance
 } from "./cameraFrustum"
 
@@ -27,14 +28,16 @@ export function useCameraFrustumFootprint(editor: any) {
   const signals = editor.signals
   const COLOR = 0x6ba3ff
 
-  function buildGeometry(fov: number, aspect: number): THREE.BufferGeometry {
+  function buildGeometry(fov: number): THREE.BufferGeometry {
     const baseHalfH = FRUSTUM_BASE_HALF_HEIGHT
 
     // 横截面：侧棱上的切片。距离随 FOV 远近变化，宽高按侧棱在该距离处的尺寸。
-    // FOV 越大横截面越近、越小（示意，不影响实际 FOV）。
+    // FOV 越大横截面越近、越小（示意，不影响实际 FOV）。宽高比使用固定常量
+    // FRUSTUM_FOOTPRINT_ASPECT，不读取 camera.aspect——后者会被编辑器视口的
+    // updateAspectRatio 改写为容器像素宽高比，导致横截面形状漂移成不确定矩形。
     const dCross = computeCrossDistance(fov)
     const crossHalfH = baseHalfH * (dCross / FRUSTUM_BASE_DISTANCE)
-    const crossHalfW = crossHalfH * aspect
+    const crossHalfW = crossHalfH * FRUSTUM_FOOTPRINT_ASPECT
     const crossZ = -dCross
 
     type Vec3 = [number, number, number]
@@ -77,10 +80,7 @@ export function useCameraFrustumFootprint(editor: any) {
         transparent: true,
         opacity: 0.85
       })
-      frustum = new THREE.LineSegments(
-        buildGeometry(camera.fov, camera.aspect),
-        material
-      )
+      frustum = new THREE.LineSegments(buildGeometry(camera.fov), material)
       frustum.name = "fovFrustum"
       // 仅作示意，不参与射线拾取，避免误选。
       frustum.raycast = () => {}
@@ -96,11 +96,21 @@ export function useCameraFrustumFootprint(editor: any) {
     const helper = editor.helpers[camera.id]
     if (!helper) return
 
+    // 辅助器挂在 editor.sceneHelpers 下、matrix 直接引用相机 matrixWorld，并不是
+    // 机位对象的子节点，故场景面板把机位 visible 置 false 只会隐藏机位子树里的
+    // camera.glb 模型，这条示意椎体仍照常渲染——「隐藏机位」看上去只隐藏了图形、
+    // 参照线还留在画面里。这里把辅助器的显隐与机位本身对齐。
+    // 放在 director 侧而不是 Viewport：引擎层的 showHelpersChanged 是辅助器显隐的
+    // 另一个主人（完整编辑器 chrome 的「显示相机辅助器」开关），在引擎层按对象
+    // visible 回写会把用户在那里关掉的辅助器重新打开；导演台不挂载该 chrome，
+    // 这条通道在本域内没有争用。
+    helper.visible = camera.visible
+
     // 隐藏 CameraHelper 自带视锥线框（含底面矩形），改用下方自定义 FOV 椎体。
     if (helper.material) helper.material.visible = false
 
     const frustum = ensureFrustum(helper, camera)
-    const next = buildGeometry(camera.fov, camera.aspect)
+    const next = buildGeometry(camera.fov)
     frustum.geometry.dispose()
     frustum.geometry = next
   }
@@ -119,6 +129,25 @@ export function useCameraFrustumFootprint(editor: any) {
     refreshHelper(object)
   }
 
+  // 时间轴逐帧写回之后：椎体挂在 CameraHelper 下、matrix 直接引用相机 matrixWorld，故
+  // 位姿自动跟随，**唯独按 FOV 建的那份几何**要重建——FOV 关键帧播放时否则横截面纹丝
+  // 不动。时间轴的写回不派发 objectChanged，这条 sceneAnimated 才是「本帧已落地」的通道
+  // （见 Editor.ts 的信号注释）。
+  //
+  // 只在 FOV 真的变了时才重建：这是每帧都会跑的一条，而 buildGeometry 是一次几何分配 +
+  // 旧几何 dispose，逐帧无条件重建就是给所有机位白付一份（绝大多数场景根本没打 FOV 帧）。
+  const lastFov = new WeakMap<object, number>()
+
+  function onSceneAnimated() {
+    for (const camera of Object.values(editor.cameras) as any[]) {
+      if (!camera?.isPerspectiveCamera || !camera.userData?.isDirectorShot)
+        continue
+      if (lastFov.get(camera) === camera.fov) continue
+      lastFov.set(camera, camera.fov)
+      refreshHelper(camera)
+    }
+  }
+
   function onHelperRemoved(helper: any) {
     const frustum: THREE.LineSegments | undefined = helper.userData?.fovFrustum
     if (frustum) {
@@ -130,6 +159,7 @@ export function useCameraFrustumFootprint(editor: any) {
   onMounted(() => {
     signals.objectChanged.add(onObjectChanged)
     signals.objectAdded.add(onObjectAdded)
+    signals.sceneAnimated.add(onSceneAnimated)
     signals.helperRemoved.add(onHelperRemoved)
     signals.windowResize.add(refreshAll)
     // 已存在的机位（如加载存档时组件晚于场景挂载）补建一次。
@@ -139,6 +169,7 @@ export function useCameraFrustumFootprint(editor: any) {
   onBeforeUnmount(() => {
     signals.objectChanged.remove(onObjectChanged)
     signals.objectAdded.remove(onObjectAdded)
+    signals.sceneAnimated.remove(onSceneAnimated)
     signals.helperRemoved.remove(onHelperRemoved)
     signals.windowResize.remove(refreshAll)
   })

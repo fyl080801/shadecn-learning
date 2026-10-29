@@ -18,7 +18,7 @@
 | 身份认证 | 无 `jose` / `openid-client` 依赖，手写 OIDC BFF 是否可行 | REQ-AUTH |
 | 服务端形态 | 一个 Node 进程同时承载 API + WebSocket + 前端，是否够用 | REQ-SERVER |
 | 实时协同 | Yjs 在自建 WebSocket 服务上的可用性 | REQ-COLLAB |
-| 3D | Three.js 官方 editor 移植到 Vue + TS 的可行性，以及在其上做垂直业务 | REQ-3DEDITOR、REQ-DIRECTOR |
+| 3D | Three.js 官方 editor 的渲染核心放进 Vue + TS 的可行性，以及在其上做垂直业务（视口） | REQ-3DEDITOR、REQ-DIRECTOR |
 | 富文本 | 不依赖 Slate/ProseMirror/Tiptap，自研插件式内联编辑器 | REQ-PROMPT |
 | 图编辑 | Vue Flow 的交互定制能力 | REQ-FLOW |
 | Canvas | 原生 Canvas 游戏、CSS 3D、`drawElementImage` 等浏览器新能力 | REQ-DEMO |
@@ -40,7 +40,7 @@
 ### 3.3 布局
 
 - 页面在 `App.vue` 的侧栏布局内渲染，可用高度为视口高度减去布局占位；页面**自己**负责内部滚动，不得把 `body` 撑出滚动条。
-- 需要整屏的工具型页面（编辑器、导演台）必须填满可用区域，不留外边距。
+- 需要整屏的工具型页面（编辑器、3D 视口）必须填满可用区域，不留外边距。
 
 ### 3.4 主题
 

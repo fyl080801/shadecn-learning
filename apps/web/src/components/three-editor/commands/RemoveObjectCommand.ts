@@ -1,4 +1,3 @@
-
 import * as THREE from "three"
 import { Command } from "../Command"
 import type { Editor } from "../Editor"

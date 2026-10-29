@@ -1,4 +1,6 @@
-import * as Commands from "./commands/Commands"
+// 只为副作用：登记全部命令类型，fromJSON 才能按 type 新建（见 commands/registry.ts）
+import "./commands/Commands"
+import { createCommandByType } from "./commands/registry"
 import type { Editor } from "./Editor"
 import type { Command } from "./Command"
 import type { ConfigApi } from "./Config"
@@ -11,6 +13,21 @@ class History {
   idCounter: number
   historyDisabled: boolean
   config: ConfigApi
+  /**
+   * 此刻正在 `execute()` 里的那条命令（不在执行中即 null）。
+   *
+   * 给「跑在命令派发的信号里、要认出宿主命令是谁」的消费方用——时间轴的自动补帧挂在
+   * `objectChanged` 上，而那个信号正是各命令在 execute 里派发的（见
+   * directorTimeline.flushAutoKeyHistory）。
+   *
+   * 此前那一侧是靠 `undos[last].inMemory === false` 反推的：push 之后、置 inMemory 之前
+   * 确实只有这个窗口。但**合并**那条路（updatable 命令在 500ms 窗口内并进上一条）走的是
+   * `cmd = lastCmd` 再 execute 一次，那时 inMemory 早已是 true，反推不出来——于是那一侧
+   * 又补了一条「这个条目已经挂过快照就直接前移」的分支绕过判据，而那条分支对**已经执行完
+   * 的**栈顶同样成立：下一次不相干的编辑在它自己的命令出现之前，补出来的帧会被塞进上一条
+   * 命令的 redo 侧。两个窗口合在一起才是「宿主命令正在执行」，故直接记下来，不再反推。
+   */
+  executing: Command | null
 
   constructor(editor: Editor) {
     this.editor = editor
@@ -18,20 +35,19 @@ class History {
     this.redos = []
     this.lastCmdTime = Date.now()
     this.idCounter = 0
+    this.executing = null
 
     this.historyDisabled = false
     this.config = editor.config
 
     // 信号
 
-    const scope = this
-
-    this.editor.signals.startPlayer.add(function () {
-      scope.historyDisabled = true
+    this.editor.signals.startPlayer.add(() => {
+      this.historyDisabled = true
     })
 
-    this.editor.signals.stopPlayer.add(function () {
-      scope.historyDisabled = false
+    this.editor.signals.stopPlayer.add(() => {
+      this.historyDisabled = false
     })
   }
 
@@ -64,7 +80,13 @@ class History {
     }
 
     cmd.name = optionalName !== undefined ? optionalName : cmd.name
-    cmd.execute()
+    // finally：命令抛出时也要交还，否则此后每一次补帧都以为自己还在这条命令的执行窗口里。
+    this.executing = cmd
+    try {
+      cmd.execute()
+    } finally {
+      this.executing = null
+    }
     cmd.inMemory = true
 
     if (this.config.getKey("settings/history")) {
@@ -138,17 +160,17 @@ class History {
 
     // 将撤销命令追加到历史记录
 
-    for (let i = 0; i < this.undos.length; i++) {
-      if (this.undos[i]!.hasOwnProperty("json")) {
-        history.undos.push(this.undos[i]!.json)
+    for (const undo of this.undos) {
+      if (Object.prototype.hasOwnProperty.call(undo, "json")) {
+        history.undos.push(undo.json)
       }
     }
 
     // 将重做命令追加到历史记录
 
-    for (let i = 0; i < this.redos.length; i++) {
-      if (this.redos[i]!.hasOwnProperty("json")) {
-        history.redos.push(this.redos[i]!.json)
+    for (const redo of this.redos) {
+      if (Object.prototype.hasOwnProperty.call(redo, "json")) {
+        history.redos.push(redo.json)
       }
     }
 
@@ -158,12 +180,8 @@ class History {
   fromJSON(json: any) {
     if (json === undefined) return
 
-    const CommandsByType: Record<string, new (editor: Editor) => Command> =
-      Commands as any
-
-    for (let i = 0; i < json.undos.length; i++) {
-      const cmdJSON = json.undos[i]
-      const cmd = new CommandsByType[cmdJSON.type]!(this.editor) // 创建一个 "json.type" 类型的新对象
+    for (const cmdJSON of json.undos) {
+      const cmd = createCommandByType(this.editor, cmdJSON.type)
       cmd.json = cmdJSON
       cmd.id = cmdJSON.id
       cmd.name = cmdJSON.name
@@ -171,9 +189,8 @@ class History {
       this.idCounter = cmdJSON.id > this.idCounter ? cmdJSON.id : this.idCounter // 设置最后使用的 idCounter
     }
 
-    for (let i = 0; i < json.redos.length; i++) {
-      const cmdJSON = json.redos[i]
-      const cmd = new CommandsByType[cmdJSON.type]!(this.editor) // 创建一个 "json.type" 类型的新对象
+    for (const cmdJSON of json.redos) {
+      const cmd = createCommandByType(this.editor, cmdJSON.type)
       cmd.json = cmdJSON
       cmd.id = cmdJSON.id
       cmd.name = cmdJSON.name
@@ -243,7 +260,7 @@ class History {
 
     let cmd = this.redo()
     while (cmd !== undefined) {
-      if (!cmd.hasOwnProperty("json")) {
+      if (!Object.prototype.hasOwnProperty.call(cmd, "json")) {
         cmd.json = cmd.toJSON()
       }
 

@@ -3,14 +3,9 @@ import { onBeforeUnmount, onMounted, ref } from "vue"
 import * as THREE from "three"
 
 import { Viewport } from "./Viewport"
-import type { ViewHelperOffset } from "./Viewport.ViewHelper"
 import { useEditor } from "./composables/useEditorContext"
 
 defineOptions({ inheritAttrs: false })
-
-const props = defineProps<{
-  viewHelperOffset?: ViewHelperOffset
-}>()
 
 const editor = useEditor()
 const signals = editor.signals
@@ -27,7 +22,7 @@ function onRendererCreated(newRenderer: THREE.WebGLRenderer) {
 onMounted(() => {
   signals.rendererCreated.add(onRendererCreated)
 
-  const viewport = Viewport(editor, { viewHelperOffset: props.viewHelperOffset })
+  const viewport = Viewport(editor)
   viewport.style.position = "absolute"
   viewport.style.inset = "0"
   hostRef.value?.appendChild(viewport)

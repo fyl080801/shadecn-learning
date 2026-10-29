@@ -136,10 +136,10 @@ WebSocket 才成立的行为，靠 Playwright 脚本手工跑（不在 CI 里）
 - E2E / 浏览器自动化测试（Playwright）。
 - 覆盖率阈值门禁。
 - 视觉回归测试。
-- 3D 相关代码的单元测试（`three-editor`、`director` 目前无测试覆盖）。
+- 3D 相关代码的完整测试覆盖：`three-editor` / `director` 的纯逻辑部分已有单测（`apps/web/src/test/components/three-editor/`、`director/`），但 Viewport / 渲染器 / 组件本身与 `/3d-viewport` 页面没有测试。
 
 ## 7. 待确认事项
 
-- 是否给 `three-editor` / `director` 的纯逻辑部分（`characterPose`、`cameraLookAt` 等）补单测 —— 这些是可测的纯函数。
+- 是否给 `three-editor` / `director` 的渲染层（`Viewport`、`useDirectorRenderer`）补测试 —— 依赖 WebGL，jsdom 下需要 mock 或改走浏览器测试。
 - 是否引入 Prettier 作为独立的格式化检查步骤（当前只是用 `eslint-config-prettier` 关掉冲突规则，没有强制格式化）。
 - 是否设置覆盖率下限。

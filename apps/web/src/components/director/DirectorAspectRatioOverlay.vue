@@ -2,57 +2,101 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 
 import { Grid2x2 } from "@lucide/vue"
+import { useEditor } from "@/components/three-editor/composables/useEditorContext"
 import { aspectRatio } from "./directorState"
+import {
+  computeAspectGateFrame,
+  useCameraAspectGate
+} from "./directorAspectGate"
 
-// 各画幅比例的宽高比（宽 / 高）。`auto` 不显示取景框。
-const RATIOS: Record<Exclude<(typeof aspectRatio)["value"], "auto">, number> = {
-  "21:9": 21 / 9,
-  "16:9": 16 / 9,
-  "4:3": 4 / 3,
-  "1:1": 1,
-  "3:4": 3 / 4,
-  "9:16": 9 / 16
-}
+const editor = useEditor()
 
 const containerRef = ref<HTMLDivElement | null>(null)
 const size = ref({ w: 0, h: 0 })
 
-// 取景框与视口边缘保留的余地（像素）。底部在边缘余地之上再叠加工具栏
-// 占位（bottom-4 偏移 + 工具栏高度 + 间距），使取景框不贴边、也不压住工具栏。
-const EDGE_MARGIN = 24
-const TOOLBAR_CLEARANCE = 64
-
-const active = computed(() => aspectRatio.value !== "auto")
-
 // 摄影参考线（3×3 九宫格）的开启状态，由取景框右上角的开关切换。
 const showGuideLines = ref(false)
 
-// 在视口容器内（扣除边缘余地与底部工具栏占位后）按所选宽高比 contain
-// 适配并居中的取景框（像素坐标）。
-const frame = computed(() => {
+// 取景框几何：几何计算单点源在 directorAspectGate.ts（供叠加层绘制与相机分辨率闸门
+// 复用同一份矩形）。本容器就是视口区域（面板列与时间轴都在其外），故只需让开仍悬浮
+// 在视口上的纵向工具栏与右上角罗盘列；面板列显隐、时间轴开合都会改变容器尺寸，
+// 经 ResizeObserver 重算即可。矩形宽高比严格等于所选比例。
+const frame = computed(() =>
+  computeAspectGateFrame(size.value.w, size.value.h, aspectRatio.value)
+)
+
+// 把同一份取景框施加为视口相机的分辨率闸门，使取景框内画面 = 机位预览（相机在所选
+// 比例下的真实成片），导演视角与机位视角同理（作用于当前视口相机）。
+useCameraAspectGate(editor, frame, size)
+
+// 周边模糊遮罩：取景框四周四条互不重叠的矩形，各自 backdrop-blur。
+//
+// 刻意不用「铺满一层 + clip-path(evenodd) 挖洞」：视口区域现在是带圆角的卡片
+// （DirectorConsoleModal 的 .director-viewport-region，border-radius + overflow:hidden），
+// 祖先的圆角裁切会把 backdrop-filter 提升到独立渲染面，元素自身的 clip-path 不再
+// 裁剪其模糊输出——取景框内也会跟着糊掉。四条矩形按几何直接避开取景框，模糊范围
+// 由布局本身保证，不依赖任何裁剪语义。
+//
+// 边界与取景框严格相接（对齐到整像素避免亚像素缝），万一有半像素误差也被取景框
+// 自身的 1px 边框盖住。四条矩形只负责「模糊」，压暗交给下面的 dimStyle——四条的
+// 边界是取景框的外接矩形，压暗若也走这里，圆角外的四个小角落就会既不压暗也不
+// 圆角，露出突兀的清晰直角。
+interface BlurBand {
+  key: string
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+const blurBands = computed<BlurBand[]>(() => {
+  const f = frame.value
   const { w, h } = size.value
-  if (!active.value || w === 0 || h === 0) return null
-  const a = RATIOS[aspectRatio.value as Exclude<(typeof aspectRatio)["value"], "auto">]
-  if (!a) return null
-  const marginTop = EDGE_MARGIN
-  const marginBottom = EDGE_MARGIN + TOOLBAR_CLEARANCE
-  const marginX = EDGE_MARGIN
-  const availW = Math.max(0, w - marginX * 2)
-  const availH = Math.max(0, h - marginTop - marginBottom)
-  let fw: number
-  let fh: number
-  if (a >= availW / availH) {
-    fw = availW
-    fh = availW / a
-  } else {
-    fh = availH
-    fw = availH * a
-  }
+  if (!f || w === 0 || h === 0) return []
+  const left = Math.round(f.x)
+  const top = Math.round(f.y)
+  const right = Math.round(f.x + f.w)
+  const bottom = Math.round(f.y + f.h)
+  const bandHeight = Math.max(0, bottom - top)
+  return [
+    { key: "top", left: 0, top: 0, width: w, height: top },
+    {
+      key: "bottom",
+      left: 0,
+      top: bottom,
+      width: w,
+      height: Math.max(0, h - bottom)
+    },
+    { key: "left", left: 0, top, width: left, height: bandHeight },
+    {
+      key: "right",
+      left: right,
+      top,
+      width: Math.max(0, w - right),
+      height: bandHeight
+    }
+  ].filter((band) => band.width > 0 && band.height > 0)
+})
+
+/** 取景框圆角，叠加层与压暗层共用。 */
+const FRAME_RADIUS = 16
+
+// 框外压暗：一个贴在取景框矩形上的元素，用超大 spread 的外阴影把框外整片压暗。
+// 外阴影天然不画在自身 border-box 之内，且这块「挖空」严格贴合 border-radius，
+// 于是压暗边界与取景框圆角完全一致（圆角外的小角落也照样压暗），全程只用到
+// border-radius 与 box-shadow——不碰 clip-path/mask 这类在圆角卡片里对
+// backdrop-filter 失效的裁剪方式。溢出容器的部分由容器的 overflow:hidden 收掉。
+const dimStyle = computed(() => {
+  const f = frame.value
+  if (!f) return null
+  const spread = Math.ceil(size.value.w + size.value.h)
   return {
-    x: marginX + (availW - fw) / 2,
-    y: marginTop + (availH - fh) / 2,
-    w: fw,
-    h: fh
+    left: `${f.x}px`,
+    top: `${f.y}px`,
+    width: `${f.w}px`,
+    height: `${f.h}px`,
+    borderRadius: `${FRAME_RADIUS}px`,
+    boxShadow: `0 0 0 ${spread}px rgba(0, 0, 0, 0.4)`
   }
 })
 
@@ -89,39 +133,31 @@ onBeforeUnmount(() => {
     aria-hidden="true"
   >
     <template v-if="frame">
-      <!-- 周边模糊遮罩：四块矩形围绕中央取景框，仅框外区域被模糊与压暗 -->
+      <!-- 周边模糊：取景框上/下/左/右四条矩形，各自 backdrop-blur，
+                 互不重叠也不覆盖取景框（几何见 blurBands），不带压暗 -->
       <div
-        class="absolute left-0 right-0 top-0 bg-black/40 backdrop-blur-md"
-        :style="{ height: frame.y + 'px' }"
-      />
-      <div
-        class="absolute bottom-0 left-0 right-0 bg-black/40 backdrop-blur-md"
-        :style="{ height: size.h - frame.y - frame.h + 'px' }"
-      />
-      <div
-        class="absolute left-0 bg-black/40 backdrop-blur-md"
+        v-for="band in blurBands"
+        :key="band.key"
+        class="absolute backdrop-blur-md"
         :style="{
-          top: frame.y + 'px',
-          height: frame.h + 'px',
-          width: frame.x + 'px'
+          left: `${band.left}px`,
+          top: `${band.top}px`,
+          width: `${band.width}px`,
+          height: `${band.height}px`
         }"
       />
-      <div
-        class="absolute right-0 bg-black/40 backdrop-blur-md"
-        :style="{
-          top: frame.y + 'px',
-          height: frame.h + 'px',
-          width: size.w - frame.x - frame.w + 'px'
-        }"
-      />
+      <!-- 框外压暗：边界严格贴合取景框圆角（见 dimStyle） -->
+      <div class="absolute" :style="dimStyle" />
       <!-- 中央取景框 -->
       <div
-        class="absolute border border-white/80 shadow-[0_0_0_1px_rgba(0,0,0,0.4)]"
+        class="absolute border"
         :style="{
           left: frame.x + 'px',
           top: frame.y + 'px',
           width: frame.w + 'px',
-          height: frame.h + 'px'
+          height: frame.h + 'px',
+          borderColor: '#D9D9D9',
+          borderRadius: `${FRAME_RADIUS}px`
         }"
       />
       <!-- 取景框右上角：摄影参考线开关 -->
@@ -130,8 +166,8 @@ onBeforeUnmount(() => {
         class="pointer-events-auto absolute flex size-6 items-center justify-center rounded-sm border border-white/30 bg-black/40 text-white/70 backdrop-blur-sm transition-colors hover:bg-black/60 hover:text-white"
         :class="showGuideLines && 'border-white/50 bg-white/20 text-white'"
         :style="{
-          left: frame.x + frame.w - 28 + 'px',
-          top: frame.y + 4 + 'px'
+          left: frame.x + 8 + 'px',
+          top: frame.y + 8 + 'px'
         }"
         :title="showGuideLines ? '关闭摄影参考线' : '开启摄影参考线'"
         @click="showGuideLines = !showGuideLines"

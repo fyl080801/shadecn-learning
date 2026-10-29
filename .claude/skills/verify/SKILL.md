@@ -35,18 +35,12 @@ p.chromium.launch(
 
 Collect `pageerror` + console errors; screenshot for evidence.
 
-## Gotchas (3D 导演台, /3d-scene)
+## Gotchas (3D 视口, /3d-viewport)
 
-- Right sidebar panels (scene/object/camera) all stay mounted via `v-show` —
-  always scope locators with `:visible` (e.g. `input[inputmode=decimal]:visible`).
-- Layout hooks: left panel `aside.w-56`, right panel `aside.w-72`.
-- Toolbar buttons are icon-only; select by lucide class,
-  e.g. `button:has(svg.lucide-camera)` (add 机位), `svg.lucide-user-plus` (add 图形).
-- In the 添加图形 dropdown, first item "上传文件/本地上传" is a no-op without a
-  file — to add geometry hover 几何模型, wait for
-  `[data-slot=dropdown-menu-sub-content]`, click e.g. 立方体.
-- Scene objects get numbered names (机位1, 立方体1); scene list rows are
-  `span.truncate` inside `aside.w-56`.
-- shadcn selects: trigger `[data-slot=select-trigger]:visible`, options via
-  `get_by_role("option", name=...)`. Sliders: focus `[role=slider]` + ArrowRight.
-- reka NumberField inputs commit on Enter/blur after `fill()`.
+- The page is not in the sidebar menu — navigate to `/3d-viewport` directly.
+- It is only a viewport (no panels, toolbar or timeline): a `<canvas>` with three
+  shapes (立方体1 / 球体1 / 圆锥1) and a wireframe-only camera frustum (机位1),
+  a 16:9 aspect-ratio overlay, a view helper at top-right and a transform
+  button column below it. Nothing is persisted; every load is the same scene.
+- Needs WebGL (`--enable-unsafe-swiftshader`); collect `pageerror` + console
+  errors and check that revisiting the page still shows the gizmo on click.

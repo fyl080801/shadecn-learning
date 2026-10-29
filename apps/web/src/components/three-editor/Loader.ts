@@ -7,7 +7,9 @@ import { SetSceneCommand } from "./commands/SetSceneCommand"
 
 import { LoaderUtils } from "./LoaderUtils"
 
-import { GLTFImportDialog } from "./GLTFImportDialog"
+// 本仓库只保留渲染核心，不带 GLTF 导入选项弹窗（GLTFImportDialog）：
+// glTF / glb 一律按「作为对象加入当前场景」导入，等价于弹窗里不勾「作为场景导入」。
+const GLTF_IMPORT_OPTIONS = { asScene: false } as const
 
 import { snapshotBindPose } from "./SkeletonBindPose"
 
@@ -33,6 +35,7 @@ interface Loader {
 }
 
 function Loader(this: Loader, editor: Editor) {
+  // eslint-disable-next-line @typescript-eslint/no-this-alias -- scope 被多个带自身 this 的 function 表达式（回调、loadFiles 等）闭包使用，无法改为箭头函数而不改变 this 语义
   const scope = this
 
   this.texturePath = ""
@@ -63,7 +66,7 @@ function Loader(this: Loader, editor: Editor) {
 
         try {
           normalized = decodeURIComponent(normalized)
-        } catch (e) {
+        } catch {
           /* 格式错误的 URI — 保持原样 */
         }
 
@@ -112,8 +115,8 @@ function Loader(this: Loader, editor: Editor) {
           if (!candidates || candidates.length === 0) return null
           if (candidates.length === 1) return candidates[0]
 
-          for (let i = 0; i < candidates.length; i++) {
-            if (candidates[i].key === lookup) return candidates[i]
+          for (const candidate of candidates) {
+            if (candidate.key === lookup) return candidate
           }
 
           if (!warnedAmbiguous.has(lookup)) {
@@ -148,8 +151,8 @@ function Loader(this: Loader, editor: Editor) {
 
       manager.addHandler(/\.tga$/i, new TGALoader())
 
-      for (let i = 0; i < files.length; i++) {
-        scope.loadFile(files[i], manager)
+      for (const file of files) {
+        scope.loadFile(file, manager)
       }
     }
   }
@@ -351,8 +354,7 @@ function Loader(this: Loader, editor: Editor) {
             const contents = event.target.result
 
             try {
-              const dialog = new GLTFImportDialog(editor.strings)
-              const options = await dialog.show()
+              const options = GLTF_IMPORT_OPTIONS
 
               const loader = await createGLTFLoader()
 
@@ -373,8 +375,8 @@ function Loader(this: Loader, editor: Editor) {
                 loader.dracoLoader.dispose()
                 loader.ktx2Loader.dispose()
               })
-            } catch (e) {
-              // 导入已取消
+            } catch {
+              // 解析失败：与原先「取消导入」同样静默忽略
             }
           },
           false
@@ -391,8 +393,7 @@ function Loader(this: Loader, editor: Editor) {
             const contents = event.target.result
 
             try {
-              const dialog = new GLTFImportDialog(editor.strings)
-              const options = await dialog.show()
+              const options = GLTF_IMPORT_OPTIONS
 
               const loader = await createGLTFLoader(manager)
 
@@ -413,8 +414,8 @@ function Loader(this: Loader, editor: Editor) {
                 loader.dracoLoader.dispose()
                 loader.ktx2Loader.dispose()
               })
-            } catch (e) {
-              // 导入已取消
+            } catch {
+              // 解析失败：与原先「取消导入」同样静默忽略
             }
           },
           false
@@ -651,9 +652,7 @@ function Loader(this: Loader, editor: Editor) {
 
             let renderOrder = 0
 
-            for (let i = 0; i < paths.length; i++) {
-              const path = paths[i]
-
+            for (const path of paths) {
               // 填充
 
               const fillMaterial = (SVGLoader as any).createFillMaterial(path)
@@ -661,9 +660,7 @@ function Loader(this: Loader, editor: Editor) {
               if (fillMaterial) {
                 const shapes = path.toShapes()
 
-                for (let j = 0; j < shapes.length; j++) {
-                  const shape = shapes[j]
-
+                for (const shape of shapes) {
                   const geometry = new THREE.ShapeGeometry(shape)
                   const mesh = new THREE.Mesh(geometry, fillMaterial)
                   mesh.renderOrder = renderOrder++
@@ -950,8 +947,7 @@ function Loader(this: Loader, editor: Editor) {
 
         case "glb": {
           try {
-            const dialog = new GLTFImportDialog(editor.strings)
-            const options = await dialog.show()
+            const options = GLTF_IMPORT_OPTIONS
 
             const loader = await createGLTFLoader()
 
@@ -971,8 +967,8 @@ function Loader(this: Loader, editor: Editor) {
               loader.dracoLoader.dispose()
               loader.ktx2Loader.dispose()
             })
-          } catch (e) {
-            // 导入已取消
+          } catch {
+            // 解析失败：与原先「取消导入」同样静默忽略
           }
 
           break
@@ -980,8 +976,7 @@ function Loader(this: Loader, editor: Editor) {
 
         case "gltf": {
           try {
-            const dialog = new GLTFImportDialog(editor.strings)
-            const options = await dialog.show()
+            const options = GLTF_IMPORT_OPTIONS
 
             const loader = await createGLTFLoader(manager)
 
@@ -1001,8 +996,8 @@ function Loader(this: Loader, editor: Editor) {
               loader.dracoLoader.dispose()
               loader.ktx2Loader.dispose()
             })
-          } catch (e) {
-            // 导入已取消
+          } catch {
+            // 解析失败：与原先「取消导入」同样静默忽略
           }
 
           break

@@ -1,6 +1,6 @@
-
 import * as THREE from "three"
 import { Command } from "../Command"
+import { readAuthored, writeAuthored } from "../EvaluatedTransform"
 import type { Editor } from "../Editor"
 import { Vector3 } from "three"
 
@@ -31,7 +31,11 @@ class SetPositionCommand extends Command {
     this.object = object
 
     if (object !== null && newPosition !== null) {
-      this.oldPosition = object.position.clone()
+      // 读 **authored**：节点上此刻的位置可能含派生量（约束/轨迹算出来的那一份），
+      // 把它当成 old 存进历史，撤销就会把派生量固化成作者数据（见 EvaluatedTransform）。
+      this.oldPosition = new THREE.Vector3().fromArray(
+        readAuthored(object, "position")
+      )
       this.newPosition = newPosition.clone()
     }
 
@@ -41,13 +45,13 @@ class SetPositionCommand extends Command {
   }
 
   execute() {
-    this.object!.position.copy(this.newPosition!)
+    writeAuthored(this.object!, "position", this.newPosition!.toArray())
     this.object!.updateMatrixWorld(true)
     this.editor.signals.objectChanged.dispatch(this.object)
   }
 
   undo() {
-    this.object!.position.copy(this.oldPosition!)
+    writeAuthored(this.object!, "position", this.oldPosition!.toArray())
     this.object!.updateMatrixWorld(true)
     this.editor.signals.objectChanged.dispatch(this.object)
   }

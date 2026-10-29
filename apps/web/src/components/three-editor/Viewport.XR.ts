@@ -1,4 +1,3 @@
-
 import * as THREE from "three"
 
 import { HTMLMesh } from "three/addons/interactive/HTMLMesh.js"
@@ -165,7 +164,6 @@ class XR {
 
       renderer.xr.removeEventListener("sessionend", onSessionEnded)
       renderer.xr.enabled = false
-
       ;(editor.camera as any).copy(camera)
 
       signals.windowResize.dispatch()
@@ -186,7 +184,9 @@ class XR {
 
     signals.offerXR.add(function (mode: any) {
       if ("xr" in navigator) {
-        ;(navigator.xr as any).offerSession(mode, sessionInit).then(onSessionStarted)
+        ;(navigator.xr as any)
+          .offerSession(mode, sessionInit)
+          .then(onSessionStarted)
 
         signals.leaveXR.add(function () {
           ;(navigator.xr as any)

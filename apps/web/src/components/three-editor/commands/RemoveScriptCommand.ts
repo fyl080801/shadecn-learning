@@ -1,4 +1,3 @@
-
 import * as THREE from "three"
 import { Command } from "../Command"
 import type { Editor } from "../Editor"
@@ -14,7 +13,11 @@ class RemoveScriptCommand extends Command {
    * @param {string} [script='']
    * @constructor
    */
-  constructor(editor: Editor, object: THREE.Object3D | null = null, script: any = "") {
+  constructor(
+    editor: Editor,
+    object: THREE.Object3D | null = null,
+    script: any = ""
+  ) {
     super(editor)
 
     this.type = "RemoveScriptCommand"

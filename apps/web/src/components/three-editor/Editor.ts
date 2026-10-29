@@ -7,6 +7,7 @@ import { History as _History } from "./History"
 import { Strings, type StringsApi } from "./Strings"
 import { Storage as _Storage, type StorageApi } from "./Storage"
 import { Selector } from "./Selector"
+import { suspendEvaluated } from "./EvaluatedTransform"
 import type { Command } from "./Command"
 import type { EditorControls } from "./EditorControls"
 
@@ -34,6 +35,34 @@ interface EditorSignals {
   sceneFogSettingsChanged: Signal
   sceneGraphChanged: Signal
   sceneRendered: Signal
+  /**
+   * 「**就地**画一帧，现在就画完」——派发返回时 canvas 的绘制缓冲区里已经是新画面。
+   *
+   * 与其余会触发重绘的信号（它们只置位 `renderRequested`，由 setAnimationLoop 每帧最多兑现
+   * 一次）分工明确：那条路要等到下一次 rAF，而**逐帧导出**必须在同一个任务里画完就取帧
+   * ——`preserveDrawingBuffer` 为 false 时绘制缓冲区在合成之后即被清空，中间让出一次事件
+   * 循环，取到的就是一块空白。见 director/useDirectorMovieExport 的录制循环。
+   *
+   * 只给这类「画完立刻要读像素」的流程用。常规的「某某变了、该重绘了」一律走既有信号，
+   * **不要**改派本条：帧内多次同步全量渲染正是当年 render() 降级为标记位要解决的问题。
+   */
+  renderNow: Signal
+  /**
+   * 「场景被逐帧驱动改写了一次」——动画播放这类高频写回的**唯一**广播，参数是当前时刻
+   * （秒）。导演台由时间轴的落地入口派发（见 director/timeline/useDirectorTimeline 的
+   * applyCurrentTime）。
+   *
+   * 与 `objectChanged` 的分工是本域的一条硬线，**不要**混用：
+   *   · `objectChanged` = 「某个对象被改了」，扇出极宽（属性面板逐字段回填、场景面板整表
+   *     重渲染、自动保存防抖、自动关键帧补帧），逐帧派发会直接把播放拖垮；
+   *   · 本信号 = 「这一帧的场景已经落地」，只供**自己画一份场景、或跟着对象走的叠加层**
+   *     刷新（视口重绘与选中框、机位预览、注视装置连线、FOV 视锥示意），**不做任何
+   *     数值回填**。数值面板与自动保存在播放停下时由 settle() 补一次 objectChanged 对账。
+   *
+   * 新增「播放时也要跟着动」的东西一律订这条，**不要**再各自 `watch(timelineCurrentTime)`
+   * 或借 `cameraChanged` 混用——那正是此前四条通道各自为政、机位预览播放时冻住的来源。
+   */
+  sceneAnimated: Signal
   cameraChanged: Signal
   cameraResetted: Signal
   geometryChanged: Signal
@@ -73,6 +102,12 @@ interface Editor {
   strings: StringsApi
   loader: Loader
 
+  /**
+   * 当前渲染器（尚未创建时为 null）。由 `rendererCreated` 信号记入，供晚于该信号挂载
+   * 的消费者取用——那个信号只广播一次，之后挂载的组件订阅了也收不到。
+   */
+  renderer: THREE.WebGLRenderer | null
+
   camera: EditorCamera
   scene: THREE.Scene
   sceneHelpers: THREE.Scene
@@ -83,6 +118,9 @@ interface Editor {
   // （three-editor 自身行为）；为数字时表示以该半径的圆形填充覆盖
   // 全景球的赤道切面（导演台行为）。由 `setGroundExtent` 切换。
   groundExtent: number | null
+  // 中心 X/Z 坐标轴线（红/蓝，细条状 Mesh），长度随 groundExtent 同步
+  // 延伸至地面填充边界，由 `setGroundExtent` 一并更新几何体。
+  groundAxisLines: { x: THREE.Mesh; z: THREE.Mesh }
 
   backgroundType: string
   environmentType: string
@@ -108,6 +146,16 @@ interface Editor {
   viewportColor: THREE.Color
 
   controls?: EditorControls
+  // Viewport 构造时挂载的 TransformControls 实例（选中对象的变换 gizmo）。
+  // 暴露到 editor 上，供机位视角的相机导航（director/useDirectorCameraControls）
+  // 判定指针是否落在 gizmo 手柄上，从而与拖拽对象的手势区分：hover 到手柄时
+  // transformControls.axis 非空，此时左键交给 gizmo，不触发相机旋转。
+  transformControls?: any
+  // Viewport 构造时挂上的视口拾取：把屏幕坐标解析成场景里的世界点（命中图形则取命中
+  // 点，否则退回地面平面，都不成立时为 null）。相机导航据此标定手感——绕哪儿转、拖
+  // 多快、朝哪儿推，两个视角各自的控制器（EditorControls.pickPoint 与
+  // director/useDirectorCameraControls）都问它，**不要**再各自建一套射线。
+  pickViewportPoint?: (clientX: number, clientY: number) => THREE.Vector3 | null
 
   setScene(scene: THREE.Scene): void
   addObject(
@@ -183,6 +231,32 @@ function createGroundGeometry(extent: number | null): THREE.BufferGeometry {
   return new THREE.CircleGeometry(extent, 64)
 }
 
+// 地面填充范围对应的半边长/半径：与 createGroundGeometry 的形状规则一致，
+// 供中心 X/Z 坐标轴线复用，使轴线长度始终延伸到地面填充边界。
+function groundHalfExtent(extent: number | null): number {
+  return extent === null ? GROUND_DEFAULT_SIZE / 2 : extent
+}
+
+// 中心坐标轴线极小的 y 偏移，避免与网格线共面产生 z-fighting
+// （同一手法见 groundPlane 的 -0.001 偏移）。
+const AXIS_LINE_Y = 0.001
+
+// 轴线用细条状 Mesh（而非 1px 的 THREE.Line）绘制，使其在视口中更醒目；
+// 宽度为世界单位下的固定值。
+const AXIS_LINE_WIDTH = 0.01
+
+// 轴线用一条细长 PlaneGeometry 表示，长边沿 axis 方向延伸至 halfExtent 边界；
+// 由调用方旋转铺平（rotation.x = -Math.PI / 2，与 groundPlane 手法一致）。
+function createAxisLineGeometry(
+  halfExtent: number,
+  axis: "x" | "z"
+): THREE.PlaneGeometry {
+  const length = halfExtent * 2
+  return axis === "x"
+    ? new THREE.PlaneGeometry(length, AXIS_LINE_WIDTH)
+    : new THREE.PlaneGeometry(AXIS_LINE_WIDTH, length)
+}
+
 function Editor(this: Editor, namespace?: string) {
   const Signal = signals.Signal
 
@@ -222,6 +296,8 @@ function Editor(this: Editor, namespace?: string) {
     sceneFogSettingsChanged: new Signal(),
     sceneGraphChanged: new Signal(),
     sceneRendered: new Signal(),
+    renderNow: new Signal(),
+    sceneAnimated: new Signal(),
 
     cameraChanged: new Signal(),
     cameraResetted: new Signal(),
@@ -268,6 +344,16 @@ function Editor(this: Editor, namespace?: string) {
   }
 
   this.config = Config(namespace)
+
+  // 当前渲染器。`rendererCreated` 是**一次性**广播（渲染器在视口挂载后随即创建，
+  // 见 SidebarProject / useDirectorRenderer），晚于那一刻挂载的消费者永远收不到它——
+  // 表现是「某个后来才出现的面板里，用共享渲染器画的东西一直空白」。故在此记一份，
+  // 让消费者先从 editor.renderer 取，再订阅信号以覆盖后续重建。
+  this.renderer = null
+  this.signals.rendererCreated.add((renderer: THREE.WebGLRenderer) => {
+    this.renderer = renderer
+  })
+
   this.history = new _History(this)
   this.selector = new Selector(this)
   this.storage = _Storage(namespace)
@@ -307,6 +393,36 @@ function Editor(this: Editor, namespace?: string) {
   grid2.material.color.setHex(0x777777)
   grid2.material.vertexColors = false
   this.grid.add(grid2)
+
+  // 中心 X/Z 坐标轴线：颜色与 director 罗盘（DirectorViewHelper 复用的
+  // three/addons/helpers/ViewHelper.js）的 X/Z 轴颜色保持一致，使地面
+  // 网格中心线与罗盘指向直观对应。长度随 groundExtent 延伸到地面填充
+  // 边界（见 groundHalfExtent），由 `setGroundExtent` 一并更新几何体。
+  const xAxisLine = new THREE.Mesh(
+    createAxisLineGeometry(groundHalfExtent(null), "x"),
+    new THREE.MeshBasicMaterial({
+      color: 0xff4466,
+      toneMapped: false,
+      side: THREE.DoubleSide
+    })
+  )
+  xAxisLine.rotation.x = -Math.PI / 2
+  xAxisLine.position.y = AXIS_LINE_Y
+  this.grid.add(xAxisLine)
+
+  const zAxisLine = new THREE.Mesh(
+    createAxisLineGeometry(groundHalfExtent(null), "z"),
+    new THREE.MeshBasicMaterial({
+      color: 0x4488ff,
+      toneMapped: false,
+      side: THREE.DoubleSide
+    })
+  )
+  zAxisLine.rotation.x = -Math.PI / 2
+  zAxisLine.position.y = AXIS_LINE_Y
+  this.grid.add(zAxisLine)
+
+  this.groundAxisLines = { x: xAxisLine, z: zAxisLine }
 
   this.groundPlane = new THREE.Mesh(
     createGroundGeometry(null),
@@ -388,14 +504,12 @@ Editor.prototype = {
     parent?: THREE.Object3D,
     index?: number
   ) {
-    const scope = this
+    object.traverse((child: any) => {
+      if (child.geometry !== undefined) this.addGeometry(child.geometry)
+      if (child.material !== undefined) this.addMaterial(child.material)
 
-    object.traverse(function (child: any) {
-      if (child.geometry !== undefined) scope.addGeometry(child.geometry)
-      if (child.material !== undefined) scope.addMaterial(child.material)
-
-      scope.addCamera(child)
-      scope.addHelper(child)
+      this.addCamera(child)
+      this.addHelper(child)
     })
 
     if (parent === undefined) {
@@ -417,13 +531,11 @@ Editor.prototype = {
   removeObject: function (object: THREE.Object3D) {
     if (object.parent === null) return // 避免删除相机或场景
 
-    const scope = this
+    object.traverse((child: any) => {
+      this.removeCamera(child)
+      this.removeHelper(child)
 
-    object.traverse(function (child: any) {
-      scope.removeCamera(child)
-      scope.removeHelper(child)
-
-      if (child.material !== undefined) scope.removeMaterial(child.material)
+      if (child.material !== undefined) this.removeMaterial(child.material)
     })
 
     object.parent!.remove(object)
@@ -498,9 +610,9 @@ Editor.prototype = {
     const materialsMap: Record<string, THREE.Material> = this.materials
     const materials = Object.values(materialsMap)
 
-    for (let i = 0; i < materials.length; i++) {
-      if ((materials[i] as any).id === id) {
-        material = materials[i]
+    for (const m of materials) {
+      if ((m as any).id === id) {
+        material = m
         break
       }
     }
@@ -555,6 +667,7 @@ Editor.prototype = {
           helper.matrixAutoUpdate = true
 
           const light = object
+          // eslint-disable-next-line @typescript-eslint/no-this-alias -- updateMatrixWorld 是带自身 this 的 function（this 指向 helper），无法改为箭头函数，只能通过别名访问编辑器
           const editor = this
 
           helper.updateMatrixWorld = function (this: any) {
@@ -593,10 +706,17 @@ Editor.prototype = {
           return
         }
 
-        const picker = new THREE.Mesh(geometry, material)
-        picker.name = "picker"
-        picker.userData.object = object
-        helper.add(picker)
+        // 机位（PerspectiveCamera）不附加通用 picker 球体：该球体半径为 2，
+        // 远大于实际代表机位的 camera.glb 模型（约 0.3m），会让机位图形
+        // 附近很大范围都可被点击选中。机位在视口中只能通过点击其摄像机
+        // 模型图形选中（见 Selector.ts 对 isCamera 的向上解析）；
+        // 无模型的极端加载失败场景仍可经场景面板（DirectorScenePanel）选中。
+        if (!object.isCamera) {
+          const picker = new THREE.Mesh(geometry, material)
+          picker.name = "picker"
+          picker.userData.object = object
+          helper.add(picker)
+        }
       }
 
       this.sceneHelpers.add(helper)
@@ -755,6 +875,15 @@ Editor.prototype = {
     const plane = this.groundPlane
     plane.geometry.dispose()
     plane.geometry = createGroundGeometry(extent)
+
+    // 红蓝中心轴线随地面填充范围同步延伸，始终覆盖到当前边界。
+    const halfExtent = groundHalfExtent(extent)
+    const { x: xAxisLine, z: zAxisLine } = this.groundAxisLines
+    xAxisLine.geometry.dispose()
+    xAxisLine.geometry = createAxisLineGeometry(halfExtent, "x")
+    zAxisLine.geometry.dispose()
+    zAxisLine.geometry = createAxisLineGeometry(halfExtent, "z")
+
     this.signals.sceneGraphChanged.dispatch()
   },
 
@@ -774,11 +903,9 @@ Editor.prototype = {
   },
 
   selectByUuid: function (uuid: string) {
-    const scope = this
-
-    this.scene.traverse(function (child: THREE.Object3D) {
+    this.scene.traverse((child: THREE.Object3D) => {
       if (child.uuid === uuid) {
-        scope.select(child)
+        this.select(child)
       }
     })
   },
@@ -895,6 +1022,18 @@ Editor.prototype = {
       }
     }
 
+    // 派生变换（约束/轨迹/动作算出来的那一份）不进存档：它们是「时刻 → 值」的纯函数，
+    // 存下来重新落地时会在自己之上再叠一遍，每存一次歪一点。整场一次性还原成 authored
+    // 再序列化，收尾时装回去（见 EvaluatedTransform 的 suspendEvaluated）。
+    const restoreEvaluated = suspendEvaluated(this.scene)
+    try {
+      return this.serializeProject()
+    } finally {
+      restoreEvaluated()
+    }
+  },
+
+  serializeProject: function () {
     return {
       metadata: {},
       project: {

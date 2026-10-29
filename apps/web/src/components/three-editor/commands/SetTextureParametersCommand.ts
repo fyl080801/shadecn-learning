@@ -1,4 +1,3 @@
-
 import { Command } from "../Command"
 import type { Editor } from "../Editor"
 
@@ -15,7 +14,11 @@ class SetTextureParametersCommand extends Command {
    * @param {Object} newParameters
    * @constructor
    */
-  constructor(editor: Editor, texture: any = null, newParameters: Record<string, any> = {}) {
+  constructor(
+    editor: Editor,
+    texture: any = null,
+    newParameters: Record<string, any> = {}
+  ) {
     super(editor)
 
     this.type = "SetTextureParametersCommand"

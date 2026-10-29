@@ -62,7 +62,7 @@ function Storage(namespace?: string): StorageApi {
       const request = objectStore.put(data, 0)
       request.onsuccess = function () {
         console.log(
-          "[" + /\d\d\:\d\d\:\d\d/.exec(String(new Date()))![0] + "]",
+          "[" + /\d\d:\d\d:\d\d/.exec(String(new Date()))![0] + "]",
           "Saved state to IndexedDB. " +
             (performance.now() - start).toFixed(2) +
             "ms"
@@ -78,7 +78,7 @@ function Storage(namespace?: string): StorageApi {
       const request = objectStore.clear()
       request.onsuccess = function () {
         console.log(
-          "[" + /\d\d\:\d\d\:\d\d/.exec(String(new Date()))![0] + "]",
+          "[" + /\d\d:\d\d:\d\d/.exec(String(new Date()))![0] + "]",
           "Cleared IndexedDB."
         )
       }

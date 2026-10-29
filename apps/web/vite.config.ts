@@ -2,20 +2,22 @@ import path from 'node:path'
 import { defineConfig } from 'vite'
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
+import { threeDecoderLibs } from './build/three-decoder-libs'
 
 /**
- * 画布编辑器的模块 —— 下面的 onwarn 只对这片代码把「循环依赖」当错误。
+ * 环上有没有我们自己的模块 —— 下面的 onwarn 只放过**整条环都在 node_modules 里**的那种。
  *
- * 为什么不是全仓库：`apps/web/src/components/ui/` 下每个 shadcn-vue 组件都和自己那个
- * `index.ts` 互相引（`index.ts` → `Button.vue` → `index.ts`），是 CLI 生成的形状，
- * 改不了也没必要改 —— 一个 barrel 和它自己的组件总是落在同一个 chunk 里，
- * rollup 不用跨 chunk 挑顺序，从来没出过事。真正咬人的是环**跨了 chunk**那种。
+ * 第三方包（reka-ui、@internationalized/date）自带一批环，我们改不了，只能放过；
+ * 自家代码一条环都不留。shadcn-vue CLI 生成的形状本身就成环（组件从 `"."` 引自己
+ * barrel 里的 `buttonVariants` / `useCommand`），已经把那部分抽成了同目录的叶子模块
+ * （`variants.ts` / `context.ts`）—— 重新 `shadcn-vue add` 会把 `from "."` 写回来，
+ * 这时构建失败是故意的，照原样再抽一次。
  */
-const FLOW_MODULE = /src\/(components|composables)\/flow\//
+const isOwnModule = (id: string) => !id.includes('/node_modules/')
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+  plugins: [vue(), tailwindcss(), threeDecoderLibs()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -103,8 +105,8 @@ export default defineConfig({
         if (warning.code === 'CYCLIC_CROSS_CHUNK_REEXPORT') {
           throw new Error(`[build] 存在跨 chunk 的循环 re-export，拒绝构建：\n${warning.message}`)
         }
-        if (warning.code === 'CIRCULAR_DEPENDENCY' && FLOW_MODULE.test(warning.message ?? '')) {
-          throw new Error(`[build] 画布模块之间出现循环依赖，拒绝构建：\n${warning.message}`)
+        if (warning.code === 'CIRCULAR_DEPENDENCY' && warning.ids?.some(isOwnModule)) {
+          throw new Error(`[build] 出现循环依赖，拒绝构建：\n${warning.message}`)
         }
         defaultHandler(warning)
       },

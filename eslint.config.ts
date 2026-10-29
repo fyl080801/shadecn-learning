@@ -62,6 +62,7 @@ export default defineConfig(
       // provider / 连接串解析，prisma.config.ts 和构建脚本共用的那份
       "apps/server/prisma/*.mjs",
       "apps/web/vite.config.ts",
+      "apps/web/vite-plugins/**/*.ts",
       "apps/web/vitest.config.ts",
       "packages/shared/vitest.config.ts",
       // 画布 Agent 包整个是 node 环境（沙箱要 spawn 子进程、读写文件）

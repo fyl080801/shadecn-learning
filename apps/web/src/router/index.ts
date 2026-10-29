@@ -89,16 +89,11 @@ const router = createRouter({
           meta: { title: "Canvas 绘制 DOM" }
         },
         {
-          path: "three-editor",
-          name: "ThreeEditor",
-          component: () => import("@/views/three/ThreeEditor.vue"),
-          meta: { title: "场景编辑器" }
-        },
-        {
-          path: "3d-scene",
-          name: "3DScene",
-          component: () => import("@/views/three/3DScene.vue"),
-          meta: { title: "3D 导演台" }
+          // 导演台的中心视口（three-editor 渲染核心 + 视口叠加层），不进侧栏菜单
+          path: "3d-viewport",
+          name: "Viewport3D",
+          component: () => import("@/views/three/Viewport3D.vue"),
+          meta: { title: "3D 视口" }
         },
         {
           path: "vue-flow",

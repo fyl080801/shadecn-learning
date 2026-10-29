@@ -1,12 +1,6 @@
+// 本仓库只保留 three-editor 的渲染核心（Editor / Viewport / 命令与历史 / 加载器），
+// 源项目里的菜单栏、侧栏、工具栏、脚本/动画/播放器面板与各类弹窗都没有迁移。
 export { createEditor } from "./composables/useEditorContext"
 
 export { default as ThreeEditor } from "./ThreeEditor.vue"
-export { default as EditorMenubar } from "./EditorMenubar.vue"
-export { default as EditorSidebar } from "./EditorSidebar.vue"
-export { default as EditorToolbar } from "./EditorToolbar.vue"
 export { default as EditorViewport } from "./EditorViewport.vue"
-export { default as EditorViewportControls } from "./EditorViewportControls.vue"
-export { default as EditorViewportInfo } from "./EditorViewportInfo.vue"
-export { default as EditorPlayer } from "./EditorPlayer.vue"
-export { default as EditorScript } from "./EditorScript.vue"
-export { default as EditorAnimation } from "./EditorAnimation.vue"
