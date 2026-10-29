@@ -14,7 +14,7 @@ describe('parseGraph', () => {
       nodes: [
         {
           id: 'n1',
-          type: 'image-config',
+          type: 'image',
           layout: { position: { x: 1, y: 2 }, width: 10 },
           metadata: { label: '生图' },
           data: { prompt: 'p' },
@@ -30,7 +30,7 @@ describe('parseGraph', () => {
     expect(result.value.nodes).toEqual([
       {
         id: 'n1',
-        type: 'image-config',
+        type: 'image',
         layout: { position: { x: 1, y: 2 }, width: 10 },
         metadata: { label: '生图' },
         data: { prompt: 'p' },

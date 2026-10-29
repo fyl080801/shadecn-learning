@@ -3,7 +3,6 @@ paths:
   - "apps/server/collab/**"
   - "apps/server/auth/ws.ts"
   - "apps/web/src/composables/flow/sync/**"
-  - "apps/web/src/composables/flow/useFlowSync.ts"
   - "apps/web/src/composables/flow/useFlowPresence.ts"
   - "apps/web/src/lib/presence.ts"
   - "apps/web/src/components/flow/FlowConnectionEndedDialog.vue"
@@ -41,7 +40,7 @@ paths:
 - **The shared layer fails open**: `sameAsStored` (read) and `rememberStoredVersion` (write) are cache ops — worst case one redundant write. `rememberStoredVersion` must stay `async` (the lazy proxy throws synchronously when Redis is down, which would bypass `.catch()`).
 - **Store-failure notice**: `onStoreStateChange` → `broadcastStateless` → client `onStateless` → `saveFailed`. Broadcast **only on flip** (good↔bad), **re-send to a joining connection** (`connected` reads `isStoreFailing`). It's not a `fatal` — this one heals.
 - No y-leveldb, no `@hocuspocus/extension-database`: persistence writes the app's own `flow` table. **Legacy migration is `onLoadDocument` itself** — `ydoc` NULL → pour the old `graph` JSON in. `Flow.graph` is a read-only projection (list counts, thumbnails); the editor never reads it. No per-update audit log, no history/rollback; `Flow.ydoc` is a converging snapshot.
-- **Quota** (`collab/quota.ts`, bytes only: 1MB/message, 20MB/doc; no node/edge count limits) is measured in `onChange`, enforced in `beforeHandleMessage`, and **can only refuse before applying**. Refusal **never throws** (a throw closes the connection and the provider resends forever) — it flips the connection `readOnly`. Two tiers: over *soft* marks the room but accepts writes (deletes must work; the mark clears at the next re-measure, ≤1s); the *hard* ceiling (soft × 1.25) locks the room read-only until unload.
+- **Quota** (`collab/quota.ts`; limits and tiers: `docs/04` §4.2) is measured in `onChange`, enforced in `beforeHandleMessage`, and **can only refuse before applying**. Refusal **never throws** (a throw closes the connection and the provider resends forever) — it flips the connection `readOnly`. The soft tier must keep accepting writes (deletes are the only way back under); only the hard ceiling locks the room until unload.
 - **Doc limit ≥ projection limit** (`COLLAB_LIMITS.document` 20MB vs `GRAPH_LIMITS.bytes` 2MB, never reversed). Between them, `deriveProjection` returns null and keeps the previous projection (stale counts, content intact).
 - `onStoreDocument` prunes dangling edges under a `'gc'` origin (out of undo stacks).
 - **Every graph mutation goes through the store.** Vue Flow defaults bypass it (`deleteKeyCode` under `applyDefault: true`), so `FlowCanvas` passes `:delete-key-code="null"` and `canvas.deleteSelection()` is the single delete path.
@@ -51,11 +50,11 @@ paths:
 - `apps/web/src/lib/presence.ts` is the pure half (color hashing, defensive peer-state parsing, occupancy arbitration); elements are keyed `node:<id>` / `edge:<id>`.
 - **The server rewrites identity in every awareness update** (`beforeHandleAwareness` → `enforceIdentity`): `user.id` / `name` / `avatarUrl` come from what `onConnect` authenticated. Entries are bound to the socket that first published their `clientID` (`dropForeignClients`; claims released on disconnect). For a personal room `beforeHandleAwareness` empties every frame, and `authorizeCollab` lets only `personalOwner` in.
 - Membership + session are **re-validated every minute** (`revalidateConnections`) with `{ refresh: false }` — read the session, never renew it.
-- **Occupancy arbitration is tested but deliberately not wired** — anyone edits anything; labels only *show* who else is there. To reinstate: feed `presence.lockedKeys` into `draggable` / `selectable` / `updatable` in `useFlowCanvas`, writing the flags **explicitly as `true` and `false`** (`Object.assign` keeps a stale `false`). See §4.0.1.
+- **Occupancy arbitration is tested but not wired** (`docs/04` §4.0.1). If you wire it: feed `presence.lockedKeys` into `draggable` / `selectable` / `updatable` in `useFlowCanvas`, writing the flags **explicitly as `true` and `false`** (`Object.assign` keeps a stale `false`).
 
 ## One user, one canvas, one connection (`collab/exclusive.ts`)
 
-- The newest window wins, per *room × user* (personal canvases too). The old window gets a non-dismissible 「协作会话已过期，请刷新页面」 (personal: 「这张画布已在另一个窗口打开」) and **stops reconnecting**.
+- The newest window wins, per *room × user* (personal canvases too); the old window **stops reconnecting** (wording: `docs/04` §4.3, `docs/16` §4.6).
 - **The holder registry is in the shared layer** (`SharedMap`) — the two windows are likely on different replicas. `connected` handles the local half; a 3s sweep converges cross-instance and renews the TTL.
 - **Kicking must close the socket**, not just the connection — `connection.close()` leaves the socket open and the next heartbeat re-authenticates as a fresh connection, resurrecting the old window. Send the CLOSE message *and* a real close frame (`4409` / `session-superseded`); the client accepts either.
 - **The client stops itself** (`onClose` → `provider.disconnect()`), or its retry kicks the tab the user is in. `disconnect()` keeps doc and awareness, so the canvas stays on screen, unsynced.
@@ -64,10 +63,9 @@ paths:
 ## Terminal refusals (§4.4)
 
 - Codes/reasons live in `@shadecn/shared/collab` (`CLOSE_SUPERSEDED` / `CLOSE_UNAUTHORIZED` / `CLOSE_REVOKED` / `CLOSE_QUOTA_LOCKED`, `CloseReason`, plus `COLLAB_PATH`, `FLOW_ROOM_PREFIX`, `STORE_STATE_MESSAGE`, `FLOW_STATE_VECTOR_HEADER`); `collab/close.ts` re-exports them with server helpers; the client's `classifyClose` is in `sync/collab.ts`.
-  - `4409` `session-superseded` — newer window took over → refresh.
-  - `4401` `Unauthorized` — session gone → app-wide `SessionExpiredDialog`, then reconnect in place. **Never navigate to `/login`** (unsynced edits stay on screen); a watch reconnects once actually authenticated (dismissing also clears `sessionExpired`).
-  - `4403` `permission-revoked` — not a member or canvas deleted → leave. One sentence covers both (the server doesn't distinguish) and lands on `/projects`; **on a personal canvas** it means "canvas gone" and lands on `/canvas`.
-  - `4413` `quota-exceeded` — hard ceiling hit; everyone in the room gets it; maps to `too-large`. `FlowConnectionEndedDialog` is non-dismissible **except for `too-large`** (fixing it means deleting on this page).
+  - `4409` `session-superseded`, `4401` `Unauthorized`, `4403` `permission-revoked`, `4413` `quota-exceeded` (→ `too-large`, shared with the solo REST path). What each dialog says, whether it can be dismissed and where it lands: `docs/04` §4.4.
+  - `4401` → app-wide `SessionExpiredDialog`, then reconnect in place. **Never navigate to `/login`** (unsynced edits stay on screen); a watch reconnects once actually authenticated (dismissing also clears `sessionExpired`).
+  - `4403` copy must not distinguish "removed" from "canvas deleted" (the server deliberately doesn't); personal vs project copy switches on `mode`, never `projectId` (`flow-editor.md`).
 - `authorizeCollab` returns a `CollabDenialReason`; never collapse `unauthorized` and `forbidden` (an idled-out viewer would be told they were removed), and never lump any of them in with "offline" (the provider retries forever, `maxAttempts: 0`, and new edits strand in IndexedDB).
 - **The deleter is kicked too** (the route revokes before 204): `remove()` calls `sync.leave()` *before* the request and `sync.stay()` if it fails.
 - **Two server paths, the client must handle both.** ① Closing an established connection = CLOSE message + close frame (above). ② **A refused handshake (`onConnect` throws) has no close at all** — Hocuspocus sends `PermissionDenied` with `error.reason ?? 'permission-denied'`, surfacing as `onAuthenticationFailed({reason})`; `onClose` never fires. So the server throws an error carrying `reason` (`denialError`) and the client `disconnect()`s in `onAuthenticationFailed`. **`reason` is the discriminator, not `code`**; both paths funnel into one `endConnection()`. Path ② is the common one.

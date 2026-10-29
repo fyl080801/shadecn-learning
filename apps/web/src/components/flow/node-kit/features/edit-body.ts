@@ -8,9 +8,15 @@ import { defineNodeFeature, defineNodeHandler, defineNodeMode } from "../protoco
  */
 export const EDIT_BODY_MODE = "edit-body"
 
+/**
+ * 正在就地改正文：收起底部输入框 —— 写正文和写提示词是两件事，正文编辑器上下各挂一块输入区只会互相挡着。
+ * 退出模式（失焦 / Esc / 被顶掉）后按原规则再出现。
+ */
+const editBodyMode = defineNodeMode({ id: EDIT_BODY_MODE, conceal: ["composer"] })
+
 export const editBodyFeature = defineNodeFeature({
   id: "edit-body",
-  modes: [defineNodeMode({ id: EDIT_BODY_MODE })],
+  modes: [editBodyMode],
   handlers: [
     defineNodeHandler({
       event: "node:dblclick",

@@ -10,6 +10,12 @@ Code identifiers, types and commit messages stay English. **Source comments in `
 
 A Vue 3 learning sandbox: shadcn-vue UI, Three.js scenes, canvas mini-games, and one real feature — collaborative flow canvases (projects, Yjs, an agent). Requirements live in `docs/`, one file per requirement (index: `docs/README.md`); `docs/` says *what*, this file and `.claude/rules/` say *how*.
 
+### Where a fact goes — `docs/` vs `.claude/rules/`
+
+- **`docs/`** — product behaviour: features, interactions, what is on screen and where, which types / options exist, acceptance criteria, what is deferred. **A requirement change updates `docs/` only.**
+- **`.claude/rules/`** — only constraints a reader of the code would get wrong by following intuition: the one write path, forbidden shortcuts, cross-module invariants, cycle rules, and *why* each holds. Don't restate behaviour; point at it (`docs/13` §3.7).
+- **Test:** if a line would only change because a requirement changed, it belongs in `docs/`, not in a rule. Don't add component inventories, UI layouts, type lists or "not wired yet" notes to a rule.
+
 ## Monorepo layout
 
 pnpm workspace. Every root command is a `pnpm --filter <pkg>` delegation.
@@ -60,7 +66,7 @@ Details live in `.claude/rules/`, one file per area, each loaded when you touch 
 - **Database** — `database.md`: entities, SQLite *or* PostgreSQL, entity rules, Prisma habits that are now bugs, schema-sync guard, `containsIgnoreCase()`.
 - **Clustering** — `cluster.md` · **Deploy** — `deploy.md` · **Tests** — `testing.md` · **Agent** — `agent.md`.
 
-When a fact goes stale, fix it where it lives — each fact has one home.
+When a fact goes stale, fix it where it lives — each fact has one home. If a stale fact sits in a rule but is really a requirement, move it to `docs/` instead of rewriting it in place.
 
 ## Dependencies
 

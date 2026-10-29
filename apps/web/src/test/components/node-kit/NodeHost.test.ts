@@ -130,7 +130,7 @@ function hostCtx(): NodePartContext {
 let wrapper: VueWrapper | null = null
 let runtime: NodeKitRuntime
 
-function mountHost(kit: NodeKit, id = "n1", type = "image-config") {
+function mountHost(kit: NodeKit, id = "n1", type = "image") {
   const store = useFlowStore()
   store.load(detail())
   store.attachDoc(new Y.Doc())
@@ -181,11 +181,11 @@ describe("NodeHost 的区域", () => {
         ]
       })
     )
-    kit.registerType({ type: "image-config", features: ["f"] })
+    kit.registerType({ type: "image", features: ["f"] })
 
     const w = mountHost(kit)
     expect(markers(w)).toEqual(["badge", "header", "footer-1", "footer-2"])
-    expect(seen.every((ctx) => ctx.id === "n1" && ctx.type === "image-config")).toBe(true)
+    expect(seen.every((ctx) => ctx.id === "n1" && ctx.type === "image")).toBe(true)
 
     hidden.value = false
     await nextTick()
@@ -219,8 +219,8 @@ describe("NodeHost 的区域", () => {
 
   it("能力给根元素加的 class 合到宿主根上", () => {
     const kit = createNodeKit()
-    kit.registerFeature(defineNodeFeature({ id: "glow", rootClass: (ctx) => ctx.type === "image-config" && "ring-4" }))
-    kit.registerType({ type: "image-config", features: ["glow"] })
+    kit.registerFeature(defineNodeFeature({ id: "glow", rootClass: (ctx) => ctx.type === "image" && "ring-4" }))
+    kit.registerType({ type: "image", features: ["glow"] })
 
     const w = mountHost(kit)
     expect(w.find('[data-status]').classes()).toContain("ring-4")
@@ -229,7 +229,7 @@ describe("NodeHost 的区域", () => {
   it("底部输入框：单独选中时露出，拉框时不露出，没选中时挂着但不露出", async () => {
     const kit = createNodeKit()
     kit.registerType({
-      type: "image-config",
+      type: "image",
       features: [],
       parts: [defineNodePart({ id: "composer", slot: "composer", component: marker("composer") })]
     })
@@ -250,7 +250,7 @@ describe("NodeHost 的区域", () => {
   it("侧边预览只在被要求时露出（slots.open / close）", async () => {
     const kit = createNodeKit()
     kit.registerType({
-      type: "image-config",
+      type: "image",
       features: [],
       parts: [defineNodePart({ id: "preview", slot: "side", component: marker("preview") })]
     })
@@ -287,7 +287,7 @@ describe("NodeHost 的区域", () => {
       })
     )
     kit.registerType({
-      type: "image-config",
+      type: "image",
       features: ["prompt"],
       parts: [defineNodePart({ id: "composer", slot: "composer", component: marker("composer") })]
     })
@@ -324,7 +324,7 @@ describe("NodeHost 的动作", () => {
         ]
       })
     )
-    kit.registerType({ type: "image-config", features: ["f"] })
+    kit.registerType({ type: "image", features: ["f"] })
 
     const w = mountHost(kit)
     selectedNodeId.value = "n1"
@@ -344,7 +344,7 @@ describe("NodeHost 的动作", () => {
         actions: [defineNodeAction({ id: "run", slot: "footer", icon: Icon, label: "运行", run })]
       })
     )
-    kit.registerType({ type: "image-config", features: ["f"] })
+    kit.registerType({ type: "image", features: ["f"] })
     const events: string[] = []
     kit.on("action:invoke", ({ action }) => events.push(`invoke ${action}`))
     kit.on("action:done", ({ action, error }) => events.push(`done ${action} ${error ? "error" : "ok"}`))
@@ -375,7 +375,7 @@ describe("NodeHost 的动作", () => {
         ]
       })
     )
-    kit.registerType({ type: "image-config", features: ["f"] })
+    kit.registerType({ type: "image", features: ["f"] })
     const done = vi.fn()
     kit.on("action:done", done)
 

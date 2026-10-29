@@ -9,6 +9,7 @@ import { parseUserStatePatch } from '../store/flow-types.ts'
 import { flowUserState } from '../store/flow-user-state.ts'
 import { FLOW_STATUSES, flows as store, type FlowStatus } from '../store/flows.ts'
 import { agent } from './agent.ts'
+import { assets } from './assets.ts'
 import type { ProjectKind } from '../store/projects.ts'
 import { INVALID_JSON, parseDescription, parseName, readJson } from './params.ts'
 
@@ -214,3 +215,5 @@ export const flows = new Hono<Env>()
 
   // 画布 Agent（REQ-AGENT）：挂在上面那条 `/:flowId/*` 的 requireFlowMember 之下，非成员同样 404
   .route('/:flowId/agent', agent)
+  // 画布资源上传（图片 / 视频 → S3），同样挂在 requireFlowMember 之下
+  .route('/:flowId/assets', assets)

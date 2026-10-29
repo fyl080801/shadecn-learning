@@ -51,35 +51,6 @@ export function isApiPath(pathname: string) {
 export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
 
 /**
- * GalStory 引擎（`gal-story serve`）的地址，例如 `http://127.0.0.1:8000`。
- *
- * **空 = 这块功能没开**（不是配错了）：前端会显示「未配置」并说明该设哪个变量，
- * 而不是把一个连不上的后端渲染成一屏错误 —— 这个仓库里绝大多数人不会跑那个引擎。
- * 末尾的斜杠一律去掉，好让拼路径的地方只有一种写法。
- */
-export const galStoryApiUrl = (process.env.GAL_STORY_API_URL ?? '').trim().replace(/\/+$/, '')
-
-/**
- * 代理请求的超时（毫秒）。**必须自己给** —— fetch 默认没有上界，一个卡住的上游会把请求
- * 永远挂着，浏览器那边只看到一个转圈的页面。
- *
- * 缺省 30s 是按**只读口**给的（故事详情、模型配置、存档列表都在百毫秒级）。
- * ⚠️ 将来接对局：`POST /api/saves/{id}/open` 首次要跑建档（归一化 + 公开人物志 + 按 observer
- * 分调的初次印象 + 泄密判定），实测**几十秒到几分钟**，那时这个数要跟着调大，
- * 或者给那一条单独的上界。
- */
-export const galStoryTimeoutMs = Number(process.env.GAL_STORY_API_TIMEOUT_MS ?? 30_000)
-
-/**
- * 与 GalStory 引擎之间的共享密钥（`X-Gal-Gateway-Token`）。空 = 不带这个头。
- *
- * 引擎那一侧没有账号体系，属主完全由本服务注入的 `X-Gal-Owner` 决定 —— 也就是说，**谁能直连
- * 引擎，谁就能扮演任何用户**。引擎缺省只听 127.0.0.1，这道密钥是第二层：配了它，绕过本服务
- * 的请求会被引擎 403。同一个值要同时配在引擎的 `GAL_SERVER_GATEWAY_TOKEN` 上。
- */
-export const galStoryGatewayToken = (process.env.GAL_STORY_GATEWAY_TOKEN ?? '').trim()
-
-/**
  * 画布 Agent 的模型配置（REQ-AGENT，`docs/20-agent-canvas.md`）。
  *
  * 这里只做**环境变量 → 参数对象**这一步；拿它选模型（注册表 / 自定义端点 / 缺 key）是
@@ -109,6 +80,32 @@ export const agentConfig = {
 
 /** 沙箱工作目录的根：`<dataDir>/agent-workspaces/<flowId>/<runId>`，一张画布一个项目目录 */
 export const agentWorkspaceDir = path.join(dataDir, 'agent-workspaces')
+
+/**
+ * 画布资源（图片 / 视频）的对象存储：S3 协议，path-style（`<endpoint>/<bucket>/<key>`）。
+ *
+ * - `S3_ENDPOINT`：服务地址，默认 `https://s3.fyl080801.uk`；
+ * - `S3_REGION`：签名用的 region，默认 `us-east-1`（MinIO 一类自建服务没改过就是它）；
+ * - `S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`：三样缺一个就是**没开上传**
+ *   （上传接口 503），和 agent 一样不影响启动；
+ * - `S3_MAX_UPLOAD_MB`：单个文件上限，默认 100。
+ * - `S3_KEY_PREFIX`：对象键的根目录，默认 `canvas`；几个环境共用一个桶时用它隔开（如 `dev/canvas`）。
+ *   之下按项目 / 画布 / 类别 / uuid 分层，见 `storage/keys.ts`。
+ *
+ * **读资源直接用 S3 原始地址**（`<endpoint>/<bucket>/<key>`，写进节点 `data.src`），不经后端转发 ——
+ * 所以桶要对匿名开放读（`s3:GetObject`），否则画布上的图都是裂的。
+ */
+export const s3Config = {
+  endpoint: (process.env.S3_ENDPOINT?.trim() || 'https://s3.fyl080801.uk').replace(/\/+$/, ''),
+  region: process.env.S3_REGION?.trim() || 'us-east-1',
+  bucket: process.env.S3_BUCKET?.trim() ?? '',
+  accessKeyId: process.env.S3_ACCESS_KEY_ID?.trim() ?? '',
+  secretAccessKey: process.env.S3_SECRET_ACCESS_KEY?.trim() ?? '',
+  maxUploadBytes: Number(process.env.S3_MAX_UPLOAD_MB ?? 100) * 1024 * 1024,
+  keyPrefix: (process.env.S3_KEY_PREFIX?.trim() ?? 'canvas').replace(/^\/+|\/+$/g, ''),
+} as const
+
+export const s3Enabled = Boolean(s3Config.bucket && s3Config.accessKeyId && s3Config.secretAccessKey)
 
 /** 支持的两种库 */
 export type DbProvider = 'sqlite' | 'postgresql'

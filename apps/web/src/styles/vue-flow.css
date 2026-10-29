@@ -128,20 +128,27 @@
   opacity: 1;
 }
 
-/* 悬停在连接点上：放大、填满，露出加号 —— 点它或从它拉线都能长出新节点 */
-.vue-flow__handle.flow-handle:hover {
+/*
+ * 悬停在**出口**（右边，`.source`）上：放大、填满，露出加号 —— 点它或从它拉线都弹出新建节点的菜单。
+ * 入口（左边，`.target`）只是落点：不能从它起拉（`connectable-start=false`），所以悬停不放大、没有加号。
+ */
+.vue-flow__handle.flow-handle.source:hover {
   --flow-handle-scale: 1;
   /* Vue Flow 给可连的手柄是十字准星（`.connectable`），这里主动作是「点一下长出节点」，用手型 */
   cursor: pointer;
 }
 
-.vue-flow__handle.flow-handle:hover::before {
+.vue-flow__handle.flow-handle.source:hover::before {
   opacity: 1;
   background: var(--primary);
 }
 
-.vue-flow__handle.flow-handle:hover::after {
+.vue-flow__handle.flow-handle.source:hover::after {
   opacity: 1;
+}
+
+.vue-flow__handle.flow-handle.target {
+  cursor: default;
 }
 
 /* 拉线时作为起点 / 正被吸附的那个，填满但不放大 */

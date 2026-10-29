@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue"
-import { Panel } from "@vue-flow/core"
 import { Bot, ChevronUp, History, LoaderCircle, MessageCircle, Sparkles, SquarePen } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { useFlowEditor } from "@/composables/flow/editor-context"
@@ -20,7 +19,7 @@ import FlowAgentTitle from "./FlowAgentTitle.vue"
  * agent 实例和「开没开」来自 `useFlowAgentPanel()`，和底部工具栏的快捷输入共用 ——
  * 那边输完直接开新会话，这里自动展开并显示那一轮。
  *
- * 定位用 Vue Flow 的 `<Panel>`（所以必须渲染在 `<VueFlow>` 的插槽里），不手写 absolute。
+ * 自己不定位：右上角那排（和分享按钮并列）的 `<Panel>` 在 `FlowEditor.vue` 里。
  *
  * **收起不卸载**（`v-show`）：收起时这一轮照样在跑、流照样在读、输入框里的草稿也还在；
  * 按钮上转着的圈告诉你它还没跑完。连卸载（换画布、刷新）都不会停掉服务端那一轮 ——
@@ -171,11 +170,7 @@ function isolateKeys(event: KeyboardEvent) {
     nowheel / nodrag / nopan：Vue Flow 认的「这块别当成画布」标记 ——
     在面板里滚动消息列表不能变成平移画布。
   -->
-  <Panel position="top-right" class="nowheel nodrag nopan" data-testid="agent-panel">
-    <div class="flex flex-col items-end gap-2" @keydown="isolateKeys">
-      <div class="flex items-center gap-2">
-        <!-- 右上角同一排、对话按钮左边的其他按钮（编辑器根视图塞进来，比如分享） -->
-        <slot name="actions" />
+  <div class="nowheel nodrag nopan relative" data-testid="agent-panel" @keydown="isolateKeys">
         <Button
           :variant="open ? 'secondary' : 'outline'"
           size="icon"
@@ -195,11 +190,11 @@ function isolateKeys(event: KeyboardEvent) {
             <LoaderCircle class="size-3 animate-spin text-primary" />
           </span>
         </Button>
-      </div>
 
+      <!-- 挂在按钮正下方、右缘对齐：同一排左边的其他按钮（分享等）不会被它挤开 -->
       <section
         v-show="open"
-        class="flex h-[min(560px,calc(100vh-12rem))] w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-xl"
+        class="absolute right-0 top-full mt-2 flex h-[min(560px,calc(100vh-12rem))] w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-xl"
         data-testid="agent-dialog"
         aria-label="画布 Agent"
       >
@@ -331,8 +326,5 @@ function isolateKeys(event: KeyboardEvent) {
           </div>
         </template>
       </section>
-
-    </div>
-
-  </Panel>
+  </div>
 </template>

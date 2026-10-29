@@ -13,12 +13,12 @@ import {
 import { type FlowEdge, type FlowNode } from '@shadecn/shared/flow-graph'
 import {
   buildNodeRecord,
+  CREATABLE_NODE_TYPES,
   DEFAULT_EDGE_TYPE,
-  FLOW_NODE_TYPE_DEFAULTS,
-  GROUP_NODE_TYPE,
   portsOf,
   connectionEdgeData,
   resolveConnection,
+  type ConnectionContext,
   type ResolvedPorts,
   type PortDef,
 } from '@shadecn/shared/flow-node-types'
@@ -87,10 +87,11 @@ const PORT_PATTERN = '^[A-Za-z0-9_-]{1,64}$'
 /** 坐标的合理范围：防一个离谱的数把节点扔到看不见的地方 */
 const COORD_LIMIT = 1_000_000
 
-/** agent 能建的节点类型：注册表里除了分组的全部（分组只能由「打组」围着已有节点长出来） */
-export const AGENT_NODE_TYPES = Object.keys(FLOW_NODE_TYPE_DEFAULTS).filter(
-  (type) => type !== GROUP_NODE_TYPE,
-)
+/**
+ * agent 能建的节点类型 = 人能建的（shared 的 `CREATABLE_NODE_TYPES`，和工具栏菜单同一份）。
+ * 兜底的 `process` 只用来显示认不出的老节点；分组只能由「打组」围着已有节点长出来。
+ */
+export const AGENT_NODE_TYPES: readonly string[] = CREATABLE_NODE_TYPES
 
 /** 一轮里工具之间共享的状态 —— 目前只有删除预算 */
 export interface ToolRunState {
@@ -244,6 +245,9 @@ export function canvasSnapshot(doc: Y.Doc) {
 /** 量不到渲染尺寸（服务端没有 DOM），按各类型组件的最小尺寸估 */
 const ESTIMATED_SIZE: Record<string, { width: number; height: number }> = {
   text: { width: 320, height: 120 },
+  image: { width: 320, height: 200 },
+  video: { width: 320, height: 200 },
+  director: { width: 280, height: 120 },
   process: { width: 360, height: 203 },
 }
 const FALLBACK_SIZE = { width: 320, height: 160 }
@@ -375,6 +379,20 @@ function typeOfNode(doc: Y.Doc, id: string): string | undefined {
   return typeof type === 'string' && type ? type : 'process'
 }
 
+/** 节点的业务 data（连线规则要看：图片 / 视频有资源就不再接受连入）；节点不存在返回 undefined */
+function dataOfNode(doc: Y.Doc, id: string): Record<string, unknown> | undefined {
+  const data = nodeGroupMap(getNodeMap(doc, id) ?? undefined, 'data')
+  return data ? (data.toJSON() as Record<string, unknown>) : undefined
+}
+
+/** 按文档查类型和数据 —— 和前端 `useFlowCanvas` 喂给 `resolveConnection` 的是同样两样东西 */
+function docLookup(doc: Y.Doc) {
+  return {
+    typeOf: (id: string) => typeOfNode(doc, id),
+    dataOf: (id: string) => dataOfNode(doc, id),
+  }
+}
+
 function nodeLabel(doc: Y.Doc, id: string): string {
   const label = nodeGroupMap(getNodeMap(doc, id) ?? undefined, 'metadata')?.get('label')
   return typeof label === 'string' && label ? label : id
@@ -386,10 +404,10 @@ function nodeLabel(doc: Y.Doc, id: string): string {
  */
 function pickConnection(
   request: { source: string; target: string; sourcePort?: string; targetPort?: string },
-  typeOf: (id: string) => string | undefined,
+  lookup: Pick<ConnectionContext, 'typeOf' | 'dataOf'>,
   edges: readonly FlowEdge[],
 ): ResolvedPorts {
-  const verdict = resolveConnection(request, { typeOf, edges })
+  const verdict = resolveConnection(request, { ...lookup, edges })
   if (!verdict.ok) throw new Error(verdict.reason)
   return { sourcePort: verdict.sourcePort, targetPort: verdict.targetPort }
 }
@@ -432,14 +450,14 @@ const metadataParams = (required: boolean) =>
 
 const dataParams = Type.Record(Type.String({ pattern: DATA_KEY_PATTERN }), Type.Unknown(), {
   description:
-    '业务字段，平铺的键值对（例如 text 节点的 text、生成类节点的 prompt / model / width）。只写给出的键，其余保留。',
+    '业务字段，平铺的键值对（例如 text 节点的 text、image / video 节点的 src、video 的 poster、底部输入框的 prompt）。只写给出的键，其余保留。',
 })
 
 const addNodeParams = Type.Object(
   {
     type: StringEnum(AGENT_NODE_TYPES, {
       description:
-        'text = 带正文（data.text）的文本节点；process = 只有名字的流程节点；其余是带端口的业务节点，端口见 read_canvas 的 nodeTypes',
+        'text = 文本（正文 data.text）；image = 图片（资源地址 data.src）；video = 视频（资源地址 data.src、预览图 data.poster）；director = 导演台。端口见 read_canvas 的 nodeTypes',
     }),
     metadata: metadataParams(true),
     data: Type.Optional(dataParams),
@@ -556,11 +574,16 @@ export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
           if (!getNodeMap(doc, args.connectFrom)) {
             throw new Error(`connectFrom 指向的节点 ${args.connectFrom} 不存在，先 read_canvas 确认 id`)
           }
-          // 新节点还没进文档：它的类型由这里告诉校验
-          const typeOf = (nodeId: string) => (nodeId === id ? args.type : typeOfNode(doc, nodeId))
+          // 新节点还没进文档：它的类型和 data（默认值 + 这次给的字段）由这里告诉校验 ——
+          // 带着 src 建一张图再连进去，和人往一张已有资源的图上连一样被拒
+          const lookup = docLookup(doc)
+          const newData = { ...(buildNodeRecord({ id, type: args.type, label: '', position: { x: 0, y: 0 } }).data), ...data }
           ports = pickConnection(
             { source: args.connectFrom, target: id, sourcePort: args.sourcePort, targetPort: args.targetPort },
-            typeOf,
+            {
+              typeOf: (nodeId) => (nodeId === id ? args.type : lookup.typeOf(nodeId)),
+              dataOf: (nodeId) => (nodeId === id ? newData : lookup.dataOf(nodeId)),
+            },
             existing,
           )
         }
@@ -683,7 +706,7 @@ export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
           if (!getNodeMap(doc, end)) throw new Error(`节点 ${end} 不存在，先 read_canvas 确认 id`)
         }
         const existing = readEdgeList(doc)
-        const ports = pickConnection(args, (id) => typeOfNode(doc, id), existing)
+        const ports = pickConnection(args, docLookup(doc), existing)
         const edge = buildEdge(args.source, args.target, ports, existing, args.label)
         edgesMap(doc).set(edge.id, toYEdge(edge))
         return {

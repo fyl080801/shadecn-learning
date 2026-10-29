@@ -586,14 +586,17 @@ access token 进入 30 秒刷新窗口之前根本不问 Keycloak），TTL 取 2
 |---|---|---|---|
 | `4409` | `session-superseded` | 自己在别处开了新窗口（§4.3） | 不可关闭的框 → 刷新页面重新接管 |
 | `4401` | `Unauthorized` | 会话没了：过期、登出、被踢 | 走全站的「会话过期」确认框，登录完**就地重连** |
-| `4403` | `permission-revoked` | 人登着，但进不了这个房间：不是项目成员、画布已删 | 不可关闭的框 → 返回画布项目 |
+| `4403` | `permission-revoked` | 人登着，但进不了这个房间：不是项目成员、画布已删 | 不可关闭的框 → 返回画布工作区（`/canvas`） |
 | `4413` | `quota-exceeded` | 画布顶到内容硬限，房间锁写清场（§4.2 ②） | **可关闭**的框 → 关掉去删内容，再刷新页面 |
 
 `4403` 那一行的文案要**同时**说得通两件事（服务端故意不区分「画布已删」和「你不是成员」，
 分开说等于给出探测存在性的机会），所以写成「可能已被删除，或者你已不是它所属项目的成员」。
-落点取 `/projects` 而不是那张画布的项目主页 —— 后者在「被移出项目」这一半里是进不去的。
-**个人画布是例外**：它没有项目、没有成员、没有管理员，`forbidden` 只可能是「这张画布已经没了」，
-所以换一套文案，落点也换成 `/canvas`（离开画布回哪儿认 `mode` 不认 `projectId`，见 REQ-SOLO）。
+落点取画布工作区 `/canvas` 而不是那张画布的项目主页 —— 后者在「被移出项目」这一半里是进不去的；
+原先的独立列表页 `/projects` 已并入工作区（[REQ-CANVAS §4.1](13-flow-canvas-management.md)），
+工作区的页内侧栏里就是剩下还能进的项目。
+**个人画布只换文案**：它没有项目、没有成员、没有管理员，`forbidden` 只可能是「这张画布已经没了」，
+所以说成「这张画布已经不在了」，按钮是「返回个人画布」，落点同样是 `/canvas`
+（离开画布回哪儿认 `mode` 不认 `projectId`，见 REQ-SOLO）。
 
 前三种是**冲这个人来的**，第四种不是 —— 房间里每个人都会收到它，因为不能保存的是这张画布。
 它也是唯一**可以关掉**的一个框，而且这不是文案偏好：另外三种，用户在这一页上再做什么都
@@ -641,7 +644,7 @@ socket 继续开着；provider 收到后 `emit('authenticationFailed')` 就完�
 **所以 reason 才是判据，code 不是**：CLOSE 消息里只有 reason，code 被 provider 填成 `1000`；
 `4xxx` 只在关闭帧上。前端 `classifyClose` 两种形状都匹配。
 
-**客户端必须主动停掉重连**（`useFlowCollab` 的 `endConnection` → `provider.disconnect()`，
+**客户端必须主动停掉重连**（`sync/collab.ts` 的 `endConnection` → `provider.disconnect()`，
 `onClose` 和 `onAuthenticationFailed` 都汇到它）。被顶下线时，重连的握手在服务端看来又是
 「新开了一个窗口」，会踢掉用户真正在用的那个；另外两种则是每次握手被同一套检查原样拒回来，
 只是白耗。`disconnect()` 只停连接，文档和 awareness 都留着：画面还在，只是不再同步
@@ -649,7 +652,7 @@ socket 继续开着；provider 收到后 `emit('authenticationFailed')` 就完�
 
 **`4401` 不跳登录页**，而是复用全站那套会话过期确认框（`requestReLogin` →
 `SessionExpiredDialog`）：它能在**不离开这一页**的前提下另开一个窗口重新登录，
-画布上还没同步出去的改动不会被一次跳转带走。登上之后 `useFlowCollab` 里的 watch 就地
+画布上还没同步出去的改动不会被一次跳转带走。登上之后 `sync/collab.ts` 里的 watch 就地
 重连，Y.Doc 里攒着的自动补发。那个 watch 有两个条件：**确实登上了**（确认框可以被关掉，
 关掉时也会把 `sessionExpired` 置假，此时重连只会再被拒一次、再弹一次框，来回空转）、
 **原因是 `unauthorized`**（另外两种重连解决不了）。

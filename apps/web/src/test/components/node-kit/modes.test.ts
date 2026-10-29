@@ -31,7 +31,7 @@ function setup() {
       ]
     })
   )
-  kit.registerType({ type: "image-config", features: ["rename", "prompt"] })
+  kit.registerType({ type: "image", features: ["rename", "prompt"] })
   kit.registerType({ type: "text", features: ["rename"] })
 
   const modes = createNodeModeController(kit)
@@ -46,7 +46,7 @@ function setup() {
     renameExit,
     promptEnter,
     promptExit,
-    a: fakeContext(kit, "a", "image-config"),
+    a: fakeContext(kit, "a", "image"),
     b: fakeContext(kit, "b", "text")
   }
 }

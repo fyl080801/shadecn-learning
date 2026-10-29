@@ -1,4 +1,4 @@
-import { computed, nextTick, ref, toRaw, watch, watchEffect } from "vue"
+import { computed, nextTick, ref, shallowRef, toRaw, watch, watchEffect } from "vue"
 import { until, useEventListener } from "@vueuse/core"
 import { toast } from "vue-sonner"
 import {
@@ -14,21 +14,18 @@ import {
   type XYPosition
 } from "@vue-flow/core"
 import { createId } from "@/lib/id"
+import { layoutHorizontal } from "@/lib/flow-layout"
 import { elementKey, type PresencePoint } from "@/lib/presence"
-import {
-  buildFlowNode,
-  FLOW_NODE_TYPES,
-  flowNodeTypeOf,
-  GROUP_NODE_TYPE,
-  NEW_NODE_TYPE
-} from "@/components/flow/node-types"
+import { buildFlowNode, flowNodeTypeOf, GROUP_NODE_TYPE, NEW_NODE_TYPE } from "@/components/flow/node-types"
 import { toVueFlowNode } from "@/components/flow/node-view"
 import {
+  connectableNodeTypes,
   connectionEdgeData,
-  findGrowType,
-  hasPorts,
   resolveConnection,
+  resolveGrowConnection,
   type ConnectionCandidate,
+  type ConnectionContext,
+  type GrowCandidate,
   type ResolvedPorts
 } from "@shadecn/shared/flow-node-types"
 import { isEditableTarget } from "./editable"
@@ -89,6 +86,7 @@ export function useFlowCanvas(
     getViewport,
     setViewport,
     findNode,
+    getNodes,
     getEdges,
     getSelectedNodes,
     getSelectedEdges,
@@ -435,8 +433,8 @@ export function useFlowCanvas(
   })
 
   /**
-   * 这一次拉线从哪个连接点出发、有没有真的连上 —— 松手时用来判断
-   * 「拉到空白处」，那是在落点长出一个新节点（`addConnectedNode`）。
+   * 这一次拉线从哪个连接点出发、有没有真的连上 —— 松手时用来判断落点：
+   * 落在节点身上就连到它（`connectNodes`），拉到空白处就在落点弹出新建节点的菜单（`openGrowMenu`）。
    */
   let connectStart: { nodeId: string; handleType: HandleType } | null = null
   let connectedThisDrag = false
@@ -450,24 +448,38 @@ export function useFlowCanvas(
     // Vue Flow 先发 connect 再发 connectEnd：连上了（含靠近吸附上的）就不再建节点
     if (!start || connectedThisDrag || !event) return
 
+    // 线只能从出口拉（入口 `connectable-start=false`）；万一从入口起了拉，也不往回长
+    if (start.handleType !== "source") return
+
     const point = "changedTouches" in event ? event.changedTouches[0] : event
-    if (!point || !droppedOnPane(point)) return
-    void addConnectedNode(
-      start.nodeId,
-      start.handleType,
-      screenToFlowCoordinate({ x: point.clientX, y: point.clientY })
-    )
+    if (!point) return
+    const drop = dropTargetAt(point)
+    if (drop.kind === "node") {
+      // 落在节点身上（没对准左边的入口）也算连到它：端口照样由 `resolveConnection` 选，连不上就提示原因
+      if (drop.nodeId !== start.nodeId) connectNodes(start.nodeId, drop.nodeId)
+      return
+    }
+    if (drop.kind === "pane") {
+      openGrowMenu(start.nodeId, { drop: { clientX: point.clientX, clientY: point.clientY } })
+    }
   })
 
   /**
-   * 落点是不是空白画布。看的是**落点下面的元素**，不依赖 `event.target` 指向谁。
-   * 落在节点身上不算（多半是没对准连接点，不该凭空多出一个节点），落在浮在画布上的
-   * 控件（缩放按钮、小地图、节点工具栏）上也不算。
+   * 落点下面是什么。看的是**落点下面的元素**，不依赖 `event.target` 指向谁：
+   * - `node`：某个节点身上（Vue Flow 节点根元素的 `data-id`）；
+   * - `pane`：空白画布；
+   * - `none`：画布外，或浮在画布上的控件（缩放按钮、小地图、节点工具栏）。
    */
-  function droppedOnPane(point: { clientX: number; clientY: number }): boolean {
+  function dropTargetAt(point: {
+    clientX: number
+    clientY: number
+  }): { kind: "node"; nodeId: string } | { kind: "pane" } | { kind: "none" } {
     const element = document.elementFromPoint(point.clientX, point.clientY)
-    if (!element || !vueFlowRef.value?.contains(element)) return false
-    return !element.closest(".vue-flow__node, .vue-flow__panel, .vue-flow__node-toolbar")
+    if (!element || !vueFlowRef.value?.contains(element)) return { kind: "none" }
+    if (element.closest(".vue-flow__panel, .vue-flow__node-toolbar")) return { kind: "none" }
+    const nodeId = element.closest(".vue-flow__node")?.getAttribute("data-id")
+    if (nodeId) return { kind: "node", nodeId }
+    return { kind: "pane" }
   }
 
   /**
@@ -492,9 +504,21 @@ export function useFlowCanvas(
     return store.nodeById.get(id)?.type
   }
 
+  /**
+   * 喂给 shared 连线规则的画布：类型、业务 data（图片 / 视频有资源就不再接受连入）、已有的边。
+   * agent 的 `connect` 喂的是同样三样（`packages/agent/src/tools.ts` 的 `docLookup`）。
+   */
+  function connectionContext(): ConnectionContext {
+    return {
+      typeOf: typeOfNode,
+      dataOf: (id) => store.nodeById.get(id)?.data,
+      edges: store.edges
+    }
+  }
+
   /** 这两个节点之间连的是哪对端口；不能连给出原因。规则全在 shared 的 `resolveConnection` */
-  function resolve(candidate: ConnectionCandidate, typeOf = typeOfNode) {
-    return resolveConnection(candidate, { typeOf, edges: store.edges })
+  function resolve(candidate: ConnectionCandidate) {
+    return resolveConnection(candidate, connectionContext())
   }
 
   /**
@@ -509,14 +533,18 @@ export function useFlowCanvas(
 
   onConnect((connection: Connection) => {
     connectedThisDrag = true
-    // 松手这一刻再选一次端口：拉线期间别人可能已经占掉了那个端口
-    const verdict = resolve({ source: connection.source, target: connection.target })
+    connectNodes(connection.source, connection.target)
+  })
+
+  /** 松手真正建边（落在入口上、或落在节点身上）。这一刻再选一次端口：拉线期间别人可能已经占掉了那个端口 */
+  function connectNodes(source: string, target: string) {
+    const verdict = resolve({ source, target })
     if (!verdict.ok) {
       toast.error(verdict.reason)
       return
     }
-    store.addEdge(buildEdge(connection.source, connection.target, verdict))
-  })
+    store.addEdge(buildEdge(source, target, verdict))
+  }
 
   // —— 视口 ——
 
@@ -613,6 +641,63 @@ export function useFlowCanvas(
   /** 全览：和首次打开的兜底一致，不放大超过 1 倍 */
   function fitAll() {
     return afterTransition(fitView({ maxZoom: 1, padding: 0.2, duration: VIEW_TRANSITION_MS }))
+  }
+
+  // —— 自动布局 ——
+
+  /** 画布上有没有东西可排；空画布时按钮置灰 */
+  const canAutoLayout = computed(() => store.nodes.length > 0)
+
+  /**
+   * 横向自动布局（从左到右，dagre），排完全览一次。
+   *
+   * 只排**顶层**节点：分组框连同里面的节点当成一个盒子整体挪（子节点的坐标相对分组，不用动）；
+   * 连到组内节点的线按它所在的顶层分组计。尺寸用 Vue Flow 实测的 `dimensions`。
+   *
+   * 是一次内容修改：所有位置一笔 `moveNodes` 写进文档 = 一条撤销，照常广播给协作者。
+   * 本地正拖着节点时不排（拖完那次提交会把位置覆盖回去）。
+   */
+  async function autoLayout() {
+    if (localDragging.value) return
+
+    const topLevel = getNodes.value.filter((node) => !node.parentNode)
+    if (topLevel.length === 0) return
+
+    /** 节点所在的顶层祖先（自己就是顶层时返回自己） */
+    const rootOf = (id: string): string => {
+      let node = findNode(id)
+      while (node?.parentNode) {
+        const parent = findNode(node.parentNode)
+        if (!parent) break
+        node = parent
+      }
+      return node?.id ?? id
+    }
+
+    const positions = layoutHorizontal(
+      topLevel.map((node) => ({
+        id: node.id,
+        width: node.dimensions.width,
+        height: node.dimensions.height
+      })),
+      getEdges.value.map((edge) => ({ source: rootOf(edge.source), target: rootOf(edge.target) }))
+    )
+
+    const moved = new Map<string, { x: number; y: number }>()
+    for (const node of topLevel) {
+      const next = positions.get(node.id)
+      if (next && (next.x !== node.position.x || next.y !== node.position.y)) moved.set(node.id, next)
+    }
+
+    if (moved.size > 0) {
+      store.separateUndo()
+      store.moveNodes(moved, "自动布局")
+      store.separateUndo()
+    }
+
+    // 新位置要等 Vue Flow 同步到内部节点后再量外接矩形
+    await nextTick()
+    await fitAll()
   }
 
   /** 小地图显隐 —— 纯本地视图偏好，不进文档也不落库；默认不显示 */
@@ -765,55 +850,90 @@ export function useFlowCanvas(
     return id
   }
 
-  /** 点连接点上的加号时，新节点和原节点之间留的空隙（画布坐标） */
+  /** 点出口上的加号时，新节点和原节点之间留的空隙（画布坐标） */
   const CONNECTED_NODE_GAP = 80
 
   /**
-   * 从某个连接点长出一个新节点并连上：点加号（不给 `drop`）或拉线到空白处松手（`drop` 是落点）。
+   * 「从出口长出新节点」的候选菜单（`FlowGrowMenu.vue` 画它）。
    *
-   * 从出口（右）长出来的新节点在右边、用它的入口接上；从入口（左）长出来的在左边、
-   * 用它的出口接上。新节点对应的那个连接点落在 `anchor` 上：点加号时是原节点同侧
-   * 再隔一段，拉线时就是落点。
+   * 两个入口弹同一个菜单：点出口上的加号（锚在那个连接点上），拉线到空白处松手（锚在落点）。
+   * 菜单里只列 shared 的 `connectableNodeTypes` 认可的类型 —— 按「全新的空节点」去试 `resolveConnection`，
+   * 和真连线是同一套规则；选一种才建节点。Esc / 点别处关掉，什么都不建。
+   */
+  interface GrowMenuState {
+    /** 从哪个节点的出口长 */
+    sourceId: string
+    /** 新节点入口（左边中点）落在哪（画布坐标） */
+    at: XYPosition
+    /** 菜单贴着谁：连接点元素，或松手那一点（reka-ui 的虚拟参照元素） */
+    reference: { getBoundingClientRect: () => DOMRect }
+  }
+
+  const growMenu = shallowRef<GrowMenuState | null>(null)
+
+  /** 菜单里此刻该列哪些类型：随画布变（别人在这期间往这里连了线、填了资源）而变 */
+  const growCandidates = computed<GrowCandidate[]>(() => {
+    const menu = growMenu.value
+    return menu ? connectableNodeTypes(menu.sourceId, connectionContext()) : []
+  })
+
+  /**
+   * 弹出候选菜单。`anchor`：点加号时那个连接点元素（新节点放在原节点右边隔一段）；
+   * `drop`：拉线松手的屏幕坐标（新节点的入口落在那一点）。
+   */
+  function openGrowMenu(
+    sourceId: string,
+    place: { anchor: Element } | { drop: { clientX: number; clientY: number } }
+  ) {
+    const from = findNode(sourceId)
+    if (!from) return
+    if ("drop" in place) {
+      const { clientX, clientY } = place.drop
+      growMenu.value = {
+        sourceId,
+        at: screenToFlowCoordinate({ x: clientX, y: clientY }),
+        reference: { getBoundingClientRect: () => new DOMRect(clientX, clientY, 0, 0) }
+      }
+      return
+    }
+    growMenu.value = {
+      sourceId,
+      at: {
+        x: from.computedPosition.x + from.dimensions.width + CONNECTED_NODE_GAP,
+        y: from.computedPosition.y + from.dimensions.height / 2
+      },
+      reference: place.anchor
+    }
+  }
+
+  function closeGrowMenu() {
+    growMenu.value = null
+  }
+
+  /** 在菜单里选了一种：关菜单，按菜单记下的位置长出这种节点 */
+  async function growFromMenu(type: string): Promise<string | null> {
+    const menu = growMenu.value
+    if (!menu) return null
+    growMenu.value = null
+    return addConnectedNode(menu.sourceId, type, menu.at)
+  }
+
+  /**
+   * 从 `sourceId` 的出口长出一个 `type` 节点并连上，新节点的入口（左边中点）落在 `at`。
    *
-   * **长成什么类型**：原节点没声明端口的，照旧是 `NEW_NODE_TYPE`（无端口，和谁都能连）；
-   * 声明了端口的，取注册表里第一个**能和它连上**的类型（`findGrowType` 拿 `resolveConnection`
-   * 逐个去试，顺序见 shared 的注册表），端口也由它选。一个都连不上（例如往回长时原节点的输入都满了）
-   * 就提示原因、不建节点 —— 不该凭空多出一条超额的线。
+   * 连哪对端口由 shared 的 `resolveGrowConnection` 定（新节点按全新的空节点算，规则就是 `resolveConnection`）；
+   * 菜单弹出之后画布可能变了，连不上就提示原因、不建节点 —— 不该凭空多出一个没连上的节点。
    *
    * 节点和线进**同一个事务**（`addElements`）：一条撤销把两者一起拿掉，
    * 别人也不会先看到一条指向不存在节点的线。摆正位置要等量出尺寸，和 `addNode` 一样
-   * 并进同一条撤销。
+   * 并进同一条撤销（中间不 `separateUndo`）。
    */
-  async function addConnectedNode(
-    nodeId: string,
-    handleType: HandleType,
-    drop?: XYPosition
-  ): Promise<string | null> {
-    const from = findNode(nodeId)
-    const fromType = typeOfNode(nodeId)
-    if (!from || fromType === undefined) return null
-
-    const toRight = handleType === "source"
-    const anchor = drop ?? {
-      x: toRight
-        ? from.computedPosition.x + from.dimensions.width + CONNECTED_NODE_GAP
-        : from.computedPosition.x - CONNECTED_NODE_GAP,
-      y: from.computedPosition.y + from.dimensions.height / 2
-    }
-    const place = (width: number, height: number) => ({
-      x: toRight ? anchor.x : anchor.x - width,
-      y: anchor.y - height / 2
-    })
+  async function addConnectedNode(sourceId: string, type: string, at: XYPosition): Promise<string | null> {
+    if (typeOfNode(sourceId) === undefined) return null
+    const place = (height: number) => ({ x: at.x, y: at.y - height / 2 })
 
     const id = createId("n")
-    const pair = toRight ? { source: nodeId, target: id } : { source: id, target: nodeId }
-    // 新节点还没进 store：它的类型由这里告诉校验
-    const attempt = (type: string) =>
-      resolve(pair, (candidateId) => (candidateId === id ? type : typeOfNode(candidateId)))
-
-    const grown = hasPorts(fromType) ? findGrowType(Object.keys(FLOW_NODE_TYPES), attempt) : null
-    const type = grown?.type ?? NEW_NODE_TYPE
-    const verdict = attempt(type)
+    const verdict = resolveGrowConnection(sourceId, type, id, connectionContext())
     if (!verdict.ok) {
       toast.error(verdict.reason)
       return null
@@ -822,10 +942,10 @@ export function useFlowCanvas(
     const node = buildFlowNode({
       id,
       type,
-      position: place(0, 0),
+      position: place(0),
       label: `${flowNodeTypeOf(type).label} ${store.nodes.length + 1}`
     })
-    const edge = buildEdge(pair.source, pair.target, verdict)
+    const edge = buildEdge(sourceId, id, verdict)
 
     store.separateUndo()
     store.addElements([node], [edge], "新增相连节点")
@@ -833,10 +953,7 @@ export function useFlowCanvas(
     const rendered = findNode(id)
     if (rendered) {
       await until(() => rendered.dimensions.width).toBeTruthy({ timeout: 1000 })
-      store.moveNodes(
-        new Map([[id, place(rendered.dimensions.width, rendered.dimensions.height)]]),
-        "摆放新节点"
-      )
+      store.moveNodes(new Map([[id, place(rendered.dimensions.height)]]), "摆放新节点")
       selectOnly(id)
     }
     store.separateUndo()
@@ -944,6 +1061,8 @@ export function useFlowCanvas(
     zoomOutView,
     zoomToLevel,
     fitAll,
+    canAutoLayout,
+    autoLayout,
     miniMapVisible,
     onPointerMove,
     onPointerLeave,
@@ -954,6 +1073,11 @@ export function useFlowCanvas(
     groupSelection,
     addNode,
     addConnectedNode,
+    growMenu,
+    growCandidates,
+    openGrowMenu,
+    closeGrowMenu,
+    growFromMenu,
     isValidConnection,
     duplicateNode,
     deleteNode,

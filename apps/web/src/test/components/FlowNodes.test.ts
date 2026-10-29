@@ -12,8 +12,9 @@ import NodeHost from "@/components/flow/node-kit/NodeHost.vue"
 import { nodeKitGlobal } from "./node-kit/with-kit"
 
 /**
- * 画布上的节点（宿主 `NodeHost` + 默认注册表里的类型与能力）：运行态的展示、按端口声明画连接点（分组不画）、
- * 改名经 `useFlowNode` 写到 `metadata.label`、分组的解组、文本的就地编辑。
+ * 画布上的节点（宿主 `NodeHost` + 默认注册表里的类型与能力）：运行态的展示、按端口声明 + 节点数据画连接点（分组不画）、
+ * 连线方向（入口不能起拉、没有加号；出口的加号弹候选菜单）、改名经 `useFlowNode` 写到 `metadata.label`、分组的解组、
+ * 文本的就地编辑、图片 / 视频 / 导演台各自的 body。
  *
  * 数据走真的 store + Y.Doc（`useFlowNode` 直接读 store）；Vue Flow 那几个要画布上下文的组件
  * （Handle / NodeToolbar / NodeResizer）换成只渲染自己的替身 —— 这里测的是基础组件交给它们什么，
@@ -21,15 +22,20 @@ import { nodeKitGlobal } from "./node-kit/with-kit"
  */
 
 const selectOnly = vi.fn()
-const addConnectedNode = vi.fn()
+const openGrowMenu = vi.fn()
 const deleteNode = vi.fn()
 const selectedNodeId = ref<string | null>(null)
+const uploadAsset = vi.fn()
+const captureVideoPoster = vi.fn()
+
+vi.mock("@/lib/asset-upload", () => ({ uploadFlowAsset: (...args: unknown[]) => uploadAsset(...args) }))
+vi.mock("@/lib/video-poster", () => ({ captureVideoPoster: (...args: unknown[]) => captureVideoPoster(...args) }))
 
 vi.mock("@/composables/flow/editor-context", () => ({
   useFlowEditor: () => ({
     canvas: {
       selectOnly,
-      addConnectedNode,
+      openGrowMenu,
       deleteNode,
       duplicateNode: vi.fn(),
       isValidConnection: () => true,
@@ -37,6 +43,7 @@ vi.mock("@/composables/flow/editor-context", () => ({
     },
     presence: { occupantsOf: () => [] },
     selection: { selectedNodeId },
+    flowId: ref("flow-1"),
     store: useFlowStore()
   })
 }))
@@ -44,13 +51,21 @@ vi.mock("@/composables/flow/editor-context", () => ({
 vi.mock("@vue-flow/core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@vue-flow/core")>()),
   Handle: defineComponent({
-    props: { id: { type: String, default: null }, type: String, position: String },
+    props: {
+      id: { type: String, default: null },
+      type: String,
+      position: String,
+      connectableStart: { type: Boolean, default: true },
+      connectableEnd: { type: Boolean, default: true }
+    },
     setup(props) {
       return () =>
         h("div", {
           "data-stub": "handle",
           "data-handle-id": props.id ?? "",
-          "data-handle-type": props.type
+          "data-handle-type": props.type,
+          "data-connectable-start": String(props.connectableStart),
+          "data-connectable-end": String(props.connectableEnd)
         })
     }
   }),
@@ -121,7 +136,7 @@ describe("画布节点", () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     selectOnly.mockClear()
-    addConnectedNode.mockClear()
+    openGrowMenu.mockClear()
     selectedNodeId.value = null
   })
   afterEach(() => {
@@ -158,7 +173,7 @@ describe("画布节点", () => {
     expect(wrapper.attributes("data-status")).toBe("idle")
     expect(wrapper.find('[data-testid="node-status-processing"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="node-status-error"]').exists()).toBe(false)
-    expect(wrapper.find('p[title="双击编辑文本"]').text()).toBe("双击输入文本")
+    expect(wrapper.find('[data-testid="text-body"]').text()).toBe("双击输入文本")
   })
 
   it("没声明端口的类型：左右各一个不带 id 的连接点", () => {
@@ -173,8 +188,8 @@ describe("画布节点", () => {
   })
 
   it("声明了多个端口的类型：照样只有左右各一个不带 id 的连接点（端口不画成多个 Handle）", () => {
-    setup(record("cfg", "director-console"))
-    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("cfg", "director-console") })
+    setup(record("dc", "director"))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("dc", "director") })
 
     const handles = wrapper.findAll('[data-stub="handle"]')
     expect(handles.map((item) => [item.attributes("data-handle-type"), item.attributes("data-handle-id")])).toEqual([
@@ -183,14 +198,49 @@ describe("画布节点", () => {
     ])
   })
 
-  it("只声明了输出的类型（text-input）左边没有连接点，右边一个不带 id", () => {
-    setup(record("txt", "text-input"))
-    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("txt", "text-input") })
+  it("文本只有输出：左边没有连接点，右边一个不带 id", () => {
+    setup(record("txt", "text"))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("txt", "text") })
 
     const handles = wrapper.findAll('[data-stub="handle"]')
     expect(handles.map((item) => [item.attributes("data-handle-type"), item.attributes("data-handle-id")])).toEqual([
       ["source", ""]
     ])
+  })
+
+  it("图片 / 视频：没有资源时左右都有；填上 data.src 后左边收起（不再接受连入），右边照旧", async () => {
+    for (const type of ["image", "video"]) {
+      const { store } = setup(record(`${type}1`, type))
+      wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps(`${type}1`, type) })
+      const sides = () => wrapper!.findAll('[data-stub="handle"]').map((item) => item.attributes("data-handle-type"))
+      expect(sides(), type).toEqual(["target", "source"])
+
+      store.writeNode(`${type}1`, "data", { set: { src: "https://x/a" } })
+      await nextTick()
+      expect(sides(), type).toEqual(["source"])
+      wrapper.unmount()
+      wrapper = null
+    }
+  })
+
+  it("连线只从出口往入口拉：左边不能起拉、点了没反应；右边不能当落点，点它弹出候选菜单（锚在这个连接点）", async () => {
+    setup(record("img", "image"))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+
+    const target = wrapper.find('[data-handle-type="target"]')
+    const source = wrapper.find('[data-handle-type="source"]')
+    expect(target.attributes("data-connectable-start")).toBe("false")
+    expect(source.attributes("data-connectable-end")).toBe("false")
+    // 左边没有加号：不挂提示、点击不长节点
+    expect(target.attributes("title")).toBeUndefined()
+    await target.trigger("click")
+    expect(openGrowMenu).not.toHaveBeenCalled()
+
+    await source.trigger("click")
+    expect(openGrowMenu).toHaveBeenCalledTimes(1)
+    expect(openGrowMenu).toHaveBeenCalledWith("img", { anchor: source.element })
+    // 点加号不把原节点选中（要选中的是新长出来的那个）
+    expect(selectOnly).not.toHaveBeenCalled()
   })
 
   it("分组不画连接点（类型声明不启用 connectable），但外壳和拉伸手柄照常", () => {
@@ -204,8 +254,8 @@ describe("画布节点", () => {
   })
 
   it("双击名字改名：经 useFlowNode 写到 metadata.label，data 不受影响", async () => {
-    const { store, doc } = setup(record("n1", "image-config", { data: { prompt: "一只猫" } }))
-    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("n1", "image-config") })
+    const { store, doc } = setup(record("n1", "image", { data: { prompt: "一只猫" } }))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("n1", "image") })
 
     await wrapper.find('span[title="双击改名"]').trigger("dblclick")
     expect(selectOnly).toHaveBeenCalledWith("n1")
@@ -261,7 +311,7 @@ describe("画布节点", () => {
       { global: nodeKitGlobal() }
     )
 
-    await wrapper.find('p[title="双击编辑文本"]').trigger("dblclick")
+    await wrapper.find('[data-testid="text-body"]').trigger("dblclick")
     expect(selectOnly).toHaveBeenCalledWith("t1")
     expect(outer).not.toHaveBeenCalled()
     const textarea = wrapper.find("textarea")
@@ -276,7 +326,7 @@ describe("画布节点", () => {
     const { store } = setup(record("t1", "text", { data: { text: "原文" } }))
     wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("t1", "text") })
 
-    await wrapper.find('p[title="双击编辑文本"]').trigger("dblclick")
+    await wrapper.find('[data-testid="text-body"]').trigger("dblclick")
     await wrapper.find("textarea").setValue("改了")
     await wrapper.find("textarea").trigger("keydown", { key: "Escape" })
 
@@ -285,44 +335,148 @@ describe("画布节点", () => {
   })
 })
 
-describe("GenericBody 的通用 body", () => {
+describe("各类型的 body", () => {
   beforeEach(() => setActivePinia(createPinia()))
   afterEach(() => {
     wrapper?.unmount()
     wrapper = null
   })
 
-  it("展示名字、关键业务字段、连进来的输入和输出端口的产出", () => {
-    const { store } = setup(
-      record("src", "image-source", {
-        metadata: { label: "参考图" },
-        runtime: { status: "completed", outputs: { image: "https://x/a.png" } }
-      }),
-      record("cfg", "image-config", {
-        metadata: { label: "生图" },
-        data: { prompt: "一只猫", width: 1024, scene: { big: true } },
-        runtime: { status: "completed", outputs: { image: "https://x/out.png" } }
+  it("文本：占满节点、无边框的正文区，有正文显示正文", () => {
+    setup(record("t1", "text", { data: { text: "第一行\n第二行" } }))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("t1", "text") })
+    const body = wrapper.find('[data-testid="text-body"]')
+    expect(body.classes()).not.toContain("border")
+    expect(body.text()).toBe("第一行\n第二行")
+  })
+
+  it("图片：有 data.src 就画那张图；没有是空占位 + 上传按钮", async () => {
+    const { store } = setup(record("img", "image"))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+    const empty = wrapper.find('[data-testid="image-body-empty"]')
+    expect(empty.text()).toContain("暂无图片")
+    expect(empty.find('[data-testid="node-upload-button"]').text()).toBe("上传图片")
+    expect(empty.find('[data-testid="node-upload-input"]').attributes("accept")).toBe("image/*")
+    expect(wrapper.find('[data-testid="image-body"] img').exists()).toBe(false)
+
+    store.writeNode("img", "data", { set: { src: "https://x/a.png" } })
+    await nextTick()
+    expect(wrapper.find('[data-testid="image-body"] img').attributes("src")).toBe("https://x/a.png")
+    expect(wrapper.find('[data-testid="image-body-empty"]').exists()).toBe(false)
+  })
+
+  it("视频：只画预览图 data.poster，不放 <video>；没有预览图是空占位", async () => {
+    const { store } = setup(record("vid", "video"))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("vid", "video") })
+    expect(wrapper.find('[data-testid="video-body-empty"]').text()).toContain("暂无视频")
+    expect(wrapper.find('[data-testid="node-upload-button"]').text()).toBe("上传视频")
+
+    store.writeNode("vid", "data", { set: { src: "https://x/a.mp4" } })
+    await nextTick()
+    expect(wrapper.find('[data-testid="video-body-empty"]').text()).toBe("暂无预览图")
+    // 已经有视频了，不再给上传入口
+    expect(wrapper.find('[data-testid="node-upload-button"]').exists()).toBe(false)
+
+    store.writeNode("vid", "data", { set: { poster: "https://x/p.png" } })
+    await nextTick()
+    expect(wrapper.find('[data-testid="video-body"] img').attributes("src")).toBe("https://x/p.png")
+    expect(wrapper.find("video").exists()).toBe(false)
+  })
+
+  it("图片 / 视频预览图加载完：按高宽比记进布局（竖图定宽、横图定高），节点按布局尺寸画", async () => {
+    const { store } = setup(record("img", "image", { data: { src: "https://x/tall.png" } }))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+    // 还没量过：默认宽度、高度随图片
+    expect(wrapper.attributes("style")).toBe("width: 320px;")
+    expect(wrapper.find('[data-testid="image-body"]').attributes("style")).toBeUndefined()
+
+    const img = wrapper.find('[data-testid="image-body"] img')
+    Object.defineProperty(img.element, "naturalWidth", { value: 600 })
+    Object.defineProperty(img.element, "naturalHeight", { value: 900 })
+    await img.trigger("load")
+    expect(store.nodeById.get("img")?.layout).toMatchObject({ width: 240, height: 360 })
+    expect(wrapper.attributes("style")).toBe("width: 240px;")
+    expect(wrapper.find('[data-testid="image-body"]').attributes("style")).toBe("aspect-ratio: 240 / 360;")
+
+    store.addNode(record("vid", "video", { data: { src: "https://x/v.mp4", poster: "https://x/p.jpg" } }))
+    const video = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("vid", "video") })
+    const poster = video.find('[data-testid="video-body"] img')
+    Object.defineProperty(poster.element, "naturalWidth", { value: 1920 })
+    Object.defineProperty(poster.element, "naturalHeight", { value: 1080 })
+    await poster.trigger("load")
+    expect(store.nodeById.get("vid")?.layout).toMatchObject({ width: 427, height: 240 })
+    video.unmount()
+  })
+
+  it("布局里已经记过尺寸：一打开就按它画，不等资源加载", () => {
+    setup(record("img", "image", { layout: { position: { x: 0, y: 0 }, width: 427, height: 240 } }))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+    expect(wrapper.attributes("style")).toBe("width: 427px;")
+    expect(wrapper.find('[data-testid="image-body"]').attributes("style")).toBe("aspect-ratio: 427 / 240;")
+  })
+
+  it("报错不影响图片：报错行接在图片区后面，图片区照旧按记录的比例", () => {
+    setup(
+      record("img", "image", {
+        layout: { position: { x: 0, y: 0 }, width: 240, height: 427 },
+        data: { src: "https://x/a.png" },
+        runtime: { status: "error", error: "生成失败" }
       })
     )
-    store.addEdge({
-      id: "e1",
-      source: "src",
-      target: "cfg",
-      sourceHandle: null,
-      targetHandle: null,
-      data: { sourcePort: "image", targetPort: "image", index: 1 }
-    })
-    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("cfg", "image-config") })
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+    const body = wrapper.find('[data-testid="image-body"]')
+    expect(body.attributes("style")).toBe("aspect-ratio: 240 / 427;")
+    expect(body.element.nextElementSibling?.getAttribute("data-testid")).toBe("node-status-error")
+    // 根元素不钉高度，报错行是多出来的一截
+    expect(wrapper.attributes("style")).toBe("width: 240px;")
+  })
 
-    expect(wrapper.find('[data-testid="generic-node-label"]').text()).toBe("生图")
-    const summary = wrapper.find('[data-testid="generic-node-summary"]').text()
-    expect(summary).toContain("prompt")
-    expect(summary).toContain("一只猫")
-    // 大对象不展开
-    expect(summary).not.toContain("scene")
-    expect(wrapper.find('[data-testid="generic-node-inputs"]').text()).toContain("参考图 #1")
-    expect(wrapper.find('[data-testid="generic-node-outputs"] img').attributes("src")).toBe(
-      "https://x/out.png"
+  it("图片上传：选了文件 → 传到本画布 → S3 原始地址写进 data.src", async () => {
+    uploadAsset.mockReset().mockResolvedValue({ url: "https://s3.test/b/flows/flow-1/a.png" })
+    const { store } = setup(record("img", "image"))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+
+    const file = new File(["x"], "a.png", { type: "image/png" })
+    const input = wrapper.find('[data-testid="node-upload-input"]')
+    Object.defineProperty(input.element, "files", { value: [file], configurable: true })
+    await input.trigger("change")
+    await vi.waitFor(() => expect(store.nodeById.get("img")?.data.src).toBe("https://s3.test/b/flows/flow-1/a.png"))
+    expect(uploadAsset).toHaveBeenCalledWith("flow-1", file)
+  })
+
+  it("视频上传：本地截一帧当预览图，视频和预览图一起传，一次写进 src / poster", async () => {
+    const frame = new Blob(["jpg"], { type: "image/jpeg" })
+    captureVideoPoster.mockReset().mockResolvedValue(frame)
+    uploadAsset
+      .mockReset()
+      .mockImplementation(async (_flowId: string, file: Blob) => ({
+        url: file === frame ? "https://s3.test/b/p.jpg" : "https://s3.test/b/v.mp4"
+      }))
+    const { store } = setup(record("vid", "video"))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("vid", "video") })
+
+    const file = new File(["x"], "v.mp4", { type: "video/mp4" })
+    const input = wrapper.find('[data-testid="node-upload-input"]')
+    Object.defineProperty(input.element, "files", { value: [file], configurable: true })
+    await input.trigger("change")
+    await vi.waitFor(() =>
+      expect(store.nodeById.get("vid")?.data).toMatchObject({
+        src: "https://s3.test/b/v.mp4",
+        poster: "https://s3.test/b/p.jpg"
+      })
     )
+    expect(uploadAsset).toHaveBeenCalledWith("flow-1", frame, "poster.jpg")
+  })
+
+  it("导演台：body 是一个「打开导演台」按钮，先空着（点了不写文档、不选别的）", async () => {
+    const { store } = setup(record("dc", "director"))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("dc", "director") })
+    const button = wrapper.find('[data-testid="director-open"]')
+    expect(button.element.tagName).toBe("BUTTON")
+    expect(button.text()).toBe("打开导演台")
+
+    const before = JSON.stringify(store.nodeById.get("dc"))
+    await button.trigger("click")
+    expect(JSON.stringify(store.nodeById.get("dc"))).toBe(before)
   })
 })

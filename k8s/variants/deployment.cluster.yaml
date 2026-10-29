@@ -24,11 +24,6 @@
 #     --from-literal=SESSION_SECRET="$SESSION_SECRET" \
 # 要开 GitHub 登录就再加 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET 两个键 ——
 # 下面的 envFrom 是整份 Secret 注入，Deployment 本身不用改。回调地址和 Keycloak 共用。
-# gal-story 那条链路还有一个可选的键：GAL_STORY_GATEWAY_TOKEN —— 引擎没有账号体系，
-# 属主完全由本服务注入的 X-Gal-Owner 决定，谁能直连引擎谁就能扮演任何人。引擎缺省只听
-# 127.0.0.1，这道共享密钥是第二层；配了它，绕过本服务的请求会被引擎 403。
-# 要开的话两边一起配（引擎那侧是 GAL_SERVER_GATEWAY_TOKEN），值必须一样：
-#     --from-literal=GAL_STORY_GATEWAY_TOKEN="$GAL_STORY_GATEWAY_TOKEN" \
 #     --from-literal=DATABASE_URL="postgresql://user:pass@postgres:5432/app?schema=public" \
 #     --from-literal=REDIS_URL="redis://redis:6379" \
 #     --dry-run=client -o yaml | kubectl apply -f -
@@ -89,15 +84,6 @@ spec:
             - name: DB_PROVIDER
               value: postgresql
             # DATABASE_URL / REDIS_URL 都在 Secret 里（连接串带密码）
-            # gal-story 引擎（叙事那一侧）。**集群内地址**：那个服务是 ClusterIP、不开 Ingress ——
-            # 它没有账号体系，属主隔离靠本服务注入的 `X-Gal-Owner`（引擎那侧
-            # `GAL_SERVER_TRUST_OWNER_HEADER=true` 才认）。开到公网就等于任何人都能带一个自己
-            # 编的属主头进来，那不是「少一层鉴权」，是把隔离整个绕开。
-            #
-            # ⚠️ 不配这一格的话，`/api/galstory/*` 那条反代会回 503「GalStory 后端未配置」——
-            # 那是刻意的（「没开这块功能」不是「坏了」），但故事库那一页会整页空着。
-            - name: GAL_STORY_API_URL
-              value: http://gal-story.dev.svc:8000
             - name: APP_ORIGIN
               value: https://demo.fyl080801.uk
             # 多域名访问时把每个对外域名都列进来（逗号分隔），APP_ORIGIN 自动在内。
@@ -112,6 +98,9 @@ spec:
               value: sample
             - name: KEYCLOAK_SCOPE
               value: openid profile email
+            # 画布资源单个文件上限（MB），分片上传开始时校验；单片大小另由 ingress 的 proxy-body-size 放行
+            - name: S3_MAX_UPLOAD_MB
+              value: "500"
           envFrom:
             - secretRef:
                 name: shadecn-learning-auth

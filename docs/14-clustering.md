@@ -99,7 +99,7 @@ in-flight promise；Redis 实现跨进程共享不了 promise，所以后来者�
 
 - `revalidateConnections`：每个实例只遍历自己的连接，天然可扩展。
 - `persistence.ts` 的写队列：只需本实例内保持顺序，跨实例那道是 `flow-writer.ts` 里对 `revision` 的 CAS。
-- 前端：客户端不知道自己连的是哪个实例，`useFlowCollab` 一行没动。
+- 前端：客户端不知道自己连的是哪个实例，`useFlowSync`（`sync/collab.ts`）一行没动。
 
 ## 4. 取舍
 

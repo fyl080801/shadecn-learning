@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue"
 
+import { PromptInput, createEditor } from "@/components/prompt-input"
+
 import { useNodePart } from "@/components/flow/node-kit/context"
 
 import { EDIT_PROMPT_MODE } from "./prompt"
@@ -8,7 +10,7 @@ import { EDIT_PROMPT_MODE } from "./prompt"
 /**
  * 底部输入框的外壳 —— 在节点的某个 `data` 字段上就地写一段提示词，回车提交。
  *
- * 各类型的输入框部件（`ImagePromptComposer` …）用它，传进来写哪个字段、占位文案；
+ * 各类型的输入框部件（`composer-part.ts` 的 `definePromptComposerPart` 包出来的）用它，传进来写哪个字段、占位文案；
  * 框旁边要不要再放别的（视频的时长、比例）由那个部件自己加。
  *
  * - **草稿**走 `ctx.node.draft("data", field)`：打字期间只改草稿，结束时写一次文档、前后夹 `separateUndo`；
@@ -25,7 +27,13 @@ const props = defineProps<{
 
 const ctx = useNodePart()
 
-const textareaRef = ref<HTMLTextAreaElement | null>(null)
+const { editor } = createEditor()
+const inputRef = ref<InstanceType<typeof PromptInput> | null>(null)
+
+/** 让编辑区失焦（PromptInput 暴露的是 contenteditable 本体） */
+function blurInput() {
+  inputRef.value?.editableEl?.blur()
+}
 
 const current = computed(() => {
   const value = ctx.node.data.value[props.field]
@@ -64,17 +72,27 @@ function finish(reason: "commit" | "cancel") {
  * 不判 `isComposing` 的话，打一个英文单词就会被当成提交。
  */
 function onEnter(event: KeyboardEvent) {
-  if (event.isComposing) return
+  // Safari 上 isComposing 不可靠，keyCode 229 兜底
+  if (event.isComposing || event.keyCode === 229) return
   event.preventDefault()
   const submitted = text.value
   finish("commit")
   ctx.emit("composer:submit", { text: submitted })
-  textareaRef.value?.blur()
+  blurInput()
+}
+
+function onKeydown(event: KeyboardEvent) {
+  if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    onEnter(event)
+  } else if (event.key === "Escape") {
+    event.preventDefault()
+    cancel()
+  }
 }
 
 function cancel() {
   finish("cancel")
-  textareaRef.value?.blur()
+  blurInput()
 }
 
 // 模式被别处顶掉了，框里还有草稿 —— 按失焦的规矩写回
@@ -93,16 +111,21 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- nodrag / nopan / nowheel：在框里拖选文字、滚动不该变成拖节点、拖画布、缩放 -->
-  <textarea
-    ref="textareaRef"
-    v-model="text"
-    rows="2"
-    class="nodrag nopan nowheel w-80 resize-none rounded-lg bg-transparent px-2 py-1 text-sm outline-none placeholder:text-muted-foreground"
-    :placeholder="placeholder"
-    data-testid="prompt-composer"
-    @focus="begin()"
-    @blur="finish('commit')"
-    @keydown.enter.exact="onEnter"
-    @keydown.esc.prevent="cancel()"
-  />
+  <div class="nodrag nopan nowheel w-80" data-testid="prompt-composer">
+    <!--
+      defer-focus-on-click：浮层挂载时不能抢画布的焦点（否则 Delete / Ctrl+Z 全落进输入框），点它才聚焦。
+      wrapper-class 去掉 PromptInput 默认的边框 / 焦点环 / 背景，只留紧凑的两行起步、几行后滚动。
+    -->
+    <PromptInput
+      ref="inputRef"
+      v-model="text"
+      :editor="editor"
+      :defer-focus-on-click="true"
+      :placeholder="placeholder"
+      wrapper-class="border-0 [&_[data-slate-editor]]:min-h-14 [&_[data-slate-editor]]:max-h-32 [&_[data-slate-editor]]:overflow-y-auto [&_[data-slate-editor]]:rounded-lg [&_[data-slate-editor]]:border-0 [&_[data-slate-editor]]:bg-transparent [&_[data-slate-editor]]:px-2 [&_[data-slate-editor]]:py-1 [&_[data-slate-editor]]:leading-6 [&_[data-slate-editor]]:focus:ring-0 [&_[data-slate-editor]]:focus:ring-offset-0 [&_[data-slate-editor]]:before:left-2 [&_[data-slate-editor]]:before:top-1 [&_[data-slate-editor]]:before:leading-6"
+      @focus="begin()"
+      @blur="finish('commit')"
+      @keydown="onKeydown"
+    />
+  </div>
 </template>

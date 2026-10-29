@@ -11,7 +11,7 @@ const text = computed(() => ctx.node.runtime.value.error || "运行出错")
 </script>
 
 <template>
-  <p class="mt-1 flex items-start gap-1 break-words text-xs text-destructive" data-testid="node-status-error">
+  <p class="flex items-start gap-1 break-words px-2 py-1 text-xs text-destructive" data-testid="node-status-error">
     <CircleAlert class="mt-px size-3 shrink-0" />
     <span>{{ text }}</span>
   </p>

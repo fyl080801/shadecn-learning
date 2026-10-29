@@ -137,3 +137,44 @@ export interface Paged<T> {
   total: number
   totalPages: number
 }
+
+// —— 画布资源 ——
+
+/**
+ * `POST /api/flows/:flowId/assets` 的回包。`url` 是对象存储（S3）的原始地址，
+ * 前端原样写进节点的 `data.src` / `data.poster`，读资源不经后端。
+ */
+export interface UploadedAsset {
+  url: string
+  key: string
+  contentType: string
+  size: number
+}
+
+/**
+ * 分片大小，也是「要不要分片」的分界线：**大于它的文件分片上传**，否则一次传完。
+ *
+ * 前后端读同一份：单次上传接口的请求体上限就是它，分片接口按它切片、按它限每片的大小。
+ * 8 MiB —— S3 要求除最后一片外每片 ≥ 5 MiB，最多 10000 片。
+ */
+export const ASSET_PART_SIZE = 8 * 1024 * 1024
+
+/** S3 一次分片上传最多 10000 片 */
+export const ASSET_MAX_PARTS = 10_000
+
+/**
+ * 开始一次分片上传（`POST /api/flows/:flowId/assets/multipart`）的回包。
+ * 后端不记会话：之后的每片、完成、放弃都由客户端把 `uploadId` + `key` 带回来。
+ */
+export interface AssetUploadSession {
+  uploadId: string
+  key: string
+  partSize: number
+  partCount: number
+}
+
+/** 传完一片拿到的回执；完成时按 `partNumber` 升序整组交回去 */
+export interface AssetUploadPart {
+  partNumber: number
+  etag: string
+}

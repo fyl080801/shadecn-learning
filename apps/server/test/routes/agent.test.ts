@@ -257,7 +257,7 @@ describe('跑一轮', () => {
 
   it('个人画布也能跑', async () => {
     useFaux([
-      fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', metadata: { label: '私人' } })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: '私人' } })], { stopReason: 'toolUse' }),
       fauxAssistantMessage('好'),
     ])
     const alice = await actor()
@@ -627,7 +627,7 @@ describe('运行日志', () => {
     }
     useFaux(
       [
-        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', metadata: { label: '照样加' } })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: '照样加' } })], { stopReason: 'toolUse' }),
         fauxAssistantMessage('好'),
       ],
       { runLog: broken },
@@ -651,7 +651,7 @@ describe('运行日志', () => {
     }
     useFaux(
       [
-        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', metadata: { label: '已经加上' } })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: '已经加上' } })], { stopReason: 'toolUse' }),
         fauxAssistantMessage('好'),
       ],
       { store: failingSave },

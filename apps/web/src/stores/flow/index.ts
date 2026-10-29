@@ -72,6 +72,14 @@ export const USER_STATE_FLUSH_MAX_WAIT = 10000
  */
 export const LOCAL_ORIGIN = Symbol("flow-local")
 
+/**
+ * 「从内容派生出来、顺手记进文档」的事务 origin（眼下只有媒体节点按资源记下的尺寸，`recordNodeSize`）。
+ *
+ * 照样广播、落库，但**不进撤销栈**：它不是用户的操作，只是把「量过一次的结果」存下来 ——
+ * 打开画布什么都没做就按 Ctrl+Z，撤掉的不该是一个尺寸。
+ */
+export const DERIVED_ORIGIN = Symbol("flow-derived")
+
 /** 连续多久内的改动并成一次撤销（Y.UndoManager 的 captureTimeout） */
 export const UNDO_CAPTURE_TIMEOUT = 400
 
@@ -382,6 +390,24 @@ export const useFlowStore = defineStore("flow", () => {
   }
 
   /**
+   * 把按资源量出来的尺寸记进节点布局（`width` / `height`），下次打开直接按这个尺寸画，不必等资源加载完。
+   *
+   * 和 `resizeNode` 写的是同两个键，区别在 origin：这是 {@link DERIVED_ORIGIN}，不进撤销栈、
+   * 也不 `noteLocalEdit()`（只是看了一眼画布，不算编辑，不发心跳）。值没变就什么都不写 ——
+   * 每次资源加载完都会调一次，几个人同时打开也只是写进同样的值。
+   */
+  function recordNodeSize(nodeId: string, size: { width: number; height: number }) {
+    if (!doc) return
+    const target = nodesMap(doc).get(nodeId)
+    if (!target) return
+    if (target.get("width") === size.width && target.get("height") === size.height) return
+    doc.transact(() => {
+      target.set("width", size.width)
+      target.set("height", size.height)
+    }, DERIVED_ORIGIN)
+  }
+
+  /**
    * 改一个节点**某一组**（metadata / data / runtime）上的若干键 —— **写和删在同一个事务里**。
    *
    * 逐个 key 写，不整块替换：Y.Map 的合并粒度就是 key，整块替换会把别人同时改的字段盖掉。
@@ -623,6 +649,7 @@ export const useFlowStore = defineStore("flow", () => {
     groupNodes,
     moveNodes,
     resizeNode,
+    recordNodeSize,
     writeNode,
     removeElements,
     // 视图状态

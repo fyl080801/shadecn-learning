@@ -1,33 +1,20 @@
 import { markRaw, type Component } from "vue"
-import {
-  Box,
-  Clapperboard,
-  FileText,
-  Film,
-  Frame,
-  Image,
-  ImagePlus,
-  MessageSquareText,
-  Type,
-  Video
-} from "@lucide/vue"
+import { Box, Clapperboard, Film, Frame, Image, Type } from "@lucide/vue"
 
-import ImagePromptComposer from "@/components/flow/composer/ImagePromptComposer.vue"
-import { editPromptMode } from "@/components/flow/composer/prompt"
-import GenericBody from "@/components/flow/GenericBody.vue"
+import { definePromptComposerPart } from "@/components/flow/composer/composer-part"
+import DirectorBody from "@/components/flow/DirectorBody.vue"
+import ImageBody from "@/components/flow/ImageBody.vue"
+import { mediaNodeStyle } from "@/components/flow/media-fit"
 import NodeHost from "@/components/flow/node-kit/NodeHost.vue"
-import {
-  defineNodePart,
-  ORDER_TYPE,
-  type NodeModeDef,
-  type NodePartDef,
-  type NodeTypeView
-} from "@/components/flow/node-kit/protocol"
+import type { NodeModeDef, NodePartDef, NodeTypeView } from "@/components/flow/node-kit/protocol"
 import TextBody from "@/components/flow/TextBody.vue"
+import VideoBody from "@/components/flow/VideoBody.vue"
 import type { FlowNodeRecord } from "@shadecn/shared/flow-graph"
 import {
   buildNodeRecord,
+  CREATABLE_NODE_TYPES,
   FLOW_NODE_TYPE_DEFAULTS,
+  hasNodeResource,
   type BuildNodeOptions,
   type FlowNodeTypeDefaults
 } from "@shadecn/shared/flow-node-types"
@@ -63,15 +50,13 @@ export {
  * 新建逻辑（`useFlowCanvas.addNode`）都从这里取，没有第二处硬编码。
  *
  * 工具栏**不按这张表铺一排按钮**：加号弹出一个类型菜单（`ADDABLE_NODE_TYPES`），
- * 每一项就是这里的 `label` + `icon`。
+ * 每一项就是这里的 `label` + `icon`；拉线到空白处 / 点出口加号弹出的候选菜单也用这两样。
  *
- * 示例数据（`sample/画布数据参考/`）里有 8 种节点，形状彼此完全不同 ——
- * 这张表就是让它们能共存的地方：`process` 是内容自适应的普通节点，
- * `group` 是带固定尺寸、压在所有节点之下的分组框，两者除了 `type` 之外没有共同点；
- * 七种带端口的业务节点眼下没有专门的界面，都用 `GenericBody`（通用 body）。
+ * 能新建的只有四种：`text` / `image` / `video` / `director`（顺序在 shared 的 `CREATABLE_NODE_TYPES`）。
+ * 另外两条不可新建：`process` 是认不出的 `type` 的兜底外观，`group` 由「打组」围出来。
  *
- * **键的顺序就是 shared 那张表的顺序**：从带类型的端口「长出」新节点时取第一个兼容的类型
- * （`findGrowType`），顺序在 shared 里定，这里照着排，别各排各的。
+ * 每种类型往 `body` 区登记自己的内容展示（`view.body`），往 `composer` 区登记自己的底部输入框
+ * （`parts`，按类型注册）—— 宿主 `NodeHost` 不认识任何类型。
  */
 export interface FlowNodeTypeDef extends FlowNodeTypeDefaults {
   /** 菜单里显示的名字 */
@@ -88,7 +73,7 @@ export interface FlowNodeTypeDef extends FlowNodeTypeDefaults {
    */
   features: readonly string[]
   /**
-   * 只属于这个类型的部件 / 模式（REQ-NODEKIT §4.1）—— 比如生图节点的底部输入框：
+   * 只属于这个类型的部件 / 模式（REQ-NODEKIT §4.1）—— 比如图片 / 视频节点的底部输入框：
    * 哪些类型有、里面放什么都因类型而异，所以就近写在类型声明旁，不做成通用能力。
    */
   parts?: readonly NodePartDef[]
@@ -114,44 +99,68 @@ export function defineNodeType(
 }
 
 /**
- * 七种带端口的业务节点：同一个通用 body，同一张卡片，都能看产出（`output-preview`）。
- * 兜底名用 type 本身（和 body 里「没起名显示 type」一致）。
- * `extra` 是这个类型多出来的那点东西：多启用的能力、只属于它的部件 / 模式。
+ * 底部输入框（按类型注册）。文本 / 图片 / 视频**有了内容就收起**（`hasNodeResource`）：
+ * 输入框是「还没有内容时描述想要什么」用的。导演台一直有。
+ *
+ * 眼下只到「写进 `data.prompt`、回车发 `composer:submit`」为止 —— 没有谁接这个事件，提交不会触发任何运行。
  */
-function genericType(
-  type: string,
-  label: string,
-  icon: Component,
-  extra: { features?: readonly string[]; parts?: readonly NodePartDef[]; modes?: readonly NodeModeDef[] } = {}
-): FlowNodeTypeDef {
-  return defineNodeType(type, {
-    label,
-    icon,
-    view: { body: GenericBody, class: "flex min-h-[160px] w-[300px] flex-col gap-2", fallbackLabel: type },
-    features: [...STANDARD_NODE_FEATURES, "output-preview", ...(extra.features ?? [])],
-    parts: extra.parts,
-    modes: extra.modes
-  })
-}
+const whenEmpty = (part: Parameters<typeof definePromptComposerPart>[0]) =>
+  definePromptComposerPart({ ...part, when: (ctx) => !hasNodeResource(ctx.type, ctx.node.data.value) })
 
-/** 生成类节点：能接受运行请求（眼下只到「发出 `node:run`」，见 `node-kit/features/runnable.ts`） */
-const GENERATOR_FEATURES = ["runnable"] as const
+/**
+ * 带底部输入框的类型多启用 `edit-prompt`（写字时露出输入框、整张画布只有一个节点在编辑）。
+ * 模式 id 全局唯一，所以它是一个能力（`composer/prompt.ts`），不是每个类型各登记一份模式。
+ */
+const COMPOSER_FEATURES = [...STANDARD_NODE_FEATURES, "edit-prompt"] as const
 
 export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
+  /**
+   * 文本 —— body 是一个输入框样子的正文区（`TextBody`，双击进入编辑，失焦提交一次），正文在 `data.text`。
+   * 只有输出：文本是源头。
+   */
   text: defineNodeType("text", {
     label: "文本",
     icon: Type,
     view: { body: TextBody, class: "flex min-h-[120px] w-[320px] flex-col", fallbackLabel: "文本" },
-    features: [...STANDARD_NODE_FEATURES, "edit-body"]
+    features: [...COMPOSER_FEATURES, "edit-body"],
+    parts: [whenEmpty({ id: "text.composer", placeholder: "描述想写的内容（Shift+回车换行）" })]
   }),
   /**
-   * 流程节点 —— 一张空卡片，暂时只有名字，所以没有 body。
+   * 图片 —— body 画 `data.src` 那张图，没有就是空占位。没有资源时接受文本 / 图片 / 视频连入。
+   * 尺寸按图的高宽比（竖图定宽、横图定高），量过一次就记在布局里（`media-fit.ts`）
+   */
+  image: defineNodeType("image", {
+    label: "图片",
+    icon: Image,
+    view: { body: ImageBody, class: "flex flex-col", style: mediaNodeStyle, fallbackLabel: "图片" },
+    parts: [whenEmpty({ id: "image.composer", placeholder: "描述想要的画面（Shift+回车换行）" })],
+    features: COMPOSER_FEATURES
+  }),
+  /** 视频 —— body 只画预览图 `data.poster`（不放 `<video>`），没有就是空占位。连入规则、尺寸规则同图片 */
+  video: defineNodeType("video", {
+    label: "视频",
+    icon: Film,
+    view: { body: VideoBody, class: "flex flex-col", style: mediaNodeStyle, fallbackLabel: "视频" },
+    parts: [whenEmpty({ id: "video.composer", placeholder: "描述想要的视频（Shift+回车换行）" })],
+    features: COMPOSER_FEATURES
+  }),
+  /** 导演台 —— body 是一个「打开导演台」按钮（目的地还没做，按钮先空着）。底部输入框一直在 */
+  director: defineNodeType("director", {
+    label: "导演台",
+    icon: Clapperboard,
+    view: { body: DirectorBody, class: "flex w-[280px] flex-col", fallbackLabel: "导演台" },
+    parts: [definePromptComposerPart({ id: "director.composer", placeholder: "描述想要的镜头（Shift+回车换行）" })],
+    features: COMPOSER_FEATURES
+  }),
+  /**
+   * 兜底 —— 认不出的 `type`（老画布里的 `process`、已经下线的旧业务类型）都按它画：一张空卡片，只有名字，
+   * 没有端口所以和谁都能连。**不可新建**，不在任何菜单里。
    *
    * 宽度固定 360，高度下限按 16:9 给到 202.5（= 360 × 9 / 16），内容更高就自然撑开。
    * 写成 `min-h` 而不是 `aspect-video`：aspect-ratio 只在高度自动、且内容装得下时才成立，
    * 内容一旦超出，块级盒子是溢出而不是长高 —— 那正好和「内容高就撑开」相反。
    */
-  process: defineNodeType("process", {
+  [FALLBACK_NODE_TYPE]: defineNodeType(FALLBACK_NODE_TYPE, {
     label: "流程节点",
     icon: Box,
     view: { class: "min-h-[202.5px] w-[360px]", fallbackLabel: "流程节点" }
@@ -187,35 +196,17 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
       fallbackLabel: "分组"
     },
     features: ["rename", "status", "ungroup", "resizable", "drag-strip"]
-  }),
-  "text-input": genericType("text-input", "文本输入", MessageSquareText),
-  /**
-   * 生图节点有底部输入框 —— **按类型注册**：它的部件和编辑模式就写在这里，别的类型没有。
-   * 视频 / 文本生成将来各注册自己的（框里要的东西不一样），共用 `PromptComposer` 那个外壳。
-   */
-  "image-config": genericType("image-config", "图片生成", ImagePlus, {
-    features: GENERATOR_FEATURES,
-    parts: [
-      defineNodePart({ id: "image-config.composer", slot: "composer", order: ORDER_TYPE, component: ImagePromptComposer })
-    ],
-    modes: [editPromptMode]
-  }),
-  "video-config": genericType("video-config", "视频生成", Film, { features: GENERATOR_FEATURES }),
-  "text-config": genericType("text-config", "文本生成", FileText, { features: GENERATOR_FEATURES }),
-  "image-source": genericType("image-source", "图片素材", Image),
-  "video-source": genericType("video-source", "视频素材", Video),
-  "director-console": genericType("director-console", "导演台", Clapperboard)
+  })
 }
 
 /**
- * 工具栏「添加节点」菜单里列出的类型，顺序即注册表顺序。
+ * 工具栏「添加节点」菜单里列出的类型：text / image / video / director，顺序是 shared 的 `CREATABLE_NODE_TYPES`
+ * （agent 能建的也是这几种）。
  *
  * 分组不在里面：分组是**把已经选中的一片节点圈起来**，入口在 `FlowSelectionToolbar`，
- * 凭空建一个空框再把节点拖进去是反的。
+ * 凭空建一个空框再把节点拖进去是反的。兜底类型也不在：它只是认不出的老节点的外观。
  */
-export const ADDABLE_NODE_TYPES: readonly FlowNodeTypeDef[] = Object.values(FLOW_NODE_TYPES).filter(
-  (def) => def.type !== GROUP_NODE_TYPE
-)
+export const ADDABLE_NODE_TYPES: readonly FlowNodeTypeDef[] = CREATABLE_NODE_TYPES.map((type) => FLOW_NODE_TYPES[type]!)
 
 /**
  * 喂给 `<VueFlow :node-types>` 的组件表。

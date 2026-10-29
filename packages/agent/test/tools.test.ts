@@ -68,7 +68,7 @@ describe('add_node', () => {
 
   it('带 connectFrom：节点和连线在同一个事务里出现，边的形状照前端 onConnect', async () => {
     const { doc, origins, call } = setup([textNode('a', 'A')])
-    const res = await call('add_node', { type: 'process', metadata: { label: 'B' }, connectFrom: 'a' })
+    const res = await call('add_node', { type: 'image', metadata: { label: 'B' }, connectFrom: 'a' })
     const { id, edgeId } = JSON.parse((res.content[0] as { text: string }).text) as { id: string; edgeId: string }
 
     expect(origins).toHaveLength(1)
@@ -83,9 +83,8 @@ describe('add_node', () => {
       animated: false,
     })
     expect(typeof edge!.data.createdAt).toBe('number')
-    // 两端都是无端口类型：data 里不写端口和序号
-    expect(edge!.data).not.toHaveProperty('index')
-    expect(edge!.data).not.toHaveProperty('targetPort')
+    // 文本 → 图片：端口自动选 text → text，写在 data 上
+    expect(edge!.data).toMatchObject({ sourcePort: 'text', targetPort: 'text', index: 1 })
     // 自动摆放：放在来源节点右边，不和它重叠
     expect(node(doc, id)!.layout.position.x).toBeGreaterThan(300)
   })
@@ -97,27 +96,43 @@ describe('add_node', () => {
     expect(origins).toHaveLength(0)
   })
 
-  it('带端口的业务节点：默认业务字段 + 给出的 data；connectFrom 自动选兼容端口', async () => {
-    const { doc, call } = setup([typedNode('src', 'image-source')])
+  it('带端口的节点：默认业务字段 + 给出的 data；connectFrom 自动选兼容端口', async () => {
+    const { doc, call } = setup([typedNode('src', 'image')])
     const res = await call('add_node', {
-      type: 'image-config',
-      metadata: { label: '生图' },
+      type: 'video',
+      metadata: { label: '视频' },
       data: { prompt: '一只猫' },
       connectFrom: 'src',
     })
     const { id, edgeId, sourcePort, targetPort } = JSON.parse((res.content[0] as { text: string }).text)
-    expect(node(doc, id)!.data).toMatchObject({ prompt: '一只猫', model: '', width: 1024 })
+    expect(node(doc, id)!.data).toEqual({ src: '', poster: '', prompt: '一只猫' })
     expect([sourcePort, targetPort]).toEqual(['image', 'image'])
     const edge = edges(doc).find((item) => item.id === edgeId)!
     expect(edge).toMatchObject({ sourceHandle: null, targetHandle: null, data: { sourcePort: 'image', targetPort: 'image', index: 1 } })
   })
 
   it('connectFrom 两端没有兼容端口 → 报错，节点也不建', async () => {
-    const { doc, call } = setup([typedNode('txt', 'text-input')])
+    const { doc, call } = setup([typedNode('vid', 'video')])
     await expect(
-      call('add_node', { type: 'image-source', metadata: { label: 'X' }, connectFrom: 'txt' }),
+      call('add_node', { type: 'director', metadata: { label: 'X' }, connectFrom: 'vid' }),
     ).rejects.toThrow('不匹配')
+    // 文本没有输入，谁也连不进去
+    await expect(call('add_node', { type: 'text', metadata: { label: 'X' }, connectFrom: 'vid' })).rejects.toThrow('没有输入端口')
     expect(nodesMap(doc).size).toBe(1)
+  })
+
+  it('新节点带着资源（data.src）再连进去 → 和人往有资源的图上连一样被拒，节点也不建', async () => {
+    const { doc, call } = setup([textNode('a', 'A')])
+    await expect(
+      call('add_node', { type: 'image', metadata: { label: 'X' }, data: { src: 'https://x/a.png' }, connectFrom: 'a' }),
+    ).rejects.toThrow('已经有资源')
+    expect(nodesMap(doc).size).toBe(1)
+  })
+
+  it('只能新建 text / image / video / director：兜底的 process、分组都不行', async () => {
+    const { call } = setup()
+    await expect(call('add_node', { type: 'process', metadata: { label: 'X' } })).rejects.toThrow()
+    await expect(call('add_node', { type: 'group', metadata: { label: 'X' } })).rejects.toThrow()
   })
 
   it('不认识的 data 键名、超长字符串都在动手之前拒绝', async () => {
@@ -178,7 +193,7 @@ describe('update_node', () => {
 
 describe('connect', () => {
   it('两端存在才连；同方向不重复；不连自己', async () => {
-    const { doc, call } = setup([textNode('a', 'A'), textNode('b', 'B')])
+    const { doc, call } = setup([textNode('a', 'A'), typedNode('b', 'image', 'B')])
     const res = await call('connect', { source: 'a', target: 'b', label: '下一步' })
     expect(res.details.summary).toBe('连线「A」 → 「B」')
     expect(edges(doc)[0]).toMatchObject({ source: 'a', target: 'b', label: '下一步' })
@@ -189,15 +204,16 @@ describe('connect', () => {
     expect(edges(doc)).toHaveLength(1)
   })
 
-  it('端口校验和前端同一套（resolveConnection）：类型不兼容、端口不存在、单输入端口已满都拒绝', async () => {
+  it('端口校验和前端同一套（resolveConnection）：类型不兼容、端口不存在、同一对重复、文本不能被连入都拒绝', async () => {
     const { doc, call } = setup([
-      typedNode('src', 'image-source'),
-      typedNode('txt', 'text-input'),
-      typedNode('txt2', 'text-input'),
-      typedNode('cfg', 'image-config'),
+      typedNode('src', 'image'),
+      textNode('txt', 'txt'),
+      textNode('txt2', 'txt2'),
+      typedNode('cfg', 'image'),
     ])
     await expect(call('connect', { source: 'src', target: 'cfg', sourcePort: 'image', targetPort: 'text' })).rejects.toThrow('不匹配')
     await expect(call('connect', { source: 'src', target: 'cfg', targetPort: 'nope' })).rejects.toThrow('没有输入端口')
+    await expect(call('connect', { source: 'src', target: 'txt' })).rejects.toThrow('没有输入端口')
 
     await call('connect', { source: 'txt', target: 'cfg' })
     expect(edges(doc)[0]).toMatchObject({
@@ -205,20 +221,33 @@ describe('connect', () => {
       targetHandle: null,
       data: { sourcePort: 'text', targetPort: 'text', index: 1 }
     })
-    // 不指定端口也一样：文本只能进提示词，而它已经接满了
-    await expect(call('connect', { source: 'txt2', target: 'cfg' })).rejects.toThrow('接满')
-    await expect(call('connect', { source: 'txt2', target: 'cfg', targetPort: 'text' })).rejects.toThrow('接满')
+    // 被连过之后还能从别的节点连进来；同一个上游同一对端口不连第二条
+    await call('connect', { source: 'txt2', target: 'cfg' })
+    expect(edges(doc).find((item) => item.source === 'txt2')!.data).toMatchObject({ targetPort: 'text', index: 2 })
+    await expect(call('connect', { source: 'txt', target: 'cfg' })).rejects.toThrow('已经有线')
+    expect(edges(doc)).toHaveLength(2)
+  })
+
+  it('目标图片已有资源（data.src）→ 拒绝新线，已有的线不动', async () => {
+    const { doc, call } = setup([textNode('txt', 'txt'), textNode('txt2', 'txt2'), typedNode('img', 'image')])
+    await call('connect', { source: 'txt', target: 'img' })
+    nodeGroup(doc, 'img', 'data')!.set('src', 'https://x/a.png')
+    await expect(call('connect', { source: 'txt2', target: 'img' })).rejects.toThrow('已经有资源')
     expect(edges(doc)).toHaveLength(1)
   })
 
-  it('导演台连到只收视频的节点：自动跳过图片输出，选 video → video', async () => {
-    const { doc, call } = setup([typedNode('dc', 'director-console'), typedNode('vsrc', 'video-source')])
-    await call('connect', { source: 'dc', target: 'vsrc' })
-    expect(edges(doc)[0]!.data).toMatchObject({ sourcePort: 'video', targetPort: 'video', index: 1 })
+  it('导演台 → 图片：先连截图 image → image，再连落到录制 video → video', async () => {
+    const { doc, call } = setup([typedNode('dc', 'director'), typedNode('img', 'image')])
+    await call('connect', { source: 'dc', target: 'img' })
+    await call('connect', { source: 'dc', target: 'img' })
+    expect(edges(doc).map((edge) => [edge.data.sourcePort, edge.data.targetPort])).toEqual([
+      ['image', 'image'],
+      ['video', 'video'],
+    ])
   })
 
   it('多输入端口：不给端口时自动选兼容的那个；序号递增，删线不重排', async () => {
-    const { doc, call } = setup([typedNode('s1', 'image-source'), typedNode('s2', 'image-source'), typedNode('s3', 'image-source'), typedNode('cfg', 'image-config')])
+    const { doc, call } = setup([typedNode('s1', 'image'), typedNode('s2', 'image'), typedNode('s3', 'image'), typedNode('cfg', 'image')])
     await call('connect', { source: 's1', target: 'cfg' })
     await call('connect', { source: 's2', target: 'cfg' })
     const first = edges(doc).find((item) => item.source === 's1')!
@@ -278,8 +307,8 @@ describe('read_canvas', () => {
   it('按组给出：layout / metadata / data / runtime / inputs；超长正文截断，大对象只报大小', async () => {
     const { doc, call } = setup([
       textNode('a', 'A', 'x'.repeat(1000)),
-      { ...typedNode('src', 'image-source'), runtime: { status: 'completed', outputs: { image: 'u.png' } } },
-      typedNode('cfg', 'image-config'),
+      { ...typedNode('src', 'image'), runtime: { status: 'completed', outputs: { image: 'u.png' } } },
+      typedNode('cfg', 'image'),
     ])
     nodeGroup(doc, 'a', 'data')!.set('scene', { objects: Array.from({ length: 100 }, (_, i) => ({ i })) })
     doc.transact(() => {
@@ -299,8 +328,9 @@ describe('read_canvas', () => {
     expect(cfg.inputs).toEqual([{ port: 'image', index: 1, edgeId: 'e1', source: 'src', sourcePort: 'image', value: 'u.png' }])
     expect(snapshot.edges).toEqual([{ id: 'e1', source: 'src', target: 'cfg', sourcePort: 'image', targetPort: 'image', index: 1 }])
     // 画布上出现过的带端口类型列出端口，好让模型连线时点名
-    expect(snapshot.nodeTypes['image-config'].inputs.map((port: { id: string }) => port.id)).toEqual(['image', 'text'])
-    expect(snapshot.nodeTypes.text).toBeUndefined()
+    expect(snapshot.nodeTypes.image.inputs.map((port: { id: string }) => port.id)).toEqual(['text', 'image', 'video'])
+    // 文本只有输出
+    expect(snapshot.nodeTypes.text).toEqual({ inputs: [], outputs: [expect.objectContaining({ id: 'text', dataType: 'text' })] })
   })
 
   it('节点太多时截断并说明', async () => {

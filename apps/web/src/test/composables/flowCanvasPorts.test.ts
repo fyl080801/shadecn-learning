@@ -16,7 +16,7 @@ import { buildNodeRecord } from "@shadecn/shared/flow-node-types"
 /**
  * `useFlowCanvas` 里和 v3 有关的那几件事：
  * 投影节点 → Vue Flow 节点的映射（对象身份、layout 摊平、四组进 data）、
- * 拉线校验（和 agent 共用 shared 的 `validateConnection`）、从带类型的端口长出新节点。
+ * 拉线校验（和 agent 共用 shared 的 `resolveConnection`，带节点数据）、从出口长出新节点的候选菜单。
  */
 
 vi.mock("vue-sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
@@ -143,142 +143,244 @@ describe("拉线校验与端口", () => {
     wrapper = null
   })
 
-  it("isValidConnection 忽略 handle id，按自动选端口判：有一对能连就行，一对都没有才拒绝", () => {
+  it("isValidConnection 忽略 handle id，按 shared 的规则（带节点数据）判", () => {
     const { store, canvas } = setup()
-    store.addNode(record("src", "image-source"))
-    store.addNode(record("txt", "text-input"))
-    store.addNode(record("txt2", "text-input"))
-    store.addNode(record("cfg", "image-config"))
     store.addNode(record("t1", "text"))
-    store.addNode(record("t2", "text"))
+    store.addNode(record("img", "image"))
+    store.addNode({ ...record("full", "image"), data: { src: "https://x/a.png" } })
+    store.addNode(record("vid", "video"))
+    store.addNode(record("dc", "director"))
+    store.addNode(record("p1", "process"))
+    store.addNode(record("p2", "process"))
 
     const ok = (partial: Partial<Connection>) => canvas.isValidConnection(connection(partial))
-    expect(ok({ source: "src", target: "cfg" })).toBe(true)
-    expect(ok({ source: "txt", target: "src" })).toBe(false)
-    expect(ok({ source: "t1", target: "t2" })).toBe(true)
-    // 只有输出的类型（text-input）连不进去
-    expect(ok({ source: "t1", target: "txt" })).toBe(false)
-
-    store.addEdge({
-      id: "e1",
-      source: "txt",
-      target: "cfg",
-      sourceHandle: null,
-      targetHandle: null,
-      data: { sourcePort: "text", targetPort: "text", index: 1 }
-    })
-    // 提示词端口是单输入：第二个文本输入没有别的端口可去
-    expect(ok({ source: "txt2", target: "cfg" })).toBe(false)
+    expect(ok({ source: "t1", target: "img" })).toBe(true)
+    expect(ok({ source: "t1", target: "dc" })).toBe(true)
+    expect(ok({ source: "dc", target: "img" })).toBe(true)
+    expect(ok({ source: "img", target: "dc" })).toBe(true)
+    // 文本没有输入
+    expect(ok({ source: "img", target: "t1" })).toBe(false)
+    // 图片已经有资源：不再接受连入
+    expect(ok({ source: "t1", target: "full" })).toBe(false)
+    // 导演台不收视频
+    expect(ok({ source: "vid", target: "dc" })).toBe(false)
+    // 认不出 / 兜底的老节点和谁都能连
+    expect(ok({ source: "p1", target: "p2" })).toBe(true)
+    // 带 handle id 的也一样判（连接点不带 id，给了也忽略）
+    expect(ok({ source: "t1", target: "img", sourceHandle: "x", targetHandle: "y" })).toBe(true)
   })
 
-  it("拉线连上（onConnect）：handle 为空，自动选出的端口和序号写进 data", () => {
+  it("拉线连上（onConnect）：handle 为空，自动选出的端口和序号写进 data；被连过还能再连别的", () => {
     const { store, flow } = setup()
-    store.addNode(record("dc", "director-console"))
-    store.addNode(record("vsrc", "video-source"))
+    store.addNode(record("dc", "director"))
+    store.addNode(record("img", "image"))
     store.addNode(record("t1", "text"))
     store.addNode(record("t2", "text"))
 
-    flow.emits.connect(connection({ source: "dc", target: "vsrc" }))
-    flow.emits.connect(connection({ source: "t1", target: "t2" }))
+    flow.emits.connect(connection({ source: "dc", target: "img" }))
+    flow.emits.connect(connection({ source: "dc", target: "img" }))
+    flow.emits.connect(connection({ source: "t1", target: "img" }))
+    flow.emits.connect(connection({ source: "t2", target: "img" }))
 
     expect(store.edges.map((edge) => [edge.source, edge.sourceHandle, edge.targetHandle, edge.data])).toEqual([
+      ["dc", null, null, expect.objectContaining({ sourcePort: "image", targetPort: "image", index: 1 })],
       ["dc", null, null, expect.objectContaining({ sourcePort: "video", targetPort: "video", index: 1 })],
-      ["t1", null, null, { createdAt: expect.any(Number) }]
+      ["t1", null, null, expect.objectContaining({ sourcePort: "text", targetPort: "text", index: 1 })],
+      ["t2", null, null, expect.objectContaining({ sourcePort: "text", targetPort: "text", index: 2 })]
     ])
+  })
+
+  it("松手时目标已经有了资源：不建边，提示原因；已有的线不动", async () => {
+    const { toast } = await import("vue-sonner")
+    const { store, flow } = setup()
+    store.addNode(record("t1", "text"))
+    store.addNode(record("t2", "text"))
+    store.addNode(record("img", "image"))
+    flow.emits.connect(connection({ source: "t1", target: "img" }))
+    store.writeNode("img", "data", { set: { src: "https://x/a.png" } })
+
+    flow.emits.connect(connection({ source: "t2", target: "img" }))
+    expect(store.edges).toHaveLength(1)
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("已经有资源"))
   })
 
   it("交给 Vue Flow 的边 handle 一律为空（连接点不带 id，带 id 的老边也照样渲染）", () => {
     const { store, canvas } = setup()
-    store.addNode(record("a", "image-source"))
-    store.addNode(record("b", "image-config"))
+    store.addNode(record("a", "image"))
+    store.addNode(record("b", "image"))
     store.addEdge({ id: "e", source: "a", target: "b", sourceHandle: "image", targetHandle: "image", data: {} })
     expect(canvas.edges.value[0]).toMatchObject({ sourceHandle: null, targetHandle: null })
   })
+})
 
-  it("从带端口的节点往右长：取注册表里第一个能连上的类型，端口写进边的 data", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    try {
-      const { store, canvas, syncToVueFlow } = setup()
-      store.addNode(record("src", "image-source"))
-      syncToVueFlow()
-
-      const pending = canvas.addConnectedNode("src", "source")
-      await vi.advanceTimersByTimeAsync(1100)
-      const id = (await pending)!
-
-      expect(store.nodeById.get(id)!.type).toBe("image-config")
-      expect(store.edges).toHaveLength(1)
-      expect(store.edges[0]).toMatchObject({
-        source: "src",
-        target: id,
-        sourceHandle: null,
-        targetHandle: null,
-        data: { sourcePort: "image", targetPort: "image", index: 1 }
-      })
-    } finally {
-      vi.useRealTimers()
-    }
+describe("从出口长出新节点：候选菜单", () => {
+  beforeEach(() => setActivePinia(createPinia()))
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(document, "elementFromPoint")
   })
 
-  it("从无端口的节点长出来的照旧是默认的文本节点，线的 data 里没有端口", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    try {
-      const { store, canvas, syncToVueFlow } = setup()
-      store.addNode(record("t1", "text"))
-      syncToVueFlow()
+  const typesOf = (canvas: ReturnType<typeof useFlowCanvas>) => canvas.growCandidates.value.map((item) => item.type)
 
-      const pending = canvas.addConnectedNode("t1", "source")
-      await vi.advanceTimersByTimeAsync(1100)
-      const id = (await pending)!
+  /** jsdom 没有 `document.elementFromPoint`：装一个返回指定元素的替身（`droppedOnPane` 靠它判落点） */
+  function stubElementFromPoint(element: Element) {
+    const fn = vi.fn((_x: number, _y: number): Element | null => element)
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: fn })
+    return fn
+  }
 
-      expect(store.nodeById.get(id)!.type).toBe("text")
-      expect(store.edges[0]).toMatchObject({ sourceHandle: null, targetHandle: null })
-      expect(store.edges[0]!.data).not.toHaveProperty("targetPort")
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it("往多输入端口回长两次：序号依次是 1、2", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    try {
-      const { store, canvas, syncToVueFlow } = setup()
-      // 导演台只有一个多输入的图片端口
-      store.addNode(record("dc", "director-console"))
-      syncToVueFlow()
-
-      for (let round = 0; round < 2; round += 1) {
-        const pending = canvas.addConnectedNode("dc", "target", { x: -400, y: round * 300 })
-        await vi.advanceTimersByTimeAsync(1100)
-        await pending
-        syncToVueFlow()
-      }
-
-      expect(store.edges.map((edge) => [edge.data.targetPort, edge.data.index])).toEqual([
-        ["image", 1],
-        ["image", 2]
-      ])
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it("往已经接满的单输入节点回长：提示原因，不建节点也不连线", async () => {
+  it("点出口加号：弹出菜单（锚在连接点上），只列能连上的类型；没选就什么都不建", () => {
     const { store, canvas, syncToVueFlow } = setup()
-    store.addNode(record("a", "image-source"))
-    store.addNode(record("b", "image-source"))
-    store.addEdge({
-      id: "e1",
-      source: "a",
-      target: "b",
+    store.addNode(record("t1", "text"))
+    store.addNode(record("vid", "video"))
+    syncToVueFlow()
+    const handle = document.createElement("div")
+
+    canvas.openGrowMenu("t1", { anchor: handle })
+    expect(canvas.growMenu.value).toMatchObject({ sourceId: "t1", reference: handle })
+    expect(typesOf(canvas)).toEqual(["image", "video", "director"])
+
+    canvas.openGrowMenu("vid", { anchor: handle })
+    expect(typesOf(canvas)).toEqual(["image", "video"])
+
+    canvas.closeGrowMenu()
+    expect(canvas.growMenu.value).toBeNull()
+    expect(typesOf(canvas)).toEqual([])
+    expect(store.nodes).toHaveLength(2)
+  })
+
+  it("从出口拉线到空白处松手：不直接建节点，在落点弹出同一个菜单", () => {
+    const { store, canvas, flow, syncToVueFlow } = setup()
+    store.addNode(record("dc", "director"))
+    syncToVueFlow()
+    // 没有真的 <VueFlow>：给它一个画布根元素，并让「落点下面的元素」落在画布空白上
+    const pane = document.createElement("div")
+    document.body.append(pane)
+    flow.vueFlowRef.value = pane
+    stubElementFromPoint(pane)
+
+    flow.emits.connectStart({ nodeId: "dc", handleId: null, handleType: "source" } as never)
+    flow.emits.connectEnd(new MouseEvent("mouseup", { clientX: 300, clientY: 200 }))
+
+    expect(store.nodes).toHaveLength(1)
+    expect(canvas.growMenu.value?.sourceId).toBe("dc")
+    expect(canvas.growMenu.value?.reference.getBoundingClientRect()).toMatchObject({ x: 300, y: 200, width: 0, height: 0 })
+    expect(typesOf(canvas)).toEqual(["image", "video", "director"])
+    pane.remove()
+  })
+
+  it("落在节点身上（没对准入口）：直接连到它，不弹菜单；连不上就不建边", () => {
+    const { store, canvas, flow, syncToVueFlow } = setup()
+    store.addNode(record("t1", "text"))
+    store.addNode(record("img", "image"))
+    store.addNode(record("t2", "text"))
+    syncToVueFlow()
+    const pane = document.createElement("div")
+    const nodeEl = document.createElement("div")
+    nodeEl.className = "vue-flow__node"
+    nodeEl.setAttribute("data-id", "img")
+    const inner = document.createElement("span")
+    nodeEl.append(inner)
+    pane.append(nodeEl)
+    document.body.append(pane)
+    flow.vueFlowRef.value = pane
+    stubElementFromPoint(inner)
+
+    flow.emits.connectStart({ nodeId: "t1", handleId: null, handleType: "source" } as never)
+    flow.emits.connectEnd(new MouseEvent("mouseup", { clientX: 1, clientY: 1 }))
+    expect(canvas.growMenu.value).toBeNull()
+    expect(store.edges).toHaveLength(1)
+    expect(store.edges[0]).toMatchObject({ source: "t1", target: "img", data: { sourcePort: "text", targetPort: "text" } })
+
+    // 文本没有入口：落在它身上连不上，不建边也不弹菜单
+    nodeEl.setAttribute("data-id", "t2")
+    flow.emits.connectStart({ nodeId: "t1", handleId: null, handleType: "source" } as never)
+    flow.emits.connectEnd(new MouseEvent("mouseup", { clientX: 1, clientY: 1 }))
+    expect(canvas.growMenu.value).toBeNull()
+    expect(store.edges).toHaveLength(1)
+
+    // 落回起点自己身上：什么都不做
+    nodeEl.setAttribute("data-id", "t1")
+    flow.emits.connectStart({ nodeId: "t1", handleId: null, handleType: "source" } as never)
+    flow.emits.connectEnd(new MouseEvent("mouseup", { clientX: 1, clientY: 1 }))
+    expect(store.edges).toHaveLength(1)
+    pane.remove()
+  })
+
+  it("真的连上了（落在入口上）：不弹菜单，也不会再连一次", () => {
+    const { store, canvas, flow, syncToVueFlow } = setup()
+    store.addNode(record("t1", "text"))
+    store.addNode(record("img", "image"))
+    syncToVueFlow()
+    const pane = document.createElement("div")
+    document.body.append(pane)
+    flow.vueFlowRef.value = pane
+    stubElementFromPoint(pane)
+
+    flow.emits.connectStart({ nodeId: "t1", handleId: null, handleType: "source" } as never)
+    flow.emits.connect(connection({ source: "t1", target: "img" }))
+    flow.emits.connectEnd(new MouseEvent("mouseup", { clientX: 1, clientY: 1 }))
+    expect(canvas.growMenu.value).toBeNull()
+    expect(store.edges).toHaveLength(1)
+    pane.remove()
+  })
+
+  it("从入口起的拉线（规则上不该发生）松手也不弹菜单：线只从出口往入口连", () => {
+    const { store, canvas, flow, syncToVueFlow } = setup()
+    store.addNode(record("img", "image"))
+    syncToVueFlow()
+    const pane = document.createElement("div")
+    document.body.append(pane)
+    flow.vueFlowRef.value = pane
+    stubElementFromPoint(pane)
+
+    flow.emits.connectStart({ nodeId: "img", handleId: null, handleType: "target" } as never)
+    flow.emits.connectEnd(new MouseEvent("mouseup", { clientX: 1, clientY: 1 }))
+    expect(canvas.growMenu.value).toBeNull()
+    pane.remove()
+  })
+
+  it("在菜单里选一种：建节点 + 连线（端口写进 data），落在菜单记下的位置；一次撤销两样都拿掉", async () => {
+    const { store, canvas, syncToVueFlow } = setup()
+    store.addNode(record("dc", "director"))
+    syncToVueFlow()
+    canvas.openGrowMenu("dc", { anchor: document.createElement("div") })
+    const at = canvas.growMenu.value!.at
+
+    const id = (await canvas.growFromMenu("video"))!
+    expect(canvas.growMenu.value).toBeNull()
+    const created = store.nodeById.get(id)!
+    expect(created.type).toBe("video")
+    expect(created.data).toEqual({ src: "", poster: "" })
+    expect(created.layout.position).toEqual({ x: at.x, y: at.y })
+    expect(store.edges).toHaveLength(1)
+    expect(store.edges[0]).toMatchObject({
+      source: "dc",
+      target: id,
       sourceHandle: null,
       targetHandle: null,
       data: { sourcePort: "image", targetPort: "image", index: 1 }
     })
-    syncToVueFlow()
 
-    expect(await canvas.addConnectedNode("b", "target")).toBeNull()
-    expect(store.nodes).toHaveLength(2)
-    expect(store.edges).toHaveLength(1)
+    store.undo()
+    expect(store.nodeById.has(id)).toBe(false)
+    expect(store.edges).toHaveLength(0)
+    expect(store.nodes.map((node) => node.id)).toEqual(["dc"])
+  })
+
+  it("菜单开着时起点被删了：选了也不建节点，提示原因", async () => {
+    const { toast } = await import("vue-sonner")
+    const { store, canvas, syncToVueFlow } = setup()
+    store.addNode(record("t1", "text"))
+    syncToVueFlow()
+    canvas.openGrowMenu("t1", { anchor: document.createElement("div") })
+    store.removeElements(["t1"], [])
+
+    expect(typesOf(canvas)).toEqual([])
+    expect(await canvas.growFromMenu("image")).toBeNull()
+    expect(store.nodes).toHaveLength(0)
+    expect(toast.error).not.toHaveBeenCalledWith(expect.stringContaining("undefined"))
   })
 })

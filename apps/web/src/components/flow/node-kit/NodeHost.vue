@@ -197,7 +197,7 @@ const rootClass = computed(() =>
   cn(
     "relative",
     view.value.shell !== "frame" &&
-      "rounded-md border bg-card px-3 py-2 text-sm text-card-foreground shadow-sm transition-shadow",
+      "rounded-md border bg-card text-sm text-card-foreground shadow-sm transition-shadow",
     view.value.class,
     ...kit.rootClassesFor(props.type).map((rootClass) => rootClass(ctx)),
     props.selected ? (view.value.selectedClass ?? DEFAULT_SELECTED_CLASS) : view.value.idleClass
@@ -269,7 +269,7 @@ const OUTER_OFFSET = 8
     <component :is="view.body" v-if="view.body" />
 
     <NodeSlot :parts="parts.footer" />
-    <div v-if="actions.footer.length > 0" class="nodrag nopan mt-1 flex items-center gap-1">
+    <div v-if="actions.footer.length > 0" class="nodrag nopan flex items-center gap-1 px-2 py-1">
       <ActionBar :actions="actions.footer" />
     </div>
 
@@ -290,7 +290,7 @@ const OUTER_OFFSET = 8
       :offset="OUTER_OFFSET"
     >
       <div
-        class="nodrag nopan flex items-center gap-1 rounded-xl border bg-card/95 p-1.5 shadow-lg backdrop-blur"
+        class="nodrag nopan flex items-center gap-1 rounded-xl bg-card/95 p-1.5 shadow-lg backdrop-blur"
         data-node-slot="composer"
       >
         <NodeSlot :parts="parts.composer" />

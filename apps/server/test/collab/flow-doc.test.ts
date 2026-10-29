@@ -49,7 +49,7 @@ describe('graph ↔ Y.Doc 往返', () => {
     const business = { prompt: '一只猫', model: 'v2', steps: 30, 嵌套: { 数组: [1, '二', null] } }
     const original = node(
       'n1',
-      'image-config',
+      'image',
       { position: { x: 0, y: 0 }, sourcePosition: 'right', targetPosition: 'left' },
       {
         metadata: { label: '生图', description: '说明', createdAt: 1_700_000_000_000 },

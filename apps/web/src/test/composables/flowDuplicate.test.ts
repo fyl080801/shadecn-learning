@@ -119,7 +119,7 @@ function directorNode(id: string): FlowNodeRecord {
   }))
 
   return {
-    ...buildNodeRecord({ id, type: "director-console", label: "导演台", position: { x: 0, y: 0 } }),
+    ...buildNodeRecord({ id, type: "director", label: "导演台", position: { x: 0, y: 0 } }),
     data: {
       ...spreadCollection(OBJ, objects, (o) => o.uuid),
       ...spreadCollection(TRACK, tracks, (t) => t.id),
@@ -138,12 +138,12 @@ describe("复制节点与平铺分键", () => {
   it("复制 type / layout / metadata / data；runtime 重置为空闲且不带产出；连线不复制", async () => {
     const { store, canvas } = setup()
     store.addNode({
-      ...buildNodeRecord({ id: "src", type: "image-source", label: "素材", position: { x: 10, y: 20 } }),
+      ...buildNodeRecord({ id: "src", type: "image", label: "素材", position: { x: 10, y: 20 } }),
       metadata: { label: "素材", description: "说明", createdAt: 1_700_000_000_000 },
-      data: { sourceType: "image" },
+      data: { src: "a.png" },
       runtime: { status: "completed", taskId: "t1", outputs: { image: "a.png" } }
     })
-    store.addNode(buildNodeRecord({ id: "cfg", type: "image-config", label: "生图", position: { x: 0, y: 0 } }))
+    store.addNode(buildNodeRecord({ id: "cfg", type: "image", label: "生图", position: { x: 0, y: 0 } }))
     store.addEdge({
       id: "e1",
       source: "src",
@@ -157,11 +157,11 @@ describe("复制节点与平铺分键", () => {
     const copyId = (await canvas.duplicateNode("src"))!
     const copy = store.nodes.find((node) => node.id === copyId)!
 
-    expect(copy.type).toBe("image-source")
+    expect(copy.type).toBe("image")
     expect(copy.layout.position).toEqual({ x: 34, y: 44 })
     expect(copy.metadata).toMatchObject({ label: "素材", description: "说明" })
     expect(copy.metadata.createdAt).toBeGreaterThan(1_700_000_000_000)
-    expect(copy.data).toEqual({ sourceType: "image" })
+    expect(copy.data).toEqual({ src: "a.png" })
     expect(copy.runtime).toEqual({ status: "idle" })
     expect(store.edges.map((item) => item.id)).toEqual(["e1"])
   })
@@ -180,7 +180,7 @@ describe("复制节点与平铺分键", () => {
     expect(Object.keys(copy.data).sort()).toEqual(Object.keys(source.data).sort())
     expect(readCollection(copy.data, OBJ).size).toBe(15)
     expect(readCollection(copy.data, TRACK).size).toBe(4)
-    expect(copy.type).toBe("director-console")
+    expect(copy.type).toBe("director")
   })
 
   it("副本的每个集合元素都是深拷贝，改一个不影响另一个", async () => {

@@ -73,97 +73,138 @@ export interface FlowNodeTypeDefaults {
   /**
    * 输入 / 输出端口。端口**不画成多个连接点**：节点左边最多一个进、右边最多一个出（都不带 id），
    * 端口只决定能连什么、连上之后是哪对（写在边的 data 上）。
-   * **一个都不声明**就是和谁都能连的普通节点 —— `text` / `process` 就是这样。
+   * **一个都不声明**就是和谁都能连的普通节点 —— 兜底的 `process` 就是这样。
    */
   inputs?: PortDef[]
   outputs?: PortDef[]
+  /**
+   * 这个节点「有没有内容 / 资源」—— 文本有正文、图片 / 视频有资源地址。
+   * 不给 = 永远没有（导演台、分组）。界面（底部输入框要不要出现）和连线规则问的都是它，
+   * 统一经 `hasNodeResource` 调，别在别处重写一遍判断。
+   */
+  hasResource?: (data: Readonly<Record<string, unknown>>) => boolean
+  /**
+   * 声明了的输入端口**此刻**开不开放。不给 = 一直开放。
+   * 关上时：画布上左边那个连接点不画，`resolveConnection` 拒绝**新**连线；
+   * 已经连着的线照旧保留（读的一侧从不回写文档）。
+   */
+  inputsOpen?: (data: Readonly<Record<string, unknown>>) => boolean
 }
 
+/** 字符串字段有没有非空白内容 */
+function filled(value: unknown): boolean {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+/** 图片 / 视频的资源地址在 `data.src` */
+const hasSrc = (data: Readonly<Record<string, unknown>>) => filled(data.src)
+
 /**
- * 注册表本体。**键的顺序有意义**：从一个带端口的节点「长出新节点」时，取的是这里
- * 第一个能和它连上的类型（`findGrowType`）。所以「加工」类型排在「素材」类型前面 ——
- * 从一张图往右长，长出来的应该是图生图，而不是另一张素材图。
+ * 图片 / 视频节点共用的输入：文本（提示词）、参考图、参考视频。
+ *
+ * **每个输入都能接多条、不设上限**：一个节点已经被连过，别的节点还能再连进来；
+ * 唯一的去重是「同一个上游、同一对端口」不连第二条（`resolveConnection` 第 4 条）。
+ */
+const mediaInputs = (): PortDef[] => [
+  { id: 'text', dataType: 'text', label: '提示词', multiple: true },
+  { id: 'image', dataType: 'image', label: '参考图', multiple: true },
+  { id: 'video', dataType: 'video', label: '参考视频', multiple: true },
+]
+
+/**
+ * 注册表本体。
+ *
+ * **键的顺序有意义**：前四个就是「可新建」的类型（`CREATABLE_NODE_TYPES`，工具栏菜单、
+ * 拉线 / 点加号弹出的候选菜单、agent 的 `add_node` 都按这个顺序列）；`process` / `group` 不可新建。
  *
  * **每个类型里端口的声明顺序也有意义**：画布上一个节点最多左右各一个连接点，连线时连的是哪对端口
- * 由 `resolveConnection` 按声明顺序自动选（第一对类型兼容、目标没满的）。
+ * 由 `resolveConnection` 按声明顺序自动选（起点的输出在外层，第一对类型兼容、目标没满、还没连过的）。
  *
- * 示例数据（`sample/画布数据参考/`）里的七种业务节点都在这里，端口照样例里真实出现过的连线声明：
- * text-input → text-config / video-config，image-source → image-config / video-config /
- * director-console / image-source（派生），image-config → video-config / image-config /
- * image-source，director-console → image-source（截图）/ video-source（录制），
- * video-source → video-config。
+ * ## 连线关系表（起点 → 终点：选中的端口对；条件）
+ *
+ * | 起点 \ 终点 | text | image | video | director |
+ * |---|---|---|---|---|
+ * | **text**     | ✗ text 没有输入 | text → text | text → text | text → text |
+ * | **image**    | ✗ | image → image | image → image | image → image |
+ * | **video**    | ✗ | video → video | video → video | ✗ 导演台不收视频 |
+ * | **director** | ✗ | image → image（截图）；连过再连落到 video → video（录制） | 同左 | image → image（只此一对） |
+ *
+ * - 终点是 image / video 时，**只在它没有资源（`data.src` 为空）时**能连进去；有了资源一律拒绝新连线。
+ * - 起点有没有资源不影响能不能连。
+ * - 每个输入端口都能接多条；同一个上游、同一对端口已经连过时试下一对，没有下一对就拒绝。
+ *
+ * 这张表由 `packages/shared/test/flow-node-types.test.ts` 里的全矩阵测试逐格钉住 —— 改端口声明
+ * 必须同时改这张表和那份测试。
  */
 export const FLOW_NODE_TYPE_DEFAULTS: Record<string, FlowNodeTypeDefaults> = {
   text: {
     type: 'text',
     // 正文单独占一个 key（平铺在 data 上）：两个人一个改标题一个改正文才不会互相盖掉
     defaultData: () => ({ text: '' }),
+    hasResource: (data) => filled(data.text),
+    // 文本是源头：只往外给，不接收
+    outputs: [{ id: 'text', dataType: 'text', label: '文本' }],
   },
-  process: {
-    type: 'process',
+  image: {
+    type: 'image',
+    // 资源地址平铺在 data 上：`src` 是图片本身
+    defaultData: () => ({ src: '' }),
+    hasResource: hasSrc,
+    // 已经有图了就不再接收输入 —— 输入是「怎么得到这张图」的素材，图有了就没有意义了
+    inputsOpen: (data) => !hasSrc(data),
+    inputs: mediaInputs(),
+    outputs: [{ id: 'image', dataType: 'image', label: '图片' }],
+  },
+  video: {
+    type: 'video',
+    // `src` 是视频本身，`poster` 是它的预览图（画布上只画这张，不放 <video>）
+    defaultData: () => ({ src: '', poster: '' }),
+    hasResource: hasSrc,
+    inputsOpen: (data) => !hasSrc(data),
+    inputs: mediaInputs(),
+    outputs: [{ id: 'video', dataType: 'video', label: '视频' }],
+  },
+  director: {
+    type: 'director',
+    // 场景、时间轴这类巨型对象不进默认值：它们按「平铺分键」由导演台自己写
+    defaultData: () => ({}),
+    inputs: [
+      { id: 'image', dataType: 'image', label: '全景 / 参考图', multiple: true },
+      { id: 'text', dataType: 'text', label: '描述', multiple: true },
+    ],
+    outputs: [
+      { id: 'image', dataType: 'image', label: '截图' },
+      { id: 'video', dataType: 'video', label: '录制' },
+    ],
+  },
+  /**
+   * 兜底类型：认不出的 `type`（老画布里的 `process`、已经下线的旧业务类型）按它渲染和连线，
+   * 外观不变、和谁都能连。不可新建。
+   */
+  [FALLBACK_NODE_TYPE]: {
+    type: FALLBACK_NODE_TYPE,
   },
   [GROUP_NODE_TYPE]: {
     type: GROUP_NODE_TYPE,
     defaultData: () => ({ background: GROUP_DEFAULT_BACKGROUND }),
     defaultLayout: () => ({ ...GROUP_DEFAULT_SIZE, zIndex: GROUP_Z_INDEX }),
   },
-  'text-input': {
-    type: 'text-input',
-    defaultData: () => ({ prompt: '', negativePrompt: '' }),
-    outputs: [{ id: 'text', dataType: 'text', label: '文本' }],
-  },
-  'image-config': {
-    type: 'image-config',
-    defaultData: () => ({ prompt: '', model: '', width: 1024, height: 1024 }),
-    inputs: [
-      { id: 'image', dataType: 'image', label: '参考图', multiple: true },
-      { id: 'text', dataType: 'text', label: '提示词' },
-    ],
-    outputs: [{ id: 'image', dataType: 'image', label: '图片' }],
-  },
-  'video-config': {
-    type: 'video-config',
-    defaultData: () => ({ prompt: '', model: '', width: 1280, height: 720, fps: 24, duration: 5 }),
-    inputs: [
-      { id: 'image', dataType: 'image', label: '参考图 / 首尾帧', multiple: true },
-      { id: 'video', dataType: 'video', label: '参考视频', multiple: true },
-      { id: 'text', dataType: 'text', label: '提示词' },
-    ],
-    outputs: [{ id: 'video', dataType: 'video', label: '视频' }],
-  },
-  'text-config': {
-    type: 'text-config',
-    defaultData: () => ({ prompt: '', model: '', content: '' }),
-    inputs: [
-      { id: 'text', dataType: 'text', label: '文本', multiple: true },
-      { id: 'image', dataType: 'image', label: '图片', multiple: true },
-    ],
-    outputs: [{ id: 'text', dataType: 'text', label: '文本' }],
-  },
-  'image-source': {
-    type: 'image-source',
-    defaultData: () => ({ sourceType: 'image' }),
-    // 派生（裁剪、全景、截图）的来源：一张图只能从一个地方派生出来
-    inputs: [{ id: 'image', dataType: 'image', label: '派生自' }],
-    outputs: [{ id: 'image', dataType: 'image', label: '图片' }],
-  },
-  'video-source': {
-    type: 'video-source',
-    defaultData: () => ({ sourceType: 'video' }),
-    // 导演台录制出来的视频从这里接进来
-    inputs: [{ id: 'video', dataType: 'video', label: '录制自' }],
-    outputs: [{ id: 'video', dataType: 'video', label: '视频' }],
-  },
-  'director-console': {
-    type: 'director-console',
-    // 场景、时间轴这类巨型对象不进默认值：它们按「平铺分键」由导演台自己写
-    defaultData: () => ({ aspectRatio: '16:9', activeView: 'camera' }),
-    inputs: [{ id: 'image', dataType: 'image', label: '全景 / 参考图', multiple: true }],
-    outputs: [
-      { id: 'image', dataType: 'image', label: '截图' },
-      { id: 'video', dataType: 'video', label: '录制' },
-    ],
-  },
+}
+
+/**
+ * 能新建的节点类型，**顺序就是菜单顺序**：工具栏「添加节点」、拉线 / 点加号弹出的候选菜单、
+ * agent 的 `add_node` 都只认这几种。兜底的 `process` 和分组（只能由「打组」围出来）不在里面。
+ */
+export const CREATABLE_NODE_TYPES = ['text', 'image', 'video', 'director'] as const
+
+export type CreatableNodeType = (typeof CREATABLE_NODE_TYPES)[number]
+
+/**
+ * 这个节点有没有内容 / 资源：text → 正文非空白；image / video → `data.src` 非空白；其余永远没有。
+ * 「有没有内容」只问这一个函数（底部输入框收不收、连线规则）。
+ */
+export function hasNodeResource(type: string, data: Readonly<Record<string, unknown>>): boolean {
+  return FLOW_NODE_TYPE_DEFAULTS[type]?.hasResource?.(data) ?? false
 }
 
 /** 认不认识这个 type；认不出来的按兜底类型（和 `fromYNode` 读缺失 type 时同一个） */
@@ -209,7 +250,7 @@ export function portsOf(type: string, side: PortSide): PortDef[] {
 
 /**
  * 这个类型声明过端口没有（任一侧）。声明过的类型**只有**声明了的那些端口：只声明了输出的
- * （text-input）就没有输入、谁也连不进去；一个都没声明的（text / process / group）
+ * （text）就没有输入、谁也连不进去；一个都没声明的（兜底的 process、group）
  * 是「左右各一个、和谁都能连」。
  */
 export function hasPorts(type: string): boolean {
@@ -217,11 +258,31 @@ export function hasPorts(type: string): boolean {
 }
 
 /**
- * 节点在这一侧有没有连接点 —— 画布上左边（inputs）/ 右边（outputs）那一个圆画不画。
- * 没声明端口的类型两边都有；声明了端口的类型，这一侧至少有一个端口才有。
+ * 这个类型在这一侧**声明**过端口没有（不看节点数据）。没声明端口的类型两边都算有。
+ * 「此刻能不能连」要用带数据的 `hasSide`。
  */
-export function hasSide(type: string, side: PortSide): boolean {
+export function declaresSide(type: string, side: PortSide): boolean {
   return !hasPorts(type) || portsOf(type, side).length > 0
+}
+
+/**
+ * 声明了的输入此刻开不开放（`inputsOpen`，不给就一直开放）—— 图片 / 视频有了资源就关上。
+ * 没声明输入的类型这里也返回 true：「没有」和「关上」是两回事，由 `declaresSide` 判前者。
+ */
+export function inputsOpen(type: string, data: Readonly<Record<string, unknown>>): boolean {
+  return FLOW_NODE_TYPE_DEFAULTS[type]?.inputsOpen?.(data) ?? true
+}
+
+/**
+ * 节点在这一侧**此刻**有没有连接点 —— 画布上左边（inputs）/ 右边（outputs）那一个圆画不画，
+ * 也是 `resolveConnection` 判「这一侧能不能连」的同一个函数。
+ *
+ * `data` 是节点的业务数据，**必填**：输入开不开放看数据（图片 / 视频有资源就关），
+ * 必填是为了每个调用方都没法漏掉这条 —— 漏掉了人和 agent 的规则就不一样了。
+ */
+export function hasSide(type: string, side: PortSide, data: Readonly<Record<string, unknown>>): boolean {
+  if (!declaresSide(type, side)) return false
+  return side === 'outputs' || inputsOpen(type, data)
 }
 
 /** 按 id 找端口；`port` 为 null 返回 null */
@@ -253,6 +314,11 @@ export interface ConnectionCandidate {
 export interface ConnectionContext {
   /** 按节点 id 取类型；节点不存在返回 undefined */
   typeOf: (nodeId: string) => string | undefined
+  /**
+   * 按节点 id 取业务 `data`（输入开不开放要看它）；取不到按空对象算。
+   * **必填**：人（`useFlowCanvas`）和 agent（`tools.ts`）都得传，规则才是同一套。
+   */
+  dataOf: (nodeId: string) => Readonly<Record<string, unknown>> | undefined
   /** 画布上已有的边（端口读的是 `data.sourcePort` / `data.targetPort`） */
   edges: Iterable<Pick<FlowEdge, 'id' | 'source' | 'target' | 'data'>>
   /** 正在被改端点的那条边自己（重连时），不算进容量和重复判断 */
@@ -280,12 +346,13 @@ function portOfEdge(edge: Pick<FlowEdge, 'data'>, key: 'sourcePort' | 'targetPor
  * 画布上每个节点最多左右各一个连接点（不带 id），端口不由用户点选，而是在这里**自动选**：
  *
  * 1. 两端都存在，且不是同一个节点；
- * 2. 声明过端口、但这一侧一个都没有的类型连不了（text-input 没有输入）；
+ * 2. 声明过端口、但这一侧一个都没有的类型连不了（text 没有输入）；
+ *    终点的输入此刻关着的（图片 / 视频已经有资源）连不了 —— 只拒绝新线，已有的线不动；
  *    显式给了端口的，必须是该侧真实存在的端口；给无端口类型指定端口拒绝；
  * 3. 候选 = 起点的输出端口 × 终点的输入端口，**都按注册表里声明的顺序**，起点在外层 ——
  *    没声明端口的一侧只有一个按 `any` 算的「虚端口」（null）；
- * 4. 取第一对：数据类型兼容、目标端口没满（单输入只接一条，`max` 限多输入）、
- *    且这对端口之间还没有线（已经有了就跳过，试下一对 —— 导演台第二次连到视频生成，会落到 video 那对上）；
+ * 4. 取第一对：数据类型兼容、目标端口没满（单输入只接一条，`max` 限多输入；眼下的类型都是不限条数的多输入）、
+ *    且这对端口之间还没有线（已经有了就跳过，试下一对 —— 导演台第二次连到视频，会落到 video 那对上）；
  * 5. 一对都不行就拒绝，原因按「类型不兼容 < 端口已满 < 已经连过」取最接近能连上的那条。
  *
  * 两端都没声明端口的连线：选出来的是 (null, null)，同方向已经有一条就拒绝，不连第二条。
@@ -300,8 +367,11 @@ export function resolveConnection(
   if (targetType === undefined) return { ok: false, reason: `终点节点 ${candidate.target} 不存在` }
   if (candidate.source === candidate.target) return { ok: false, reason: '起点和终点不能是同一个节点' }
 
-  if (!hasSide(sourceType, 'outputs')) return { ok: false, reason: `${sourceType} 没有输出端口` }
-  if (!hasSide(targetType, 'inputs')) return { ok: false, reason: `${targetType} 没有输入端口` }
+  if (!declaresSide(sourceType, 'outputs')) return { ok: false, reason: `${sourceType} 没有输出端口` }
+  if (!declaresSide(targetType, 'inputs')) return { ok: false, reason: `${targetType} 没有输入端口` }
+  if (!hasSide(targetType, 'inputs', context.dataOf(candidate.target) ?? {})) {
+    return { ok: false, reason: `${targetType} 节点已经有资源，不再接受新的连入` }
+  }
 
   const sources = candidatesOf(sourceType, 'outputs', candidate.sourcePort)
   if (!sources.ok) return sources
@@ -391,21 +461,58 @@ export function connectionEdgeData(
   }
 }
 
+// —— 从出口长出新节点（拉线到空白处 / 点出口上的加号）——
+
 /**
- * 从一个节点的某一侧「长出」新节点时该长成什么：按 `types` 的顺序，第一个能和它连上的类型
- * （由 `attempt` 判 —— 调用方拿 `resolveConnection` 去试，规则和真连线是同一套）。
- *
- * 只看**声明了端口**的类型 —— 没声明端口的节点和谁都兼容，算进来的话永远是它赢。
- * 找不到返回 null，调用方退回默认的新建类型。
+ * 连线只有一个方向：**从出口（右边）拉向入口（左边）**。入口不能起拉、也没有加号，
+ * 所以「长出新节点」只有一种：新节点在下游、是终点。
  */
-export function findGrowType(
-  types: Iterable<string>,
-  attempt: (type: string) => ConnectionVerdict,
-): { type: string; ports: ResolvedPorts } | null {
+
+/** 一个能长出来的类型，和长出来之后那条线会连哪对端口 */
+export interface GrowCandidate {
+  type: string
+  ports: ResolvedPorts
+}
+
+/** 列候选时给「还不存在的新节点」用的占位 id —— 不会和 `createId()` 发出来的撞 */
+const CANDIDATE_NODE_ID = '\u0000candidate'
+
+/**
+ * 从 `sourceId` 的出口新建一个 `type` 节点（id 为 `newNodeId`、data 是该类型的默认值，即**全新的空节点**）
+ * 并连上，这条线能不能连、连哪对端口 —— 规则就是 `resolveConnection`，新节点的类型和数据由这里补给它。
+ */
+export function resolveGrowConnection(
+  sourceId: string,
+  type: string,
+  newNodeId: string,
+  context: ConnectionContext,
+): ConnectionVerdict {
+  const fresh = nodeTypeDefaultsOf(type).defaultData?.() ?? {}
+  return resolveConnection(
+    { source: sourceId, target: newNodeId },
+    {
+      ...context,
+      typeOf: (id) => (id === newNodeId ? type : context.typeOf(id)),
+      dataOf: (id) => (id === newNodeId ? fresh : context.dataOf(id)),
+    },
+  )
+}
+
+/**
+ * 从 `sourceId` 的出口能长出哪些类型 —— 拉线到空白处 / 点出口加号时弹出的那个菜单列的就是它。
+ *
+ * 按 `types` 的顺序（默认 `CREATABLE_NODE_TYPES`），逐个按「全新的空节点」去试 `resolveConnection`，
+ * 只留能连上的。一个都没有就是空数组（菜单里给一条置灰的「没有可连接的节点」）。
+ */
+export function connectableNodeTypes(
+  sourceId: string,
+  context: ConnectionContext,
+  types: Iterable<string> = CREATABLE_NODE_TYPES,
+): GrowCandidate[] {
+  const candidates: GrowCandidate[] = []
   for (const type of types) {
-    if (!hasPorts(type)) continue
-    const verdict = attempt(type)
-    if (verdict.ok) return { type, ports: { sourcePort: verdict.sourcePort, targetPort: verdict.targetPort } }
+    const verdict = resolveGrowConnection(sourceId, type, CANDIDATE_NODE_ID, context)
+    if (verdict.ok) candidates.push({ type, ports: { sourcePort: verdict.sourcePort, targetPort: verdict.targetPort } })
   }
-  return null
+  return candidates
 }

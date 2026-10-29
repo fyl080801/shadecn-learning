@@ -136,7 +136,7 @@ describe("内容读写", () => {
 
   it("runtime 也按组写：产出按端口摊成 outputs.<port> 键，投影里读回成 outputs 对象", () => {
     const { store, doc } = setup()
-    store.addNode(typed("cfg", "image-config"))
+    store.addNode(typed("cfg", "image"))
     store.writeNode("cfg", "runtime", { set: { status: "completed", [outputKey("image")]: "a.png" } })
 
     expect(store.nodes[0]!.runtime).toEqual({ status: "completed", outputs: { image: "a.png" } })
@@ -385,6 +385,28 @@ describe("撤销", () => {
 
     // 撤掉的是我加的那个，别人的还在
     expect(store.nodes.map((item) => item.id)).toEqual(["n-remote"])
+  })
+
+  it("按资源记下的尺寸写进布局、同步给别人，但不进撤销栈；值没变不再写", () => {
+    const { store, doc } = setup()
+    const remote = new Y.Doc()
+    store.addNode(node("n1"))
+    store.separateUndo()
+    sync(doc, remote)
+    const updates = vi.fn()
+    doc.on("update", updates)
+
+    store.recordNodeSize("n1", { width: 240, height: 427 })
+    expect(store.nodes[0]!.layout).toMatchObject({ width: 240, height: 427 })
+    sync(doc, remote)
+    expect(remote.getMap<Y.Map<unknown>>("nodes").get("n1")?.get("height")).toBe(427)
+
+    store.recordNodeSize("n1", { width: 240, height: 427 })
+    expect(updates).toHaveBeenCalledTimes(1)
+
+    // 撤销栈里只有「加节点」：撤一次节点就没了，不是先撤掉尺寸
+    store.undo()
+    expect(store.nodes).toHaveLength(0)
   })
 
   it("separateUndo 之间的改动各成一条记录", () => {
@@ -659,12 +681,12 @@ describe("增量投影", () => {
 describe("inputs 派生（增量）", () => {
   beforeEach(() => setActivePinia(createPinia()))
 
-  /** 上游图片素材 → 下游图生图，外加一个毫不相干的节点 */
+  /** 上游图片 → 下游图片（参考图），外加一个毫不相干的节点 */
   function wired() {
     const ctx = setup()
-    ctx.store.addNode(typed("src", "image-source", { image: "a.png" }))
-    ctx.store.addNode(typed("cfg", "image-config"))
-    ctx.store.addNode(typed("other", "image-config"))
+    ctx.store.addNode(typed("src", "image", { image: "a.png" }))
+    ctx.store.addNode(typed("cfg", "image"))
+    ctx.store.addNode(typed("other", "image"))
     ctx.store.addEdge(
       edge("e1", "src", "cfg", { data: { sourcePort: "image", targetPort: "image", index: 1 } })
     )
@@ -684,7 +706,7 @@ describe("inputs 派生（增量）", () => {
 
   it("加一条边：只有目标节点换对象，上游和无关节点引用不变", () => {
     const { store } = wired()
-    store.addNode(typed("src2", "image-source", { image: "b.png" }))
+    store.addNode(typed("src2", "image", { image: "b.png" }))
     const before = byId(store)
 
     store.addEdge(
@@ -726,7 +748,7 @@ describe("inputs 派生（增量）", () => {
 
   it("删线不重排：删掉 1 号，2 号的 index 还是 2", () => {
     const { store } = wired()
-    store.addNode(typed("src2", "image-source", { image: "b.png" }))
+    store.addNode(typed("src2", "image", { image: "b.png" }))
     store.addEdge(
       edge("e2", "src2", "cfg", { data: { sourcePort: "image", targetPort: "image", index: 2 } })
     )

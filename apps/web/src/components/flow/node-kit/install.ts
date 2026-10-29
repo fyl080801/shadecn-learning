@@ -1,3 +1,4 @@
+import { editPromptFeature } from "@/components/flow/composer/prompt"
 import { FLOW_NODE_TYPES } from "@/components/flow/node-types"
 
 import { deleteFeature, duplicateFeature } from "./features/edit-actions"
@@ -25,9 +26,11 @@ const FEATURES = [
   connectableFeature,
   statusFeature,
   editBodyFeature,
+  editPromptFeature,
   ungroupFeature,
   resizableFeature,
   dragStripFeature,
+  // 下面两个是通用能力，眼下没有类型启用（四种节点都还没有运行器 / 产出）；保留登记，有类型要用时只改声明
   outputPreviewFeature,
   runnableFeature
 ]

@@ -19,7 +19,7 @@ import {
 function record(id: string, outputs?: Record<string, unknown>): FlowNodeRecord {
   return {
     id,
-    type: 'image-config',
+    type: 'image',
     layout: { position: { x: 0, y: 0 } },
     metadata: { label: id },
     data: {},

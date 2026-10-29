@@ -529,7 +529,7 @@ describe('持久化的失败语义', () => {
     }
     const runtime = runtimeWith(
       [
-        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', metadata: { label: '留下' } })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: '留下' } })], { stopReason: 'toolUse' }),
         fauxAssistantMessage('好了'),
       ],
       { store: failing },
@@ -586,7 +586,7 @@ describe('持久化的失败语义', () => {
     }
     const runtime = runtimeWith(
       [
-        fauxAssistantMessage([fauxToolCall('add_node', { type: 'process', metadata: { label: 'x' } })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: 'x' } })], { stopReason: 'toolUse' }),
         fauxAssistantMessage('好了'),
       ],
       { runLog: broken },

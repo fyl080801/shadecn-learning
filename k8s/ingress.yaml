@@ -8,6 +8,8 @@ metadata:
     # /ws/collaboration 上的 Yjs 长连接：默认 60s 读超时会把闲置的协作连接掐掉
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # 画布资源上传：每个请求最多一片（ASSET_PART_SIZE = 8MiB）加一点 multipart 余量；默认 1m 会把它们全拦成 413
+    nginx.ingress.kubernetes.io/proxy-body-size: "16m"
 spec:
   ingressClassName: nginx
   tls:

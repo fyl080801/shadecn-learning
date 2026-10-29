@@ -10,8 +10,8 @@ import { EDIT_BODY_MODE } from "@/components/flow/node-kit/features/edit-body"
  * 正文存在 `data.text`（业务字段，自己一个 key）；名字在 `metadata.label`。
  * Y.Map 的合并粒度是 key，所以一个人改标题、另一个人改正文不会互相盖掉。
  *
- * 编辑用的是「双击进入 textarea、失焦或 Esc 退出」，**不是**随时可编辑的 contenteditable：
- * 节点首先要能被拖、被框选，一直可编辑的话在上面按下鼠标就成了放光标而不是拖节点。
+ * 外观是一个输入框（占满节点、无边框的正文区，空着显示占位文字）；编辑用的是「双击进入 textarea、失焦或 Esc 退出」，
+ * **不是**随时可编辑的 contenteditable：节点首先要能被拖、被框选，一直可编辑的话在上面按下鼠标就成了放光标而不是拖节点。
  *
  * 「双击 → 进入编辑」是能力 `edit-body` 的事（它接 `node:dblclick`、进 `edit-body` 模式）；
  * 这里只看模式：进了就开草稿，被顶掉（选中了别的节点、改起了名字）就按 blur 的规矩提交。
@@ -59,6 +59,9 @@ function cancel() {
 
 <template>
   <!--
+    看起来就是一个输入框：平时是一块占满节点、无边框的正文区（空着时显示占位文字），双击变成真的 textarea。
+    不做成随时可编辑：节点首先要能被拖、被框选，一直可编辑的话按下鼠标就成了放光标而不是拖节点。
+
     nodrag / nopan：在文本框里拖选文字不该变成拖节点或拖画布。
     Esc 退出、失焦提交；回车留给换行 —— 这是一块多行文本，不是一行标题。
   -->
@@ -66,17 +69,19 @@ function cancel() {
     v-if="body.editing.value"
     ref="inputRef"
     v-model="body.draft.value"
-    class="nodrag nopan nowheel min-h-[104px] w-full flex-1 resize-none rounded-sm border border-primary bg-background p-1 text-sm outline-none"
+    class="nodrag nopan nowheel min-h-[120px] w-full flex-1 resize-none rounded-[inherit] border-0 bg-background px-3 py-2 text-sm outline-none ring-0"
+    data-testid="text-body-input"
     @blur="commit()"
     @keydown.esc.prevent="cancel()"
     @dblclick.stop
   />
-  <p
+  <div
     v-else
-    class="min-h-[104px] whitespace-pre-wrap break-words p-1"
+    class="min-h-[120px] flex-1 cursor-text whitespace-pre-wrap break-words rounded-[inherit] bg-background px-3 py-2 text-sm"
     :class="text ? '' : 'text-muted-foreground'"
     title="双击编辑文本"
+    data-testid="text-body"
   >
     {{ text || "双击输入文本" }}
-  </p>
+  </div>
 </template>

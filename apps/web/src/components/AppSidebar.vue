@@ -47,7 +47,7 @@ interface NavItem {
   to: string
   icon: Component
   /**
-   * 高亮判据。缺省是路径**全等** —— 详情页（`/galstory/stories/:id`）也要让它所属的
+   * 高亮判据。缺省是路径**全等** —— 详情页（如 `/xxx/:id`）也要让它所属的
    * 那一项亮着，否则点进去侧栏就整个失去当前位置，所以那类入口写 `prefix`。
    */
   match?: "exact" | "prefix"
@@ -62,8 +62,7 @@ interface NavItem {
 /**
  * 侧栏分组。`label` 为空的那一组不带标题（就是原来那条平铺的列表）。
  *
- * **为什么要分组**：GalStory 是一整块功能（故事 + 配置，将来还有对局），
- * 平铺进这串演示页里，「这两项是一起的」就只能靠位置猜。
+ * 目前只剩一组；分组机制保留，给将来「一整块相关入口」用，免得靠位置猜哪些项是一起的。
  *
  * 「关于」不在任何一组里 —— 它和「设置」「退出」一起挂在底部的用户菜单下
  * （关于是个模态窗，不是页面）。
@@ -85,13 +84,6 @@ const navGroups: NavGroup[] = [
       { label: "画布", to: "/canvas", icon: Workflow, activePaths: ["/canvas", "/projects"] }
     ]
   }
-  // {
-  //   label: "GalStory",
-  //   items: [
-  //     { label: "故事库", to: "/galstory/stories", icon: BookOpen, match: "prefix" },
-  //     { label: "模型配置", to: "/galstory/config", icon: SlidersHorizontal }
-  //   ]
-  // }
 ]
 
 const {

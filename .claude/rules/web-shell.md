@@ -31,8 +31,8 @@ paths:
 
 - The gate is server-side (`apps/server/frontend/guard.ts`): anonymous browsers never receive `index.html`. The router's `beforeEach` is the fallback for a session that dies mid-visit: `fetchSession()` (one cached `GET /api/auth/me`), then if anonymous `goToLoginPage()` (`location.replace('/login?redirect=…')`) on the **first** navigation (`from === START_LOCATION`), else `requestReLogin(to.fullPath)`.
 - `lib/auth.ts`: `useAuth()` (`user` / `roles` / `isAuthenticated` / `authEnabled` / `sessionExpired` / `hasRole`) and `apiFetch()`. No token in the browser; login/logout are full-page navigations to `/api/auth/login` / `/api/auth/logout`.
-- **An expired session is never a silent redirect** (it would destroy unsubmitted input). A 401 → `requestReLogin(redirect)` clears the user, remembers the URL, flips `sessionExpired`; `SessionExpiredDialog.vue` asks. × / Esc / overlay → `dismissReLogin()` (the next 401 asks again). **退出** = `logoutFromExpired()` → `/api/auth/logout?redirect=<url>`, landing on `/login?redirect=<url>`. **重新登录** opens a **second window** on `/api/auth/login?redirect=/auth/login-done` and the page stays put.
-- **Re-login is a popup, not an iframe** (an iframe needs Keycloak to drop `X-Frame-Options` and loses its SSO cookie to third-party-cookie rules). The cost is the popup blocker: `window.open()` → `null` is toasted and the button becomes 「重新打开登录窗口」; the dialog stays.
+- **An expired session is never a silent redirect** (it would destroy unsubmitted input). A 401 only calls `requestReLogin(redirect)` (clears the user, remembers the URL, flips `sessionExpired`); `SessionExpiredDialog.vue` owns every exit (choices: `docs/02` §3.7).
+- **Re-login is a popup, not an iframe** (an iframe needs Keycloak to drop `X-Frame-Options` and loses its SSO cookie to third-party-cookie rules). `window.open()` may return `null` (popup blocker) — handle it without closing the dialog (`docs/02` §3.7).
 - **Success has two legs** (the session cookie is httpOnly): `apps/server/frontend/login-done-page.ts` renders `/auth/login-done` (registered *after* `pageGuard`), `postMessage`s a same-origin `app-auth:login-done` to `window.opener` and closes. The dialog accepts it only when `event.origin === location.origin` **and** the marker matches, then `finishReLogin()` → `fetchSession(true)` and closes only if `/api/auth/me` says logged-in. A 3s poll is the second leg, and also notices `loginWindow.closed`. `LOGIN_DONE_PATH` / `LOGIN_DONE_SOURCE` / `LOGIN_DONE_MESSAGE` live in `@shadecn/shared/auth`.
 
 ## UI components (shadcn-vue)
@@ -51,14 +51,9 @@ paths:
 - `tailwind.css`'s `@layer base` restores `cursor: pointer` for `button:not(:disabled), [role="button"]:not(:disabled)` (v4 Preflight dropped it).
 - **Declare `color-scheme` in both blocks** (`light` on `:root`, `dark` on `.dark`) or scrollbars stay white.
 - **vue-sonner ignores the class**: `App.vue` feeds its `theme` prop from `resolvedTheme`. **`style.css` must `@import "vue-sonner/style.css"`** — without it toasts render unstyled in the document flow.
-- The `.dark` palette is one step lighter than shadcn's default (background `0.215`, card `0.255`, …); the login page's inline CSS carries the same numbers — keep them in sync.
+- The `.dark` palette deviates from shadcn's default (values: `docs/01` §2.7); the login page's inline CSS carries the same numbers — change both together.
 
 ## Views — grouped by feature
 
-- Root: `Home.vue`, `Settings.vue` (account, linked accounts, appearance, display preferences; theme in `lib/theme.ts`, dates in `lib/preferences.ts` — browser-local, no save button). Its only entry is the sidebar's bottom user menu, which also holds 关于 (`components/AboutDialog.vue`, a modal, no route) and 退出登录 (behind an `AlertDialog` in `AppSidebar.vue`). The middle nav is pages only.
-  - `components/settings/LinkedAccounts.vue` is the only card that writes to the server (rules in `auth.md`). It reads the route, so `Settings.test.ts` mounts through a memory router and stubs `@/lib/api`.
-- `views/canvas/` — REQ-CANVAS (see `flow-editor.md`).
-- `views/three/` — `ThreeEditor.vue` (REQ-3DEDITOR), `3DScene.vue` (REQ-DIRECTOR), `Canvas3D.vue` / `LightScene.vue` (Three.js placeholders), `Emu3DView.vue` (CSS-only cube via `Cube3D.vue`, not Three.js).
-- `views/games/` — `Demo3.vue` (brick-breaker), `SnakeGame.vue`, `Game2048.vue` (scoped CSS, no shadcn).
-- `views/demos/` — `FlowChart.vue` (REQ-FLOW), `RichEditor.vue` (REQ-PROMPT), `HiC.vue`, `Example.vue`.
-- `Example.vue` and `Emu3DView.vue` have **no route** (`docs/01-app-shell.md` §3).
+- Views are grouped by feature directory (catalog: `docs/01` §2.4.2); `router/index.ts` is their only importer. `views/canvas/` → `flow-editor.md`.
+- `components/settings/LinkedAccounts.vue` is the only settings card that writes to the server (rules in `auth.md`). It reads the route, so `Settings.test.ts` mounts through a memory router and stubs `@/lib/api`.

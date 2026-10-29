@@ -12,7 +12,10 @@ import type {
   Paged,
   ProjectInviteView,
   ProjectMemberView,
-  ProjectSummary
+  ProjectSummary,
+  AssetUploadPart,
+  AssetUploadSession,
+  UploadedAsset
 } from "@shadecn/shared/canvas"
 import {
   agentApiPath,
@@ -299,6 +302,90 @@ export const flowApi = {
       body: json(patch)
     })
   },
+
+  /**
+   * 一次传完一个画布资源（图片 / 视频，**不超过一片**）。大文件别直接调，走 `lib/asset-upload.ts` 的
+   * `uploadFlowAsset`：它按大小选一次传完还是分片。
+   *
+   * 不走 `request()`：那条路会给有 body 的请求补 `content-type: application/json`，
+   * 而 multipart 的边界得由浏览器自己写进 content-type。
+   */
+  async uploadAsset(flowId: string, file: Blob, filename?: string) {
+    const body = new FormData()
+    body.set("file", file, filename ?? (file instanceof File ? file.name : "file"))
+    const res = await apiFetch(`/api/flows/${flowId}/assets`, {
+      method: "POST",
+      headers: { accept: "application/json" },
+      body
+    })
+    return readAssetResponse<UploadedAsset>(res)
+  },
+
+  /**
+   * 分片上传第 1 步：开一次上传，拿 `uploadId` / `key` / 分片大小。
+   *
+   * 错误走 `readAssetResponse` 而不是 `request()`：文件超过总上限时后端回 413，
+   * 要提示的是 `message`（「文件不能超过 100MB」），不是 `error` 那句 "Payload Too Large"。
+   */
+  async startAssetUpload(flowId: string, body: { filename: string; contentType: string; size: number }) {
+    const res = await apiFetch(`/api/flows/${flowId}/assets/multipart`, {
+      method: "POST",
+      headers: ASSET_JSON_HEADERS,
+      body: json(body)
+    })
+    return readAssetResponse<AssetUploadSession>(res)
+  },
+
+  /** 分片上传第 2 步：传一片（原始字节），回这片的 ETag */
+  async uploadAssetPart(flowId: string, session: AssetUploadSession, partNumber: number, chunk: Blob) {
+    const res = await apiFetch(
+      `${multipartPath(flowId, session.uploadId)}/parts/${partNumber}?key=${encodeURIComponent(session.key)}`,
+      {
+        method: "PUT",
+        headers: { accept: "application/json", "content-type": "application/octet-stream" },
+        body: chunk
+      }
+    )
+    return readAssetResponse<AssetUploadPart>(res)
+  },
+
+  /** 分片上传第 3 步：按片号升序交回全部回执，拼成对象 */
+  async completeAssetUpload(flowId: string, session: AssetUploadSession, parts: AssetUploadPart[]) {
+    const res = await apiFetch(`${multipartPath(flowId, session.uploadId)}/complete`, {
+      method: "POST",
+      headers: ASSET_JSON_HEADERS,
+      body: json({ key: session.key, parts })
+    })
+    return readAssetResponse<UploadedAsset>(res)
+  },
+
+  /** 中途失败：放弃这次上传，S3 删掉已传的片 */
+  abortAssetUpload(flowId: string, session: AssetUploadSession) {
+    return request<void>(`${multipartPath(flowId, session.uploadId)}?key=${encodeURIComponent(session.key)}`, {
+      method: "DELETE"
+    })
+  }
+}
+
+const ASSET_JSON_HEADERS = { accept: "application/json", "content-type": "application/json" }
+
+function multipartPath(flowId: string, uploadId: string) {
+  return `/api/flows/${flowId}/assets/multipart/${encodeURIComponent(uploadId)}`
+}
+
+/**
+ * 上传接口的回包：失败时把服务端的 `message`（「只支持图片或视频」「文件不能超过…」）当作提示 ——
+ * 比 `request()` 用的 `error`（"Unsupported Media Type"）说人话。
+ */
+async function readAssetResponse<T>(res: Response): Promise<T> {
+  const payload: unknown = await res.json().catch(() => null)
+  if (!res.ok) {
+    const { message, error } = (payload ?? {}) as { message?: string; error?: string }
+    const text =
+      res.status === 401 ? "登录状态已失效，请重新登录" : (message ?? error ?? `上传失败（${res.status}）`)
+    throw new ApiError(text, res.status, payload)
+  }
+  return payload as T
 }
 
 // —— 画布 Agent（REQ-AGENT，docs/20）——

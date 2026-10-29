@@ -39,21 +39,21 @@ The browser never sees a token: the code exchange is server-side, tokens live in
 
 - `GET /api/auth/{config,me,login,link/:provider,callback,identities,logout}` + `DELETE /api/auth/identities/:id`. `/me` always answers 200 (`{enabled, authenticated, user}`). `state` / `nonce` / `code_verifier` live in `AuthRequest`, keyed by a short-lived `oidc_tx` cookie, consumed exactly once.
 - **`/api/auth` is in `PUBLIC_API`**, so the logged-in-only endpoints check `c.get('user')` themselves.
-- **Logout only ends the local session** — no token revocation, no RP-initiated logout (signing out here must not sign the user out of other SSO apps). Accepted cost: Keycloak's SSO cookie survives, so logging in again is silent.
+- **Logout only ends the local session** — don't add token revocation or RP-initiated logout (`docs/02` §3.2.3).
 - No IdP configured (`KEYCLOAK_ISSUER` + `KEYCLOAK_CLIENT_ID`, or `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET`) → `authEnabled = false`: dev warns and lets everything through, production refuses to boot. Half a provider is reported as a missing variable.
 
 ## Account linking
 
 - **Login and linking are the same flow**; `AuthRequest.linkUserId` makes the callback stash a pending link instead of minting a session. The callback **reads the `AuthRequest` before looking at `?error=`** (a cancelled link must return to `/settings`), and re-checks `c.get('user')?.id === linkUserId`.
 - **A link is never written until the user confirms which account it is** (`PendingLink` + `POST /api/auth/link/confirm`). The browser may be signed into someone else's GitHub, an authorized OAuth App skips consent, and GitHub has no account chooser — so we ask. The callback only pre-checks (`identities.checkLink`, read-only) and stashes; confirm re-runs the real check. **One pending row per user** (a retry replaces it); **no access token stored** for it; pending state rides **`GET /api/auth/identities`, not the URL**; confirm is **POST**.
-- UI: `components/settings/LinkedAccounts.vue` lists `UserIdentity` rows, offers 关联 for unbound providers, 解绑 behind an `AlertDialog` (disabled at the last row). Linking is a **full-page navigation** to `/api/auth/link/:provider`; coming back it opens the confirm dialog on `pending`. Failures arrive as `?link_error=` — toast once, then strip it from the URL. Dismissing the dialog means "later" (the pending row lives server-side, expires in ten minutes).
+- Linking is a **full-page navigation** to `/api/auth/link/:provider`; the confirm dialog opens from `pending` on `GET /api/auth/identities`, never from URL state; `?link_error=` is read once and stripped from the URL (UI: `docs/02` §3.9).
 
 ## Identities — `store/identities.ts`
 
 - Each binding is a `UserIdentity`; `unique(provider, subject)` *is* the conflict check. The **primary identity** has no flag column — it's the row whose `(issuer, subject)` equals `User.issuer` / `User.subject`.
 - Every login refreshes *that identity's* display fields; **`User` profile fields follow only the primary identity**; **`User.roles` is written only on a Keycloak login** (GitHub reports `[]`).
 - Unbinding the last identity → 409 (no recovery path). Unbinding the primary promotes another row, rewrites the two columns, leaves name/avatar alone. Legacy users get their primary row **backfilled on use** (login adopts, `listFor` writes on read).
-- **Identity is `(provider, subject)`, never email** — no "same email = same person", not even verified. Email changes and gets reassigned, Apple relays differ per app, and auto-merge is the classic takeover path (we can't re-check another IdP's `email_verified`). Merging only happens via 关联 from a signed-in session. Accepted cost: Keycloak-then-GitHub sign-in creates two accounts; the supported path is sign in with the main account, then link. Merging existing accounts is not implemented.
+- **Identity is `(provider, subject)`, never email** — no "same email = same person", not even verified. Email changes and gets reassigned, Apple relays differ per app, and auto-merge is the classic takeover path (we can't re-check another IdP's `email_verified`). Merging only happens via 关联 from a signed-in session (`docs/02` §3.9.1, §3.9.3).
 
 ## Profile hooks and avatars
 

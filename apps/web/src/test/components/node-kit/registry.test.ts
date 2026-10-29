@@ -34,17 +34,17 @@ afterEach(() => {
 })
 
 describe("matchesNode", () => {
-  const info = { type: "image-config", features: ["rename", "runnable"] }
+  const info = { type: "image", features: ["rename", "runnable"] }
 
   it("各项之间是「且」：types 命中其一、features 全部具备、not 一项都不沾", () => {
     expect(matchesNode({}, info)).toBe(true)
-    expect(matchesNode({ types: ["text", "image-config"] }, info)).toBe(true)
+    expect(matchesNode({ types: ["text", "image"] }, info)).toBe(true)
     expect(matchesNode({ types: ["text"] }, info)).toBe(false)
     expect(matchesNode({ features: ["rename", "runnable"] }, info)).toBe(true)
     expect(matchesNode({ features: ["rename", "composer"] }, info)).toBe(false)
     expect(matchesNode({ not: { features: ["runnable"] } }, info)).toBe(false)
-    expect(matchesNode({ not: { types: ["image-config"] } }, info)).toBe(false)
-    expect(matchesNode({ types: ["image-config"], not: { features: ["resizable"] } }, info)).toBe(true)
+    expect(matchesNode({ not: { types: ["image"] } }, info)).toBe(false)
+    expect(matchesNode({ types: ["image"], not: { features: ["resizable"] } }, info)).toBe(true)
   })
 })
 
@@ -52,10 +52,10 @@ describe("部件解析", () => {
   it("能力里的部件只挂到启用了这个能力的类型上", () => {
     const kit = createNodeKit()
     kit.registerFeature(defineNodeFeature({ id: "runnable", parts: [part("status.badge", { slot: "badge" })] }))
-    kit.registerType({ type: "image-config", features: ["runnable"] })
+    kit.registerType({ type: "image", features: ["runnable"] })
     kit.registerType({ type: "text", features: [] })
 
-    expect(ids(kit.partsFor("image-config", "badge"))).toEqual(["status.badge"])
+    expect(ids(kit.partsFor("image", "badge"))).toEqual(["status.badge"])
     expect(kit.partsFor("text", "badge")).toEqual([])
   })
 
@@ -63,22 +63,22 @@ describe("部件解析", () => {
     const kit = createNodeKit()
     kit.registerFeature(defineNodeFeature({ id: "rename" }))
     kit.registerType({
-      type: "image-config",
+      type: "image",
       features: ["rename"],
       parts: [part("image.composer", { slot: "composer" })]
     })
     kit.registerType({ type: "text", features: ["rename"] })
 
-    expect(ids(kit.partsFor("image-config", "composer"))).toEqual(["image.composer"])
+    expect(ids(kit.partsFor("image", "composer"))).toEqual(["image.composer"])
     expect(kit.partsFor("text", "composer")).toHaveLength(0)
   })
 
   it("单独注册的部件按 match.types 只挂到指定的类型上", () => {
     const kit = createNodeKit()
-    kit.registerPart(part("prompt.composer", { slot: "composer", match: { types: ["image-config", "video-config"] } }))
+    kit.registerPart(part("prompt.composer", { slot: "composer", match: { types: ["image", "video"] } }))
 
-    expect(ids(kit.partsFor("image-config", "composer"))).toEqual(["prompt.composer"])
-    expect(ids(kit.partsFor("video-config", "composer"))).toEqual(["prompt.composer"])
+    expect(ids(kit.partsFor("image", "composer"))).toEqual(["prompt.composer"])
+    expect(ids(kit.partsFor("video", "composer"))).toEqual(["prompt.composer"])
     expect(kit.partsFor("text", "composer")).toHaveLength(0)
   })
 
@@ -87,14 +87,14 @@ describe("部件解析", () => {
     kit.registerFeature(
       defineNodeFeature({
         id: "output-preview",
-        parts: [part("preview.thumb", { slot: "footer", match: { types: ["image-source"] } })]
+        parts: [part("preview.thumb", { slot: "footer", match: { types: ["image-src"] } })]
       })
     )
-    kit.registerType({ type: "image-source", features: ["output-preview"] })
-    kit.registerType({ type: "text-config", features: ["output-preview"] })
+    kit.registerType({ type: "image-src", features: ["output-preview"] })
+    kit.registerType({ type: "text", features: ["output-preview"] })
 
-    expect(ids(kit.partsFor("image-source", "footer"))).toEqual(["preview.thumb"])
-    expect(kit.partsFor("text-config", "footer")).toHaveLength(0)
+    expect(ids(kit.partsFor("image-src", "footer"))).toEqual(["preview.thumb"])
+    expect(kit.partsFor("text", "footer")).toHaveLength(0)
   })
 
   it("按 order 排序，同 order 按注册顺序；类型自带的部件默认排在能力之后", () => {
@@ -231,10 +231,10 @@ describe("事件总线", () => {
         handlers: [defineNodeHandler({ event: "action:invoke", handle })]
       })
     )
-    kit.registerType({ type: "image-config", features: ["runnable"] })
+    kit.registerType({ type: "image", features: ["runnable"] })
     kit.registerType({ type: "text", features: [] })
 
-    kit.emit("action:invoke", { action: "x" }, fakeContext(kit, "n1", "image-config"))
+    kit.emit("action:invoke", { action: "x" }, fakeContext(kit, "n1", "image"))
     kit.emit("action:invoke", { action: "x" }, fakeContext(kit, "n2", "text"))
 
     expect(handle).toHaveBeenCalledTimes(1)

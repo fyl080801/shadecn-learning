@@ -117,22 +117,31 @@ describe("默认注册表的组合", () => {
     expect(kit.findMode("process", "edit-body")).toBeNull()
   })
 
-  it("底部输入框按类型注册：只有 image-config 有，其余类型选中了也没有", () => {
+  it("底部输入框按类型注册：文本 / 图片 / 视频 / 导演台各一个，兜底和分组没有；编辑模式来自能力 edit-prompt", () => {
     const kit = createDefaultNodeKit()
+    const withComposer = ["text", "image", "video", "director"]
     for (const type of Object.keys(FLOW_NODE_TYPES)) {
-      expect(ids(kit.partsFor(type, "composer"))).toEqual(type === "image-config" ? ["image-config.composer"] : [])
+      expect(ids(kit.partsFor(type, "composer")), type).toEqual(withComposer.includes(type) ? [`${type}.composer`] : [])
+      expect(kit.findMode(type, "edit-prompt") !== null, type).toBe(withComposer.includes(type))
     }
-    expect(kit.findMode("image-config", "edit-prompt")).not.toBeNull()
-    expect(kit.findMode("video-config", "edit-prompt")).toBeNull()
   })
 
-  it("产出预览挂在七种业务节点上；可运行的是三种生成节点", () => {
+  it("产出预览、可运行是登记着的通用能力，但眼下没有类型启用", () => {
     const kit = createDefaultNodeKit()
-    const generic = ["text-input", "image-config", "video-config", "text-config", "image-source", "video-source", "director-console"]
     for (const type of Object.keys(FLOW_NODE_TYPES)) {
-      expect(kit.partsFor(type, "side").length > 0).toBe(generic.includes(type))
-      expect(kit.hasFeature(type, "runnable")).toBe(["image-config", "video-config", "text-config"].includes(type))
+      expect(kit.partsFor(type, "side"), type).toHaveLength(0)
+      expect(kit.hasFeature(type, "runnable"), type).toBe(false)
+      expect(kit.hasFeature(type, "output-preview"), type).toBe(false)
     }
+  })
+
+  it("每种类型的 body 是自己登记的那个；兜底类型没有 body", () => {
+    const kit = createDefaultNodeKit()
+    for (const type of ["text", "image", "video", "director"]) {
+      expect(kit.viewOf(type).body, type).toBe(FLOW_NODE_TYPES[type]!.view.body)
+      expect(kit.viewOf(type).body, type).toBeDefined()
+    }
+    expect(kit.viewOf("process").body).toBeUndefined()
   })
 })
 

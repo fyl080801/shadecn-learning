@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
  * 右上角的分享按钮 —— **占位，暂时没有任何动作**。
  *
  * 样式和旁边的对话按钮一致（浅色圆钮）。真要做分享时在这里接上即可，
- * 位置由 `FlowAgentChat` 的 `actions` 插槽决定（同一个右上角 Panel，排在对话按钮左边）。
+ * 位置由 `FlowEditor.vue` 决定（右上角同一个 Panel，和对话按钮并列、排在它左边）。
  */
 </script>
 

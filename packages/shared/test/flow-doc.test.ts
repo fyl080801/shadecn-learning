@@ -30,7 +30,7 @@ import {
 function fullNode(id: string): FlowNodeRecord {
   return {
     id,
-    type: 'image-config',
+    type: 'image',
     layout: {
       position: { x: 10, y: 20 },
       width: 200,

@@ -75,6 +75,13 @@ export default defineConfig({
       AGENT_SANDBOX: '',
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_OAUTH_TOKEN: '',
+      /**
+       * 对象存储默认按「没配」跑（上传 503），开发者 .env 里的真 AK/SK 漏不进来。
+       * 要测上传的用例用 `replaceAssetStorage()` 换一个假的存储。
+       */
+      S3_BUCKET: '',
+      S3_ACCESS_KEY_ID: '',
+      S3_SECRET_ACCESS_KEY: '',
     },
   },
 })

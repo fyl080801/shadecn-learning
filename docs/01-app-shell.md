@@ -60,10 +60,10 @@
 | 目录 | 装什么 |
 |---|---|
 | `views/` 根 | `Home.vue` / `Settings.vue` —— 不属于任何功能的外壳页 |
-| `views/canvas/` | [REQ-CANVAS](13-flow-canvas-management.md)：`Projects` / `ProjectHome` / `InviteAccept` / `FlowEditor` |
-| `views/three/` | 3D 相关：`Viewport3D`（[REQ-DIRECTOR](07-director-console.md)，渲染核心见 [REQ-3DEDITOR](06-three-editor.md)）、`Canvas3D` / `LightScene` 占位页、`Emu3DView` |
+| `views/canvas/` | [REQ-CANVAS](13-flow-canvas-management.md) / [REQ-SOLO](16-personal-flow.md)：`PersonalFlows` / `ProjectHome` / `InviteAccept` / `FlowEditor` |
+| `views/three/` | 3D 相关：`Viewport3D`（[REQ-DIRECTOR](07-director-console.md)，渲染核心见 [REQ-3DEDITOR](06-three-editor.md)）、`Canvas3D` / `LightScene` 占位页、`Emu3DView`（纯 CSS 立方体，不是 Three.js；没有路由，见 §3） |
 | `views/games/` | 小游戏：`Demo3` / `SnakeGame` / `Game2048` |
-| `views/demos/` | 单页能力验证：`FlowChart`（[REQ-FLOW](09-flow-chart.md)）、`RichEditor`（[REQ-PROMPT](08-prompt-input.md)）、`HiC`、`Example` |
+| `views/demos/` | 单页能力验证：`FlowChart`（[REQ-FLOW](09-flow-chart.md)）、`RichEditor`（[REQ-PROMPT](08-prompt-input.md)）、`HiC`、`Example`（没有路由，见 §3） |
 
 新增页面先想清楚归哪一格；哪一格都不像，说明它可能该是个独立需求。
 

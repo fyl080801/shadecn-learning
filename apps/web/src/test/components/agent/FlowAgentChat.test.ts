@@ -35,16 +35,6 @@ vi.mock("@/composables/flow/editor-context", () => ({
   })
 }))
 
-// <Panel> 要一个 Vue Flow 实例才能定位；这里只关心里面的内容
-vi.mock("@vue-flow/core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@vue-flow/core")>()),
-  Panel: defineComponent({
-    setup(_, { slots }) {
-      return () => h("div", { "data-stub": "panel" }, slots.default?.())
-    }
-  })
-}))
-
 const toastError = vi.fn()
 vi.mock("vue-sonner", () => ({
   toast: { error: (...args: unknown[]) => toastError(...args), success: vi.fn(), warning: vi.fn() }

@@ -2,19 +2,19 @@
 import { computed, ref } from "vue"
 import { Panel } from "@vue-flow/core"
 import { MiniMap } from "@vue-flow/minimap"
-import { Map, Maximize, Minus, Plus } from "@lucide/vue"
+import { Map, Maximize, Minus, Network, Plus } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Separator } from "@/components/ui/separator"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
- * 左下角视图控件：缩放（− 百分比 +）、全览、小地图显隐，外加小地图本身。
+ * 左下角视图控件：缩放（− 百分比 +）、全览、自动布局、小地图显隐，外加小地图本身。
  *
  * 小地图是挂在开关按钮上的浮层（Popover，按钮正上方弹出），默认不显示；
  * 它是一个常驻开关，点外面、按 Esc 都不收起，只有再点一次按钮才关。
  *
- * 只管「怎么看」，不碰画布内容。
+ * 除「自动布局」外只管「怎么看」，不碰画布内容；自动布局会改节点位置（一条撤销）。
  * 定位交给 Vue Flow 的 `<Panel>`，动作走 `useFlowCanvas` 里包好的那几个
  * （按钮缩放不会发 move-end，视口同步在那边补）。
  * 必须渲染在 `<VueFlow>` 的插槽里 —— Panel / MiniMap 依赖它注入的画布实例。
@@ -95,6 +95,16 @@ function cancel(event: KeyboardEvent) {
       @click="canvas.fitAll()"
     >
       <Maximize />
+    </Button>
+    <Button
+      variant="ghost"
+      size="icon"
+      class="size-8 rounded-full"
+      title="自动布局（横向）"
+      :disabled="!canvas.canAutoLayout.value"
+      @click="canvas.autoLayout()"
+    >
+      <Network class="-rotate-90" />
     </Button>
     <Popover v-model:open="canvas.miniMapVisible.value">
       <PopoverTrigger as-child>
