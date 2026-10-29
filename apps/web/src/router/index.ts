@@ -102,13 +102,7 @@ const router = createRouter({
           meta: { title: "流程图画布" }
         },
         {
-          path: "projects",
-          name: "Projects",
-          // 项目列表并进了工作区的页内侧栏，这个地址只留给老书签
-          redirect: "/personal"
-        },
-        {
-          path: "personal",
+          path: "canvas",
           name: "PersonalFlows",
           component: () => import("@/views/canvas/PersonalFlows.vue"),
           meta: { title: "个人画布" }

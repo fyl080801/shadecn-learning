@@ -134,7 +134,7 @@ async function mountPage() {
     history: createMemoryHistory(),
     routes: [
       { path: "/", component: { template: "<div />" } },
-      { path: "/personal", component: { template: "<div />" } },
+      { path: "/canvas", component: { template: "<div />" } },
       { path: "/projects/:projectId", component: { template: "<div />" } },
       { path: "/flows/:flowId", component: { template: "<div />" } }
     ]

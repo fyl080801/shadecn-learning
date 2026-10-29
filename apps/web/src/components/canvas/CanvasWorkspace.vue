@@ -39,7 +39,7 @@ import type { ProjectSummary } from "@shadecn/shared/canvas"
  *
  * 个人画布和项目原来是两个页面、两个应用侧栏入口；现在合成一个界面：
  * 侧栏第一项是「个人画布」，下面的「项目」分组列出我是成员的项目，
- * 点谁内容区就换成谁。切换仍是路由跳转（`/personal`、`/projects/:id`），
+ * 点谁内容区就换成谁。切换仍是路由跳转（`/canvas`、`/projects/:id`），
  * 所以刷新、书签、返回键都照常工作 —— 壳只是每个页面各包一份，列表状态放在
  * `useProjectNav` 的模块级缓存里，换页时侧栏不会闪 loading。
  *
@@ -103,7 +103,7 @@ const { run: confirmDelete } = useAsyncAction(async () => {
   await projectApi.remove(target.id)
   toast.success("项目已删除")
   await refresh()
-  if (wasCurrent) void router.push("/personal")
+  if (wasCurrent) void router.push("/canvas")
 }, { errorMessage: "删除失败" })
 
 const rowClass =
@@ -119,14 +119,14 @@ const rowClass =
       class="flex max-h-48 w-full shrink-0 flex-col gap-1 overflow-y-auto border-b p-2 md:max-h-none md:w-56 md:border-b-0 md:border-r"
     >
       <RouterLink
-        to="/personal"
-        :class="cn(rowClass, 'flex-none', route.path === '/personal' && 'bg-accent font-medium text-accent-foreground')"
+        to="/canvas"
+        :class="cn(rowClass, 'flex-none', route.path === '/canvas' && 'bg-accent font-medium text-accent-foreground')"
       >
         <UserRoundPen class="size-4 shrink-0" />
         <span class="truncate">个人画布</span>
       </RouterLink>
 
-      <div class="mt-2 flex items-center justify-between px-2">
+      <div class="mt-2 flex items-center justify-between pl-2 pr-1">
         <span class="text-xs font-medium text-muted-foreground">项目</span>
         <Button variant="ghost" size="icon-xs" title="新建项目" aria-label="新建项目" @click="openCreate">
           <Plus />

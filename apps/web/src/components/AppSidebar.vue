@@ -53,7 +53,7 @@ interface NavItem {
   match?: "exact" | "prefix"
   /**
    * 额外的前缀列表：路由落在其中任何一个之下（该路径本身或 `<路径>/…`）也算这一项。
-   * 给「一个入口、多个地址」用 —— 「画布」入口指向 `/personal`，
+   * 给「一个入口、多个地址」用 —— 「画布」入口指向 `/canvas`，
    * 但项目页 `/projects/:id` 是同一个工作区，也要亮着它。
    */
   activePaths?: string[]
@@ -82,7 +82,7 @@ const navGroups: NavGroup[] = [
       { label: "canvas3d", to: "/canvas3d", icon: Layers },
       { label: "lightscene", to: "/lightscene", icon: Sun },
       { label: "richeditor", to: "/richeditor", icon: Sun },
-      { label: "画布", to: "/personal", icon: Workflow, activePaths: ["/personal", "/projects"] }
+      { label: "画布", to: "/canvas", icon: Workflow, activePaths: ["/canvas", "/projects"] }
     ]
   }
   // {

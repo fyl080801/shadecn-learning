@@ -59,6 +59,9 @@ export const FLOW_EDGE_TYPE = "default"
 const CASCADE_STEP = 24
 const CASCADE_COUNT = 6
 
+/** 视图控件按钮触发的缩放 / 全览过渡时长（ms） */
+const VIEW_TRANSITION_MS = 200
+
 /**
  * Vue Flow、store、协同三者之间的那层胶水 —— 也是**唯一**同时认识这三者的地方。
  *
@@ -94,6 +97,10 @@ export function useFlowCanvas(
     removeSelectedNodes,
     minZoom,
     maxZoom,
+    viewport,
+    zoomIn,
+    zoomOut,
+    zoomTo,
     fitView,
     onPaneReady,
     onConnect,
@@ -572,6 +579,45 @@ export function useFlowCanvas(
     syncViewport()
   }
 
+  // —— 视图控件（右下角那组）——
+
+  /**
+   * 按钮触发的缩放 / 适应视图。
+   *
+   * 和手势不同，程序调用不会发 `move-end`（d3 只对带 sourceEvent 的那次 `end` 发事件），
+   * 所以等过渡结束后自己同步一次视口，否则刷新回来还是旧的。
+   */
+  async function afterTransition(transition: Promise<boolean>) {
+    await transition
+    syncViewport()
+  }
+
+  /** 当前缩放比（1 = 100%），给百分比输入框显示用 */
+  const zoomLevel = computed(() => viewport.value.zoom)
+
+  function zoomInView() {
+    return afterTransition(zoomIn({ duration: VIEW_TRANSITION_MS }))
+  }
+
+  function zoomOutView() {
+    return afterTransition(zoomOut({ duration: VIEW_TRANSITION_MS }))
+  }
+
+  /** 缩放到指定比例（1 = 100%），夹在 min / max 之间；非法值直接忽略 */
+  function zoomToLevel(level: number) {
+    if (!Number.isFinite(level) || level <= 0) return Promise.resolve()
+    const clamped = Math.min(maxZoom.value, Math.max(minZoom.value, level))
+    return afterTransition(zoomTo(clamped, { duration: VIEW_TRANSITION_MS }))
+  }
+
+  /** 全览：和首次打开的兜底一致，不放大超过 1 倍 */
+  function fitAll() {
+    return afterTransition(fitView({ maxZoom: 1, padding: 0.2, duration: VIEW_TRANSITION_MS }))
+  }
+
+  /** 小地图显隐 —— 纯本地视图偏好，不进文档也不落库；默认不显示 */
+  const miniMapVisible = ref(false)
+
   // —— 删除 ——
 
   /**
@@ -891,6 +937,14 @@ export function useFlowCanvas(
     setInteractionMode,
     onNodesChange,
     onWheelZoom,
+    zoomLevel,
+    minZoom,
+    maxZoom,
+    zoomInView,
+    zoomOutView,
+    zoomToLevel,
+    fitAll,
+    miniMapVisible,
     onPointerMove,
     onPointerLeave,
     syncViewport,

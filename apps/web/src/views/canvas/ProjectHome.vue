@@ -67,7 +67,7 @@ const project = ref<ProjectSummary | null>(null)
 const members = ref<ProjectMemberView[]>([])
 const loading = ref(true)
 const loadError = ref<string | null>(null)
-/** 正在把个人空间换到 /personal 去，见 loadProject */
+/** 正在把个人空间换到 /canvas 去，见 loadProject */
 const redirecting = ref(false)
 
 const isAdmin = computed(() => project.value?.myRole === "admin")
@@ -88,13 +88,13 @@ async function loadProject() {
     /**
      * 个人空间在库里确实是个 `kind='personal'` 的项目，`/projects/<它的 id>` 也确实
      * 打得开 —— 但这一页给它看的是成员、分享、删除项目，而这三样对它全是 403。
-     * 它的页面是 `/personal`，所以这里直接换过去（`replace`：这个地址不该留在返回栈里）。
+     * 它的页面是 `/canvas`，所以这里直接换过去（`replace`：这个地址不该留在返回栈里）。
      * 老书签和历史记录是唯一还会走到这儿的路。
      */
     if (detail.kind === "personal") {
       // 跳转要一帧才生效，这一帧里 project 还是 null —— 不举旗的话会闪一下「项目不存在」
       redirecting.value = true
-      void router.replace("/personal")
+      void router.replace("/canvas")
       return
     }
 
@@ -250,7 +250,7 @@ function displayName(member: ProjectMemberView) {
         class="flex flex-col items-center gap-3 rounded-lg border border-dashed p-12 text-center"
       >
         <p class="text-sm text-destructive">{{ loadError ?? "项目不存在" }}</p>
-        <Button variant="outline" size="sm" @click="router.push('/personal')">返回个人画布</Button>
+        <Button variant="outline" size="sm" @click="router.push('/canvas')">返回个人画布</Button>
       </div>
 
       <template v-else>

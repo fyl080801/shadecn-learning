@@ -100,14 +100,14 @@ export function useFlowDocument(
    * 「返回」回哪儿 —— **按画布自己的种类，不按它挂在哪个项目下**。
    *
    * 个人空间在接口层面是个 `kind='personal'` 的项目，`meta.projectId` 也确实指着它，
-   * 但那是存储上的事实，不是用户看到的事实：个人画布的列表页是 `/personal`，
+   * 但那是存储上的事实，不是用户看到的事实：个人画布的列表页是 `/canvas`，
    * 那个「项目主页」（成员、分享、返回全部项目）从来就不该被走到。
    * 所以这里认 `mode`，不认 `projectId`。
    */
   function backPath() {
-    if (store.meta?.mode === "solo") return "/personal"
+    if (store.meta?.mode === "solo") return "/canvas"
     const projectId = store.meta?.projectId
-    return projectId ? `/projects/${projectId}` : "/personal"
+    return projectId ? `/projects/${projectId}` : "/canvas"
   }
 
   /** 文案和落点是同一个判断，放在一起，免得哪天只改了一半 */

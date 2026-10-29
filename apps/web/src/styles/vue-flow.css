@@ -154,6 +154,24 @@
   transform-origin: bottom right;
 }
 
+/*
+ * 画布编辑器左下角（FlowViewControls.vue）的控件胶囊。边距和底部工具栏的 `bottom-6` 对齐（24px）。
+ */
+.vue-flow__panel.flow-view-controls {
+  margin: 24px;
+}
+
+/*
+ * 小地图放在开关按钮的浮层（Popover）里，位置由浮层定。
+ * MiniMap 自己会包一层 Panel（绝对定位 + 15px 外边距 + 上面那条 75% 缩放），这里全部摊平成普通块。
+ */
+.vue-flow__minimap.flow-minimap {
+  position: static;
+  margin: 0;
+  transform: none;
+  background-color: var(--card);
+}
+
 .basic-flow.dark {
   background: #2d3748;
   color: #fffffb;

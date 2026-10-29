@@ -97,7 +97,7 @@ describe("协同通道终局提示", () => {
 
     button("返回画布")?.click()
     await flushPromises()
-    expect(push).toHaveBeenCalledWith("/personal")
+    expect(push).toHaveBeenCalledWith("/canvas")
   })
 
   it("个人画布被删 → 换一套说法和落点：没有项目也没有管理员", async () => {
@@ -112,7 +112,7 @@ describe("协同通道终局提示", () => {
 
     button("返回个人画布")?.click()
     await flushPromises()
-    expect(push).toHaveBeenCalledWith("/personal")
+    expect(push).toHaveBeenCalledWith("/canvas")
   })
 
   it("画布超限 → 弹，但**可以关掉**：关掉才能去删内容", async () => {

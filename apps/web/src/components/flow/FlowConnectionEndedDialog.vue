@@ -49,7 +49,7 @@ const notices = {
       "此处的改动不会再保存。如果这是误操作，请联系项目管理员重新邀请你。",
     action: "返回画布",
     dismissible: false,
-    run: () => void router.push("/personal")
+    run: () => void router.push("/canvas")
   },
   /**
    * 两种画布共用：房间顶到内容硬限被锁写清场（服务端的 4413 / `quota-exceeded`）。
@@ -95,7 +95,7 @@ const soloForbidden = {
     "它可能是在你的另一个窗口里被删掉的 —— 通道已断开，此处的改动不会再保存。",
   action: "返回个人画布",
   dismissible: false,
-  run: () => void router.push("/personal")
+  run: () => void router.push("/canvas")
 } as const
 
 const notice = computed(() => {

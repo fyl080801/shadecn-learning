@@ -1,6 +1,6 @@
 # REQ-SOLO 个人画布（只属于我一个人的画布）
 
-> 状态：**已实现** —— 数据模型、`/personal` 界面（画布工作区，见 §4.8）、
+> 状态：**已实现** —— 数据模型、`/canvas` 界面（画布工作区，见 §4.8）、
 > 个人画布的 WebSocket 房间（只对所有者开放、无在场层），测试见第 5 节。
 >
 > 前置：[REQ-CANVAS](13-flow-canvas-management.md)（项目 / 画布 / 成员 / 分享链接）与
@@ -260,7 +260,7 @@ apps/web/src/composables/flow/sync/
   「多久没收到消息」，`timeout: 30_000`，自己不发 ping）；清成 `null` 重放就停了，
   一张只看不改的个人画布会每 30s 被超时掐断、重连一次。空对象不带身份也不带光标，
   服务端对个人房间还会把 awareness 内容整帧清空，所以什么都传不出去。
-- **返回落点**：solo 回 `/personal`（§4.8）。
+- **返回落点**：solo 回 `/canvas`（§4.8）。
 - **文案**：状态和语义两种画布一套（都是「同步」，没有「保存」这一步）；只有提到协作的句子按 `mode` 换说法 ——
 
 | 状态 | 项目画布 | 个人画布 |
@@ -292,15 +292,14 @@ apps/web/src/composables/flow/sync/
 **不在任何列表里混着区分两种画布**，也**不在同一页用 Tab 区分**：
 
 ```
-应用侧栏「画布」→ /personal，进入画布工作区；工作区内的页内侧栏（CanvasWorkspace）
- ├─「个人画布」  → /personal        直接列画布，点进去是 /flows/:id
+应用侧栏「画布」→ /canvas，进入画布工作区；工作区内的页内侧栏（CanvasWorkspace）
+ ├─「个人画布」  → /canvas        直接列画布，点进去是 /flows/:id
  └─ 分组「项目」（标题行有 + 新建项目；行 hover 出现删除图标，仅管理员）
      └─ 各项目   → /projects/:id    过滤掉 kind=personal，点进去是项目主页
 ```
 
 > **再改过一次口径。** 原先「画布项目」「个人画布」是应用侧栏上的两个入口、两个页面；
-> 现在合成一个界面，用页内二级侧栏切换。路由仍是两条（`/personal`、`/projects/:id`，
-> `/projects` 重定向到 `/personal`），所以下面「两个 URL query 互不串」的结论不变。
+> 现在合成一个界面，用页内二级侧栏切换。路由仍是两条（`/canvas`、`/projects/:id`），所以下面「两个 URL query 互不串」的结论不变。
 
 > **改过一次口径。** 最初两者是 `/projects` 页上的两个并列 Tab（§7 里当时留着
 > 「侧栏要不要给个人画布独立入口」这条待确认）。落地后的结论是：**要**。
@@ -320,19 +319,19 @@ apps/web/src/composables/flow/sync/
   所以当时只能让项目那一侧独占 URL、个人画布那侧退回组件内部 state。
 - 个人画布页**没有**成员、没有分享按钮 —— 页面头部只有标题一行。
 - 个人空间是**懒创建**的，而 `GET /api/projects/personal` 是个「读也会建」的接口 ——
-  所以它挂在这一页的加载上，没进过 `/personal` 的人不会被凭空建出一个空间。
+  所以它挂在这一页的加载上，没进过 `/canvas` 的人不会被凭空建出一个空间。
 
 编辑器（`/flows/:id`）两种模式共用一个路由和一个组件：solo 下在场栏为空、
 `FlowConnectionEndedDialog` 和标题胶囊的状态文案按 §4.6 的表换说法。
 
-**胶囊左上角那个「回去」按钮按 `mode` 决定落点，不按 `projectId`**：solo 回 `/personal`，
+**胶囊左上角那个「回去」按钮按 `mode` 决定落点，不按 `projectId`**：solo 回 `/canvas`，
 collab 回 `/projects/:projectId`。个人空间是个项目，这是存储上的事实，不是用户看到的事实 ——
 照着 `projectId` 跳，个人画布会落到一个摆着成员、分享、「返回全部项目」的项目主页上，
 而那三样对个人空间全是 403。图标和文案跟着同一个判断走。删除后的落点同理，
 且要在删之前算好。
 
 反方向也堵上：`/projects/<个人空间 id>` 被直接打开时（老书签、历史记录），
-`ProjectHome.vue` 读到 `kind === 'personal'` 就 `replace` 到 `/personal`。
+`ProjectHome.vue` 读到 `kind === 'personal'` 就 `replace` 到 `/canvas`。
 
 ### 4.9 鉴权规则
 
@@ -399,7 +398,7 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
 12. `syncText` 文案矩阵：solo 下不会出现任何协同专属文案（「协作会话」「协作者」）；`too-large` 有独立提示；
     独占顶下线的终局框在 solo 下换成「这张画布已在另一个窗口打开」。
 13. `stores/flow` 的既有测试**一行不改**照常通过 —— 这本身就是「模型没分叉」的证据。
-14. `/personal` 与 `/projects/:id` 是两个路由，各自独占一份 `page` / `keyword`，互不串。
+14. `/canvas` 与 `/projects/:id` 是两个路由，各自独占一份 `page` / `keyword`，互不串。
 
 ### 5.1 落地时才发现的三件事
 
@@ -430,7 +429,7 @@ ALTER TABLE "Project" ADD CONSTRAINT "Project_personalOwnerId_fkey" FOREIGN KEY 
 1. ~~**`FlowOperation` 对个人画布是否值得写。**~~ —— 已定：不写。操作日志整体移除了，
    两条通道都只写 `ydoc` + 投影（[REQ-DATA §5](05-data-persistence.md)）。
 2. ~~**侧栏是否要给个人画布一个独立入口。**~~ —— 已定：给。个人画布已经提到侧栏一级
-   （`/personal`），后来又与项目合并进同一个工作区界面（页内侧栏），理由见 §4.8。
+   （`/canvas`），后来又与项目合并进同一个工作区界面（页内侧栏），理由见 §4.8。
 3. ~~**推送防抖的窗口取值。**~~ —— 不再适用：前端不再走 HTTP 推送（文首修订）。
 4. **服务端 `GET/POST /api/flows/:id/doc` 何时删。** 这一期保留不动；已经没有前端调用，
    留着只为可能还开着的旧版本页面。下一期可以删掉它和 `flow-writer.ts` 的 REST 入口。

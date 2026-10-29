@@ -167,12 +167,12 @@ describe("侧栏的「画布」入口", () => {
       .map((a) => a.attributes("href"))
   }
 
-  it("个人画布与项目页是同一个工作区 → 都让「画布」（/personal）亮着", async () => {
-    expect(await activeLabels("/personal")).toContain("/personal")
-    expect(await activeLabels("/projects/p1")).toContain("/personal")
+  it("个人画布与项目页是同一个工作区 → 都让「画布」（/canvas）亮着", async () => {
+    expect(await activeLabels("/canvas")).toContain("/canvas")
+    expect(await activeLabels("/projects/p1")).toContain("/canvas")
   })
 
   it("别的页面 → 「画布」不亮", async () => {
-    expect(await activeLabels("/snake")).not.toContain("/personal")
+    expect(await activeLabels("/snake")).not.toContain("/canvas")
   })
 })

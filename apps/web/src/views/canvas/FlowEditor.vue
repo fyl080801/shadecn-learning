@@ -7,9 +7,11 @@ import FlowCanvas from "@/components/flow/FlowCanvas.vue"
 import FlowAgentChat from "@/components/flow/agent/FlowAgentChat.vue"
 import FlowConnectionEndedDialog from "@/components/flow/FlowConnectionEndedDialog.vue"
 import FlowPresenceBar from "@/components/flow/FlowPresenceBar.vue"
+import FlowShareButton from "@/components/flow/FlowShareButton.vue"
 import FlowTitleCapsule from "@/components/flow/FlowTitleCapsule.vue"
 import FlowToolbar from "@/components/flow/FlowToolbar.vue"
 import { provideFlowEditor, useFlowShortcuts } from "@/composables/flow"
+import { provideFlowAgentPanel } from "@/composables/flow/agent-panel"
 
 /**
  * 画布编辑器 —— 独占整屏（路由挂在 BlankLayout 模板页下，没有侧栏）。
@@ -24,6 +26,8 @@ const router = useRouter()
 
 const editor = provideFlowEditor(props)
 useFlowShortcuts(editor)
+// 右上角对话框和工具栏快捷输入共用的那一份 agent（docs/20）
+provideFlowAgentPanel(editor.flowId)
 
 const { sync, document: doc } = editor
 
@@ -56,7 +60,7 @@ const ready = computed(() => {
       class="flex h-full flex-col items-center justify-center gap-3 text-center"
     >
       <p class="text-sm text-destructive">{{ doc.loadError.value }}</p>
-      <Button variant="outline" size="sm" @click="router.push('/personal')">返回工作区</Button>
+      <Button variant="outline" size="sm" @click="router.push('/canvas')">返回工作区</Button>
     </div>
 
     <div
@@ -67,9 +71,13 @@ const ready = computed(() => {
     </div>
 
     <template v-else>
-      <!-- 画布 Agent 的悬浮对话框用 Vue Flow 的 <Panel> 定位，所以放进 VueFlow 的插槽里 -->
+      <!-- 画布 Agent 的悬浮对话框（右上角）用 Vue Flow 的 <Panel> 定位，所以放进 VueFlow 的插槽里 -->
       <FlowCanvas>
-        <FlowAgentChat />
+        <FlowAgentChat>
+          <template #actions>
+            <FlowShareButton />
+          </template>
+        </FlowAgentChat>
       </FlowCanvas>
 
       <!-- 左上角一排：标题胶囊 + 在场头像栏。定位只写在这一层，两枚胶囊各自不管位置 -->

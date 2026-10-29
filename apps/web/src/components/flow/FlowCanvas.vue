@@ -10,7 +10,6 @@ import {
 } from "@vue-flow/core"
 import { computed, markRaw } from "vue"
 import { Background } from "@vue-flow/background"
-import { MiniMap } from "@vue-flow/minimap"
 
 import FlowConnectionLine from "@/components/flow/FlowConnectionLine.vue"
 import FlowEdge from "@/components/flow/FlowEdge.vue"
@@ -123,8 +122,8 @@ const edgeTypes = { default: markRaw(FlowEdge) }
 
       <!-- 点阵的间距就是网格吸附的格子（同一个常量），否则「吸到网格上」对不齐任何看得见的东西 -->
       <Background :gap="FLOW_GRID_GAP" />
+      <!-- 左下角：缩放 / 全览 / 小地图（小地图本身也归它管，显隐开关在同一组里） -->
       <FlowViewControls />
-      <MiniMap pannable zoomable />
 
       <!--
         框选一片时浮在选区上方的工具栏。放在 <VueFlow> 里面是必须的：

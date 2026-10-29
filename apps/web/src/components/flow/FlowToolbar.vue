@@ -11,10 +11,14 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Separator } from "@/components/ui/separator"
 import { ADDABLE_NODE_TYPES } from "@/components/flow/node-types"
+import FlowAgentQuickPrompt from "@/components/flow/agent/FlowAgentQuickPrompt.vue"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
- * 底部悬浮工具栏 —— 指针模式 + 画布内容的编辑动作。
+ * 底部悬浮工具栏 —— 指针模式 + 画布内容的编辑动作。撤销 / 重做只走快捷键。
+ *
+ * 胶囊右侧另挂一枚独立的深色圆钮：agent 快捷输入（`FlowAgentQuickPrompt`，输完直接开新会话执行）。
+ * 它不在胶囊里，也不参与居中 —— 居中的始终是胶囊本身，圆钮贴在它右边。
  *
  * 加按钮就在这里加：拿 `useFlowEditor()` 里已有的动作接上即可，
  * 不用往编辑器根组件传 props。
@@ -31,62 +35,66 @@ const { canvas } = useFlowEditor()
 </script>
 
 <template>
-  <div
-    class="absolute bottom-6 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border bg-card/95 p-1.5 shadow-lg backdrop-blur"
-  >
-    <Button
-      :variant="canvas.interactionMode.value === 'select' ? 'secondary' : 'ghost'"
-      size="icon"
-      class="size-8 rounded-full"
-      title="框选（左键拖拽拉框；按住空格可临时拖动画布）"
-      @click="canvas.setInteractionMode('select')"
-    >
-      <MousePointer2 />
-    </Button>
-    <Button
-      :variant="canvas.interactionMode.value === 'pan' ? 'secondary' : 'ghost'"
-      size="icon"
-      class="size-8 rounded-full"
-      title="拖动画布（左键拖拽平移）"
-      @click="canvas.setInteractionMode('pan')"
-    >
-      <Hand />
-    </Button>
-
-    <Separator
-      orientation="vertical"
-      class="mx-1 data-[orientation=vertical]:h-5"
-    />
-
-    <!-- 吸附（网格 + 辅助线）没有开关：始终生效，见 useFlowSnapping -->
-    <DropdownMenu>
-      <DropdownMenuTrigger as-child>
-        <Button
-          variant="ghost"
-          size="icon"
-          class="size-8 rounded-full data-[state=open]:bg-accent"
-          title="添加节点"
-        >
-          <Plus />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        side="top"
-        align="center"
-        :side-offset="12"
-        class="w-44"
+  <div class="absolute bottom-6 left-1/2 z-10 -translate-x-1/2">
+    <div class="flex items-center gap-1 rounded-full border bg-card/95 p-1.5 shadow-lg backdrop-blur">
+      <Button
+        :variant="canvas.interactionMode.value === 'select' ? 'secondary' : 'ghost'"
+        size="icon"
+        class="size-8 rounded-full"
+        title="框选（左键拖拽拉框；按住空格可临时拖动画布）"
+        @click="canvas.setInteractionMode('select')"
       >
-        <DropdownMenuLabel class="text-xs text-muted-foreground">添加节点</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          v-for="def in ADDABLE_NODE_TYPES"
-          :key="def.type"
-          @select="canvas.addNode(def.type)"
+        <MousePointer2 />
+      </Button>
+      <Button
+        :variant="canvas.interactionMode.value === 'pan' ? 'secondary' : 'ghost'"
+        size="icon"
+        class="size-8 rounded-full"
+        title="拖动画布（左键拖拽平移）"
+        @click="canvas.setInteractionMode('pan')"
+      >
+        <Hand />
+      </Button>
+
+      <Separator
+        orientation="vertical"
+        class="mx-1 data-[orientation=vertical]:h-5"
+      />
+
+      <!-- 吸附（网格 + 辅助线）没有开关：始终生效，见 useFlowSnapping -->
+      <DropdownMenu>
+        <DropdownMenuTrigger as-child>
+          <Button
+            variant="ghost"
+            size="icon"
+            class="size-8 rounded-full data-[state=open]:bg-accent"
+            title="添加节点"
+          >
+            <Plus />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side="top"
+          align="center"
+          :side-offset="12"
+          class="w-44"
         >
-          <component :is="def.icon" />
-          {{ def.label }}
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+          <DropdownMenuLabel class="text-xs text-muted-foreground">添加节点</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            v-for="def in ADDABLE_NODE_TYPES"
+            :key="def.type"
+            @select="canvas.addNode(def.type)"
+          >
+            <component :is="def.icon" />
+            {{ def.label }}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+
+    <div class="absolute left-full top-1/2 ml-3 -translate-y-1/2">
+      <FlowAgentQuickPrompt />
+    </div>
   </div>
 </template>

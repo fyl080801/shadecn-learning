@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue"
 import { Panel } from "@vue-flow/core"
-import { Bot, ChevronDown, History, LoaderCircle, Sparkles, SquarePen } from "@lucide/vue"
+import { Bot, ChevronUp, History, LoaderCircle, MessageCircle, Sparkles, SquarePen } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { useFlowEditor } from "@/composables/flow/editor-context"
-import { useFlowAgent } from "@/composables/flow/useFlowAgent"
+import { useFlowAgentPanel } from "@/composables/flow/agent-panel"
 import { useAsyncAction } from "@/composables/useAsyncAction"
 import FlowAgentComposer from "./FlowAgentComposer.vue"
 import FlowAgentHistory from "./FlowAgentHistory.vue"
@@ -14,9 +14,11 @@ import FlowAgentTitle from "./FlowAgentTitle.vue"
 /**
  * 画布 Agent 的悬浮对话框（REQ-AGENT，docs/20）。
  *
- * **位置：左下角。** 画布上另外三个角都有人了 —— 左上标题胶囊 + 在场头像，右上缩放 / 撤销，
- * 右下 MiniMap，底部正中是工具栏；左下是 Vue Flow `Controls` 的默认位置，被我们挪去了右上，
- * 所以空着。面板从按钮往上展开，高度封顶，碰不到左上那排胶囊。
+ * **位置：右上角。** 左上是标题胶囊 + 在场头像，左下是视图控件 + 小地图，底部正中是工具栏。
+ * 面板从按钮往下展开，高度封顶，碰不到底部工具栏。
+ *
+ * agent 实例和「开没开」来自 `useFlowAgentPanel()`，和底部工具栏的快捷输入共用 ——
+ * 那边输完直接开新会话，这里自动展开并显示那一轮。
  *
  * 定位用 Vue Flow 的 `<Panel>`（所以必须渲染在 `<VueFlow>` 的插槽里），不手写 absolute。
  *
@@ -25,9 +27,8 @@ import FlowAgentTitle from "./FlowAgentTitle.vue"
  * 下次打开这张画布时自动接回（`useFlowAgent`）。
  */
 const { flowId } = useFlowEditor()
-const agent = useFlowAgent(flowId)
+const { agent, open, onStarted } = useFlowAgentPanel()
 
-const open = ref(false)
 const draft = ref("")
 /** 面板里二选一：对话 / 历史会话列表（同一个面板里切视图，不弹新窗口） */
 const view = ref<"chat" | "history">("chat")
@@ -47,13 +48,22 @@ const waitingFirstWord = computed(() => {
 
 function toggle() {
   open.value = !open.value
-  if (open.value) {
-    void nextTick(() => {
-      scrollToBottom(true)
-      composer.value?.focus()
-    })
-  }
 }
+
+// 展开（按钮或快捷输入）时贴底并聚焦输入框
+watch(open, (value) => {
+  if (!value) return
+  void nextTick(() => {
+    scrollToBottom(true)
+    composer.value?.focus()
+  })
+})
+
+// 快捷输入开了新会话：从历史视图切回对话，跟着新的一轮往下滚
+onStarted(() => {
+  view.value = "chat"
+  stickToBottom = true
+})
 
 // 换画布：面板收起、草稿清空 —— 草稿里的提及指向的是上一张画布的节点
 watch(flowId, () => {
@@ -161,11 +171,35 @@ function isolateKeys(event: KeyboardEvent) {
     nowheel / nodrag / nopan：Vue Flow 认的「这块别当成画布」标记 ——
     在面板里滚动消息列表不能变成平移画布。
   -->
-  <Panel position="bottom-left" class="nowheel nodrag nopan" data-testid="agent-panel">
-    <div class="flex flex-col items-start gap-2" @keydown="isolateKeys">
+  <Panel position="top-right" class="nowheel nodrag nopan" data-testid="agent-panel">
+    <div class="flex flex-col items-end gap-2" @keydown="isolateKeys">
+      <div class="flex items-center gap-2">
+        <!-- 右上角同一排、对话按钮左边的其他按钮（编辑器根视图塞进来，比如分享） -->
+        <slot name="actions" />
+        <Button
+          :variant="open ? 'secondary' : 'outline'"
+          size="icon"
+          class="relative size-10 rounded-full bg-card/95 shadow-lg backdrop-blur"
+          :title="agent.running.value ? '画布 Agent（运行中）' : '画布 Agent'"
+          :aria-expanded="open"
+          data-testid="agent-toggle"
+          @click="toggle()"
+        >
+          <MessageCircle class="size-5" />
+          <!-- 收起时也看得出它还在跑 -->
+          <span
+            v-if="agent.running.value"
+            class="absolute -right-0.5 -top-0.5 flex size-4 items-center justify-center rounded-full bg-background shadow"
+            data-testid="agent-running-badge"
+          >
+            <LoaderCircle class="size-3 animate-spin text-primary" />
+          </span>
+        </Button>
+      </div>
+
       <section
         v-show="open"
-        class="flex h-[min(560px,calc(100vh-9rem))] w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-xl"
+        class="flex h-[min(560px,calc(100vh-12rem))] w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-xl"
         data-testid="agent-dialog"
         aria-label="画布 Agent"
       >
@@ -201,7 +235,7 @@ function isolateKeys(event: KeyboardEvent) {
             </Button>
           </template>
           <Button variant="ghost" size="icon-xs" title="收起" aria-label="收起" @click="toggle()">
-            <ChevronDown />
+            <ChevronUp />
           </Button>
         </header>
 
@@ -298,25 +332,6 @@ function isolateKeys(event: KeyboardEvent) {
         </template>
       </section>
 
-      <Button
-        :variant="open ? 'secondary' : 'default'"
-        size="icon"
-        class="relative size-10 rounded-full shadow-lg"
-        :title="agent.running.value ? '画布 Agent（运行中）' : '画布 Agent'"
-        :aria-expanded="open"
-        data-testid="agent-toggle"
-        @click="toggle()"
-      >
-        <Sparkles class="size-5" />
-        <!-- 收起时也看得出它还在跑 -->
-        <span
-          v-if="agent.running.value"
-          class="absolute -right-0.5 -top-0.5 flex size-4 items-center justify-center rounded-full bg-background shadow"
-          data-testid="agent-running-badge"
-        >
-          <LoaderCircle class="size-3 animate-spin text-primary" />
-        </span>
-      </Button>
     </div>
 
   </Panel>

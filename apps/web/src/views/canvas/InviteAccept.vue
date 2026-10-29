@@ -82,7 +82,7 @@ const { run: join, pending: joining } = useAsyncAction(
           <CardDescription>请联系项目管理员重新发一条邀请链接。</CardDescription>
         </CardHeader>
         <CardContent class="flex justify-center">
-          <Button variant="outline" @click="router.push('/personal')">去我的项目</Button>
+          <Button variant="outline" @click="router.push('/canvas')">去我的项目</Button>
         </CardContent>
       </template>
 
@@ -104,7 +104,7 @@ const { run: join, pending: joining } = useAsyncAction(
           <Button :loading="joining" @click="join()">
             {{ preview.alreadyMember ? "进入项目" : "加入项目" }}
           </Button>
-          <Button variant="ghost" @click="router.push('/personal')">取消</Button>
+          <Button variant="ghost" @click="router.push('/canvas')">取消</Button>
         </CardContent>
       </template>
     </Card>

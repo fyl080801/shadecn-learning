@@ -74,6 +74,24 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 const { ApiError } = await import("@/lib/api")
 const { formatDateTime } = await import("@/lib/format")
 const { default: FlowAgentChat } = await import("@/components/flow/agent/FlowAgentChat.vue")
+const { provideFlowAgentPanel } = await import("@/composables/flow/agent-panel")
+
+/** 对话框的 agent 实例由编辑器根视图 provide（和工具栏快捷输入共用），这里垫一层同样的根 */
+const Host = defineComponent({
+  setup() {
+    provideFlowAgentPanel(flowId)
+    return () => h(FlowAgentChat)
+  }
+})
+const { default: FlowAgentQuickPrompt } = await import("@/components/flow/agent/FlowAgentQuickPrompt.vue")
+
+/** 编辑器里两个入口同时在：右上角对话框 + 底部工具栏的快捷输入 */
+const HostWithQuick = defineComponent({
+  setup() {
+    provideFlowAgentPanel(flowId)
+    return () => [h(FlowAgentChat), h(FlowAgentQuickPrompt)]
+  }
+})
 const { AGENT_POLL_INTERVAL, AGENT_RESUME_RETRY_DELAY } = await import("@/composables/flow/useFlowAgent")
 
 function sessionView(overrides: Partial<AgentSessionView> = {}): AgentSessionView {
@@ -192,7 +210,7 @@ const finished: AgentStreamEvent = {
 }
 
 async function mountOpened() {
-  const wrapper = mount(FlowAgentChat, { attachTo: document.body })
+  const wrapper = mount(Host, { attachTo: document.body })
   await flushPromises()
   await wrapper.get('[data-testid="agent-toggle"]').trigger("click")
   await flushPromises()
@@ -888,5 +906,64 @@ describe("接回进行中的一轮", () => {
 
     expect(runEvents).toHaveBeenCalledWith("f1", "r1", expect.anything())
     expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(true)
+  })
+})
+
+describe("工具栏快捷输入", () => {
+  async function mountQuick() {
+    const wrapper = mount(HostWithQuick, { attachTo: document.body })
+    await flushPromises()
+    await wrapper.get('[data-testid="agent-quick-toggle"]').trigger("click")
+    await flushPromises()
+    return wrapper
+  }
+
+  function quickInput(wrapper: Awaited<ReturnType<typeof mountQuick>>) {
+    return wrapper
+      .findAllComponents(PromptInput)
+      .find((item) => item.element.closest('[data-testid="agent-quick-prompt"]'))!
+  }
+
+  function quickSend() {
+    return document.querySelector<HTMLButtonElement>('[data-testid="agent-quick-prompt"] [data-testid="agent-send"]')!
+  }
+
+  it("发出去 → 开新会话（conversationId 为 null）执行，弹层收起、对话框展开显示这一轮", async () => {
+    session.mockResolvedValue(sessionView({ latest: view("c1") }))
+    send.mockImplementation(async (_id: string, _body: unknown, options: SendOptions) => {
+      options.onOpen?.()
+      options.onEvent({ type: "RUN_STARTED", threadId: "c-new", runId: "r1" })
+      // 流一直开着：这一轮还在跑
+      return new Promise(() => {})
+    })
+    const wrapper = await mountQuick()
+    expect(wrapper.get('[data-testid="agent-dialog"]').isVisible()).toBe(false)
+
+    quickInput(wrapper).vm.$emit("update:modelValue", "画一个流程")
+    await flushPromises()
+    quickSend().click()
+    await flushPromises()
+
+    expect(send).toHaveBeenLastCalledWith("f1", { text: "画一个流程", conversationId: null }, expect.anything())
+    expect(document.querySelector('[data-testid="agent-quick-prompt"]')).toBeNull()
+    expect(wrapper.get('[data-testid="agent-dialog"]').isVisible()).toBe(true)
+    expect(wrapper.text()).not.toContain("回答 c1")
+    expect(wrapper.get('[data-testid="agent-messages"]').text()).toContain("画一个流程")
+  })
+
+  it("服务端没配模型 → 入口禁用", async () => {
+    session.mockResolvedValue(sessionView({ enabled: false }))
+    const wrapper = mount(HostWithQuick, { attachTo: document.body })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="agent-quick-toggle"]').attributes("disabled")).toBeDefined()
+  })
+
+  it("别人的一轮在跑 → 提示并锁住发送", async () => {
+    session.mockResolvedValue(sessionView({ activeRun: activeRun({ mine: false, initiator: { id: "u2", name: "小王" } }) }))
+    const wrapper = await mountQuick()
+    expect(document.querySelector('[data-testid="agent-quick-busy"]')).not.toBeNull()
+    quickInput(wrapper).vm.$emit("update:modelValue", "试试")
+    await flushPromises()
+    expect(quickSend().disabled).toBe(true)
   })
 })

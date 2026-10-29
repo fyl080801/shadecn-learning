@@ -51,7 +51,7 @@ async function mountAt(path: string) {
   router = createRouter({
     history: createMemoryHistory(),
     routes: [
-      { path: "/personal", component: { template: "<div />" } },
+      { path: "/canvas", component: { template: "<div />" } },
       { path: "/projects/:projectId", component: { template: "<div />" } }
     ]
   })
@@ -89,7 +89,7 @@ describe("画布工作区的页内侧栏", () => {
   })
 
   it("个人画布排第一项，下面「项目」分组列出我的项目，内容区渲染插槽", async () => {
-    const wrapper = await mountAt("/personal")
+    const wrapper = await mountAt("/canvas")
 
     const links = wrapper.findAll("aside a").map((a) => a.text())
     expect(links).toEqual(["个人画布", "订单系统", "只读项目"])
@@ -106,7 +106,7 @@ describe("画布工作区的页内侧栏", () => {
   })
 
   it("只有管理员的项目才有删除图标", async () => {
-    await mountAt("/personal")
+    await mountAt("/canvas")
 
     expect(deleteIcon("订单系统")).not.toBeNull()
     expect(deleteIcon("只读项目")).toBeNull()
@@ -137,11 +137,11 @@ describe("画布工作区的页内侧栏", () => {
     dialogButton("[data-slot=alert-dialog-content]", "删除")!.click()
     await flushPromises()
 
-    expect(router.currentRoute.value.path).toBe("/personal")
+    expect(router.currentRoute.value.path).toBe("/canvas")
   })
 
   it("取消删除 → 什么都不发", async () => {
-    await mountAt("/personal")
+    await mountAt("/canvas")
 
     deleteIcon("订单系统")!.click()
     await flushPromises()
@@ -152,7 +152,7 @@ describe("画布工作区的页内侧栏", () => {
   })
 
   it("点「项目」标题行的 + → 弹出新建对话框，提交后创建、刷新并跳到新项目", async () => {
-    const wrapper = await mountAt("/personal")
+    const wrapper = await mountAt("/canvas")
     vi.mocked(projectApi.create).mockResolvedValue(project("p3", "新项目"))
     vi.mocked(projectApi.list).mockClear()
 
@@ -173,7 +173,7 @@ describe("画布工作区的页内侧栏", () => {
   })
 
   it("名称为空 → 不发请求", async () => {
-    const wrapper = await mountAt("/personal")
+    const wrapper = await mountAt("/canvas")
 
     await wrapper.find('button[title="新建项目"]').trigger("click")
     await flushPromises()
@@ -185,19 +185,19 @@ describe("画布工作区的页内侧栏", () => {
 
   it("没有项目 → 一句小字提示；超过一页 → 底部提示总数", async () => {
     vi.mocked(projectApi.list).mockResolvedValue(paged([]))
-    const empty = await mountAt("/personal")
+    const empty = await mountAt("/canvas")
     expect(empty.text()).toContain("还没有项目")
     empty.unmount()
 
     resetProjectNav()
     vi.mocked(projectApi.list).mockResolvedValue(paged([project("p1", "订单系统")], 130))
-    const many = await mountAt("/personal")
+    const many = await mountAt("/canvas")
     expect(many.text()).toContain("共 130 个项目")
   })
 
   it("加载失败 → 显示错误，点重试再拉一次", async () => {
     vi.mocked(projectApi.list).mockRejectedValueOnce(new Error("boom"))
-    const wrapper = await mountAt("/personal")
+    const wrapper = await mountAt("/canvas")
     expect(wrapper.text()).toContain("boom")
 
     const retry = wrapper.findAll("button").find((b) => b.text() === "重试")
@@ -209,7 +209,7 @@ describe("画布工作区的页内侧栏", () => {
   })
 
   it("第二次挂载复用缓存 → 不再重复请求，也不闪 loading", async () => {
-    const first = await mountAt("/personal")
+    const first = await mountAt("/canvas")
     first.unmount()
     vi.mocked(projectApi.list).mockClear()
 
