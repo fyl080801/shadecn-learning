@@ -297,6 +297,16 @@ function nonNegative(value: number, fallback: number): number {
 export const agentWorkspaceDir = path.join(dataDir, 'agent-workspaces')
 
 /**
+ * agent 定义（docs/26 §3.1，`<name>.md`）随代码发布，不读外部目录、不可配：
+ * - 源码运行：`packages/agent/agents/`（apps/server/ 的上两级是仓库根）；
+ * - 构建产物：`output/server/agents/`，index.js 旁边（`scripts/build-server.mjs` 拷过去）。
+ * `@shadecn/agent` 自己不找这个目录（产物里它被内联进 chunk，没有「包自己的路径」可言），由这里交给它（`agent/definitions.ts`）
+ */
+export const agentDefinitionsDir = isBundle
+  ? path.join(moduleDir, 'agents')
+  : path.resolve(moduleDir, '..', '..', 'packages', 'agent', 'agents')
+
+/**
  * 画布资源（图片 / 视频）的对象存储：S3 协议，path-style（`<endpoint>/<bucket>/<key>`）。
  *
  * - `S3_ENDPOINT`：**公开**地址，默认 `https://s3.fyl080801.uk`。节点 `data.src` 存的、浏览器直接读的都是 `<它>/<bucket>/<key>`，

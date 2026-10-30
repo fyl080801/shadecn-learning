@@ -26,6 +26,7 @@
     "ioredis": "^5.6.1",
     "minidenticons": "^4.2.1",
     "winston": "^3.19.0",
+    "yaml": "2.8.2",
     "yjs": "^13.6.32"
   },
   "devDependencies": {

@@ -6,6 +6,9 @@ import { createInlineDriver } from './sandbox/drivers/inline.ts'
 import { createMemoryLeaseRegistry } from './occupancy.ts'
 import { createMemoryRunRegistry } from './run-registry.ts'
 import type { SandboxDriver } from './sandbox/driver.ts'
+import { createAgentRegistry, DEFAULT_AGENT_MODEL, loadAgentConfigs, type AgentRegistry } from './agents.ts'
+import { BUILTIN_SKILLS, type SkillRegistry } from './skills/index.ts'
+import { fileURLToPath } from 'node:url'
 
 export { createInlineDriver, type InlineDriverOptions } from './sandbox/drivers/inline.ts'
 
@@ -22,6 +25,7 @@ export { createInlineDriver, type InlineDriverOptions } from './sandbox/drivers/
  * - {@link gatewayFetch}：把发往 {@link TEST_GATEWAY_URL} 的请求直接交给 `runtime.gateway.handle`（不开端口）。
  *   runner 里 pi 的 `streamProxy` 用的是全局 fetch，所以测试要 `vi.stubGlobal('fetch', gatewayFetch(...))`。
  * - {@link createInlineDriver}：进程内的驱动（runner 在当前进程里跑，照样只经网关协议说话）。
+ * - {@link testAgentRegistry}：仓库里真实的 agent 定义（`packages/agent/agents/`），`runtimeOptions()` 已带上。
  *
  * 生产代码不 import 这个文件。
  */
@@ -57,7 +61,7 @@ export interface ScriptedModel {
    * 一行拿齐 `createAgentRuntime` 要的模型 / 驱动 / 网关 / 占用登记表；登记表每次调用一份新的内存实现，
    * 要让两个 runtime 互相看见占用就自己传同一份
    */
-  runtimeOptions(driver?: SandboxDriver): Pick<AgentRuntimeOptions, 'model' | 'driver' | 'gateway' | 'leases' | 'runRegistry'>
+  runtimeOptions(driver?: SandboxDriver): Pick<AgentRuntimeOptions, 'model' | 'driver' | 'gateway' | 'leases' | 'runRegistry' | 'agents'>
 }
 
 /** 文字切成几段流出去：接回 / 补发的测试要看到多帧 TEXT_MESSAGE_CONTENT */
@@ -290,10 +294,22 @@ export function registerScriptedModel(
         gateway,
         leases: createMemoryLeaseRegistry(),
         runRegistry: createMemoryRunRegistry(),
+        agents: testAgentRegistry(),
       }
     },
   }
   return scripted
+}
+
+/** 仓库里的 agent 定义目录（`packages/agent/agents/`，按本文件的位置找 —— 只在源码里成立，所以只给测试用；生产由宿主传目录） */
+export const AGENT_DEFINITIONS_DIR = fileURLToPath(new URL('../agents/', import.meta.url))
+
+/**
+ * 测试用的 agent 注册表：读 {@link AGENT_DEFINITIONS_DIR} 里的真实定义（同生产的那一份），按 `skills` 校验白名单、模型表只有 `default`。
+ * 想换定义（比如测白名单）就自己 `createAgentRegistry([...])` 传给 `createAgentRuntime({ agents })`
+ */
+export function testAgentRegistry(skills: SkillRegistry = BUILTIN_SKILLS): AgentRegistry {
+  return createAgentRegistry(loadAgentConfigs(AGENT_DEFINITIONS_DIR), { skills, models: [DEFAULT_AGENT_MODEL] })
 }
 
 /** 一步只调 `load_skill({ id })` 的模型回复（docs/23 §3.3：它必须单独成批）—— 按需技能的工具要先加载才在 */

@@ -1,7 +1,7 @@
 # REQ-AGENT-DEF Agent 定义与同一沙箱内的多 agent 协作
 
-> 状态：**规划中**。现状是一个隐含的「画布 agent」加上从属于它的「子 agent」（[REQ-AGENT](20-agent-canvas.md) §3.10.11，已实现）；
-> 本文把它改成**对等的 agent 定义 + 同一轮里的任务**，分期见 §4。
+> 状态：**部分实现**（P0～P2 已完成，P3～P5 未做）。原来是一个隐含的「画布 agent」加上从属于它的「子 agent」（[REQ-AGENT](20-agent-canvas.md) §3.10.11）；
+> 本文把它改成**对等的 agent 定义 + 同一轮里的任务**，分期见 §4。P2 起定义读自 `packages/agent/agents/*.md`（目前只有 `canvas.md`），工具白名单在服务端生效。
 >
 > 前置：[REQ-AGENT](20-agent-canvas.md)（画布 agent、占用、§3.10.11 的协作规则）、
 > [REQ-AGENT-SANDBOX](22-agent-sandbox.md)（runner / 网关、§4.3 服务端调模型与权威 transcript）、
@@ -187,9 +187,9 @@ requires: [director]        # 可省略：依赖的内置技能 id
 
 | 期 | 内容 | runner 协议 | 行为变化 |
 |---|---|---|---|
-| P0 | 文档：本文、REQ-AGENT §3.10.11 改成协作口径、REQ-AGENT-SKILL §7 | — | 无 |
-| P1 | 只改名（§3.9 表里不随协议升级的那些）、规则文件同步 | 不变 | 无 |
-| P2 | 读入 `agents/*.md`（只有 `canvas.md`）、启动校验、拆 `PLATFORM_PROMPT`、工具白名单在服务端生效 | 不变（系统提示与工具表第 7 版起本来就只在服务端） | 无 |
+| P0 ✅ | 文档：本文、REQ-AGENT §3.10.11 改成协作口径、REQ-AGENT-SKILL §7 | — | 无 |
+| P1 ✅ | 只改名（§3.9 表里不随协议升级的那些）、规则文件同步 | 不变 | 无 |
+| P2 ✅ | 读入 `agents/*.md`（只有 `canvas.md`）、启动校验、拆 `PLATFORM_PROMPT`、工具白名单在服务端生效 | 不变（系统提示与工具表第 7 版起本来就只在服务端） | 无 |
 | P3 | `run_agent({ agent, task, nodeIds? })`、可调用 agent 目录、调用深度上限、按角色给 `request_confirmation`、任务条目带 `agent`、任务输入带它的 `model` | 7 → 8，重建沙箱镜像 | 能调用不同的 agent（模型仍只有 `default`） |
 | P4 | 模型表、按 agent 选模型、费用与历史预算按 agent 的模型算 | 不变（P3 已带 `model`） | 不同 agent 可用不同模型 |
 | P5 | 文字技能（`SKILL.md`，仓库目录一种来源） | 不变 | 能扩展技能 |
@@ -235,4 +235,4 @@ requires: [director]        # 可省略：依赖的内置技能 id
 3. ~~定义文件放在哪~~ —— **已定**：只随仓库打包，不读外部目录。
 4. ~~混用模型时的费用~~ —— **已定**：只要有一次请求的模型没有定价，这一轮费用记 `null`。
 5. 模型表除 `default` 以外的项怎么配置（一组带前缀的环境变量，还是一个配置文件），P4 定。
-6. 定义文件与文字技能在仓库里的目录，P2 / P5 实现时定。
+6. 定义文件与文字技能在仓库里的目录 —— agent 定义**已定**（P2）：`packages/agent/agents/`，产物里拷到 `output/server/agents/`；文字技能的目录 P5 定。

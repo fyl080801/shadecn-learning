@@ -12,12 +12,11 @@ import { readNodeById } from './tools.ts'
  */
 
 /**
- * 平台基础段：安全与通用规则，不随技能变，技能的提示段不能覆盖它（docs/23 §3.5）。
+ * 平台规则段：安全与通用规则，不随 agent、不随技能变，agent 定义的正文和技能的提示段都不能覆盖它（docs/23 §3.5、docs/26 §3.2）。
+ * 「你是谁、怎么干活」不在这里，在 agent 定义的正文里（`packages/agent/agents/*.md`，入口 agent 是 `canvas.md`）；
  * 画布工具的用法在各技能的 `prompt` 里（`skills/canvas/`、`skills/media/`）。
  */
-export const PLATFORM_PROMPT = `你是一个画布助手，正在协助用户处理一张节点画布（类似流程图 / 白板）。
-
-## 通用规则
+export const PLATFORM_PROMPT = `## 通用规则
 1. 你**只能通过工具**读写画布。你的改动会实时出现在所有正在看这张画布的人面前，人也可能同时在编辑。
 2. **不要编造 id**。工具报「不存在」时重新读取再决定。
 3. 用户消息里的 \`@{node:<id>}\` 是对某个具体节点的引用，消息末尾会附上这些节点当前的名字和内容。
@@ -35,6 +34,8 @@ export const PLATFORM_PROMPT = `你是一个画布助手，正在协助用户处
 加载后它的工具从下一步起可用、用法说明在加载结果里。已经加载的不用再加载。`
 
 export interface SystemPromptInput {
+  /** 这个 agent 定义的正文（`AgentConfig.systemPrompt`）：排在最前，空的就不占位 */
+  agentPrompt: string
   /** 一开始就加载的技能：提示段直接放进系统提示 */
   loaded: readonly Pick<AgentSkill, 'id' | 'title' | 'prompt'>[]
   /** 提供了但没加载的：技能目录（id + 一句话） */
@@ -46,11 +47,14 @@ export interface SystemPromptInput {
 }
 
 /**
- * 这一轮的系统提示：平台基础段 + 已加载技能的提示段 + 不可用说明 + 技能目录（一轮之内不变）。
+ * 一个 agent 这一轮的系统提示（一轮之内不变），各段之间空一行：agent 定义的正文 + 平台规则段 + 已加载技能的提示段 + 不可用说明 + 技能目录；
+ * 被调用的 agent 再在末尾接 {@link taskPrompt}（session.ts）。入口 agent 用 `canvas.md` 时，和拆分之前的 `PLATFORM_PROMPT` 拼出来的一字不差。
  * 没有「会话范围」段：所有会话都是全局 agent，改哪个节点由用户的提及和画布内容决定（docs/20 §3.10.9）。
  */
 export function systemPromptFor(input: SystemPromptInput): string {
-  const parts = [`${PLATFORM_PROMPT}一轮最多加载 ${input.maxSkillLoads} 次。`]
+  const parts: string[] = []
+  if (input.agentPrompt) parts.push(input.agentPrompt)
+  parts.push(`${PLATFORM_PROMPT}一轮最多加载 ${input.maxSkillLoads} 次。`)
   if (input.loaded.length > 0) {
     parts.push(
       `## 已加载的技能\n\n${input.loaded.map((skill) => `### ${skill.title}（${skill.id}）\n${skill.prompt}`).join('\n\n')}`,

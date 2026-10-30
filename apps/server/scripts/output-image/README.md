@@ -7,6 +7,7 @@
 package.json        运行时依赖（版本已锁死）+ start / db:push 脚本
 server/index.js     后端入口（ESM，node >= 22），实体定义和 ORM 配置已内联
 server/db-sync.js   表结构同步入口：把库对齐到实体定义（没有迁移文件），有损变更默认拒绝
+server/agents/      画布 agent 的定义（*.md，docs/26）：服务端启动时读并校验，坏了就起不来
 public/             前端静态资源，后端直接吐这个目录
 Dockerfile          构建上下文就是本目录
 agent-sandbox/      画布 agent 的 oci 沙箱镜像的构建上下文（runner + 它的 4 个依赖；不进本目录的镜像）

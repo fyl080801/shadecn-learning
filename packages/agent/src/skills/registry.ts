@@ -212,17 +212,23 @@ export interface SkillPlanInput {
   mentionedNodeTypes: readonly string[]
   /** 这次不提供的技能（被调用的 agent 不给 `delegate`：只有一层，docs/20 §3.10.11） */
   exclude?: readonly AgentSkillId[]
+  /**
+   * agent 定义的工具白名单（docs/26 §3.3，`agents.ts` 的 `agentToolWhitelist`）；不给 / `null` = 不收窄。
+   * 白名单把一个技能的工具全滤掉了，这个技能对这个 agent 就**不提供**（不进技能目录、不能加载、不算一开始加载的、
+   * 之前加载过的进「本轮不可用」）。只收窄、不放宽：门槛和部署条件照旧先判。技能里留下哪几个工具由调用方按同一份白名单滤（session.ts）
+   */
+  allowedTools?: ReadonlySet<string> | null
 }
 
 /** 一轮的技能集合（docs/23 §3.2） */
 export interface SkillPlan {
-  /** 提供的：门槛（`offeredWith`，缺省 `requires`）全在 Grant 里、`available` 为真。按注册顺序 */
+  /** 提供的：门槛（`offeredWith`，缺省 `requires`）全在 Grant 里、`available` 为真、工具白名单没把它滤空。按注册顺序 */
   offered: AgentSkill[]
   /** 一开始就加载的（`always`、命中的 `auto`、之前加载过且这一轮仍提供的） */
   loaded: AgentSkill[]
   /** 提供了但没加载的：进系统提示末尾的技能目录 */
   catalog: AgentSkill[]
-  /** 之前加载过、这一轮不提供的（Grant / 部署条件变了，或注册表里已经没有它）：系统提示里说明 */
+  /** 之前加载过、这一轮不提供的（Grant / 部署条件变了、agent 的工具白名单不含它的工具，或注册表里已经没有它）：系统提示里说明 */
   unavailable: AgentSkillId[]
 }
 
@@ -249,9 +255,13 @@ export interface SkillRegistry {
 export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistry {
   const byId = new Map<string, AgentSkill>()
   const toolOwner = new Map<string, AgentSkill>()
+  /** 每个技能的工具名（定义顺序）：按白名单判「还剩不剩工具」用 */
+  const toolNames = new Map<string, string[]>()
   for (const skill of skills) {
     if (byId.has(skill.id)) throw new Error(`技能 id 重复：${skill.id}`)
     byId.set(skill.id, skill)
+    const names: string[] = []
+    toolNames.set(skill.id, names)
     for (const capability of skill.offeredWith ?? []) {
       if (!skill.requires.includes(capability)) {
         throw new Error(`技能 ${skill.id} 的 offeredWith 里的 ${capability} 不在 requires 里`)
@@ -264,6 +274,7 @@ export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistr
       const other = toolOwner.get(tool.name)
       if (other) throw new Error(`工具 ${tool.name} 同时属于技能 ${other.id} 和 ${skill.id}`)
       toolOwner.set(tool.name, skill)
+      names.push(tool.name)
       if (!skill.requires.includes(tool.capability)) {
         throw new Error(`技能 ${skill.id} 的 requires 没有覆盖工具 ${tool.name} 要的 ${tool.capability}`)
       }
@@ -279,6 +290,13 @@ export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistr
   const offers = (skill: AgentSkill, env: SkillAvailability) =>
     (skill.offeredWith ?? skill.requires).every((capability) => env.scopes.has(capability)) && (skill.available?.(env) ?? true)
 
+  /** 白名单之后还剩工具（本来就没有工具的技能不算被滤掉） */
+  const survives = (skill: AgentSkill, allowed: ReadonlySet<string> | null | undefined) => {
+    if (!allowed) return true
+    const names = toolNames.get(skill.id) ?? []
+    return names.length === 0 || names.some((name) => allowed.has(name))
+  }
+
   const autoHit = (skill: AgentSkill, input: SkillPlanInput) => {
     const types = skill.activatesFor?.nodeTypes ?? []
     return input.mentionedNodeTypes.some((type) => types.includes(type))
@@ -293,7 +311,9 @@ export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistr
     plan(input) {
       const previous = new Set(input.previous)
       const excluded = new Set(input.exclude ?? [])
-      const offered = skills.filter((skill) => !excluded.has(skill.id) && offers(skill, input.env))
+      const offered = skills.filter(
+        (skill) => !excluded.has(skill.id) && offers(skill, input.env) && survives(skill, input.allowedTools),
+      )
       const loaded = offered.filter(
         (skill) =>
           skill.activation === 'always' ||

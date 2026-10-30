@@ -21,7 +21,9 @@
     "./runner/main": "./src/runner/main.ts",
     "./sandbox": "./src/sandbox/index.ts",
     "./sandbox/drivers": "./src/sandbox/drivers/index.ts",
-    "./testing": "./src/testing.ts"
+    "./testing": "./src/testing.ts",
+    "./agents": "./src/agents.ts",
+    "./skills": "./src/skills/index.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -29,6 +31,7 @@
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "1.4.0",
     "@earendil-works/pi-ai": "1.4.0",
+    "yaml": "2.8.2",
     "yjs": "^13.6.32"
   },
   "devDependencies": {
@@ -37,6 +40,7 @@
     "@shadecn/shared": "workspace:*",
     "@types/node": "^24.10.1",
     "typescript": "~5.9.3",
+    "yaml": "2.8.2",
     "yjs": "^13.6.32"
   }
 }

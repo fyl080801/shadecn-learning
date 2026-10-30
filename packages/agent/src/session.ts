@@ -62,6 +62,7 @@ import { createAgentGateway, type GatewayRun, type ModelRequestDecision } from '
 import { isServedModelApi, SERVED_MODEL_APIS, type ModelTurnResult } from './model-stream.ts'
 import { withoutImages, type MediaReader } from './media.ts'
 import type { ResolvedAgentModel } from './model.ts'
+import { agentToolWhitelist, assertAgentTools, type AgentConfig, type AgentRegistry } from './agents.ts'
 import {
   attachmentsPrompt,
   expandMentions,
@@ -425,6 +426,13 @@ export interface AgentRuntimeOptions {
    * 并且**必须**把同一个注册表交给 runner（进程内驱动的 `skills`）—— 两侧从同一份构造工具。
    */
   skills?: SkillRegistry
+  /**
+   * agent 定义（docs/26，`agents.ts`）。**必填**，理由同 `store`：定义随服务端产物发布，在哪个目录由宿主定
+   * （apps/server `agentDefinitionsDir`；本包在产物里不按自己的路径读文件），没有「包里自带一份」的默认值。
+   * 测试用 `@shadecn/agent/testing` 的 `testAgentRegistry()`（`runtimeOptions()` 已带上）。
+   * 入口 agent 固定是 `canvas`（§3.7）；P2 里被调用的 agent 也用它（`delegate_task` 还没有 `agent` 参数，P3 才有）。
+   */
+  agents: AgentRegistry
   /** 沙箱镜像与资源上限（`process` 驱动只用 `deadlineMs`；不给按一轮的**总**时长上限 + 30 秒） */
   sandbox?: { image?: string; resources?: Partial<SandboxResources> }
   /**
@@ -811,6 +819,13 @@ const STALE_SUMMARIES = 3
  */
 interface RunAgent {
   id: string
+  /** 它的 agent 定义（docs/26 §3.1）：系统提示的正文、工具白名单。入口 agent 和 P2 的被调用的 agent 都是 `canvas` */
+  definition: AgentConfig
+  /**
+   * 定义的工具白名单（docs/26 §3.3）；`null` = 全部。服务端在这三处按它滤：声明给模型的工具表（{@link definitionsOf}）、
+   * `load_skill` 交出的工具名、网关执行前的「这个 agent 有没有这个工具」。平台工具（`load_skill` / `request_confirmation`）不受它影响
+   */
+  allowed: ReadonlySet<string> | null
   /**
    * 被调用的 agent 的发起信息；入口 agent 为 null。`bound` = 调用方那条回复里发起它的那次 `delegate_task`（交回时把服务端拼的结果记在它上面）
    */
@@ -837,9 +852,11 @@ interface RunAgent {
   refusal: string | null
 }
 
-function newRunAgent(id: string, sub: RunAgent['sub']): RunAgent {
+function newRunAgent(id: string, sub: RunAgent['sub'], definition: AgentConfig): RunAgent {
   return {
     id,
+    definition,
+    allowed: agentToolWhitelist(definition),
     sub,
     loadedSkills: new Set(),
     skillLoads: 0,
@@ -852,6 +869,20 @@ function newRunAgent(id: string, sub: RunAgent['sub']): RunAgent {
     transcript: null,
     refusal: null,
   }
+}
+
+/**
+ * 这个 agent 有没有这个工具（docs/26 §3.3 的白名单）：平台工具总有；技能的工具看定义的 `tools`（没写 = 全部）。
+ * 只收窄、不授予：有了也照样在网关按工具自己的 `capability` 判权。
+ *
+ * **P2 只在服务端滤**（docs/26 §4）：runner 拿到的仍是技能的全部工具代理（按协议第 7 版的 `RunnerInput` 造，滤它要改协议，P3），
+ * 模型看不到白名单外的工具（服务端 transcript 只声明白名单内的），调了也被拒：`recordReply` 按声明的工具表预判 `Tool X not found`，
+ * 网关的 `executeTool` 再判一次。runner 自己执行的工具（`execution: 'runner'`）到不了网关 —— 现在的技能里它们各自独占一个技能，
+ * 白名单滤掉它就等于这个技能不提供、runner 里也就不会有它；以后一个技能里混了网关工具和 runner 工具，得等 P3 在 runner 里滤
+ */
+function allowsTool(agent: RunAgent, name: string): boolean {
+  if (name === LOAD_SKILL_TOOL_NAME || name === REQUEST_CONFIRMATION_TOOL_NAME) return true
+  return agent.allowed === null || agent.allowed.has(name)
 }
 
 /**
@@ -1160,6 +1191,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   const { store, runLog, leases, runRegistry } = options
   /** 技能注册表：runner 那边用的必须是同一份（生产都是内置的，测试显式传同一个） */
   const registry = options.skills ?? BUILTIN_SKILLS
+  // agent 定义的白名单按**这个** runtime 的技能注册表再判一次（建定义注册表时判的那份可能是另一个，测试会换）
+  for (const config of options.agents.agents) assertAgentTools(config, registry)
+  /** 入口 agent 的定义（docs/26 §3.7：固定 `canvas`）。P2 里被调用的 agent 也用它 */
+  const entryDefinition = options.agents.entry
   const gateway = createAgentGateway({
     secret: options.gateway.secret,
     upstream: resolved ? { model: resolved.model, apiKey: resolved.apiKey } : null,
@@ -1890,7 +1925,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
      */
     const tools = new Map<string, CanvasTool>()
     /** 这一轮里的 agent（docs/20 §3.10.11）：入口 agent 一开始就在；被调用的 agent 在发起登记时加进来、交回时标成结束 */
-    const mainAgent = newRunAgent(ENTRY_AGENT_ID, null)
+    const mainAgent = newRunAgent(ENTRY_AGENT_ID, null, entryDefinition)
     const agents = new Map<string, RunAgent>([[ENTRY_AGENT_ID, mainAgent]])
     /** 入口 agent 已加载的技能 id（一开始加载的 + `load_skill` 加载的）：会话记住的就是它们 */
     const loadedSkills = mainAgent.loadedSkills
@@ -2156,7 +2191,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           sandboxExec: Boolean(options.mediaTool),
         },
       }
-      const plan = registry.plan({ env, previous: previousSkills, mentionedNodeTypes })
+      /*
+       * 入口 agent 的技能（白名单把某个技能的工具全滤掉了，它就不提供）。P2 里只有一个定义：这一轮提供的技能、服务端造的工具实例、
+       * 交给 runner 的 `skills` 都取这一份；被调用的 agent 再从里面按它自己的定义选（P3 定义不止一个时要改成「全轮 = 各 agent 的并」）
+       */
+      const plan = registry.plan({ env, previous: previousSkills, mentionedNodeTypes, allowedTools: mainAgent.allowed })
       /** 一轮共享的预算：删除、图片字节 —— 所有技能的工具拿同一份 */
       const runState: ToolRunState = { deleted: 0, mediaBytes: 0 }
       const skillContext: SkillContext = {
@@ -2215,7 +2254,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
       const expanded = await opened.read((doc) => expandMentions(text, (id) => lookupMention(doc, id)))
       // 能不能看附件：提供了 view_attachment 的那个技能（模型吃图 + 接了素材读取，同 view_node_media）
-      const viewer = tools.has(VIEW_ATTACHMENT_TOOL_NAME) ? registry.skillOfTool(VIEW_ATTACHMENT_TOOL_NAME) : undefined
+      const viewer =
+        tools.has(VIEW_ATTACHMENT_TOOL_NAME) && allowsTool(mainAgent, VIEW_ATTACHMENT_TOOL_NAME)
+          ? registry.skillOfTool(VIEW_ATTACHMENT_TOOL_NAME)
+          : undefined
       const attached = attachmentsPrompt(attachments, {
         viewSkill: viewer ? { id: viewer.id, loaded: loadedSkills.has(viewer.id) } : null,
       })
@@ -2231,13 +2273,22 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         const skill = (agent.sub ? agent.sub.offered : offeredSkills).get(id)
         if (!skill) {
           if (agent.sub && id === DELEGATE_SKILL_ID) throw new Error('子 agent 不能派子任务（只有一层）：自己做完，或用 request_confirmation 交回父 agent')
+          const known = registry.get(id)
+          // 授权、部署条件都满足，是这个 agent 定义的工具白名单把它整个滤掉了（docs/26 §3.3）
+          if (known && agent.allowed !== null && registry.offers(known, env)) {
+            throw new Error(`技能 ${id} 不在这个 agent 能用的工具范围里，不能加载；用已有的工具完成，或向用户说明`)
+          }
           throw new Error(
             registry.get(id)
               ? `技能 ${id} 这一轮不提供（授权或部署条件不满足），不能加载；用已有的工具完成，或向用户说明`
               : `没有技能 ${id}；能加载的技能见系统提示里的技能目录`,
           )
         }
-        const toolNames = skill.tools(skillContext).map((tool) => tool.name)
+        // 只报这个 agent 白名单里的（技能整个被滤掉的根本不在它的提供集合里，上面已拒）
+        const toolNames = skill
+          .tools(skillContext)
+          .map((tool) => tool.name)
+          .filter((name) => allowsTool(agent, name))
         if (agent.loadedSkills.has(id)) {
           return {
             content: [{ type: 'text' as const, text: `技能「${skill.title}」已经加载了，这些工具现在就能用：${toolNames.join('、')}` }],
@@ -2271,6 +2322,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       tools.set(LOAD_SKILL_TOOL_NAME, createLoadSkillTool((id) => loadSkill(id, mainAgent)))
 
       const systemPrompt = systemPromptFor({
+        agentPrompt: entryDefinition.systemPrompt,
         loaded: plan.loaded,
         catalog: plan.catalog,
         unavailable: plan.unavailable.map((id) => ({ id, title: registry.titleOf(id) })),
@@ -2299,7 +2351,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           if (agent.sub && id === DELEGATE_SKILL_ID) continue
           for (const name of skillToolNames.get(id) ?? []) {
             const tool = tools.get(name)
-            if (tool) list.push(tool)
+            // 定义的白名单（docs/26 §3.3）：模型看到的工具表只有白名单里的
+            if (tool && allowsTool(agent, name)) list.push(tool)
           }
         }
         return list
@@ -2370,8 +2423,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         // load_skill 按调用它的 agent 现造：各 agent 的已加载集合、加载次数各算
         const tool =
           request.name === LOAD_SKILL_TOOL_NAME ? createLoadSkillTool((id) => loadSkill(id, agent)) : tools.get(request.name)
-        // 不是这一轮提供的工具，或在 runner 里执行的：网关不代它执行
-        if (!tool || tool.execution === 'runner') return { isError: true, message: `Tool ${request.name} not found` }
+        // 不是这一轮提供的工具、在 runner 里执行的、或不在这个 agent 定义的白名单里（docs/26 §3.3，模型请求里本来就没声明它）：
+        // 网关不代它执行。和 pi 找不到工具时同一句话（recordReply 对没声明的调用预判的也是它）
+        if (!tool || tool.execution === 'runner' || !allowsTool(agent, tool.name)) {
+          return { isError: true, message: `Tool ${request.name} not found` }
+        }
         // 这个 agent 没加载的技能里的工具（runner 不可信，可能直接点名）：拒绝。和能力判权是两道独立的检查（docs/23 §3.3）
         const owner = registry.skillOfTool(tool.name)
         if (owner && !agent.loadedSkills.has(owner.id)) {
@@ -2651,23 +2707,36 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             prompt: expandMentions(text, (nodeId) => lookupMention(doc, nodeId)),
           }))
           if (run.stopped !== null) throw new Error('这一轮已经停止')
-          const plan = registry.plan({ env, previous: [], mentionedNodeTypes: types, exclude: [DELEGATE_SKILL_ID] })
+          // 它的定义：P2 一律 `canvas`（delegate_task 还没有 agent 参数，docs/26 §4 P3 才按名字选）
+          const definition = entryDefinition
+          const plan = registry.plan({
+            env,
+            previous: [],
+            mentionedNodeTypes: types,
+            exclude: [DELEGATE_SKILL_ID],
+            allowedTools: agentToolWhitelist(definition),
+          })
           // 被调用的 agent 能用的 ⊆ 这一轮提供的（服务端的工具实例只按这一轮提供的造过）
           const subOffered = new Map(plan.offered.filter((skill) => offeredSkills.has(skill.id)).map((skill) => [skill.id, skill]))
           const loaded = plan.loaded.filter((skill) => subOffered.has(skill.id))
           const systemPrompt = `${systemPromptFor({
+            agentPrompt: definition.systemPrompt,
             loaded,
             catalog: plan.catalog.filter((skill) => subOffered.has(skill.id)),
             unavailable: [],
             maxSkillLoads: limits.maxSkillLoads,
           })}\n\n${taskPrompt({ maxTurns: limits.maxTurns, replyChars: limits.taskReplyChars })}`
-          const agent = newRunAgent(id, {
-            toolCallId: request.toolCallId,
-            brief,
-            nodeIds,
-            offered: subOffered,
-            bound: entry,
-          })
+          const agent = newRunAgent(
+            id,
+            {
+              toolCallId: request.toolCallId,
+              brief,
+              nodeIds,
+              offered: subOffered,
+              bound: entry,
+            },
+            definition,
+          )
           for (const skill of loaded) agent.loadedSkills.add(skill.id)
           // 它自己的 transcript（不落库，交回后丢掉）：它的系统提示 + 工具表 + 服务端展开过提及的任务说明
           agent.transcript = createTranscript(systemPrompt, definitionsOf(agent), [], prompt)
@@ -3098,10 +3167,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       const unfinished = mainTranscript !== null && mainTranscript.open
       if (mainTranscript) closeBatch(mainTranscript, 'final')
       const received = completeToolResults(mainTranscript && mainAgent.turns > 0 ? persistedMessages(mainTranscript) : [])
-      // 跨轮的上下文按条数、也按 token 裁（余量规则见 llmHistoryTokenBudget）：固定部分 = 这一轮的系统提示 + 提供的全部工具定义
+      // 跨轮的上下文按条数、也按 token 裁（余量规则见 llmHistoryTokenBudget）：固定部分 = 这一轮的系统提示 + 提供给入口 agent 的全部工具定义
       const fixedTokens =
         estimateTextTokens(systemPrompt) +
-        estimateTextTokens(JSON.stringify([...tools.values()].map(({ name, description, parameters }) => ({ name, description, parameters }))))
+        estimateTextTokens(
+          JSON.stringify(
+            [...tools.values()]
+              .filter((tool) => allowsTool(mainAgent, tool.name))
+              .map(({ name, description, parameters }) => ({ name, description, parameters })),
+          ),
+        )
       nextLlm = trimLlmHistory([...llmHistory, ...received], limits.llmMessages, llmHistoryTokenBudget(resolved.model, fixedTokens))
       // 两者都在回调里赋值，TS 的收窄看不见：显式放宽
       const finishReport = runnerFinish as FinishRequest | null

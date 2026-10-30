@@ -8,6 +8,8 @@
  *   output/server/db-sync.js   表结构同步入口（apps/server/db/sync-cli.ts），容器启动先跑它
  *   output/server/agent-runner.js  画布 agent 的 runner（packages/agent/src/runner/main.ts）：
  *                              `process` 沙箱驱动 spawn 的就是它（docs/22 §7），环境变量只有网关地址 + 一次性凭证
+ *   output/server/agents/      agent 定义（packages/agent/agents/*.md，docs/26 §3.1）：服务端启动时读、校验
+ *                              （apps/server/config.ts 的 agentDefinitionsDir）。只给服务端，不进沙箱镜像
  *   output/Dockerfile          构建上下文就是 output/ 本身
  *   output/.dockerignore、output/README.md
  *   output/agent-sandbox/      `oci` 沙箱镜像的构建上下文（docs/22 §7.2，`pnpm build:sandbox-image`）：
@@ -50,6 +52,8 @@ const serverOutDir = path.join(outDir, 'server')
 const templateDir = path.join(serverDir, 'scripts/output-image')
 const sandboxOutDir = path.join(outDir, 'agent-sandbox')
 const sandboxTemplateDir = path.join(serverDir, 'scripts/agent-sandbox')
+/** agent 定义的源目录：原样拷到 output/server/agents/（只拷 *.md） */
+const agentDefinitionsDir = path.join(rootDir, 'packages/agent/agents')
 /** runner 入口（esbuild 的第三个入口）；沙箱镜像只装它这一支用得到的东西 */
 const RUNNER_ENTRY = 'packages/agent/src/runner/main.ts'
 
@@ -120,6 +124,11 @@ const result = await build({
 
 await writeOutputPackageJson(collectRuntimeDeps(result.metafile))
 await writeSandboxContext(result.metafile)
+// agent 定义随产物发布：服务端从 index.js 旁边的 agents/ 读（源码运行时读 packages/agent/agents/）
+await cp(agentDefinitionsDir, path.join(serverOutDir, 'agents'), {
+  recursive: true,
+  filter: (source) => source === agentDefinitionsDir || source.endsWith('.md'),
+})
 
 // 老产物（Prisma 时代）留下的 schema 和 CLI 配置：现在的产物用不上，留着只会误导人
 await rm(path.join(outDir, 'prisma'), { recursive: true, force: true })
