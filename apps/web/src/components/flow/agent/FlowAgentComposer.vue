@@ -110,13 +110,22 @@ defineExpose({
 
 <template>
   <div class="space-y-2">
+    <!--
+      附件排自带 pt-2 / pr-2（给压在边框外的删除角标留位置，横向滚动会裁掉溢出），
+      这里用负边距把它推回外层 p-3 里，附件卡片本身离上边 / 右边仍是 12px，角标落在外层的内边距里
+    -->
     <AssetUploadList
       v-if="props.attachments && props.attachments.items.length > 0"
+      class="-mt-2 -mr-2"
       :list="props.attachments"
       :addable="false"
     />
 
-    <!-- 画布里的输入区不带边框也不留内边距，文字占满：外面的弹层 / 面板已经框住了它 -->
+    <!--
+      画布里的输入区不带边框也不留内边距，文字占满：外面的弹层 / 面板已经框住了它（统一 p-3，同 shadcn InputGroup 的 px-3 / py-3）。
+      行高 24px（提及 chip 22px 高，行高再小带 chip 的行会高低不齐）比 14px 字多出约 5px 半行距，
+      首行看上去离上边比文字离左边远；-mt-1 把它抵掉，四边视觉上都是 12px 左右。
+    -->
     <div>
       <PromptInput
         ref="input"
@@ -124,7 +133,7 @@ defineExpose({
         :editor="editor"
         :defer-focus-on-click="true"
         :placeholder="props.placeholder ?? '让 agent 改画布… 输入 @ 提及节点'"
-        wrapper-class="[&_[data-slate-editor]]:min-h-16 [&_[data-slate-editor]]:max-h-40 [&_[data-slate-editor]]:overflow-y-auto [&_[data-slate-editor]]:p-0 [&_[data-slate-editor]]:leading-6 [&_[data-slate-editor]]:before:left-0 [&_[data-slate-editor]]:before:top-0 [&_[data-slate-editor]]:before:leading-6"
+        wrapper-class="-mt-1 [&_[data-slate-editor]]:min-h-16 [&_[data-slate-editor]]:max-h-40 [&_[data-slate-editor]]:overflow-y-auto [&_[data-slate-editor]]:p-0 [&_[data-slate-editor]]:leading-6 [&_[data-slate-editor]]:before:left-0 [&_[data-slate-editor]]:before:top-0 [&_[data-slate-editor]]:before:leading-6"
         @keydown="onKeydown"
         @trigger-open="menu.onOpen"
         @trigger-search="menu.onSearch"
