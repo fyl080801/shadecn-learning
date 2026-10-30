@@ -23,7 +23,8 @@ import type { CanvasToolDetails } from './tools.ts'
  *    模型上下文、这一轮提供 / 一开始就加载的技能（runner 按同一份注册表展开成工具）、模型描述（不含地址和 key）；
  * 3. 跑 pi：模型请求走 `/model/<agentId>/api/stream`（pi 的 `streamProxy`：服务端用自己解析的模型、参数和 key 调上游，
  *    以 SSE 下发 `ProxyAssistantMessageEvent`，docs/22 §4.3）；画布工具走 `/canvas/tool`；
- *    pi 的事件裁成 {@link RunnerEvent} 分批 `/events` 上报（服务端经 `events.ts` 映射成 AG-UI —— 映射只在服务端）；
+ *    pi 的事件裁成 {@link RunnerEvent} 分批 `/events` 上报（docs/22 §4.3 第 3 步起服务端不再拿它产生界面内容：前端看到的 AG-UI 事件
+ *    由服务端从自己的模型流、执行记录、transcript 合成后经 `events.ts` 映射 —— 映射只在服务端；上报只剩时机、runner 执行的工具的结果和日志）；
  *    **一批工具调用结束时**（`turn_end` 先把事件冲完；循环要接着请求模型时，pi 的 `prepareNextTurnWithContext` 里）
  *    `/canvas/changes` 取别人的改动通知（docs/22 §4.3 第 2 步起恒回 null：通知由服务端在父 agent 的下一次模型请求时插进它的 transcript；
  *    runner 照常来取，第 4 步删掉这条路由）；
@@ -39,7 +40,7 @@ import type { CanvasToolDetails } from './tools.ts'
  * 服务端只认自己分配过、还没结束的 id；子 agent 不能再派（服务端拒绝 `agentId` 不是父 agent 的派发）。
  *
  * 中止 / 超时 / 失权不经协议通知 runner：服务端当场作废令牌、由驱动杀掉沙箱（docs/22 §5 stop），
- * 收尾帧由服务端按它已经收到的事件补齐。所以 runner 被杀在任何一步都是合法的结局。
+ * 收尾帧由服务端按它自己的记录补齐。所以 runner 被杀在任何一步都是合法的结局。
  *
  * ## 令牌失效 = 401
  *
@@ -237,7 +238,9 @@ export interface CanvasChangesResponse {
 // —— 事件（上行） ——
 
 /**
- * pi 事件裁剪后的上报形状 —— **只有 `events.ts` 与编排层要读的字段**（同名同形，`events.ts` 直接吃）。
+ * pi 事件裁剪后的上报形状 —— **只有 `events.ts` 与编排层要读的字段**（同名同形）。docs/22 §4.3 第 3 步起喂给 `events.ts` 的是
+ * 编排层按这个形状**自己合成**的（{@link RunnerEventBody}）；runner 上报的只用作时机（runner 执行的 / 它就地拦下的调用走到了）、
+ * runner 执行的工具的结果、工具调用日志，不再产生界面内容。
  * 最占地方的 `message_update.message`（每个 token 一份完整的半成品消息）不上报；思考内容、工具调用的增量也不报。
  * **图片块不上报**：`message_end` 的消息和 `tool_execution_end` 的结果里的图片换成文字占位（{@link slimMessage}）——
  * 补发缓冲与前端的工具结果里因此没有图片字节（落库的模型上下文取服务端 transcript，落库前同样换成占位）。
@@ -250,7 +253,10 @@ export type RunnerEvent = RunnerEventBody & {
 
 export type RunnerEventBody =
   | { type: 'message_update'; assistantMessageEvent: { type: 'text_delta'; delta: string } | { type: 'text_end' } }
-  /** pi 往上下文里追加的每一条消息（用户提示、assistant 回复、工具结果）；服务端只拿它映射界面事件（第 3 步之前），模型上下文是服务端的 transcript */
+  /**
+   * pi 往上下文里追加的每一条消息（用户提示、assistant 回复、工具结果）。docs/22 §4.3 第 3 步起服务端不再拿它产生界面内容
+   * （回复定稿取服务端调模型的结果），也不进模型上下文（服务端的 transcript）；只剩父 agent 循环自己出错时的原因进服务端日志。第 4 步起父 agent 不再上报
+   */
   | { type: 'message_end'; message: AgentMessage; steerId?: string }
   | { type: 'tool_execution_start'; toolCallId: string; toolName: string; args: unknown }
   | {
@@ -260,7 +266,7 @@ export type RunnerEventBody =
       result: { content: unknown[]; details?: unknown }
       isError: boolean
     }
-  /** 一批（一次模型回复 + 它的工具调用）结束；只用于界面（步数由网关按模型请求数，docs/22 §4.3） */
+  /** 一批（一次模型回复 + 它的工具调用）结束；服务端不再用它（步数由网关按模型请求数、界面由服务端产生，docs/22 §4.3） */
   | { type: 'turn_end'; toolResultCount: number }
 
 // —— 子 agent（docs/20 §3.10.11） ——

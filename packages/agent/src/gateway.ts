@@ -93,12 +93,20 @@ const DEFAULT_MAX_RETRY_DELAY_MS = 60_000
  * 编排层对一次模型请求的判定（{@link GatewayRunHandlers.modelRequest}）：
  * - `stream`：放行，用 `context`（服务端的 transcript，runner 送的上下文不用）调上游；终止帧发给 runner **之前**调一次 `release`，
  *   交回这条回复的定稿（编排层记进 transcript、释放这个 agent 的在途名额 —— runner 拿到终止帧就可能来执行工具）；
- *   拿不到定稿（不该发生）给 null；
+ *   拿不到定稿（不该发生）给 null。`frame`：终止帧之前的每一帧，写给 runner **之前**交给编排层一份
+ *   （界面上的文字流由服务端从这里产生，docs/22 §4.3 第 3 步；编排层抛错不影响下发）；
  * - `refuse`：开流之前拒绝（`{ error }` + 状态码），不调上游；
  * - `fail`：开流、只发一帧 `error`（如子 agent 步数用完），不调上游。
  */
 export type ModelRequestDecision =
-  | { kind: 'stream'; sessionId: string; step: number; context: TranscriptContext; release(result: ModelTurnResult | null): void }
+  | {
+      kind: 'stream'
+      sessionId: string
+      step: number
+      context: TranscriptContext
+      release(result: ModelTurnResult | null): void
+      frame?(frame: ProxyAssistantMessageEvent): void
+    }
   | { kind: 'refuse'; status: number; message: string }
   | { kind: 'fail'; message: string }
 
@@ -125,6 +133,11 @@ export interface GatewayRunHandlers {
    * 一次请求 = 一步（docs/22 §4.3「步数与请求上限」），计数在这里
    */
   modelRequest(agentId: string): ModelRequestDecision | Promise<ModelRequestDecision>
+  /**
+   * 这一轮的一次模型请求在开流之前被拒了（任何原因：形状、大小、`llm:invoke`、编排层的判定）：`message` 是回给 runner 的那句。
+   * 编排层据此判这个 agent 为什么没走完（服务端自己的说法，不用 runner 拿这句话拼出的报错，docs/22 §4.3 第 3 步）
+   */
+  modelRefused?(agentId: string, status: number, message: string): void
   /** 续期之前：Grant 还活着才续（同样抛 RunAuthorityError） */
   authorizeRenewal(): Promise<void>
 }
@@ -397,25 +410,33 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
     // 在途到服务端的流结束为止（长时间流式输出不算空闲）；开流之前的拒绝在 finally 里结束
     const end = begin(entry)
     let handedOff = false
+    const refused = (status: number, message: string) => {
+      try {
+        entry.registration.handlers.modelRefused?.(agentId, status, message)
+      } catch (err) {
+        console.warn(`[agent-gateway] run=${entry.registration.runId} agent=${agentId} 编排层记录模型请求被拒失败`, err)
+      }
+      return modelError(status, message)
+    }
     try {
       let body: ReturnType<typeof parseModelStreamRequest>
       try {
         body = parseModelStreamRequest(await readJson(request, MODEL_BODY_LIMIT))
       } catch (err) {
-        if (err instanceof GatewayHttpError) return modelError(err.status, err.message)
+        if (err instanceof GatewayHttpError) return refused(err.status, err.message)
         throw err
       }
-      if (!body) return modelError(400, '模型请求的形状不对')
+      if (!body) return refused(400, '模型请求的形状不对')
       try {
         await entry.registration.handlers.authorizeLlm()
       } catch (err) {
         const status = authorityStatus(err)
         if (status === null) throw err
-        return modelError(status, (err as Error).message)
+        return refused(status, (err as Error).message)
       }
-      if (entry.closed) return modelError(401, UNAUTHORIZED_MESSAGE)
+      if (entry.closed) return refused(401, UNAUTHORIZED_MESSAGE)
       const decision = await entry.registration.handlers.modelRequest(agentId)
-      if (decision.kind === 'refuse') return modelError(decision.status, decision.message)
+      if (decision.kind === 'refuse') return refused(decision.status, decision.message)
       if (decision.kind === 'fail') {
         // 不调上游，只发一帧 error（streamProxy 据此给 pi 一条出错的 assistant 消息）
         return new Response(sseFrame({ type: 'error', reason: 'error', errorMessage: decision.message, usage: ZERO_USAGE }), {
@@ -425,7 +446,7 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
       }
       if (entry.closed) {
         decision.release(null)
-        return modelError(401, UNAUTHORIZED_MESSAGE)
+        return refused(401, UNAUTHORIZED_MESSAGE)
       }
       handedOff = true
       // body.messages 只校验过形状：上下文用编排层给的服务端 transcript（docs/22 §4.3 第 2 步）
@@ -529,6 +550,13 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
                 terminal = out
                 // 先记进 transcript，再让 runner 看到终止帧
                 settle((reported as ModelTurnResult | null) ?? failedReply(out))
+              } else if (decision.frame) {
+                // 界面上的文字流从服务端自己的流来（不信 runner 上报的）：先交给编排层，再下发
+                try {
+                  decision.frame(out)
+                } catch (err) {
+                  console.warn(`[agent-gateway] run=${runId} agent=${agentId} 编排层处理模型流的一帧失败`, err)
+                }
               }
               write(out)
             }

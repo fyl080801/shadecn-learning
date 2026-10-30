@@ -1,4 +1,4 @@
-import type { AgentMessage } from '@earendil-works/pi-agent-core'
+import type { AgentMessage, ProxyAssistantMessageEvent } from '@earendil-works/pi-agent-core'
 import {
   isContextOverflow,
   type Api,
@@ -60,7 +60,7 @@ import { createdNodeIds, dataWriteTargets, leaseAgentOf, type NodeLease, type No
 import type { ConversationSlot, ReplayEntry, ReplayRecord, RunRecord, RunRegistry, StopCommand } from './run-registry.ts'
 import { createAgentGateway, type GatewayRun, type ModelRequestDecision } from './gateway.ts'
 import { isServedModelApi, SERVED_MODEL_APIS, type ModelTurnResult } from './model-stream.ts'
-import type { MediaReader } from './media.ts'
+import { withoutImages, type MediaReader } from './media.ts'
 import type { ResolvedAgentModel } from './model.ts'
 import {
   attachmentsPrompt,
@@ -78,10 +78,12 @@ import type {
   DelegateResponse,
   FinishRequest,
   RunnerEvent,
+  RunnerEventBody,
   RunnerInput,
   RunnerModel,
   SubagentFinishRequest,
   SubagentFinishResponse,
+  SubagentStatus,
   ToolCallRequest,
   ToolCallResponse,
 } from './protocol.ts'
@@ -111,6 +113,7 @@ import type {
 import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunState } from './tools.ts'
 import {
   appendUserText,
+  batchResult,
   bindCall,
   closeBatch,
   createTranscript,
@@ -122,6 +125,7 @@ import {
   TOOL_INTERRUPTED,
   toolErrorRecord,
   type AgentTranscript,
+  type ToolResultRecord,
   type TranscriptCall,
   type TranscriptTool,
 } from './transcript.ts'
@@ -192,7 +196,8 @@ import {
  *    新会话根本没建起来，拿不出 threadId。
  * 2. 发 RUN_STARTED（threadId = 会话 id）+ 回显用户消息，写运行日志的开头一行。
  * 3. 签 Grant → 打开画布 → 展开提及 → 在网关登记这一轮、让驱动起一个沙箱跑 runner（pi 在那里），
- *    等沙箱退出。runner 上报的事件经 `events.ts` 映射后发出去；每次工具结束写一行工具调用日志。
+ *    等沙箱退出。界面事件由服务端自己产生（模型流、执行记录、transcript，docs/22 §4.3 第 3 步），经 `events.ts` 映射后发出去；
+ *    每次工具结束写一行工具调用日志。
  * 4. **一次** `save` 把 assistant 消息、模型上下文、summary、messageCount、updatedAt 落库 ——
  *    success / cancelled / error 都要走到这一步。save 失败：console.error，并且**这一轮以 RUN_ERROR 收尾**，
  *    说明「对话没能保存」：画布上的改动已经在了，可这一轮的对话刷新就会丢，用户必须知道。
@@ -205,14 +210,16 @@ import {
  * 常驻观察与跨轮差异（要读文档）、run 注册表 / 补发缓冲 / SSE / 广播、落库（会话、运行日志、工具调用日志）、
  * 判权与对账、真实的 LLM key（服务端自己调模型，docs/22 §4.3）。runner 被杀在任何一步都合法：
  *
- * - **事件**：runner 把 pi 事件裁成 `RunnerEvent` 上报，这里原样喂给 `events.ts` 的映射器 —— 映射只在服务端，
- *   所以 runner 被杀之后，收尾帧（关文字段、把还在转的工具标成「已中止」）和落库的 assistant 消息照样由这里补齐；
+ * - **事件**（docs/22 §4.3 第 3 步）：喂给 `events.ts` 映射器的是这里按 pi 事件同名同形**合成**的 —— 文字增量来自服务端调模型的流，
+ *   回复定稿来自服务端的结果，工具条目来自服务端那条回复 + 网关的执行记录 / 子任务结果 / 代算的拒绝；runner 上报的只用作时机
+ *   （runner 执行的、被它就地拦下的调用走到了）和 runner 执行的工具的结果。映射只在服务端，所以 runner 被杀之后，
+ *   收尾帧（关文字段、把还在转的工具标成「已中止」）和落库的 assistant 消息照样由这里补齐；
  * - **模型上下文**：服务端为每个 agent 维护一份权威 transcript（`transcript.ts`，docs/22 §4.3 第 2 步），模型请求只用它、
  *   父 agent 的那份落库；runner 送来的上下文和上报的 `message_end` 都不进去。被杀时最后一批工具调用
  *   缺的结果补成「已中止」的错误结果，下一轮的上下文才合法；
  * - **工具调用日志**：画布工具以网关的执行记录为准（runner 在不可信区，它报的成败不算数）；
  *   只在 runner 里跑的媒体工具按它上报的记；
- * - **每一轮的上限**都在这里：步数（**一次模型请求 = 一步**，网关按 agent 硬计数，`modelRequest`；上报的 `turn_end` 只用于界面）、
+ * - **每一轮的上限**都在这里：步数（**一次模型请求 = 一步**，网关按 agent 硬计数，`modelRequest`；上报的 `turn_end` 不用）、
  *   工具调用次数（runner 先拦，网关按同一个数硬拦）、
  *   时长、删除预算（服务端的工具实例）、补发缓冲。
  *
@@ -283,7 +290,7 @@ import {
  * 只要任务列表里还看得见它，就接得回。
  *
  * **共享补发日志（多副本，docs/20 §3.10.10）**：同一批帧另外**按批**追加进 {@link RunRegistry} 的补发日志 ——
- * 一次 `send`（runner 上报的一批事件映射之后的全部帧、一次收尾……）= 一条记录，带从 1 起连续的 `seq`，文字增量不逐帧写。
+ * 一次 `send`（攒了 {@link TEXT_BATCH_MS} 的一段文字帧、一次工具开始 / 结束、一次收尾……）= 一条记录，带从 1 起连续的 `seq`，文字增量不逐帧写。
  * 追加按顺序串成一条链（{@link RunState.replayLog}），收尾时先等它写完再删登记。本进程的订阅者走上面的内存快路径；
  * 别的副本收到接回请求时（这一轮不在它的 `runs` 里）：先查任务登记（没有 = 404），再从头读日志补发（断号或带溢出标记 = 410），
  * 然后阻塞读后续的；一段时间没有新帧就查一次登记，登记没了（持有副本崩溃，收尾帧不会来了）就关流。
@@ -821,6 +828,8 @@ interface RunAgent {
   exhausted: boolean
   /** 子 agent 改过的节点（按执行记录汇总，交回父 agent） */
   changed: Set<string>
+  /** 它最近一次模型请求在开流之前被网关拒了的原因（服务端自己的话）；之后放行了一次就清掉。判「为什么没走完」用 */
+  refusal: string | null
 }
 
 function newRunAgent(id: string, sub: RunAgent['sub']): RunAgent {
@@ -836,8 +845,33 @@ function newRunAgent(id: string, sub: RunAgent['sub']): RunAgent {
     exhausted: false,
     changed: new Set(),
     transcript: null,
+    refusal: null,
   }
 }
+
+/**
+ * 父 agent 模型流里的文字帧攒多久发一批（共享补发日志里一条记录）：同原来 runner 上报的节奏（`createUplink` 的 40ms），
+ * 流式照旧、又不至于每个增量写一次共享日志
+ */
+const TEXT_BATCH_MS = 40
+
+/**
+ * runner 收尾了、父 agent 的这一段却没走完（循环自己出错 / 请求没到服务端）：给人看的原因（runner 报的原因只进日志）。
+ * `turns` = 父 agent 发过的模型请求数
+ */
+const runUnfinishedMessage = (turns: number) =>
+  turns === 0
+    ? 'agent 运行环境没有走完这一轮：没有请求过模型就结束了（运行环境内部出错，详情见服务端日志）'
+    : 'agent 运行环境没有走完这一轮：调用工具之后没有再请求模型就结束了（运行环境内部出错，详情见服务端日志）'
+
+/** 一个 agent 的模型请求在开流之前被拒、它就此停下：给人看的原因（服务端拒绝时自己的那句话） */
+const modelRefusedMessage = (reason: string) => `模型请求被拒绝：${reason}`
+
+/** runner 执行的工具结束时那句话最多留多少字 */
+const LOCAL_SUMMARY_CHARS = 200
+
+/** 子任务「需要确认」的问题最多留多少字（同协议里 runner 报的问题的上限） */
+const SUBAGENT_QUESTION_CHARS = 4000
 
 /** 执行记录 / 工具开始时刻的键：不同 agent 的 toolCallId 可能撞（各自的模型各自起名） */
 const callKey = (agentId: string, toolCallId: string) => `${agentId}\n${toolCallId}`
@@ -1695,8 +1729,25 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     // 和准备会话并行：进列表之前要有发起人的名字头像
     const ownerLookup = profiles([userId]).then((found) => found.get(userId) ?? unknownUser(userId))
 
-    /** 一次 send = 一批（共享补发日志里的一条记录） */
-    const send = (events: AgentStreamEvent[]) => emitBatch(run, events)
+    /**
+     * 一次 send = 一批（共享补发日志里的一条记录）。父 agent 模型流里的文字帧（{@link sendText}）先攒着，
+     * 每 {@link TEXT_BATCH_MS} 发一批（同原来 runner 上报的节奏：文字增量不逐帧写共享日志）；
+     * 别的任何一批发出去之前先把攒着的并在它前面 —— 帧的先后不变
+     */
+    let textFrames: AgentStreamEvent[] = []
+    let textTimer: ReturnType<typeof setTimeout> | undefined
+    const send = (events: AgentStreamEvent[]) => {
+      clearTimeout(textTimer)
+      textTimer = undefined
+      const batch = textFrames.length > 0 ? [...textFrames, ...events] : events
+      textFrames = []
+      emitBatch(run, batch)
+    }
+    const sendText = (events: AgentStreamEvent[]) => {
+      if (events.length === 0) return
+      textFrames.push(...events)
+      textTimer ??= setTimeout(() => send([]), TEXT_BATCH_MS)
+    }
 
     const attachments = input.attachments ?? []
     const userMessage: Extract<AgentChatMessage, { role: 'user' }> = {
@@ -1810,6 +1861,74 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       describeTool: (name, args) => tools.get(name)?.describe(args as never) ?? name,
     })
     send(mapper.start(userMessage))
+
+    /*
+     * 界面事件由服务端产生（docs/22 §4.3 第 3 步）：喂给 events.ts 的是服务端合成的、同名同形的 pi 事件 ——
+     * 文字增量来自服务端自己调模型的流（`frame`），回复定稿来自服务端的结果（`release`），工具条目的名字 / 参数来自服务端那条回复，
+     * 结束来自网关的执行记录 / 服务端拼的子任务结果 / 服务端代算的拒绝。runner 上报的事件只剩时机（runner 执行的、被它就地拦下的
+     * 调用什么时候走到）和 runner 执行的工具的结果（它在 transcript 里本来就取 runner 的），映射出的内容一律是服务端那份。
+     * 叫停之后不再产生（同以前：叫停之后 runner 的上报一律 401），还挂着的由 `mapper.finish` 收尾。
+     */
+    /** 这一条回复里的每次调用在界面上显示到哪了 */
+    const shown = new WeakMap<TranscriptCall, 'started' | 'ended'>()
+    const display = (agent: RunAgent, event: RunnerEventBody): AgentStreamEvent[] =>
+      run.stopped !== null ? [] : agent.sub ? mapper.subtaskEvent(agent.id, event) : mapper.handle(event)
+    const startFrames = (agent: RunAgent, entry: TranscriptCall): AgentStreamEvent[] => {
+      if (shown.has(entry)) return []
+      shown.set(entry, 'started')
+      // 参数同 pi 的 tool_execution_start：模型给的那份（服务端那条回复里的）
+      return display(agent, { type: 'tool_execution_start', toolCallId: entry.call.id, toolName: entry.call.name, args: entry.call.arguments })
+    }
+    /** 一次调用的结束（没显示过开始的先补开始）；`summary` 只有 runner 执行的工具给（结束时那句话是它执行出来的） */
+    const endFrames = (agent: RunAgent, entry: TranscriptCall, record: ToolResultRecord, summary?: string): AgentStreamEvent[] => {
+      if (shown.get(entry) === 'ended') return []
+      const out = startFrames(agent, entry)
+      shown.set(entry, 'ended')
+      out.push(
+        ...display(agent, {
+          type: 'tool_execution_end',
+          toolCallId: entry.call.id,
+          toolName: entry.call.name,
+          // 图片换占位：补发缓冲、前端都不放图片字节（同以前上报时的裁剪）
+          result: { content: withoutImages(record.content), details: summary !== undefined ? { summary } : record.details },
+          isError: record.isError,
+        }),
+      )
+      return out
+    }
+    /**
+     * 一次调用开始显示：同一条回复里排在它前面、还没显示的先按调用顺序补上（预判拒绝的连同结束，别的只显示开始），
+     * 条目的先后因此总是调用的先后（runner 不报、乱序报也一样）
+     */
+    const openCall = (agent: RunAgent, entry: TranscriptCall): AgentStreamEvent[] => {
+      const out: AgentStreamEvent[] = []
+      const pending = agent.transcript?.pending
+      if (pending && [...pending.values()].includes(entry)) {
+        for (const other of pending.values()) {
+          if (other === entry) break
+          if (shown.has(other)) continue
+          out.push(...(other.refused !== null ? endFrames(agent, other, batchResult(other, 'request')) : startFrames(agent, other)))
+        }
+      }
+      out.push(...startFrames(agent, entry))
+      return out
+    }
+    const closeCall = (agent: RunAgent, entry: TranscriptCall, record: ToolResultRecord, summary?: string) => [
+      ...openCall(agent, entry),
+      ...endFrames(agent, entry, record, summary),
+    ]
+    /**
+     * 这个 agent 的上一批里还没显示完的调用（预判拒绝、没执行、结果未知的）：下一次请求时（或子 agent 交回时）按调用顺序补完，
+     * 结果就是这次补进 transcript 的那一份（{@link batchResult}）—— 人看到的和模型看到的是同一句话
+     */
+    const revealBatch = (agent: RunAgent): AgentStreamEvent[] => {
+      const out: AgentStreamEvent[] = []
+      for (const entry of agent.transcript?.pending?.values() ?? []) out.push(...endFrames(agent, entry, batchResult(entry, 'request')))
+      return out
+    }
+    /** 父 agent 的循环自己出错时 runner 报的原因（只进服务端日志，不进对话：它是 runner 说的） */
+    let runnerLoopError: string | null = null
+
     // RUN_STARTED 发出去了：进运行中任务列表（共享登记），告诉房间；之后心跳每 1/3 TTL 续期（占用 + 登记的 expiresAt）
     run.listed = true
     run.heartbeatAt = Date.now()
@@ -2157,6 +2276,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         send(mapper.canvasChange(display))
       }
 
+      /** 父 agent 模型流里的一帧 → 文字帧（攒成一批发，{@link sendText}）；思考、工具调用的帧不显示 */
+      const streamFrame = (agent: RunAgent, frame: ProxyAssistantMessageEvent) => {
+        if (frame.type === 'text_delta') {
+          sendText(display(agent, { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: frame.delta } }))
+        } else if (frame.type === 'text_end') {
+          sendText(display(agent, { type: 'message_update', assistantMessageEvent: { type: 'text_end' } }))
+        }
+      }
+
       /**
        * 服务端调模型拿到的定稿（终止帧发给 runner 之前，`model-stream.ts`）：记进这个 agent 的 transcript。
        * 这一轮已被叫停时那段回复不进（与以前一致：叫停之后 runner 的上报一律 401）
@@ -2170,6 +2298,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           return
         }
         recordReply(transcript, result.message, result.cut, replyContext)
+        // 界面：回复定稿（关文字段、模型报错；子 agent 的回复文字）—— 服务端自己调模型的结果，不是 runner 上报的
+        send(display(agent, { type: 'message_end', message: result.message }))
       }
 
       /**
@@ -2204,8 +2334,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           ? bindCall(agent.transcript, request.toolCallId, request.name, request.args ?? {})
           : ({ ok: false, message: '这个 agent 还没有请求过模型，这次调用没有执行' } as const)
         if (!bound.ok) return { isError: true, message: bound.message }
+        // 条目在执行之前出现（旁观者先看到条目、再看到画布变化），结束取网关自己的执行记录
+        send(openCall(agent, bound.entry))
         const response = await executeBound(agent, tool, request.toolCallId, bound.entry.args)
         bound.entry.result = gatewayResultRecord(response)
+        send(endFrames(agent, bound.entry, bound.entry.result))
         return response
       }
 
@@ -2405,10 +2538,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         if (!caller || caller.finished) return refuse('这个 agent 不存在或已经结束，没有派出子任务')
         if (caller.sub) return refuse('子 agent 不能再派子任务（只有一层）：自己做完，或用 request_confirmation 交回父 agent')
         if (run.stopped !== null) return refuse('这一轮已经停止，没有派出子任务')
-        // 必须对得上父 agent 一次已经开始的 delegate_task（runner 派发前先冲了事件）：子任务条目挂在那一条上
-        if (startedCalls.get(callKey(MAIN_AGENT_ID, request.toolCallId))?.name !== AGENT_DELEGATE_TOOL_NAME) {
-          return refuse('没有对应的 delegate_task 调用，没有派出子任务')
-        }
         if (delegatedCalls.has(request.toolCallId)) return refuse('这次 delegate_task 已经派过子任务了')
         /*
          * 必须对得上父 agent 最近一条回复里还没有结果的那次 delegate_task（docs/22 §4.3「工具调用」）：任务说明、节点以服务端那份为准，
@@ -2426,8 +2555,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           return refuse('派发的任务说明或节点和模型回复里的那次 delegate_task 不一致，没有派出子任务')
         }
         entry.claimed = true
+        // 这次 delegate_task 的条目（子任务条目挂在它上面）：服务端自己开，不等 runner 报的开始
+        send(openCall(mainAgent, entry))
         const refuseBound = (message: string): DelegateResponse => {
           entry.result = toolErrorRecord(message)
+          send(endFrames(mainAgent, entry, entry.result))
           return refuse(message)
         }
         // delegate_task 本身也是一次工具调用：全轮共用的次数
@@ -2521,26 +2653,48 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         }
       }
 
-      /** `/agent/finish`：一个子 agent 交回。状态由服务端改判（步数用完 / 这一轮已停 = 失败），结果限长 */
+      /**
+       * 子 agent 怎么结束的，**全由服务端按它的 transcript 判**（docs/22 §4.3 第 3 步：runner 报的 status / question / error / text 一概不用）。
+       * 先后同 runner 原来的判法：这一轮已停 › 步数用完（第 `maxTurns + 1` 次请求被拒）› 最近一条回复里有没被拦下的 `request_confirmation`
+       * （问题取那次调用的参数）› 最近一条回复出错 / 被中止 › 调了工具却没再请求模型（步数到了被 runner 结束 / 循环自己出错）› 完成
+       */
+      const subagentVerdict = (agent: RunAgent): { status: SubagentStatus; question: string | null; error: string | null } => {
+        const failed = (error: string) => ({ status: 'failed' as const, question: null, error })
+        if (run.stopped !== null) return failed(run.stopped.reason)
+        const exhausted = `超过子任务的步数上限 ${limits.maxTurns}`
+        if (agent.exhausted) return failed(exhausted)
+        const transcript = agent.transcript
+        const confirm = [...(transcript?.pending?.values() ?? [])].find(
+          (entry) => entry.call.name === REQUEST_CONFIRMATION_TOOL_NAME && entry.refused === null,
+        )
+        if (confirm) {
+          const question = (confirm.args as { question?: unknown } | null)?.question
+          return { status: 'needs_confirmation', question: typeof question === 'string' ? clipText(question, SUBAGENT_QUESTION_CHARS) : '', error: null }
+        }
+        // 最近一次请求被网关拒了（服务端自己的原因），它就停在那里
+        if (agent.refusal !== null && (!transcript || transcript.open)) return failed(modelRefusedMessage(agent.refusal))
+        const last = transcript?.messages.slice(transcript.start).findLast((message) => message.role === 'assistant')
+        if (!transcript || last?.role !== 'assistant') return failed('子任务没有请求过模型就结束了')
+        if (last.stopReason === 'error') return failed(last.errorMessage || '模型调用失败')
+        if (last.stopReason === 'aborted') return failed('已中止')
+        if (transcript.open) {
+          return failed(agent.turns >= limits.maxTurns ? exhausted : '子任务没有做完：调用工具之后没有再请求模型就结束了')
+        }
+        return { status: 'done', question: null, error: null }
+      }
+
+      /** `/agent/finish`：一个子 agent 交回。怎么结束的由服务端判（{@link subagentVerdict}），结果限长 */
       const finishSubagent = async (request: SubagentFinishRequest): Promise<SubagentFinishResponse> => {
         const agent = agents.get(request.agentId)
         if (!agent?.sub || agent.finished) {
           return { isError: true, text: '没有这个子任务，或它已经交回过了', summary: '子任务', changedNodeIds: [] }
         }
-        let { status, error } = request
-        if (run.stopped !== null) {
-          status = 'failed'
-          error = run.stopped.reason
-        } else if (agent.exhausted && status !== 'failed') {
-          status = 'failed'
-          error = `超过子任务的步数上限 ${limits.maxTurns}`
-        }
+        const { status, question, error } = subagentVerdict(agent)
         await closeSubagent(agent)
         const changed = [...agent.changed]
-        const question = status === 'needs_confirmation' ? (request.question ?? '') : null
         /*
-         * 回复文字取服务端自己按上报的 message_end 记的「最后一条有文字的回复」，不用 runner 报的 `text`：
-         * 老镜像取的是最后一条 assistant（只调了工具 / 出错 / 被中止时为空），而且条目上显示的和交回父 agent 的必须是同一段
+         * 回复文字取服务端自己记的「最后一条有文字的回复」（服务端调模型的定稿，events.ts 的 `subtaskReply`），不用 runner 报的 `text`：
+         * 条目上显示的和交回父 agent 的必须是同一段，而且都不该是 runner 能编的
          */
         const reply = mapper.subtaskReply(agent.id)
         const resultText = subagentResultText({
@@ -2554,18 +2708,23 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         })
         const summary = `子任务${SUBTASK_STATUS_LABEL[status]}：${clipText(agent.sub.brief.replace(/\s+/g, ' '), 40)}`
         // 父 agent 那次 delegate_task 的结果就是这一段（runner 原样交给 pi；失败时它抛成错误结果）
-        agent.sub.bound.result =
+        const delegated: ToolResultRecord =
           status === 'failed'
             ? toolErrorRecord(resultText)
             : { content: [{ type: 'text', text: resultText }], details: { summary, elementIds: changed }, isError: false }
-        send(
-          mapper.subtaskFinish(agent.id, {
+        agent.sub.bound.result = delegated
+        send([
+          // 它最后一批里还没显示完的调用（被拦下的、没执行的）：条目收尾之前补完
+          ...revealBatch(agent),
+          ...mapper.subtaskFinish(agent.id, {
             status,
             question,
             error: status === 'failed' ? (error ?? '子任务失败') : null,
             changedNodeIds: changed,
           }),
-        )
+          // 父 agent 那条 delegate_task 的结束：就是上面记进 transcript 的那一段（不等 runner 报）
+          ...endFrames(mainAgent, agent.sub.bound, delegated),
+        ])
         return { isError: status === 'failed', text: resultText, summary, changedNodeIds: changed }
       }
 
@@ -2650,9 +2809,20 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         })
       }
 
+      /** runner 报的这次调用在服务端那条回复里对应的那一条（id、名字都对得上）；对不上为 undefined */
+      const reportedCall = (agent: RunAgent, toolCallId: string, toolName: string): TranscriptCall | undefined => {
+        const entry = agent.transcript?.pending?.get(toolCallId)
+        return entry && entry.call.name === toolName ? entry : undefined
+      }
+
       /**
-       * runner 上报的一批事件：按顺序映射，映射出的全部帧**作为一批**发出去（共享补发日志里一条记录，文字增量不逐帧写；
-       * 批内同步，网关保证批与批不并发）
+       * runner 上报的一批事件（批内同步，网关保证批与批不并发）。docs/22 §4.3 第 3 步起**不再拿它们产生界面内容**（文字、回复、
+       * 网关工具的条目、模型报错都由服务端产生，见 `display`），留着的用途：
+       * - **时机**：runner 执行的调用（`execution: 'runner'`、`delegate_task`）和被 runner 就地拦下的调用（服务端预判拒绝的那些）
+       *   服务端不知道 runner 什么时候走到它，就按它报的开始 / 结束显示 —— 名字、参数、结果仍取服务端那条回复 / 那份记录；
+       * - **runner 执行的工具的结果**：transcript 里本来就取它（`noteLocalResult`），条目的结束显示同一份；
+       * - 工具调用日志（runner 执行的 / 被拦下的那几种）、`delegatedCalls` 的清理；父 agent 循环自己出错的原因（只进服务端日志）。
+       * `message_update` / `turn_end` 一概不用。
        */
       const onEvents = (events: RunnerEvent[]) => {
         const batch: AgentStreamEvent[] = []
@@ -2662,25 +2832,39 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           // 归到哪个 agent：服务端分配过、还没结束的才认（runner 不可信：认不出的子 agent 事件丢掉）
           const agent = agents.get(event.agentId ?? MAIN_AGENT_ID)
           if (!agent || agent.finished) continue
-          if (event.type === 'tool_execution_start') {
-            startedCalls.set(callKey(agent.id, event.toolCallId), { name: event.toolName, args: event.args, at: Date.now() })
+          switch (event.type) {
+            case 'tool_execution_start': {
+              startedCalls.set(callKey(agent.id, event.toolCallId), { name: event.toolName, args: event.args, at: Date.now() })
+              const entry = reportedCall(agent, event.toolCallId, event.toolName)
+              if (entry && (entry.local || entry.refused !== null)) batch.push(...openCall(agent, entry))
+              break
+            }
+            case 'tool_execution_end': {
+              noteLocalResult(agent, event)
+              const entry = reportedCall(agent, event.toolCallId, event.toolName)
+              if (entry?.refused != null) {
+                batch.push(...closeCall(agent, entry, batchResult(entry, 'request')))
+              } else if (entry?.local && entry.result && entry.call.name !== AGENT_DELEGATE_TOOL_NAME) {
+                // runner 执行的工具：结果是它执行出来的那份（transcript 里也是它），结束时那句话也是
+                const summary = (event.result.details as { summary?: unknown } | null | undefined)?.summary
+                batch.push(...closeCall(agent, entry, entry.result, typeof summary === 'string' && summary ? clipText(summary, LOCAL_SUMMARY_CHARS) : undefined))
+              }
+              // delegate_task 的结束由服务端在 /agent/finish 时给（finishSubagent），网关执行的在执行完时给（executeTool）
+              logToolCall(event, agent)
+              // 这次调用结束了：之后同 id 的调用（上游复用 id）可以再派
+              if (!agent.sub) delegatedCalls.delete(event.toolCallId)
+              break
+            }
+            case 'message_end': {
+              const message = event.message
+              if (!agent.sub && message.role === 'assistant' && message.stopReason === 'error') {
+                runnerLoopError = clipText(message.errorMessage ?? '', 500)
+              }
+              break
+            }
+            default:
+              break
           }
-          if (event.type === 'tool_execution_end') noteLocalResult(agent, event)
-          if (agent.sub) {
-            // 子 agent：它的事件只改它的子任务条目，不进父 agent 的 assistant 消息（它的上下文是服务端的 transcript；步数在 modelRequest 里数）
-            batch.push(...mapper.subtaskEvent(agent.id, event))
-            if (event.type === 'tool_execution_end') logToolCall(event, agent)
-            continue
-          }
-          // 上报的事件只用于界面（第 3 步之前）：模型上下文是服务端的 transcript，message_end 不再进它；
-          // turn_end 也只用于界面：步数、「父 agent 进了下一步」都看它的下一次模型请求（modelRequest）
-          const mapped = mapper.handle(event)
-          if (event.type === 'tool_execution_end') {
-            logToolCall(event, agent)
-            // 这次调用结束了：之后同 id 的调用（上游复用 id）可以再派
-            delegatedCalls.delete(event.toolCallId)
-          }
-          batch.push(...mapped)
         }
         send(batch)
       }
@@ -2706,22 +2890,25 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           return { kind: 'refuse', status: 409, message: '这个 agent 的上一条回复已经结束了它的这一段（最终回复、出错或中止），不能再请求模型' }
         }
         agent.turns += 1
+        // 上一批里界面上还没显示完的调用：runner 已经走完了这一批（它在请求下一步），按调用顺序补完（和下面补进 transcript 的是同一句话）
+        const batch = transcript.pending ? revealBatch(agent) : []
         if (!agent.sub) {
           if (agent.turns > limits.maxTurns) {
+            send(batch)
             stopRun(run, `超过本轮步数上限 ${limits.maxTurns}，已停止`)
             return { kind: 'refuse', status: 409, message: `超过本轮步数上限 ${limits.maxTurns}` }
           }
           if (agent.turns > 1) {
-            const batch: AgentStreamEvent[] = []
             if (run.activeSubagents > 0) abandonSubagents(batch)
             delegatedCalls.clear()
-            if (batch.length > 0) send(batch)
           }
+          if (batch.length > 0) send(batch)
         } else if (agent.turns > limits.maxTurns) {
+          if (batch.length > 0) send(batch)
           agent.exhausted = true
           transcript.open = false
           return { kind: 'fail', message: `子任务的步数已达上限 ${limits.maxTurns}，这次请求没有发给模型` }
-        }
+        } else if (batch.length > 0) send(batch)
         // 先占住在途名额（下面插通知要 await）
         agent.requesting = true
         if (transcript.pending) {
@@ -2734,12 +2921,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           return { kind: 'refuse', status: 401, message: '这一轮已经停止' }
         }
         let released = false
+        agent.refusal = null
         return {
           kind: 'stream',
           // 缓存键（docs/22 §4.3 已定第 5 条）：父 agent 用会话 id（前后几轮都能命中），子 agent 每个一份
           sessionId: agent.sub ? `${run.runId}:${agent.id}` : conversationId,
           step: agent.turns,
           context: requestContext(transcript),
+          // 父 agent 的文字流：服务端自己的流里的增量（子 agent 的文字不逐帧显示，回复定稿时才更新条目，同以前）
+          ...(agent.sub ? {} : { frame: (frame: ProxyAssistantMessageEvent) => streamFrame(agent, frame) }),
           release: (result) => {
             if (released) return
             released = true
@@ -2776,6 +2966,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           },
           authorizeLlm: () => gate.authorize('llm:invoke'),
           modelRequest,
+          modelRefused(agentId, _status, message) {
+            const agent = agents.get(agentId)
+            if (agent && !agent.finished) agent.refusal = message
+          },
           async authorizeRenewal() {
             if (run.stopped !== null) throw new RunAuthorityError('revoked', run.stopped.reason)
             // 续期不是一项能力；拿这一轮的基础能力 flow:read 探一下 Grant 还活着（失效即整轮停）
@@ -2831,6 +3025,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
        * 一次模型请求都没发出去（runner 没起来、协议不对）就不留这一轮的用户消息 —— 模型没看到它
        */
       const mainTranscript = mainAgent.transcript as AgentTranscript | null
+      /*
+       * 父 agent 的这一段没有走完：还没请求过模型，或最近一条回复调了工具、之后却没再请求（runner 的循环自己出错 —— pi 的
+       * `handleRunFailure` —— 或请求根本没到服务端）。原因只有 runner 说得出，那是它的话，不进对话（只进日志）
+       */
+      const unfinished = mainTranscript !== null && mainTranscript.open
       if (mainTranscript) closeBatch(mainTranscript, 'final')
       const received = completeToolResults(mainTranscript && mainAgent.turns > 0 ? persistedMessages(mainTranscript) : [])
       // 跨轮的上下文按条数、也按 token 裁（余量规则见 llmHistoryTokenBudget）：固定部分 = 这一轮的系统提示 + 提供的全部工具定义
@@ -2859,7 +3058,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
                   ? overflow
                     ? { type: 'error', message: overflow, code: 'context_overflow' }
                     : { type: 'error', message: mapper.modelError, code: 'model_error' }
-                  : { type: 'success' }
+                  : unfinished
+                    ? mainAgent.refusal !== null
+                      ? { type: 'error', message: modelRefusedMessage(mainAgent.refusal), code: 'model_error' }
+                      : { type: 'error', message: runUnfinishedMessage(mainAgent.turns), code: 'run_failed' }
+                    : { type: 'success' }
+      if (unfinished && !stopped && !mismatch && finishReport && finishReport.error === null) {
+        console.warn(
+          `[agent] run=${run.runId} 父 agent 没有走完这一轮就收尾了（${mainAgent.turns} 次模型请求）` +
+            (runnerLoopError ? `；runner 报的原因：${runnerLoopError}` : ''),
+        )
+      }
     } catch (err) {
       // 签发失败（发起时就已失权）、打开画布失败（画布已删 / 配额锁定）、沙箱起不来……这一轮直接失败
       outcome = run.stopped

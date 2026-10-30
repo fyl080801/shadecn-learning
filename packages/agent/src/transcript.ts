@@ -211,10 +211,7 @@ export function closeBatch(transcript: AgentTranscript, mode: 'request' | 'final
   transcript.pending = null
   const now = Date.now()
   for (const entry of pending.values()) {
-    const record =
-      entry.refused !== null
-        ? errorRecord(entry.refused)
-        : (entry.result ?? errorRecord(mode === 'request' && !entry.claimed ? TOOL_NOT_EXECUTED : TOOL_INTERRUPTED))
+    const record = batchResult(entry, mode)
     const message: ToolResultMessage = {
       role: 'toolResult',
       toolCallId: entry.call.id,
@@ -226,6 +223,16 @@ export function closeBatch(transcript: AgentTranscript, mode: 'request' | 'final
     }
     transcript.messages.push(message)
   }
+}
+
+/**
+ * 一次调用此刻在 transcript 里的结果（{@link closeBatch} 补进去的就是它）：预判的拒绝 › 执行记录 › 没有记录
+ * （`request`：「没有执行」，网关已开始执行的是「结果未知」；`final`：一律「结果未知」）。
+ * 界面上补显示这批调用的结束时用同一份（docs/22 §4.3 第 3 步：人看到的和模型看到的是同一句话）
+ */
+export function batchResult(entry: TranscriptCall, mode: 'request' | 'final'): ToolResultRecord {
+  if (entry.refused !== null) return errorRecord(entry.refused)
+  return entry.result ?? errorRecord(mode === 'request' && !entry.claimed ? TOOL_NOT_EXECUTED : TOOL_INTERRUPTED)
 }
 
 /**

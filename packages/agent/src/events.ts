@@ -26,10 +26,12 @@ import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/r
  * **整个映射只在这一个文件里**：路由只管把这里吐出来的对象逐帧写成 `data: <JSON>\n\n`，
  * 不认识任何一种事件。将来换协议（或者 AG-UI 加字段）只改这里。
  *
- * 二期起 pi 跑在沙箱里的 runner 中（docs/22 §4），**映射仍在服务端这里做**：runner 只把 pi 事件裁成
- * `protocol.ts` 的 `RunnerEvent`（同名同形、去掉用不着的字段）上报，编排层把它们原样喂给 {@link RunEventMapper.handle}。
+ * 二期起 pi 跑在沙箱里的 runner 中（docs/22 §4），**映射仍在服务端这里做**；docs/22 §4.3 第 3 步起**喂进来的事件也是服务端产生的**：
+ * 编排层（`session.ts` 的 `display`）按 pi 事件的同名同形（`protocol.ts` 的 `RunnerEventBody`）合成 —— 文字增量来自服务端自己调模型的流，
+ * 回复定稿来自服务端的结果，工具的开始 / 结束来自服务端那条回复 + 网关的执行记录 / 服务端拼的子任务结果 / 服务端代算的拒绝。
+ * runner 上报的事件不再拿来产生这里的任何内容（被攻破的 runner 不能让人看到、并且落库一段模型没说过的话）。这里的规则不变，只换了输入来源。
  * 映射放在服务端，是因为 runner 随时可能被杀（中止 / 失权 / 超时）：收尾帧、落库的 assistant 消息
- * 都得由服务端按已经收到的事件补齐，映射状态必须在服务端。
+ * 都得由服务端补齐，映射状态必须在服务端。
  *
  * 顺便它也是「这一轮落定的 assistant 消息长什么样」的唯一来源 —— 对话记录里存的那条
  * （`message`）和线上发出去的事件是同一份状态一起推出来的，两边不会对不上：
@@ -55,7 +57,8 @@ import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/r
  *   （完整条目），之后每次变化一帧 CUSTOM `agent.subtask-update`（**只带变了的**：新的 / 变了的那条工具调用、新的回复、结束时的状态）——
  *   完整条目带着最长 8000 字的任务说明和全部工具调用，逐帧重复会让补发量随调用数成倍增长。落库的 `subtasks` 是完整条目。
  *   子 agent 的文字增量不逐帧发：只在它的一条**有文字的**回复结束（message_end）时更新 `text` —— 所以 `text` 总是它最后一条有文字的回复
- *   （最后一步只调了工具、出错或被中止时也不会变成空），交回父 agent 的结果文字也取它（{@link RunEventMapper.subtaskReply}，不信 runner 报的）。
+ *   （最后一步只调了工具、出错或被中止时也不会变成空），交回父 agent 的结果文字也取它（{@link RunEventMapper.subtaskReply}；
+ *   喂进来的 message_end 是服务端调模型的定稿，不是 runner 报的）。
  *   它的 `load_skill` / `request_confirmation` 不列进它的工具调用（状态和问题已经在条目上了）。
  */
 
@@ -147,7 +150,7 @@ function assistantText(message: unknown): string {
 export interface RunEventMapper {
   /** RUN_STARTED + 回显用户消息 */
   start(userMessage: UserChatMessage): AgentStreamEvent[]
-  /** 吃一个 pi 事件（或 runner 上报的裁剪版），吐出零到多个线上事件 */
+  /** 吃一个 pi 事件（编排层按同名同形合成的那份，docs/22 §4.3 第 3 步），吐出零到多个线上事件 */
   handle(event: AgentEvent | RunnerEvent): AgentStreamEvent[]
   /** 一条画布改动通知（先关掉没关的文字段：通知插在两段文字之间） */
   canvasChange(message: AgentCanvasChangeMessage): AgentStreamEvent[]
@@ -158,13 +161,13 @@ export interface RunEventMapper {
    * `start.toolCallId` 是父 agent 那次调用的**原始** id，这里换成它在 `toolCalls` 里那一条的显示 id
    */
   subtaskStart(start: SubtaskStart): AgentStreamEvent[]
-  /** 一个子 agent 上报的事件 → 它那一项的变化帧（只带变了的；没变化就是空数组）；认不出的 id 忽略 */
+  /** 一个子 agent 的事件（同样是编排层合成的）→ 它那一项的变化帧（只带变了的；没变化就是空数组）；认不出的 id 忽略 */
   subtaskEvent(agentId: string, event: AgentEvent | RunnerEvent): AgentStreamEvent[]
   /** 一个子任务结束了 */
   subtaskFinish(agentId: string, end: SubtaskEnd): AgentStreamEvent[]
   /** 这一轮的某个子任务条目（只读用）；没有为 undefined */
   subtask(agentId: string): AgentSubtaskView | undefined
-  /** 子 agent 最后一条有文字的回复（服务端按上报的 message_end 记的，没截短）；没有为空串 */
+  /** 子 agent 最后一条有文字的回复（服务端调模型的定稿里记的，没截短）；没有为空串 */
   subtaskReply(agentId: string): string
   /** 原始调用 id 最近一次对应的那条工具调用（父 agent 的；给了 `subagentId` 就是那个子 agent 的）；没有为 undefined */
   toolCall(toolCallId: string, subagentId?: string): AgentToolCallView | undefined

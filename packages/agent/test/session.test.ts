@@ -738,6 +738,8 @@ describe('失败的收尾', () => {
    * 失败消息只上报一次（收尾的兜底补报不重复）、pi 自己的 system 消息不上报不落库。它没有请求模型，所以不算一步（步数按模型请求数）。
    * 这里让 runner 在一批调过工具之后取别人改动时网关回 500 —— 那是在 pi 的 `prepareNextTurnWithContext` 里抛的
    * （和以前在 turn_end 监听器里抛一样走 `handleRunFailure`；不再请求模型）。
+   * docs/22 §4.3 第 3 步起：那条出错的 assistant 消息是 runner 说的，不再拿它当「模型报错」显示 —— 服务端只看得到
+   * 「调了工具之后没再请求模型就收尾了」，以 `run_failed` + 服务端自己的话收尾（runner 报的原因只进服务端日志）。
    */
   function failChangesFetch(runtime: ReturnType<typeof runtimeWith>, uploaded: { type: string; message?: { role: string; stopReason?: string } }[]) {
     vi.stubGlobal(
@@ -756,7 +758,7 @@ describe('失败的收尾', () => {
     )
   }
 
-  it('循环本身出错（handleRunFailure）→ 失败消息只报一次，RUN_ERROR 带原因；system 消息不上报、不落库', async () => {
+  it('循环本身出错（handleRunFailure）→ 失败消息只报一次，RUN_ERROR 是服务端的话（runner 报的原因不进对话）；system 消息不上报、不落库', async () => {
     const runtime = runtimeWith([
       fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: 'x' } })], { stopReason: 'toolUse' }),
       fauxAssistantMessage('不该走到这'),
@@ -773,8 +775,9 @@ describe('失败的收尾', () => {
     expect(faux!.state.callCount).toBe(1)
 
     const last = out.events.at(-1)
-    expect(last).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'model_error' })
-    expect(last?.type === AgentEventType.RUN_ERROR && last.message).toContain('取改动失败')
+    expect(last).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'run_failed' })
+    expect(last?.type === AgentEventType.RUN_ERROR && last.message).toContain('调用工具之后没有再请求模型')
+    expect(JSON.stringify(out.events)).not.toContain('取改动失败')
 
     const row = runtime.store.rows.get(threadOf(out.events))!
     expect(row.llmMessages.map((message) => message.role)).not.toContain('system')
@@ -791,7 +794,7 @@ describe('失败的收尾', () => {
     expect(message).toContain(`模型原文：400: {"message":${JSON.stringify(raw)}`)
   })
 
-  it('失败的那一下没有请求模型、不算一步：步数上限 2 也照常以模型错误收尾（不按超限停）', async () => {
+  it('失败的那一下没有请求模型、不算一步：步数上限 2 也照常以「没走完」收尾（不按超限停）', async () => {
     const runtime = runtimeWith(
       [fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: 'x' } })], { stopReason: 'toolUse' })],
       { limits: { maxTurns: 2 } },
@@ -799,7 +802,7 @@ describe('失败的收尾', () => {
     const uploaded: { type: string; message?: { role: string; stopReason?: string } }[] = []
     failChangesFetch(runtime, uploaded)
     const out = await runOnce(runtime, '一')
-    expect(out.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'model_error' })
+    expect(out.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'run_failed' })
     expect(faux!.state.callCount).toBe(1)
   })
 

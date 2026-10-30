@@ -2,7 +2,7 @@
 
 > 状态：**一期（身份核心）、二期（网关 + runner + `process` 驱动）、三期（`oci` 驱动 + 沙箱镜像）、四期（`k8s` 驱动 + 部署清单，§9 第 1～4 项）已实现**；
 > 四期**还没在真实集群上跑过**（单元测试对着假的 k8s API，真集群的用例默认跳过，见 §7.5）。五期起为方案。
-> 模型请求改由服务端发起（§4.3）：**第 1 步（换传输：runner 用 `streamProxy`、服务端调上游、按请求数步数）、第 2 步（服务端维护权威 transcript，模型请求与落库只用它）已实现**，第 3～5 步为规划。
+> 模型请求改由服务端发起（§4.3）：**第 1 步（换传输：runner 用 `streamProxy`、服务端调上游、按请求数步数）、第 2 步（服务端维护权威 transcript，模型请求与落库只用它）、第 3 步（对话里给人看的事件由服务端产生）已实现**，第 4、5 步为规划。
 > 一期已实现：Grant / scope 表（`agent_grant` / `agent_grant_scope`，签发时 scope = 请求的 ∩ 发起人当时的权限 ∩ 服务端配置）；
 > run 状态机 running → success / cancelled / error / expired（线上 RUN_FINISHED 仍只有 success / cancelled，expired 在线上是 cancelled）；
 > 全部工具执行前、每次请求模型前、画布每次读写前 `authorize(capability)`；失效即 `stop`（整轮立即停，cancelled + 原因，Grant 标撤销）；
@@ -76,7 +76,7 @@
                       ▼
           服务端（apps/server + @shadecn/agent 的 session / gateway）
           ├─ run 注册表 + 补发缓冲 + SSE + 任务列表广播（不变）
-          ├─ events.ts：runner 上报的 pi 事件 → AG-UI（映射只在这里）
+          ├─ events.ts：服务端合成的 pi 事件（模型流 / 执行记录 / transcript）→ AG-UI（映射只在这里）
           ├─ 画布：direct connection + tools.ts + flow-ops（工具在这里执行）、常驻观察、跨轮差异
           ├─ 落库：会话、运行日志、工具调用日志（画布工具以网关的执行记录为准）、Grant
           └─ authorize + Reconciler（一期）；真实 LLM key 只在模型代理里
@@ -88,7 +88,7 @@
                       ├─ POST /model/<agentId>/api/stream  服务端调用模型（§4.3）：判 llm:invoke → 按 agent 数步数 → 服务端带真实 key 调上游 → SSE 下发；叫停即掐断
                       ├─ POST /canvas/tool      画布工具：authorize(工具的能力) → 按 schema 再校验参数 → 执行（一次一个 Y 事务）
                       ├─ POST /canvas/changes   别人改动的通知（第 2 步起恒回 null：通知由服务端插进 transcript，§4.3；第 4 步删）
-                      ├─ POST /events           裁剪后的 pi 事件分批上报（批次序号逐一递增）
+                      ├─ POST /events           裁剪后的 pi 事件分批上报（批次序号逐一递增；第 3 步起只用作时机、runner 执行的工具的结果、日志）
                       └─ POST /run/finish       runner 收尾（随后令牌作废）
                       │
 沙箱（runner：pi 推理循环，环境变量只有网关地址 + 一次性 bootstrap token + 工作目录 + PATH）
@@ -103,8 +103,9 @@
   时长上限、删除预算、补发缓冲、落库都在服务端。
 - **画布工具**：schema / 描述在 runner 侧，执行在网关侧（复用 `tools.ts` 的校验与 `flow-ops`）。一次工具调用 = 一次网关请求 = 一个 Y 事务。
   工具调用次数 runner 先拦（回给模型），网关按同一个数硬拦。
-- **事件**：pi → AG-UI 的映射在服务端（`events.ts`），因为 runner 随时可能被杀：收尾帧（关文字段、把还在转的工具标成「已中止」）
-  和落库的 assistant 消息由服务端按已收到的事件补齐。模型上下文**不**按上报的 `message_end` 重建：它是服务端维护的 transcript（§4.3 第 2 步）；被杀时最后一批缺的工具结果补成「结果未知」。
+- **事件**：pi → AG-UI 的映射在服务端（`events.ts`），喂给它的事件也由服务端产生（§4.3 第 3 步：文字来自服务端调模型的流，工具条目来自
+  服务端的回复与执行记录），因为 runner 随时可能被杀、而且不可信：收尾帧（关文字段、把还在转的工具标成「已中止」）
+  和落库的 assistant 消息由服务端补齐。模型上下文**不**按上报的 `message_end` 重建：它是服务端维护的 transcript（§4.3 第 2 步）；被杀时最后一批缺的工具结果补成「结果未知」。
 - **会话持久化**：服务端仍是唯一写库方，runner 只上报事件、不交「最终结果」。
 - **模型请求（§4.3）**：服务端自己调模型（第 1 步，已实现：runner 用 pi 的 `streamProxy`，取代原来的 `/llm/*` 透传）；
   上下文只用服务端为每个 agent 维护的 transcript，runner 送来的上下文和上报的消息都不进请求、不落库（第 2 步，已实现）。
@@ -135,10 +136,10 @@
   实际做到的程度见 §7.4：只有 `--internal` 网络 + 服务端也接在里面才真的「只到网关」；默认的 `bridge` 网络可以出网（启动告警）。
 - `process`：不隔离网络，**生产环境拒绝启用**。
 
-### 4.3 服务端调用模型（第 1、2 步已实现）
+### 4.3 服务端调用模型（第 1～3 步已实现）
 
-> 状态：**第 1、2 步已实现**（见下面「迁移步骤」表），取代了原来的 `POST /llm/*` 透传代理和 runner 的「`baseUrl` = 网关、`apiKey` = run 令牌」，
-> §9 第 2 项里「模型代理」那条只作为历史保留；第 3～5 步仍是规划。依据 pi 1.4.0（`@earendil-works/pi-agent-core` 的 `streamProxy`，`dist/proxy.js`）。
+> 状态：**第 1～3 步已实现**（见下面「迁移步骤」表），取代了原来的 `POST /llm/*` 透传代理和 runner 的「`baseUrl` = 网关、`apiKey` = run 令牌」，
+> §9 第 2 项里「模型代理」那条只作为历史保留；第 4、5 步仍是规划。依据 pi 1.4.0（`@earendil-works/pi-agent-core` 的 `streamProxy`，`dist/proxy.js`）。
 
 **为什么改**：现在网关只是**透传**：runner 拼好 OpenAI / Anthropic 的请求体，网关校验一个 `model` 字段、换上真实 key 就转给上游。
 于是请求里除了模型名，**一切都由不可信的 runner 决定**，落库的模型上下文也来自它的上报：
@@ -225,7 +226,7 @@ pi 只提供客户端那一半，服务端那一半（下面的路由）我们�
     只是它的上下文不再进请求。两边看到的回复是同一条（服务端发的）、工具结果是同一份（服务端回的），差别只在 runner 不知道的通知和服务端代算的拒绝文字 ——
     它们只影响模型看到什么，不影响 runner 怎么执行。
 
-**事件从哪来**（第 3 步，可以晚于 transcript 单独做）：对话记录、补发、旁观看到的 assistant 文字和工具条目现在由 runner 上报的事件映射而来，
+**事件从哪来**（第 3 步，**已实现**，见「第 3 步的实现说明」）：对话记录、补发、旁观看到的 assistant 文字和工具条目原来由 runner 上报的事件映射而来，
 被攻破的 runner 能让人看到、并且落库一段模型没说过的话（「我什么都没删」）。服务端有了自己的模型流和执行记录之后，
 父 / 子 agent 的文字增量、回复定稿、网关工具的开始与结束都由服务端合成同名同形的事件喂给 `events.ts`（映射器不用改）；
 runner 上报的只剩 runner 执行的工具的开始 / 结束。顺序天然对：网关工具在执行之前发开始，旁观者先看到条目、再看到画布变化。
@@ -280,7 +281,7 @@ runner 上报的只剩 runner 执行的工具的开始 / 结束。顺序天然�
 |---|---|---|---|
 | 1（**已实现**） | **传输换成服务端调用**：新路由与服务端调用模型（三种线协议分派、调用 id 补齐、参数 / 头 / `identity` / 重试 / `sessionId` 服务端定、不转 `toolcall_delta`、叫停发 `aborted` 帧、参数过长掐断）；runner 的 `streamFn` 换成 `streamProxy` 的包装；按 agent 数请求、同 agent 不并发（问题 B）；用量日志；删掉 `/llm/*` 透传（`LLM_PROXY`、`guardedBody`、`stoppedFrame`、头过滤）。**上下文仍取 runner 送的 `context`**（只校验形状与大小），系统提示与工具也还在里面 —— 这一步不解决 C，只换传输，所以现有用例应当原样通过 | 5 → 6 | 中等（网关 / runner / 测试工具各一处，删多于加）/ 低～中 |
 | 2（**已实现**） | **权威 transcript**：服务端按上表维护每个 agent 的 transcript 并只用它发请求；工具调用与 `delegate` 绑到服务端回复；通知改由服务端在请求时插（`/canvas/changes` 恒回 `null`）；落库改用服务端 transcript | 不升（第 1 步的 runner 行为兼容）；动了 `protocol.ts` 就照规矩升 | 大（`session.ts` 核心路径）/ 高：要逐条对齐 pi 的行为（`toolsAdded` 的位置、runner 侧拒绝的文字、并行批的结果顺序），对抗性用例要多 |
-| 3 | **事件由服务端产生**（见「事件从哪来」） | 不升 | 中 / 中 |
+| 3（**已实现**） | **事件由服务端产生**（见「事件从哪来」） | 不升 | 中 / 中 |
 | 4 | **清理**：runner 只送空上下文、请求体上限降下来；`RunnerInput` 去掉 `llmMessages`；删 `/canvas/changes` 与 `steerId`；runner 侧的「单独调用 / 工具调用上限」拦截挪到网关（服务端不必再代算这两种文字）；父 agent 不再上报 `message_end` | 6 → 7 | 中（以删为主）/ 低 |
 | 5 | **用量落库**（`agent_run` 加列，`finishRun` 写入） | 不升 | 小 / 低 |
 
@@ -315,7 +316,37 @@ runner 上报的只剩 runner 执行的工具的开始 / 结束。顺序天然�
 - **参数过长**：服务端掐断上游后把这条回复收成「调用了工具」（还开着的块补结束帧，被掐断的调用以空参数下发，其后才开始的块不下发），以 `done { reason: 'toolUse' }` 结束；
   runner 照常「执行」（参数过不了 schema 就本地报错，过得了的到网关被拒），下一次请求里这次调用的结果是「参数过长」的工具错误，这一轮继续。
 - **落库**：父 agent 这一轮的那段去掉 system 消息、图片换占位，再 `completeToolResults` / `trimLlmHistory`；父 agent 一次模型请求都没发出去（runner 没起来、协议不对）就不留这一轮的用户消息。
-  界面事件（对话文字、工具条目、子任务条目、模型错误文字）仍按 runner 上报的映射（第 3 步）。
+  界面事件（对话文字、工具条目、子任务条目、模型错误文字）当时仍按 runner 上报的映射，第 3 步改掉（见下）。
+
+**第 3 步的实现说明**（`session.ts` 的事件入口 `display` / `onEvents` / `modelRequest` / `executeTool` / `delegateTask` / `finishSubagent` / 收尾，
+`gateway.ts` 的 `ModelRequestDecision.frame` 与 `modelRefused`，`transcript.ts` 的 `batchResult`；`events.ts` 的映射规则不变；协议**没升**：`protocol.ts` 只改了注释，runner 没改代码）：
+
+- **喂给 `events.ts` 的事件**由服务端按 pi 事件的同名同形合成：
+
+  | 界面上的 | 来源 |
+  |---|---|
+  | 父 agent 的文字增量 | 服务端调模型的流里每一个 `text_delta` / `text_end`（网关在写给 runner 之前交给编排层），攒 40ms 一批发出（同原来 runner 上报的节奏，补发日志不逐帧写）；仍是逐增量的流式 |
+  | 回复定稿（关文字段、模型报错、子 agent 的回复文字） | 服务端的定稿（`ModelTurnResult`，和记进 transcript 的同一份）。`mapper.modelError` / `subtaskReply` 因此是服务端的 |
+  | 工具条目的开始（名字、参数） | 服务端那条回复里的调用。网关工具在对上调用之后、执行之前开始；`delegate_task` 在 `/agent/delegate` 对上时开始（不再要求 runner 先报开始） |
+  | 网关工具的结束 | 网关的执行记录（回给 runner 的那份，图片换占位） |
+  | `delegate_task` 的结束 | 服务端 `finishSubagent` 拼的结果（派发被拒时是那句拒绝），紧跟在子任务的结束帧之后 |
+  | 被 runner 就地拦下的调用（不存在、参数不对、超上限、没单独调用、输出被截断、参数过长） | 服务端代算的那句（= 模型下一步看到的那句） |
+  | runner 执行的工具（`run_media_command`；子 agent 的 `request_confirmation` 不显示） | 结果取它上报的 `tool_execution_end`（transcript 里本来就取它），结束时的那句话取它报的 `summary`（限 200 字） |
+  | 子任务的状态 / 问题 / 失败原因 | 服务端按子 agent 的 transcript 判：这一轮已停 › 步数用完 › 最近一条回复里有没被拦下的 `request_confirmation`（问题取那次调用的参数）› 最近一条回复出错 / 中止 › 调了工具却没再请求（步数到了被 runner 结束，或循环自己出错）› 完成。`/agent/finish` 报的 status / question / error / text 一概不用 |
+
+- **时机**：runner 执行的调用、被它就地拦下的调用，服务端不知道 runner 什么时候走到它，就按它报的 `tool_execution_start` / `_end` 显示（只用作时机，内容仍取服务端的）；
+  一次调用开始显示时，同一条回复里排在它前面、还没显示的先按调用顺序补上，所以条目的先后总是调用的先后；runner 什么都不报，
+  这一批没显示完的在这个 agent 的下一次模型请求时（子 agent：交回时）补完，结果就是那时补进 transcript 的那句。叫停之后不再产生（同以前：叫停之后上报一律 401）。
+- **runner 上报的事件还留着**（协议不变，第 4 步再删父 agent 的 `message_end`）：用作上面的时机、runner 执行的工具的结果、工具调用日志（runner 执行的 / 被拦下的那几种）、
+  `delegatedCalls` 的清理；父 agent 循环自己出错时它报的原因只进服务端日志。`message_update` / `turn_end` 不用。
+- **runner 没走完就收尾**（父 agent 调了工具之后没再请求模型、或一次都没请求过，且 runner 报的是正常收尾）：以前靠 runner 报的那条出错消息当「模型报错」，
+  现在服务端自己判：最近一次请求在开流之前被网关拒了（如 `llm:invoke` 不在授予范围）→ `model_error`「模型请求被拒绝：<服务端的原因>」；
+  否则 `run_failed`「agent 运行环境没有走完这一轮……」。子 agent 同理（「子任务没有做完 / 没有请求过模型」）。
+- **事件序列的变化**（对照改动前的全部 agent 用例逐帧比较；其余用例逐帧相同）：子任务交回时 `delegate_task` 的 TOOL_CALL_RESULT 紧跟子任务的结束帧
+  （以前等 runner 报，可能排在别的子任务的帧之后）；派发被拒的那次立即结束；被拦下的调用显示服务端代算的原因（参数过长时以前显示 runner 本地的 schema 报错）；
+  runner 发来对不上的工具调用 / 派发时，条目的结果是模型看到的「这次调用没有执行」（以前是网关回给 runner 的那句）；循环自己出错见上一条。
+- **测试**：`packages/agent/test/server-events.test.ts` —— runner 伪造文字增量 / 回复 / 模型报错、凭空的工具调用和改写的参数 / 结果、子 agent 的回复与 `/agent/finish` 的状态 / 问题时，
+  事件流和落库的对话都是服务端那份；runner 一个事件都不报时事件流和老实上报时相同；上游卡在半句时前端已经收到前半句（流式）。
 
 要改写的规则与不变式：`.claude/rules/agent.md` 里网关的模型代理（只放行一个路径、校验 `model`、头过滤、协议内错误帧）、runner 的 `streamFn`（`runner/stream.ts`、
 在 runner 里补调用 id）、「runner 不可信」那条（步数按 `turn_end`、上下文按 `message_end` 重建）、「别人的改动只在 runner 的 `prepareNextTurnWithContext` 里交」、
@@ -329,7 +360,7 @@ runner 上报的只剩 runner 执行的工具的开始 / 结束。顺序天然�
 **已定**（2026-10-30，均按建议）：
 
 1. 上下文只用服务端 transcript（B），不核对 runner 送来的消息。
-2. 事件也改由服务端产生，排在 transcript 之后的第 3 步。
+2. 事件也改由服务端产生，排在 transcript 之后的第 3 步（已实现）。
 3. 通知插入点挪到服务端的「下一次模型请求」，时机规则不变；docs/20 §3.10.2「由 runner 执行」随之改。
 4. 模型参数完全由服务端定；`maxTokens` 上限新增配置，默认 min(模型的 `maxTokens`, 16384)。
 5. `sessionId`：父 agent 用会话 id（前后几轮都能命中缓存），子 agent 用 `<runId>:<agentId>`。

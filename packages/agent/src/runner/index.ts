@@ -181,7 +181,8 @@ const textOf = (message: AgentMessage | undefined): string =>
 /**
  * 子 agent 交回的文字：**最后一条有文字的** assistant 回复（同 pi 示例扩展 `subagent` 的 `getFinalOutput`）。
  * 最后一条只调了工具（步数到了被 finishTurn 结束）、出错或被中止时文字为空，取它会把真回复丢掉。
- * 服务端不靠这个：它按上报的 message_end 自己记同样的一段（`events.ts` 的 `subtaskReply`），这里报的只供参考
+ * 服务端不靠这个：它从自己调模型的定稿里记同样的一段（`events.ts` 的 `subtaskReply`）；状态、问题、错误也由服务端按它的 transcript 判，
+ * 这里报的只供参考
  */
 export function finalReplyOf(messages: readonly AgentMessage[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
