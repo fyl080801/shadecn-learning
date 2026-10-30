@@ -2,6 +2,7 @@
 
 > 状态：**部分实现**：注册表、`load_skill`、首批四个技能（`canvas` / `canvas-edit` / `media-view` / `media-exec`）、
 > 会话记住技能、节点范围会话的契约与路由、导演台的 `director` 技能（写 + 量）已做；`director-view`、`director-script` 待做（节点范围会话的前端入口随导演台界面一起做）。
+> **规划变更**：取消节点范围会话，所有会话都是全局 agent（[REQ-AGENT](20-agent-canvas.md) §3.10.9）；`canvas` 与 `canvas-edit` 合成一个 `canvas`（§4），`boundNode` 随之去掉。
 >
 > 前置：[REQ-AGENT](20-agent-canvas.md)（画布 agent、原子操作层、常驻观察）、
 > [REQ-AGENT-SANDBOX](22-agent-sandbox.md)（runner / 网关 / 授权）。
@@ -47,7 +48,7 @@ interface AgentSkill {
   prompt: string                 // 加载后放进上下文的说明段（用法、规则、限额）
   tools(ctx: SkillContext): CanvasTool[]   // 工具定义；runner 和服务端从同一份构造（§3.5）
   requires: AgentCapability[]    // Grant 里缺任何一项，这个技能就不提供
-  available?(env: SkillAvailability): boolean   // 判断提不提供，此时还没打开画布：Grant 能力、部署条件（看图 / 对象存储 / 沙箱执行）、会话绑定的节点
+  available?(env: SkillAvailability): boolean   // 判断提不提供，此时还没打开画布：Grant 能力、部署条件（看图 / 对象存储 / 沙箱执行）
   workdirFiles?(ctx): Promise<Record<string, string>>   // 服务端钩子：提供了这个技能时往 runner 工作目录写的文件（如 canvas.json）
   activation: 'always' | 'auto' | 'on-demand'
   activatesFor?: { nodeTypes?: string[] }  // activation = 'auto' 时，什么情况下一轮开始就自动加载
@@ -69,9 +70,9 @@ interface AgentSkill {
 
 1. **提供** = 注册表里 `requires` 全在 Grant 里、并且 `available` 为真的技能。不提供的技能对模型完全不可见，目录里也没有。
 2. **一开始就加载**：
-   - `activation: 'always'` 的技能（`canvas`，以及普通会话里的 `canvas-edit`）；
-   - 命中 `activatesFor` 的 `auto` 技能：会话绑定的节点（节点范围会话，见 [REQ-DIRECTOR](07-director-console.md) §7.4）属于它声明的节点类型，
-     或者用户这条消息 `@` 提及了这种类型的节点；
+   - `activation: 'always'` 的技能（`canvas`）；
+   - 命中 `activatesFor` 的 `auto` 技能：用户这条消息 `@` 提及了它声明的节点类型的节点
+     （从导演台里发起的新会话自动带上导演台节点的提及，[REQ-AGENT](20-agent-canvas.md) §3.10.9）；
    - 这个会话之前加载过的技能（§3.4）。
 3. 其余提供了但没加载的技能进系统提示末尾的**技能目录**（`id` + `summary`），模型需要时调 `load_skill` 加载。
 
@@ -108,6 +109,7 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 - **runner 和服务端从同一份注册表构造工具**：服务端造真实工具，runner 照旧用 `NO_CANVAS` 造定义再包成代理（现在 `createCanvasTools({ canvas: NO_CANVAS })` 的做法）。
   技能模块属于两侧共用的代码，**不能 import 服务端模块**（`session` / `gateway` / `store` / `canvas-changes`），规则同 `agent.md`。
 - `RunnerInput` 从 `tools: string[]` 改成按技能的结构，另带会话绑定的节点 `boundNode`（两侧构造工具用同一个上下文）。runner 协议版本因此升到 2，改了 runner 侧要重建沙箱镜像。
+  取消节点范围会话后 `boundNode` 去掉，协议版本再升一次。
   runner 按注册表展开工具名单，`load_skill` 的结果里有新加载的工具名单。
 - 系统提示拆成「平台基础段（安全与通用规则，不可覆盖）+ 每个已加载技能的 `prompt` + 技能目录」。
   `SYSTEM_PROMPT` 里属于画布工具用法的那部分挪进 `canvas` 技能的 `prompt`。
@@ -118,7 +120,7 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 ### 3.6 界面
 
 - 对话流里，每次加载显示一行「已加载：导演台」（由 `agent.skill-loaded` 事件驱动，刷新、接回补发、只读旁观看到的一样）。
-  一轮开始时自动加载的技能不逐条刷屏，会话头部列出当前已加载的技能（新会话的第一轮里，头部要到下次打开会话才包含自动加载的技能 —— 已知缺口）。
+  一轮开始时自动加载的技能不逐条刷屏，输入框上方列出当前已加载的技能（标题里不显示；新会话的第一轮里，这一栏要到下次打开会话才包含自动加载的技能 —— 已知缺口）。
 - 被拒的 `load_skill`（不提供、同批混用、超次数）在界面上看不到，只在工具调用日志里。
 - `load_skill` 本身不作为普通工具调用条目展示，只显示上面那一行。
 
@@ -126,16 +128,17 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 
 | id | 标题 | 工具 | requires | 可用条件 | activation |
 |---|---|---|---|---|---|
-| `canvas` | 画布（只读） | `read_canvas`、`get_node`、`check_connection` | `flow:read` | — | `always` |
-| `canvas-edit` | 画布编辑 | `add_node`、`update_node`、`duplicate_node`、`connect`、`delete_elements`、`move_nodes`、`resize_node`、`group_nodes`、`ungroup`、`auto_layout` | `flow:read`、`flow:write`、`flow:delete` | 不是节点范围会话 | `always` |
+| `canvas` | 画布 | 读 `read_canvas`、`get_node`、`check_connection`；写 `add_node`、`update_node`、`duplicate_node`、`connect`、`delete_elements`、`move_nodes`、`resize_node`、`group_nodes`、`ungroup`、`auto_layout` | `flow:read`、`flow:write`、`flow:delete` | — | `always` |
 | `media-view` | 查看素材 | `view_node_media` | `flow:read` | 模型支持图片输入，并且配了对象存储（[REQ-AGENT §3.10.7](20-agent-canvas.md)） | `on-demand` |
 | `media-exec` | 媒体处理 | `run_media_command`（runner） | `sandbox:exec` | `AGENT_SANDBOX_EXEC=1` | `on-demand` |
 | `director` | 导演台：写 + 量 | 原子操作 `get_director_scene`、`add_objects`、`transform_objects`、`place_object`、`align_objects`、`distribute_objects`、`aim_camera`、`update_objects`、`set_director_settings`、`set_keyframes`、`animate_motion`、`delete_director_elements`；测量 `measure_objects`、`measure_distance`、`check_scene`、`camera_view`（都在网关执行） | `flow:read`、`flow:write`、`flow:delete` | — | `auto`：`nodeTypes: ['director']` |
 | `director-view` | 导演台：看 | `render_view`（网关调渲染服务） | `flow:read` | 配了渲染服务，并且模型支持图片输入 | `auto`：同上 |
 | `director-script` | 导演台：脚本 | `run_scene_script`（runner，产出操作列表交网关执行） | `flow:read`、`flow:write`、`sandbox:exec` | `AGENT_SANDBOX_EXEC=1` | `on-demand` |
 
-- `canvas` / `canvas-edit` 是基础技能，不做按需加载：几乎每一轮都要读写画布，按需加载只会多一次往返。
-  拆成两个是为了节点范围会话（[REQ-DIRECTOR](07-director-console.md) §7.4）：那里画布只读，`canvas-edit` 不提供，也加载不了。
+- `canvas` 是基础技能，不做按需加载：几乎每一轮都要读写画布，按需加载只会多一次往返。
+  原先拆成只读的 `canvas` 和写入的 `canvas-edit`，是为了节点范围会话的画布只读；节点范围会话取消后（REQ-AGENT §3.10.9）合成一个。
+  会话记住的技能（§3.4）里旧的 `canvas-edit` 按 `canvas` 读。
+- 每个工具仍各自声明 `capability`：Grant 里缺 `flow:write` / `flow:delete` 时，`canvas` 照样提供（只要有 `flow:read`），写工具在网关逐个判权时被拒。
 - 导演台三个技能的工具、写 → 量 → 看的闭环、渲染服务与脚本的安全要求见 [REQ-DIRECTOR](07-director-console.md) §7.3。
   拆成三个是因为它们的可用条件不同：写 + 量都是网关工具，不需要 `sandbox:exec`，任何部署都有；看要渲染服务和能看图的模型；
   脚本要在沙箱里执行模型写的代码，需要 `sandbox:exec`。
@@ -148,16 +151,16 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 |---|---|
 | S1 | 工具按内置技能注册；每轮只把已加载技能的工具交给模型 |
 | S2 | 技能的提供由 Grant 能力与部署条件共同决定；不提供的技能对模型不可见 |
-| S3 | `always` 技能每轮自动加载；`auto` 技能在会话绑定或提及对应类型的节点时自动加载；其余由模型调 `load_skill` 加载 |
+| S3 | `always` 技能每轮自动加载；`auto` 技能在提及对应类型的节点时自动加载；其余由模型调 `load_skill` 加载 |
 | S4 | `load_skill` 单独成批，加载后新工具在同一轮里可用；每轮加载次数有上限 |
 | S5 | 网关拒绝执行本轮没加载的技能里的工具 |
 | S6 | 会话记住加载过的技能，下一轮预加载（仍受 S2 约束） |
-| S7 | 对话里显示技能加载，会话头部列出已加载的技能 |
+| S7 | 对话里显示技能加载，输入框上方列出已加载的技能 |
 
 ## 6. 验收标准
 
-1. 普通画布会话：第一次模型请求里只有 `canvas` + `canvas-edit` 的 13 个工具和 `load_skill`，系统提示的技能目录里有其它提供了的技能。
-2. 在导演台节点的节点范围会话里发起：第一次模型请求里就有 `director` 的工具，没有 `canvas-edit` 的工具；`load_skill('canvas-edit')` 被拒。
+1. 普通画布会话：第一次模型请求里只有 `canvas` 的 13 个工具和 `load_skill`，系统提示的技能目录里有其它提供了的技能。
+2. 消息里提及一个导演台节点（含从导演台里发起、自动带上提及的新会话）：第一次模型请求里就有 `director` 的工具，也有 `canvas` 的全部工具。
 3. 模型调 `load_skill({ id: 'director' })` 后，同一轮的下一次请求带上导演台工具，模型能调用它们；对话里出现「已加载：导演台」。
 4. 同一批里同时调 `load_skill` 和别的工具：`load_skill` 被拦下并返回原因，别的工具照常执行。
 5. 伪造的 runner 直接请求网关执行一个没加载的技能里的工具：网关拒绝，画布不变。
@@ -174,7 +177,7 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 ## 8. 待确认
 
 1. ~~没开沙箱执行时导演台怎么办~~ —— **已定**：拆成 `director` / `director-view` / `director-script` 三个技能，写 + 量不需要 `sandbox:exec`（§4）。
-2. ~~`canvas` 要不要拆~~ —— **已定**：拆成只读的 `canvas` 和写入的 `canvas-edit`（节点范围会话要用）；布局类暂不再拆。
+2. ~~`canvas` 要不要拆~~ —— **已定**：不拆，读写合成一个 `canvas`（节点范围会话取消，REQ-AGENT §3.10.9；原先拆成 `canvas` / `canvas-edit`）；布局类暂不再拆。
 3. ~~技能能不能卸载~~ —— **已定**：不能，只增不减。
 4. ~~每轮加载上限~~ —— **已定**：3 次。
 5. 执行模型写的代码的工具（`run_scene_script`）在 `process` 驱动下怎么开：沿用 `AGENT_SANDBOX_EXEC=1` 就算开启，
