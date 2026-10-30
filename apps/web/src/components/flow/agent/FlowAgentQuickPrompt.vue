@@ -19,9 +19,10 @@ import FlowAgentComposer from "./FlowAgentComposer.vue"
  * 不在这里续聊 —— 续聊、看历史、停止都在对话框里；这里只负责「起一个头」。
  * 别的任务在跑（别人的、我别的会话里的）不挡它：并发单位是会话，新会话总能发起（docs/20 §3.10.3）。
  * 输入框和对话框底部是同一个 `FlowAgentComposer`（含 @ 提及节点、引用选中）。
+ * 导演台底部工具栏也挂它，读到的是导演台那一份（新会话绑定那个节点）。
  */
 const { flowId } = useFlowEditor()
-const { agent, startConversation } = useFlowAgentPanel()
+const { agent, copy, startConversation } = useFlowAgentPanel()
 
 const open = ref(false)
 const draft = ref("")
@@ -30,8 +31,8 @@ const composer = ref<InstanceType<typeof FlowAgentComposer> | null>(null)
 const enabled = computed(() => agent.session.value?.enabled === true)
 
 const title = computed(() => {
-  if (agent.session.value && !enabled.value) return "画布 Agent（服务端未配置模型）"
-  return "让 agent 改画布（新会话）"
+  if (agent.session.value && !enabled.value) return `${copy.name}（服务端未配置模型）`
+  return copy.quickTitle
 })
 
 watch(open, (value) => {
@@ -124,6 +125,8 @@ function isolateKeys(event: KeyboardEvent) {
               v-model="draft"
               :running="false"
               :aborting="false"
+              :placeholder="copy.placeholder"
+              :hide-quote="copy.hideQuote"
               @send="send()"
             />
           </PopoverContent>

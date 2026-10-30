@@ -10,7 +10,7 @@ import { isEditableTarget } from "@/composables/flow/editable"
 import { suspendCanvasShortcuts } from "@/composables/flow/shortcut-layer"
 
 /**
- * 全屏导演台：接住导演台节点发的 `director:open`，整屏盖一层导演台（`FlowDirectorWorkspace`），右上角关闭。
+ * 全屏导演台：接住导演台节点发的 `director:open`，整屏盖一层导演台（`FlowDirectorWorkspace`），左上角返回画布。
  *
  * 层级：
  * - **关着就不挂**（`v-if`），画布上一个元素都不多，不挡任何操作；

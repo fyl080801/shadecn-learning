@@ -8,6 +8,7 @@ import type { FlowDetail, ProjectSummary } from "@shadecn/shared/canvas"
 import { GRAPH_SCHEMA_VERSION } from "@shadecn/shared/flow-graph"
 import { buildNodeRecord } from "@shadecn/shared/flow-node-types"
 import PromptInput from "@/components/prompt-input/PromptInput.vue"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { createNodeKitRuntime, type NodeKitRuntime } from "@/components/flow/node-kit/context"
 import { createDefaultNodeKit } from "@/components/flow/node-kit/install"
 import type { NodeEventSource } from "@/components/flow/node-kit/protocol"
@@ -25,9 +26,14 @@ vi.mock("@/components/director", () => ({
   DirectorStage: defineComponent({
     name: "DirectorStageStub",
     props: { nodeId: String, agentEditing: Boolean },
-    setup(props, { expose }) {
+    setup(props, { expose, slots }) {
       expose({ runShortcut: (action: string) => runShortcut(action) })
-      return () => h("div", { "data-testid": "stage-stub", "data-agent-editing": String(props.agentEditing) })
+      // 插槽照样渲染：全屏层的对话按钮、快捷会话圆钮挂在舞台的插槽里
+      return () =>
+        h("div", { "data-testid": "stage-stub", "data-agent-editing": String(props.agentEditing) }, [
+          slots["top-right"]?.(),
+          slots["toolbar-end"]?.()
+        ])
     }
   })
 }))
@@ -166,7 +172,7 @@ async function mountOverlay() {
         nodeKit: runtime,
         document: { flushBeforeLeave: async () => {} }
       } as never)
-      return () => h(FlowDirectorOverlay)
+      return () => h(TooltipProvider, null, () => h(FlowDirectorOverlay))
     }
   })
   wrapper = mount(Host, { attachTo: document.body })
@@ -302,6 +308,22 @@ describe("全屏导演台的键盘", () => {
   })
 })
 
+describe("全屏导演台的界面", () => {
+  it("左上只有返回画布 + 节点名，点返回关闭；右上对话按钮和底部快捷会话是导演台那一份", async () => {
+    await mountOverlay()
+    await openDirector()
+    expect(document.querySelector('[data-testid="director-title"]')?.textContent).toBe("开场")
+    const chatToggle = document.querySelector('[data-testid="director-overlay"] [data-testid="agent-toggle"]')
+    expect(chatToggle?.getAttribute("aria-label")).toBe("导演台助手")
+    const quick = document.querySelector('[data-testid="director-overlay"] [data-testid="agent-quick-toggle"]')
+    expect(quick?.getAttribute("aria-label")).toBe("让助手改这个场景（新会话）")
+
+    ;(document.querySelector('[data-testid="director-close"]') as HTMLElement).click()
+    await flushPromises()
+    expect(overlay()).toBeNull()
+  })
+})
+
 describe("对话面板选会话", () => {
   it("默认打开我在这个节点上最近的那个会话（不是别的节点的、不是别人的）", async () => {
     conversations.mockResolvedValue([
@@ -315,7 +337,7 @@ describe("对话面板选会话", () => {
     await mountOverlay()
     await openDirector()
     expect(conversation).toHaveBeenCalledWith("flow-1", "c-new")
-    expect(document.querySelector('[data-testid="director-agent-title"]')?.textContent).toContain("c-new")
+    expect(document.querySelector('[data-testid="director-overlay"] [data-testid="agent-title"]')?.textContent).toContain("c-new")
   })
 
   it("有绑定这个节点的任务在跑：顶部显示「某某的助手正在编辑这个场景」，舞台据此高亮远端改动", async () => {

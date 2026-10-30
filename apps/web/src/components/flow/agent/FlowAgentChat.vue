@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue"
+import { toast } from "vue-sonner"
 import {
   ArrowDown,
   Bot,
@@ -62,9 +63,12 @@ import FlowAgentTitle from "./FlowAgentTitle.vue"
  *
  * **收起不卸载**（`v-show`）：收起时这一轮照样在跑、流照样在读、输入框里的草稿也还在。
  * 连卸载（换画布、刷新）都不会停掉服务端那一轮 —— 下次打开这张画布时自动接回（`useFlowAgent`）。
+ *
+ * 导演台全屏层右上角也是这个组件：它读到的是导演台 provide 的那一份（绑定节点，文案换成导演台的，docs/07 §7.5），
+ * 节点底部输入框来的话经 `submit` 发进当前会话。
  */
 const { flowId } = useFlowEditor()
-const { agent, open, onStarted } = useFlowAgentPanel()
+const { agent, copy, open, onStarted } = useFlowAgentPanel()
 
 const draft = ref("")
 /** 面板里三选一：对话 / 历史会话列表 / 进行中的任务（同一个面板里切视图，不弹新窗口） */
@@ -77,7 +81,7 @@ const enabled = computed(() => agent.session.value?.enabled === true)
 const messages = agent.messages
 const runCount = computed(() => agent.activeRuns.value.length)
 const toggleLabel = computed(() =>
-  runCount.value > 0 ? `画布 Agent（${runCount.value} 个任务运行中）` : "画布 Agent"
+  runCount.value > 0 ? `${copy.name}（${runCount.value} 个任务运行中）` : copy.name
 )
 /** 别人的会话（只读）的发起人；自己的 / 新会话为 null */
 const foreignOwner = computed(() => (agent.mine.value ? null : agent.owner.value))
@@ -160,6 +164,29 @@ function stop() {
   void agent.abort()
 }
 
+/**
+ * 外面递来一句话，发进**当前**会话（导演台节点底部输入框来的）：展开面板、切回对话。
+ * 当前会话正在跑、或者是别人的：放进输入框、提示一声。返回 true = 服务端接下了这一轮
+ */
+async function submit(text: string): Promise<boolean> {
+  const prompt = text.trim()
+  if (!prompt) return false
+  open.value = true
+  view.value = "chat"
+  if (agent.running.value || !agent.mine.value) {
+    draft.value = draft.value ? `${draft.value}\n${prompt}` : prompt
+    toast.info("当前会话里有一轮正在跑，等它结束再发（已放进输入框）")
+    return false
+  }
+  void nextTick(followToEnd)
+  const accepted = await agent.send(prompt)
+  // 这一轮根本没开始（被拒）：把字放回输入框，除非用户已经又打了新的
+  if (accepted !== true && draft.value === "") draft.value = prompt
+  return accepted === true
+}
+
+defineExpose({ submit })
+
 /** 发起新会话：只清前端状态，第一条消息发出去时服务端才建会话；当前会话在跑也行（那一轮照跑） */
 function startNew() {
   agent.newConversation()
@@ -201,12 +228,13 @@ function onDeleted(id: string) {
 }
 
 /**
- * 面板里的键盘事件**一律不往外冒**：画布的快捷键挂在 window 上，
+ * 面板里的键盘事件**不往外冒**：画布的快捷键挂在 window 上，
  * Delete / Backspace 会删选中节点、Ctrl+Z 会撤销画布。输入框本身靠 `isEditableTarget`
  * 已经躲开了，但焦点在面板里的按钮上时按 Backspace 一样会删掉画布上的东西。
+ * Esc 除外：导演台全屏层靠它让输入框失焦（docs/07 §7.6），画布的快捷键不认 Esc。
  */
 function isolateKeys(event: KeyboardEvent) {
-  event.stopPropagation()
+  if (event.key !== "Escape") event.stopPropagation()
 }
 </script>
 
@@ -263,7 +291,7 @@ function isolateKeys(event: KeyboardEvent) {
         v-show="open"
         class="absolute right-0 top-full mt-2 flex h-[min(560px,calc(100vh-12rem))] w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-xl"
         data-testid="agent-dialog"
-        aria-label="画布 Agent"
+        :aria-label="copy.name"
       >
         <header class="flex items-center gap-2 border-b px-3 py-2">
           <Bot class="size-4 shrink-0 text-muted-foreground" />
@@ -275,21 +303,8 @@ function isolateKeys(event: KeyboardEvent) {
                 <span class="shrink-0 text-muted-foreground">·</span>
               </template>
               <FlowAgentTitle v-if="agent.title.value" :text="agent.title.value" class="min-w-0 flex-1" />
-              <template v-else>{{ enabled ? "新会话" : "画布 Agent" }}</template>
+              <template v-else>{{ enabled ? "新会话" : copy.name }}</template>
             </h2>
-            <!-- 这个会话已加载的技能（docs/23 §3.6） -->
-            <ul
-              v-if="agent.skills.value.length > 0"
-              class="mt-1 flex flex-wrap gap-1"
-              aria-label="已加载的技能"
-              data-testid="agent-skills"
-            >
-              <li v-for="skill in agent.skills.value" :key="skill.id">
-                <Badge variant="secondary" class="px-1.5 py-0 text-[10px] font-normal" :data-skill="skill.id">
-                  {{ skill.title }}
-                </Badge>
-              </li>
-            </ul>
           </div>
           <template v-if="enabled">
             <Tooltip v-if="runCount > 0">
@@ -369,7 +384,7 @@ function isolateKeys(event: KeyboardEvent) {
             </EmptyMedia>
             <EmptyTitle class="text-sm">服务端未配置模型</EmptyTitle>
             <EmptyDescription class="text-xs">
-              画布 Agent 暂时用不了。管理员在服务端配置好模型之后，刷新页面即可使用。
+              {{ copy.name }}暂时用不了。管理员在服务端配置好模型之后，刷新页面即可使用。
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -407,9 +422,12 @@ function isolateKeys(event: KeyboardEvent) {
                     <EmptyMedia class="mb-0 text-muted-foreground">
                       <Sparkles class="size-6" />
                     </EmptyMedia>
-                    <EmptyTitle class="text-sm">让 agent 帮你改这张画布</EmptyTitle>
+                    <EmptyTitle class="text-sm">{{ copy.emptyTitle }}</EmptyTitle>
+                    <EmptyDescription v-if="copy.emptyDescription" class="text-xs">
+                      {{ copy.emptyDescription }}
+                    </EmptyDescription>
                   </EmptyHeader>
-                  <EmptyContent>
+                  <EmptyContent v-if="!copy.emptyDescription">
                     <ul class="space-y-1 text-xs text-muted-foreground">
                       <li>新建、删除节点和连线</li>
                       <li>改写节点里的文字内容</li>
@@ -435,12 +453,27 @@ function isolateKeys(event: KeyboardEvent) {
           </MessageScroller>
 
           <div class="border-t p-3">
+            <!-- 这个会话已加载的技能（docs/23 §3.6）：放在输入框上方，不占标题 -->
+            <ul
+              v-if="agent.skills.value.length > 0"
+              class="mb-2 flex flex-wrap gap-1"
+              aria-label="已加载的技能"
+              data-testid="agent-skills"
+            >
+              <li v-for="skill in agent.skills.value" :key="skill.id">
+                <Badge variant="secondary" class="px-1.5 py-0 text-[10px] font-normal" :data-skill="skill.id">
+                  {{ skill.title }}
+                </Badge>
+              </li>
+            </ul>
             <FlowAgentComposer
               v-if="agent.mine.value"
               ref="composer"
               v-model="draft"
               :running="agent.running.value"
               :aborting="agent.aborting.value"
+              :placeholder="copy.placeholder"
+              :hide-quote="copy.hideQuote"
               @send="send()"
               @stop="stop()"
             />

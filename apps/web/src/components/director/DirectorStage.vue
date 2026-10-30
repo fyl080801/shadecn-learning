@@ -16,11 +16,31 @@
  * 编辑器实例随组件创建、随组件卸载销毁（EditorViewport 卸载时 dispose renderer），反复打开关闭不累积 WebGL 上下文。
  *
  * 取景框（画幅叠加层）本期不显示（`dc.aspect` 照样存、照样给 agent 测量用）。
+ *
+ * 界面和画布一个设计语言：视口占满，控件都是浮在上面的胶囊 / 圆钮 ——
+ * 左下视图控件（重置视角、视角罗盘显隐，`DirectorViewControls`）、
+ * 底部正中圆角工具栏（移动 / 旋转 / 缩放、添加、删除、设为当前机位、撤销 / 重做、时间轴开关）。
+ * 时间轴默认收起，工具栏上点开（收起不卸载，选中的关键帧还在）。
+ * 两个插槽给全屏层摆它自己的东西：`top-right`（对话按钮）、`toolbar-end`（工具栏右边，快捷会话圆钮）。
  */
 import * as THREE from "three"
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue"
 import { toast } from "vue-sonner"
-import { Box, Circle, Cone, Cylinder, Lightbulb, Plus, Redo2, Square, Star, Trash2, Undo2, Video } from "@lucide/vue"
+import {
+  Box,
+  ChartGantt,
+  Circle,
+  Cone,
+  Cylinder,
+  Lightbulb,
+  Plus,
+  Redo2,
+  Square,
+  Star,
+  Trash2,
+  Undo2,
+  Video
+} from "@lucide/vue"
 import {
   DC_KEYFRAME_PREFIX,
   DC_OBJECT_PREFIX,
@@ -36,14 +56,18 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
+import { Separator } from "@/components/ui/separator"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 import { useDirectorNode } from "@/composables/flow/useDirectorNode"
 import { useAsyncAction } from "@/composables/useAsyncAction"
 import DirectorTimeline from "./DirectorTimeline.vue"
-import DirectorTransformControls from "./DirectorTransformControls.vue"
-import DirectorViewHelper from "./DirectorViewHelper.vue"
+import DirectorToolbarTransform from "./DirectorToolbarTransform.vue"
+import DirectorViewControls from "./DirectorViewControls.vue"
 import { bindDirectorGizmoCommit } from "./directorGizmoCommit"
 import { resetDirectorGizmoOwner } from "./directorGizmoOwner"
 import { createDirectorProjection, directorIdOf } from "./directorProjection"
@@ -121,6 +145,9 @@ const playback = useDirectorPlayback({
 })
 
 watch(director.scene, syncScene)
+
+/** 时间轴开没开（本地，工具栏上切） */
+const timelineOpen = ref(false)
 
 // —— 选区（本地） ——
 
@@ -353,86 +380,179 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- ThreeEditor 自己是 h-full 的纵向 flex：视口占满剩下的高度，时间轴贴底 -->
+  <!-- ThreeEditor 自己是 h-full 的纵向 flex：视口占满剩下的高度，时间轴（开着时）贴底 -->
   <ThreeEditor :editor="editor">
-      <div class="relative min-h-0 w-full flex-1 overflow-hidden">
-        <EditorViewport class="absolute inset-0" />
+    <div class="relative min-h-0 w-full flex-1 overflow-hidden">
+      <EditorViewport class="absolute inset-0" />
 
-        <!-- 左上：添加图形、撤销 / 重做、删除、设为当前机位 -->
-        <div class="absolute left-4 top-4 z-10 flex items-center gap-1 rounded-lg border bg-card/95 p-1 shadow-sm backdrop-blur">
-          <DropdownMenu>
-            <DropdownMenuTrigger as-child>
-              <Button size="xs" :loading="adding" data-testid="director-add">
-                <Plus />
-                添加
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              <DropdownMenuItem
-                v-for="item in SHAPE_ITEMS"
-                :key="item.kind"
-                :data-kind="item.kind"
-                @select="addObject(item.kind)"
-              >
-                <component :is="item.icon" />
-                {{ DIRECTOR_KIND_LABELS[item.kind] }}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label="撤销（导演台）"
-            title="撤销（Ctrl+Z）"
-            :disabled="!director.history?.canUndo.value"
-            data-testid="director-undo"
-            @click="undo()"
-          >
-            <Undo2 />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label="重做（导演台）"
-            title="重做（Ctrl+Shift+Z）"
-            :disabled="!director.history?.canRedo.value"
-            data-testid="director-redo"
-            @click="redo()"
-          >
-            <Redo2 />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            :aria-label="selectedKeyframe ? '删除选中的关键帧' : '删除选中的对象'"
-            :title="selectedKeyframe ? '删除选中的关键帧（Delete）' : '删除选中的对象（Delete）'"
-            :disabled="!selectedId && !selectedKeyframe"
-            :loading="removing"
-            data-testid="director-delete"
-            @click="removeSelection()"
-          >
-            <Trash2 />
-          </Button>
-          <Button
-            v-if="selectedObject?.kind === 'camera'"
-            variant="ghost"
-            size="xs"
-            :disabled="director.scene.value.activeShot === selectedObject.id"
-            :loading="settingShot"
-            data-testid="director-active-shot"
-            @click="setActiveShot()"
-          >
-            <Star />
-            {{ director.scene.value.activeShot === selectedObject.id ? "当前机位" : "设为当前机位" }}
-          </Button>
-        </div>
-
-        <!-- 右上：视角罗盘 + 变换模式（移动 / 旋转 / 缩放） -->
-        <DirectorViewHelper class="absolute top-4 right-4 z-10 rounded-full bg-black/50" :size="72" />
-        <DirectorTransformControls />
+      <!-- 右上：全屏层的对话按钮 -->
+      <div class="absolute right-4 top-4 z-10 flex items-start gap-2">
+        <slot name="top-right" />
       </div>
 
+      <!-- 左下：视图控件（和画布左下角同款），罗盘从它上方弹出 -->
+      <div class="absolute bottom-6 left-4 z-10">
+        <DirectorViewControls />
+      </div>
+
+      <!-- 底部正中的圆角工具栏，和画布的同款；右边挂全屏层的快捷会话圆钮（不参与居中） -->
+      <div class="absolute bottom-6 left-1/2 z-10 -translate-x-1/2">
+        <div
+          class="flex items-center gap-1 rounded-full border bg-card/95 p-1.5 shadow-lg backdrop-blur"
+          data-testid="director-toolbar"
+        >
+          <DirectorToolbarTransform />
+
+          <Separator orientation="vertical" class="mx-1 data-[orientation=vertical]:h-5" />
+
+          <!-- Tooltip 在最外层、菜单整个放进触发器的 span 里（原因见 FlowToolbar） -->
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <span class="inline-flex">
+                <DropdownMenu>
+                  <DropdownMenuTrigger as-child>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      class="size-8 rounded-full data-[state=open]:bg-accent"
+                      aria-label="添加"
+                      :loading="adding"
+                      data-testid="director-add"
+                    >
+                      <Plus />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent side="top" align="center" :side-offset="12" class="w-40">
+                    <DropdownMenuLabel class="text-xs text-muted-foreground">添加到场景</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      v-for="item in SHAPE_ITEMS"
+                      :key="item.kind"
+                      :data-kind="item.kind"
+                      @select="addObject(item.kind)"
+                    >
+                      <component :is="item.icon" />
+                      {{ DIRECTOR_KIND_LABELS[item.kind] }}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">添加</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <span class="inline-flex">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-8 rounded-full"
+                  :aria-label="selectedKeyframe ? '删除选中的关键帧' : '删除选中的对象'"
+                  :disabled="!selectedId && !selectedKeyframe"
+                  :loading="removing"
+                  data-testid="director-delete"
+                  @click="removeSelection()"
+                >
+                  <Trash2 />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              {{ selectedKeyframe ? "删除选中的关键帧（Delete）" : "删除选中的对象（Delete）" }}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip v-if="selectedObject?.kind === 'camera'">
+            <TooltipTrigger as-child>
+              <span class="inline-flex">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-8 rounded-full"
+                  :class="director.scene.value.activeShot === selectedObject.id && 'text-primary'"
+                  :aria-label="director.scene.value.activeShot === selectedObject.id ? '当前机位' : '设为当前机位'"
+                  :disabled="director.scene.value.activeShot === selectedObject.id"
+                  :loading="settingShot"
+                  data-testid="director-active-shot"
+                  @click="setActiveShot()"
+                >
+                  <Star />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              {{ director.scene.value.activeShot === selectedObject.id ? "当前机位" : "设为当前机位" }}
+            </TooltipContent>
+          </Tooltip>
+
+          <Separator orientation="vertical" class="mx-1 data-[orientation=vertical]:h-5" />
+
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <span class="inline-flex">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-8 rounded-full"
+                  aria-label="撤销（导演台）"
+                  :disabled="!director.history?.canUndo.value"
+                  data-testid="director-undo"
+                  @click="undo()"
+                >
+                  <Undo2 />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">撤销（Ctrl+Z）</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <span class="inline-flex">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-8 rounded-full"
+                  aria-label="重做（导演台）"
+                  :disabled="!director.history?.canRedo.value"
+                  data-testid="director-redo"
+                  @click="redo()"
+                >
+                  <Redo2 />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">重做（Ctrl+Shift+Z）</TooltipContent>
+          </Tooltip>
+
+          <Separator orientation="vertical" class="mx-1 data-[orientation=vertical]:h-5" />
+
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <Button
+                :variant="timelineOpen ? 'secondary' : 'ghost'"
+                size="icon"
+                class="size-8 rounded-full"
+                :class="timelineOpen && 'text-primary'"
+                :aria-label="timelineOpen ? '收起时间轴' : '展开时间轴'"
+                :aria-pressed="timelineOpen"
+                data-testid="director-timeline-toggle"
+                @click="timelineOpen = !timelineOpen"
+              >
+                <ChartGantt />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">{{ timelineOpen ? "收起时间轴" : "展开时间轴" }}</TooltipContent>
+          </Tooltip>
+        </div>
+
+        <div class="absolute left-full top-1/2 ml-3 -translate-y-1/2">
+          <slot name="toolbar-end" />
+        </div>
+      </div>
+    </div>
+
+    <!-- 收起不卸载（v-show）：选中的关键帧、滚动位置都还在；视口跟着容器尺寸重排 -->
     <DirectorTimeline
+      v-show="timelineOpen"
       :scene="director.scene.value"
       :playhead="playback.playhead.value"
       :playing="playback.playing.value"

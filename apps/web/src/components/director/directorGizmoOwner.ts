@@ -140,7 +140,8 @@ export function resetDirectorGizmoOwner(): void {
 // ————————————————————————————————————————————————————————————————
 // 公共 helper 工具栏对各调节器开放哪几种模式
 //
-// 导演台里所有调节器共用右上角那一个工具栏（移动/旋转/缩放，见 DirectorTransformControls），
+// 导演台里所有调节器共用同一组移动/旋转/缩放按钮（`/3d-viewport` 右上角的 DirectorTransformControls、
+// 画布导演台底部工具栏的 DirectorToolbarTransform），
 // 故「现在这个按钮能不能按」必须有一处答案——按下一个什么也不会发生的按钮，用户读到的是
 // 「工具栏坏了」。声明在这里而不是工具栏组件里：工具栏与 useDirectorTransform 都不认识具体
 // 是谁在被调节，而所有权本就住在本文件。

@@ -566,7 +566,7 @@ describe("画布 Agent 对话框", () => {
     ])
   })
 
-  it("技能：头部列出会话已加载的技能；实时流里加载一次，对话里多一行「已加载：…」、头部跟着多一个", async () => {
+  it("技能：输入框上方列出会话已加载的技能、标题里不显示；实时流里加载一次，对话里多一行「已加载：…」、那一栏跟着多一个", async () => {
     session.mockResolvedValue(
       sessionView({
         latest: view("c1", {
@@ -600,6 +600,8 @@ describe("画布 Agent 对话框", () => {
     const wrapper = await mountOpened()
     const badges = () => wrapper.findAll('[data-testid="agent-skills"] [data-skill]').map((item) => item.text())
     expect(badges()).toEqual(["画布（只读）", "画布编辑"])
+    expect(wrapper.find('[data-testid="agent-title"] [data-skill]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="agent-title"]').text()).not.toContain("画布编辑")
 
     await type(wrapper, "看图")
     await wrapper.get('[data-testid="agent-send"]').trigger("click")

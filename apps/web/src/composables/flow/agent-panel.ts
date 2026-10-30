@@ -6,17 +6,52 @@ import { useAuth } from "@/lib/auth"
 import { useFlowAgent, type FlowAgent, type FlowAgentChannel, type FlowAgentOptions } from "./useFlowAgent"
 
 /**
- * 画布 Agent 的共享状态：一份 `useFlowAgent` + 对话框开没开。
+ * 画布 Agent 的共享状态：一份 `useFlowAgent` + 对话框开没开 + 面板上的文案。
  *
  * 入口有两个 —— 右上角的对话框（`FlowAgentChat`），和底部工具栏上的快捷输入
  * （`FlowAgentQuickPrompt`，输完直接开新会话执行）。两者必须是**同一个** agent 实例：
  * 各调一次 `useFlowAgent` 就是两条流、两份会话，快捷输入发出去的那一轮对话框里看不见。
  *
+ * 导演台全屏层在自己的子树里**再 provide 一份**（绑定那个节点，docs/07 §7.5）：同样两个组件挂在导演台的
+ * 右上角和底部工具栏上，读到的是导演台这一份，和画布那份互不影响。
+ *
  * 不挂进 `provideFlowEditor`：agent 和画布交互无关，编辑器根视图单独 provide 一次。
  * 只 import 了 `useFlowAgent`（不碰 node-types），所以从 `components/flow/` 引它不会成环。
  */
+/** 对话框 / 快捷输入上随场景变的文字（画布、导演台各一套） */
+export interface FlowAgentPanelCopy {
+  /** 按钮、面板的名字 */
+  name: string
+  emptyTitle: string
+  /** 空会话下的一句说明；null = 画布那份（新建删除节点、@ 提及节点的提示列表） */
+  emptyDescription: string | null
+  /** 快捷输入按钮的说明 */
+  quickTitle: string
+  /** 输入框占位；不给用输入框自己的 */
+  placeholder?: string
+  /** 不显示「引用画布上选中的节点」（导演台里没有画布选区） */
+  hideQuote?: boolean
+}
+
+export const CANVAS_AGENT_COPY: FlowAgentPanelCopy = {
+  name: "画布 Agent",
+  emptyTitle: "让 agent 帮你改这张画布",
+  emptyDescription: null,
+  quickTitle: "让 agent 改画布（新会话）"
+}
+
+export const DIRECTOR_AGENT_COPY: FlowAgentPanelCopy = {
+  name: "导演台助手",
+  emptyTitle: "让助手搭这个场景",
+  emptyDescription: "摆放几何体、机位和灯光，编排移动、旋转、缩放的动画。这个会话只改这个导演台。",
+  quickTitle: "让助手改这个场景（新会话）",
+  placeholder: "让助手改这个场景…（回车发送）",
+  hideQuote: true
+}
+
 export interface FlowAgentPanel {
   agent: FlowAgent
+  copy: FlowAgentPanelCopy
   /** 对话框是否展开（收起时组件仍挂着，流不断） */
   open: Ref<boolean>
   /**
@@ -67,9 +102,16 @@ export function useHostFlowAgent(
   })
 }
 
-/** 只能在编辑器根组件的 setup 里调用一次 */
-export function provideFlowAgentPanel(host: FlowAgentHost): FlowAgentPanel {
-  const agent = useHostFlowAgent(host)
+/**
+ * 画布那份只能在编辑器根组件的 setup 里调用一次；导演台全屏层给 `nodeId` 再调一次，
+ * 只覆盖它自己的子树
+ */
+export function provideFlowAgentPanel(
+  host: FlowAgentHost,
+  options: Pick<FlowAgentOptions, "nodeId" | "adoptLatest"> & { copy?: FlowAgentPanelCopy } = {}
+): FlowAgentPanel {
+  const { copy = CANVAS_AGENT_COPY, ...extra } = options
+  const agent = useHostFlowAgent(host, extra)
   const open = ref(false)
   const started = createEventHook<void>()
 
@@ -82,7 +124,7 @@ export function provideFlowAgentPanel(host: FlowAgentHost): FlowAgentPanel {
     return (await agent.send(text)) === true
   }
 
-  const panel: FlowAgentPanel = { agent, open, startConversation, onStarted: started.on }
+  const panel: FlowAgentPanel = { agent, copy, open, startConversation, onStarted: started.on }
   provide(FLOW_AGENT_PANEL_KEY, panel)
   return panel
 }

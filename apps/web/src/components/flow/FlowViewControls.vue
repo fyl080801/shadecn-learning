@@ -13,6 +13,7 @@ import {
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { useFlowEditor } from "@/composables/flow/editor-context"
+import { canvasShortcutsSuspended } from "@/composables/flow/shortcut-layer"
 
 /**
  * 左下角视图控件：缩放（− 百分比 +）、全览、自动布局、小地图显隐，外加小地图本身。
@@ -22,6 +23,8 @@ import { useFlowEditor } from "@/composables/flow/editor-context"
  *
  * 小地图是挂在开关按钮上的浮层（Popover，按钮正上方弹出），默认不显示；
  * 它是一个常驻开关，点外面、按 Esc 都不收起，只有再点一次按钮才关。
+ * 浮层 teleport 到 body、层级在全屏层（导演台，z-40）之上：画布被盖住时（`canvasShortcutsSuspended`）不画它，
+ * 开关本身不动 —— 回到画布小地图还在。
  *
  * 除「自动布局」外只管「怎么看」，不碰画布内容；自动布局会改节点位置（一条撤销）。
  * 定位交给 Vue Flow 的 `<Panel>`，动作走 `useFlowCanvas` 里包好的那几个
@@ -29,6 +32,14 @@ import { useFlowEditor } from "@/composables/flow/editor-context"
  * 必须渲染在 `<VueFlow>` 的插槽里 —— Panel / MiniMap 依赖它注入的画布实例。
  */
 const { canvas } = useFlowEditor()
+
+/** 浮层实际开没开：开关开着、且画布没被全屏层盖住 */
+const miniMapOpen = computed({
+  get: () => canvas.miniMapVisible.value && !canvasShortcutsSuspended.value,
+  set: (value: boolean) => {
+    canvas.miniMapVisible.value = value
+  }
+})
 
 const miniMapLabel = computed(() => (canvas.miniMapVisible.value ? "隐藏小地图" : "显示小地图"))
 
@@ -151,7 +162,7 @@ function cancel(event: KeyboardEvent) {
     <Tooltip>
       <TooltipTrigger as-child>
         <span class="inline-flex">
-          <Popover v-model:open="canvas.miniMapVisible.value">
+          <Popover v-model:open="miniMapOpen">
             <PopoverTrigger as-child>
               <Button
                 :variant="canvas.miniMapVisible.value ? 'secondary' : 'ghost'"

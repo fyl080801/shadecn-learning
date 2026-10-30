@@ -319,7 +319,8 @@ watch(
   }
 )
 
-// DirectorTransformControls 的"重置视角"按钮通过该令牌触发，两者非父子关系
+// DirectorTransformControls / DirectorViewControls 的"重置视角"按钮通过该令牌触发，两者非父子关系
+// （所以罗盘收起时只能 v-show，卸载了就没人接这个令牌）
 watch(viewportResetRequestId, () => resetView())
 
 onBeforeUnmount(() => {
