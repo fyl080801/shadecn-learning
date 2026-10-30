@@ -1,6 +1,7 @@
 import { createAgentRegistry, loadAgentConfigs, type AgentRegistry } from '@shadecn/agent/agents'
 import { BUILTIN_SKILLS } from '@shadecn/agent/skills'
-import { agentDefinitionsDir } from '../config.ts'
+import { createTextSkillRegistry, loadTextSkills, type TextSkillRegistry } from '@shadecn/agent/text-skills'
+import { agentDefinitionsDir, agentTextSkillsDir } from '../config.ts'
 import { agentModelKeys } from './models.ts'
 
 /**
@@ -22,3 +23,19 @@ function loadAgentDefinitions(): AgentRegistry {
 }
 
 export const agentDefinitions: AgentRegistry = loadAgentDefinitions()
+
+/**
+ * 文字技能（docs/26 §3.8，pi `SKILL.md`）：同 agent 定义，模块一被 import 就读 {@link agentTextSkillsDir} 并校验，启用与否都一样。
+ * 目录不存在 = 没有文字技能；根上的 `README.md` 是目录说明、不算技能（发现规则见 `text-skills.ts`）。
+ * 不合法（字段、正文为空、名字撞内置技能或它们的旧 id、`requires` 不是内置技能、`disable-model-invocation`）就打一行 `[agent]` 错误、抛出，服务起不来
+ */
+function loadAgentTextSkills(): TextSkillRegistry {
+  try {
+    return createTextSkillRegistry(loadTextSkills(agentTextSkillsDir), { skills: BUILTIN_SKILLS })
+  } catch (err) {
+    console.error(`[agent] 文字技能不合法，服务不启动：${err instanceof Error ? err.message : String(err)}`)
+    throw err
+  }
+}
+
+export const agentTextSkills: TextSkillRegistry = loadAgentTextSkills()

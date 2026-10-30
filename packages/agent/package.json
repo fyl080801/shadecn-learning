@@ -23,6 +23,7 @@
     "./sandbox/drivers": "./src/sandbox/drivers/index.ts",
     "./testing": "./src/testing.ts",
     "./agents": "./src/agents.ts",
+    "./text-skills": "./src/text-skills.ts",
     "./skills": "./src/skills/index.ts"
   },
   "scripts": {

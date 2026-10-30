@@ -1,4 +1,4 @@
-import type { AgentMessage, ProxyAssistantMessageEvent } from '@earendil-works/pi-agent-core'
+import type { AgentMessage, AgentToolResult, ProxyAssistantMessageEvent } from '@earendil-works/pi-agent-core'
 import {
   isContextOverflow,
   type Api,
@@ -67,12 +67,16 @@ import {
   attachmentsPrompt,
   expandMentions,
   loadedSkillText,
+  loadedTextSkillText,
+  type LoadedTextSkill,
+  type TextSkillDependency,
   lookupMention,
   taskBrief,
   taskPrompt,
   systemPromptFor,
 } from './prompt.ts'
 import { ENTRY_AGENT_ID } from './protocol.ts'
+import { createTextSkillRegistry, NO_TEXT_SKILLS, type TextSkill, type TextSkillRegistry } from './text-skills.ts'
 import type {
   AgentTaskStartRequest,
   AgentTaskStartResponse,
@@ -113,7 +117,7 @@ import type {
   StoredConversation,
   StoredConversationMeta,
 } from './store.ts'
-import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunState } from './tools.ts'
+import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type CanvasToolDetails, type ToolRunState } from './tools.ts'
 import {
   appendUserText,
   batchResult,
@@ -451,6 +455,12 @@ export interface AgentRuntimeOptions {
    * 并且**必须**把同一个注册表交给 runner（进程内驱动的 `skills`）—— 两侧从同一份构造工具。
    */
   skills?: SkillRegistry
+  /**
+   * 文字技能（docs/26 §3.8，`text-skills.ts`）：pi `SKILL.md` 格式、只有指令。宿主读 apps/server `agentTextSkillsDir`、启动时校验后传进来；
+   * 不给 = 没有文字技能（目录本来就可以是空的）。这里按 {@link skills} 再校验一次 `name` / `requires`。
+   * **只在服务端**：它们不进 {@link SkillRegistry}，runner 永远不认识它们（`loadedSkills` 只交出它依赖的内置技能）
+   */
+  textSkills?: TextSkillRegistry
   /**
    * agent 定义（docs/26，`agents.ts`）。**必填**，理由同 `store`：定义随服务端产物发布，在哪个目录由宿主定
    * （apps/server `agentDefinitionsDir`；本包在产物里不按自己的路径读文件），没有「包里自带一份」的默认值。
@@ -1267,6 +1277,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   const registry = options.skills ?? BUILTIN_SKILLS
   // agent 定义的白名单按**这个** runtime 的技能注册表再判一次（建定义注册表时判的那份可能是另一个，测试会换）
   for (const config of options.agents.agents) assertAgentTools(config, registry)
+  /** 文字技能：按**这个** runtime 的技能注册表再校验一次（名字不撞内置技能、`requires` 都是内置技能），同上 */
+  const textSkills = options.textSkills ? createTextSkillRegistry(options.textSkills.skills, { skills: registry }) : NO_TEXT_SKILLS
   /** 入口 agent 的定义（docs/26 §3.7：固定 `canvas`）；被调用的 agent 用 `run_agent` 点名的那份（`options.agents.get`） */
   const entryDefinition = options.agents.entry
   /**
@@ -2313,13 +2325,22 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
        * 会话记着的 `agents`（旧 id `delegate` 读出时已换成它）在上限 0 时不算「本轮不可用」：那是部署的选择，不是授权变了
        */
       const entryExclude = canCall(mainAgent) ? [] : [AGENTS_SKILL_ID]
+      /*
+       * 会话记着的文字技能（docs/26 §3.8，同内置技能）这一轮一开始就加载：正文进系统提示，它依赖的内置技能当作「之前加载过」一起交给计划 ——
+       * 提供了就一开始加载；不提供的不算「本轮不可用」（它们不是这个会话自己加载过的），在那个文字技能的段落里说明。
+       * 记着、但已经移除的文字技能留在 previousBuiltin 里：注册表里没有它，照「本轮不可用」说明（同移除了的内置技能）
+       */
+      const previousText = previousSkills.filter((id) => textSkills.get(id) !== undefined)
+      const previousBuiltin = previousSkills.filter((id) => textSkills.get(id) === undefined)
+      const textDeps = previousText.flatMap((name) => textSkills.get(name)!.requires)
       const plan = registry.plan({
         env: envFor(mainAgent.model),
-        previous: previousSkills.filter((id) => !entryExclude.includes(id)),
+        previous: [...new Set([...previousBuiltin, ...textDeps])].filter((id) => !entryExclude.includes(id)),
         mentionedNodeTypes,
         allowedTools: mainAgent.allowed,
         exclude: entryExclude,
       })
+      const unavailableBuiltin = plan.unavailable.filter((id) => previousBuiltin.includes(id))
       for (const skill of plan.offered) mainAgent.offered.set(skill.id, skill)
       /**
        * 这一轮提供的技能 = **这一轮可能跑起来的全部 agent 各自提供的技能的并**（服务端造工具实例、交给 runner 的 `offered`
@@ -2367,6 +2388,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         if (skill.workdirFiles) Object.assign(files, await skill.workdirFiles({ canvas: opened }))
       }
       for (const skill of plan.loaded) loadedSkills.add(skill.id)
+      for (const name of previousText) loadedSkills.add(name)
       // 常驻观察：基线与挂上观察在同一个同步段里（中间插不进别人的事务），顺手算跨轮差异
       const activeWatch = createCanvasWatch({
         canvas: opened,
@@ -2408,12 +2430,49 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       const message = attached ? (expanded ? `${expanded}\n\n${attached}` : attached) : expanded
       const prompt = since ? `${since.modelText}\n\n用户这一轮的消息：\n${message}` : message
 
+      /** 一个内置技能交给这个 agent 的工具名（只报它白名单里的：技能整个被滤掉的根本不在它的提供集合里） */
+      const toolNamesOf = (skill: AgentSkill, agent: RunAgent) =>
+        skill
+          .tools(skillContext)
+          .map((tool) => tool.name)
+          .filter((name) => allowsTool(agent, name))
+      /** 记一次加载（每个 agent 各自不超过 `maxSkillLoads`；一次 `load_skill` 一次，文字技能连同依赖也是一次） */
+      const takeSkillLoad = (agent: RunAgent) => {
+        if (agent.skillLoads >= limits.maxSkillLoads) {
+          throw new Error(
+            `本轮已经加载了 ${agent.skillLoads} 次技能，达到上限 ${limits.maxSkillLoads}，不能再加载；请用已有的工具完成，或向用户说明`,
+          )
+        }
+        agent.skillLoads += 1
+      }
+      /** 「已加载：…」那一行只给入口 agent 的（被调用的 agent 的上下文不进对话，它加载了什么不单独显示） */
+      const showSkillLoaded = (agent: RunAgent, id: string, title: string) => {
+        if (agent.sub) return
+        const display: AgentSkillLoadedMessage = { id: createId('skl'), role: 'skill-loaded', skill: { id, title }, createdAt: Date.now() }
+        liveChanges.push(display)
+        send(mapper.skillLoaded(display))
+      }
+      /**
+       * 文字技能依赖的内置技能 `id` 不在这个 agent 的提供集合里时，为什么（docs/26 §3.8）—— 判法同 `load_skill` 一个内置技能被拒时：
+       * 调用深度、白名单（授权和部署条件都满足，是白名单把它整个滤掉了）、授权或部署条件
+       */
+      const dependencyRefusal = (id: string, agent: RunAgent): string => {
+        if (id === AGENTS_SKILL_ID && !canCall(agent)) return `调用深度已达上限 ${limits.maxCallDepth}，不能再调用别的 agent`
+        const known = registry.get(id)
+        if (!known) return '没有这个内置技能'
+        if (agent.allowed !== null && registry.offers(known, envFor(agent.model))) return '不在这个 agent 能用的工具范围里'
+        return '这一轮不提供（授权或部署条件不满足）'
+      }
+
       /**
        * `load_skill`（docs/23 §3.3）：判提供集合、是否已加载、本轮次数；通过就记进已加载、发「已加载：…」那一行，
-       * 结果带上这个技能的提示段与工具名单（`details.loadedSkill`：runner 在 prepareNextTurnWithContext 里并进新工具）。
+       * 结果带上这个技能的提示段与工具名单（`details.loadedSkills`：runner 在 prepareNextTurnWithContext 里并进新工具）。
+       * 点名的是文字技能就走 {@link loadTextSkill}。
        * 「必须单独调用」在这之前由网关判（{@link executeBound}）
        */
       const loadSkill = async (id: string, agent: RunAgent) => {
+        const text = textSkills.get(id)
+        if (text) return loadTextSkill(text, agent)
         const skill = agent.offered.get(id)
         if (!skill) {
           if (id === AGENTS_SKILL_ID && !canCall(agent)) throw new Error(depthLimitReason(agent))
@@ -2428,49 +2487,85 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
               : `没有技能 ${id}；能加载的技能见系统提示里的技能目录`,
           )
         }
-        // 只报这个 agent 白名单里的（技能整个被滤掉的根本不在它的提供集合里，上面已拒）
-        const toolNames = skill
-          .tools(skillContext)
-          .map((tool) => tool.name)
-          .filter((name) => allowsTool(agent, name))
+        const toolNames = toolNamesOf(skill, agent)
         if (agent.loadedSkills.has(id)) {
           return {
             content: [{ type: 'text' as const, text: `技能「${skill.title}」已经加载了，这些工具现在就能用：${toolNames.join('、')}` }],
             details: { summary: `技能「${skill.title}」已加载`, elementIds: [] },
           }
         }
-        if (agent.skillLoads >= limits.maxSkillLoads) {
-          throw new Error(
-            `本轮已经加载了 ${agent.skillLoads} 次技能，达到上限 ${limits.maxSkillLoads}，不能再加载；请用已有的工具完成，或向用户说明`,
-          )
-        }
-        agent.skillLoads += 1
+        takeSkillLoad(agent)
         agent.loadedSkills.add(id)
-        // 「已加载：…」那一行只给入口 agent 的（被调用的 agent 的上下文不进对话，它加载了什么不单独显示）
-        if (!agent.sub) {
-          const display: AgentSkillLoadedMessage = {
-            id: createId('skl'),
-            role: 'skill-loaded',
-            skill: { id, title: skill.title },
-            createdAt: Date.now(),
-          }
-          liveChanges.push(display)
-          send(mapper.skillLoaded(display))
-        }
+        showSkillLoaded(agent, id, skill.title)
         return {
           content: [{ type: 'text' as const, text: loadedSkillText(skill, toolNames) }],
-          details: { summary: `加载技能「${skill.title}」`, elementIds: [], loadedSkill: id },
+          details: { summary: `加载技能「${skill.title}」`, elementIds: [], loadedSkills: [id] },
+        }
+      }
+
+      /**
+       * `load_skill` 一个文字技能（docs/26 §3.8）：算一次加载（连同依赖），正文进这次的结果；它 `requires` 的内置技能一起加载 ——
+       * 各自照这个 agent 的提供集合判（Grant、部署条件、白名单、调用深度，同 `load_skill` 一个内置技能），已经加载的照旧，
+       * 用不了的不挡这次加载，结果里说明是哪个、为什么。交给 runner 的 `loadedSkills` 只有这次新加载的内置技能（runner 不认识文字技能）
+       */
+      const loadTextSkill = (skill: TextSkill, agent: RunAgent): AgentToolResult<CanvasToolDetails> => {
+        if (agent.loadedSkills.has(skill.name)) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `文字技能「${skill.name}」已经加载了，做法见之前的加载结果（或系统提示里的「已加载的技能」）`,
+              },
+            ],
+            details: { summary: `文字技能「${skill.name}」已加载`, elementIds: [] },
+          }
+        }
+        takeSkillLoad(agent)
+        agent.loadedSkills.add(skill.name)
+        showSkillLoaded(agent, skill.name, skill.name)
+        const deps: TextSkillDependency[] = []
+        const added: string[] = []
+        for (const id of skill.requires) {
+          if (agent.loadedSkills.has(id)) {
+            deps.push({ status: 'already', id, title: registry.titleOf(id) })
+            continue
+          }
+          const dep = agent.offered.get(id)
+          if (!dep) {
+            deps.push({ status: 'unavailable', id, title: registry.titleOf(id), reason: dependencyRefusal(id, agent) })
+            continue
+          }
+          agent.loadedSkills.add(id)
+          added.push(id)
+          showSkillLoaded(agent, id, dep.title)
+          deps.push({ status: 'loaded', skill: dep, toolNames: toolNamesOf(dep, agent) })
+        }
+        return {
+          content: [{ type: 'text' as const, text: loadedTextSkillText(skill, deps) }],
+          details: { summary: `加载文字技能「${skill.name}」`, elementIds: [], loadedSkills: added },
         }
       }
       // 事件里那句话用；真正执行时按调用它的 agent 现造一个（executeTool）
       tools.set(LOAD_SKILL_TOOL_NAME, createLoadSkillTool((id) => loadSkill(id, mainAgent)))
 
+      // 会话记着的文字技能：正文进系统提示，依赖里这一轮入口 agent 用不了的说明原因
+      const textLoaded: LoadedTextSkill[] = previousText.map((name) => {
+        const skill = textSkills.get(name)!
+        return {
+          skill,
+          unavailableDeps: skill.requires
+            .filter((id) => !mainAgent.offered.has(id))
+            .map((id) => ({ id, title: registry.titleOf(id), reason: dependencyRefusal(id, mainAgent) })),
+        }
+      })
       const systemPrompt = systemPromptFor({
         agentPrompt: entryDefinition.systemPrompt,
         loaded: plan.loaded,
         catalog: plan.catalog,
-        unavailable: plan.unavailable.map((id) => ({ id, title: registry.titleOf(id) })),
+        unavailable: unavailableBuiltin.map((id) => ({ id, title: registry.titleOf(id) })),
         maxSkillLoads: limits.maxSkillLoads,
+        textLoaded,
+        textCatalog: textSkills.skills.filter((skill) => !loadedSkills.has(skill.name)),
       })
       // 系统提示、提示词、之前几轮的上下文只进服务端的 transcript，不给 runner（第 7 版起：runner 只送空的上下文，用不着它们）
       const runnerInput: RunnerInput = {
@@ -2886,6 +2981,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             catalog: plan.catalog.filter((skill) => own.has(skill.id)),
             unavailable: [],
             maxSkillLoads: limits.maxSkillLoads,
+            // 文字技能提供给每个 agent（docs/26 §3.8）；被调用的 agent 没有会话记忆，全部进目录
+            textCatalog: textSkills.skills,
           })}\n\n${taskPrompt({ maxTurns: limits.maxTurns, replyChars: limits.taskReplyChars, canCall: own.has(AGENTS_SKILL_ID) })}`
           const agent = newRunAgent(
             id,

@@ -185,7 +185,7 @@ const loadSkillParams = Type.Object(
 
 /**
  * `load_skill` 的定义。服务端传 `load`（判提供集合 / 是否已加载 / 每轮上限，见 `session.ts`）；
- * runner 不传，只拿定义包成网关代理。成功加载时结果带 `details.loadedSkill`：
+ * runner 不传，只拿定义包成网关代理。成功加载时结果带 `details.loadedSkills`（新加载的内置技能）：
  * runner 在 pi 的 `prepareNextTurnWithContext` 里把新技能的工具并进下一次请求（docs/23 §3.3）。必须单独调用由网关判（`session.ts` 的 `executeBound`）。
  */
 export function createLoadSkillTool(

@@ -1,10 +1,12 @@
 # REQ-AGENT-DEF Agent 定义与同一沙箱内的多 agent 协作
 
-> 状态：**部分实现**（P0～P4 已完成，P5 未做）。原来是一个隐含的「画布 agent」加上从属于它的「子 agent」（[REQ-AGENT](20-agent-canvas.md) §3.10.11）；
+> 状态：**已实现**（P0～P5 全部完成）。原来是一个隐含的「画布 agent」加上从属于它的「子 agent」（[REQ-AGENT](20-agent-canvas.md) §3.10.11）；
 > 本文把它改成**对等的 agent 定义 + 同一轮里的任务**，分期见 §4。P2 起定义读自 `packages/agent/agents/*.md`（仓库里目前只有 `canvas.md`），工具白名单在服务端生效；
 > P3 起发起任务用 `run_agent({ agent, task, nodeIds? })`，被调用的 agent 用它自己的定义（正文、白名单 —— runner 里也按它滤 —— 、模型键），
 > 调用深度有上限（默认 1，深度大于 1 也可用，嵌套的任务条目挂在发起它的任务条目里），runner 协议第 8 版。
 > P4 起模型表 = `default`（环境变量）+ 模型表文件里的项（§3.4），每个 agent 按自己定义的 `model` 调上游、算费用与看图能力，runner 协议不变。
+> P5 起有文字技能（§3.8）：`packages/agent/skills/` 里的 pi `SKILL.md`（仓库里目前只有说明目录的 `README.md`，没有技能），提供给每个 agent，按需加载时连同依赖的内置技能一起加载；
+> 一次加载可能带进几个内置技能，`load_skill` 交给 runner 的结果因此改成 `loadedSkills` 数组，runner 协议第 9 版（沙箱镜像要重建）。
 >
 > 前置：[REQ-AGENT](20-agent-canvas.md)（画布 agent、占用、§3.10.11 的协作规则）、
 > [REQ-AGENT-SANDBOX](22-agent-sandbox.md)（runner / 网关、§4.3 服务端调模型与权威 transcript）、
@@ -185,6 +187,18 @@ requires: [director]        # 可省略：依赖的内置技能 id
 - `name` 不能和内置技能 id 重复；会话记住加载过的技能（同内置技能），以后被删了就按「本轮不可用」说明。
 - **本期只有一种来源**：仓库里的一个目录，随代码发布、启动时校验。画布设置里由成员编写（REQ-AGENT §3.10.6）、存数据库、编辑界面都放到以后，
   到时只是多一种来源，格式不变。
+- **目录与发现规则**（P5，同 pi 的 `loadSkillsFromDir`）：源码 `packages/agent/skills/`（和代码目录 `packages/agent/src/skills/` 是两回事），
+  产物拷到 `output/server/skills/`；目录不存在 = 没有文字技能。一个子目录里有 `SKILL.md` 就是一个技能（不再往下找；没有就接着往它的子目录里找），
+  根上直接放的 `*.md` 也各算一个；**根上的 `README.md`（不分大小写）是说明这个目录的文档，不算技能**；`.` 开头的和 `node_modules` 跳过。
+- **启动时校验，错了就起不来**（同 agent 定义）：`name` 同 agent 名的规则（小写字母开头，小写字母、数字、`-`，最长 48），不重复，
+  不和内置技能 id、也不和它们的旧 id（`canvas-edit`、`delegate`）撞；`SKILL.md` 的 `name` 和所在目录同名；`description` 必填（≤ 1024 字）；
+  `requires` 只能写现有的内置技能 id（不能写旧 id、不能写文字技能）；正文不能为空；只认 `name` / `description` / `requires` 三个键 ——
+  pi 的 `disable-model-invocation` 也拒绝（这里没有斜杠命令，文字技能只能由模型加载）。
+- **在目录里的样子**：排在内置技能后面，每行标「（文字技能）」并列出加载时一起加载的依赖，目录末尾一句说明「文字技能只有做法说明、不带新工具，也不能改变通用规则」。
+- **加载**：结果里先说依赖的内置技能各自怎样（一起加载了、本来就在、用不了及原因 —— 不提供 / 不在这个 agent 的工具范围里 / 调用深度到了上限），
+  再给正文、再给一起加载的内置技能的用法。依赖用不了不挡加载。对话里每个新加载的技能各一行「已加载：…」（文字技能的标题就是它的 `name`）。
+  会话记住的文字技能下一轮一开始就加载：正文进系统提示的「已加载的技能」（标明它只是做法说明），依赖一并预加载，用不了的在它的段落里说明。
+- runner 永远不认识文字技能：它们不在两侧共用的内置技能注册表里，`load_skill` 交给 runner 的 `loadedSkills` 只有这次新加载的内置技能 id。
 
 ### 3.9 命名
 
@@ -214,7 +228,7 @@ requires: [director]        # 可省略：依赖的内置技能 id
 | P2 ✅ | 读入 `agents/*.md`（只有 `canvas.md`）、启动校验、拆 `PLATFORM_PROMPT`、工具白名单在服务端生效 | 不变（系统提示与工具表第 7 版起本来就只在服务端） | 无 |
 | P3 ✅ | `run_agent({ agent, task, nodeIds? })`、可调用 agent 目录、调用深度上限、按角色给 `request_confirmation`、任务条目带 `agent`、任务输入带它的 `model` | 7 → 8，重建沙箱镜像 | 能调用不同的 agent（模型仍只有 `default`） |
 | P4 ✅ | 模型表（`default` + 模型表文件）、按 agent 选模型、费用与历史预算按 agent 的模型算 | 不变（P3 已带 `model`） | 不同 agent 可用不同模型 |
-| P5 | 文字技能（`SKILL.md`，仓库目录一种来源） | 不变 | 能扩展技能 |
+| P5 ✅ | 文字技能（`SKILL.md`，仓库目录一种来源） | 8 → 9（原计划不变：加载文字技能要一次并进几个内置技能，`load_skill` 结果的 `loadedSkill` 改成 `loadedSkills` 数组），重建沙箱镜像 | 能扩展技能 |
 
 ## 5. 功能需求
 
@@ -258,4 +272,5 @@ requires: [director]        # 可省略：依赖的内置技能 id
 4. ~~混用模型时的费用~~ —— **已定**：只要有一次请求的模型没有定价，这一轮费用记 `null`。
 5. ~~模型表除 `default` 以外的项怎么配置~~ —— **已定**（P4）：一个 JSON 文件（默认 `<DATA_DIR>/agent-models.json`，`AGENT_MODELS_FILE` 可换），
    密钥只能写成 `"$环境变量名"` 引用，`default` 仍来自 `AGENT_*` 环境变量（§3.4）。
-6. 定义文件与文字技能在仓库里的目录 —— agent 定义**已定**（P2）：`packages/agent/agents/`，产物里拷到 `output/server/agents/`；文字技能的目录 P5 定。
+6. ~~定义文件与文字技能在仓库里的目录~~ —— **已定**：agent 定义（P2）`packages/agent/agents/`，产物里拷到 `output/server/agents/`；
+   文字技能（P5）`packages/agent/skills/`，产物里拷到 `output/server/skills/`，根上的 `README.md` 不算技能（§3.8）。

@@ -52,7 +52,7 @@ export { GatewayUnauthorizedError, RunnerProtocolMismatchError } from './client.
  *
  * pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` 拍快照，循环中途改 `state.tools` 不生效；
  * 改下一次请求的工具表只能经 pi 的 `prepareNextTurnWithContext`（一批工具执行完、循环要接着请求模型之前调）。所以：
- * - 网关加载成功时回 `details.loadedSkill`；`load_skill` 必须单独成批由**网关**判（同批还有别的调用就拒，回给模型的就是那句话），这里不拦；
+ * - 网关加载成功时回 `details.loadedSkills`（新加载的内置技能 id；加载一个文字技能时是它依赖、一起加载的那几个，runner 不认识文字技能）；`load_skill` 必须单独成批由**网关**判（同批还有别的调用就拒，回给模型的就是那句话），这里不拦；
  * - `prepareNextTurnWithContext` 里把新加载的技能的工具并进返回的 `context.tools`（pi 按新工具表执行下一批调用），
  *   同时写回 `agent.state.tools` —— 否则之后哪次 `continue()` 按旧快照拍工具表，pi 会宣布这些工具被移除了。
  *   模型看到的「新工具」是服务端在它的 transcript 里插的 `toolsAdded`，不是这里的。服务端每轮最多放行 3 次加载。
@@ -105,7 +105,7 @@ export interface RunnerOptions {
 
 /**
  * 网关执行的工具的代理：同一份定义，执行 = 一次 `/canvas/tool`。
- * `onLoaded`：网关回报「加载了一个技能」（只有 `load_skill` 会）时调。
+ * `onLoaded`：网关回报「加载了内置技能」（只有 `load_skill` 会，可能一次几个）时对每个调一次。
  */
 function remoteTool(
   tool: CanvasTool,
@@ -127,7 +127,7 @@ function remoteTool(
       const reply = await client.tool({ toolCallId, name: tool.name, args, ...(agentId === ENTRY_AGENT_ID ? {} : { agentId }) })
       // 服务端的报错原样交给 pi：它变成 isError 的工具结果回给模型，和在进程内抛出时一样
       if (reply.isError) throw new Error(reply.message)
-      if (reply.details.loadedSkill) onLoaded?.(reply.details.loadedSkill)
+      for (const id of reply.details.loadedSkills ?? []) onLoaded?.(id)
       return { content: reply.content, details: reply.details }
     },
   }

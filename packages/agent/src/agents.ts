@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import { parse as parseYaml } from 'yaml'
+import { readFrontmatter } from './frontmatter.ts'
 import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME, type SkillRegistry } from './skills/registry.ts'
 
 /**
@@ -39,18 +39,10 @@ export const ENTRY_AGENT_NAME = 'canvas'
 /** 模型表里的默认项（`AGENT_PROVIDER` / `AGENT_MODEL` / … 配的那一个；定义不写 `model` 就用它）。其余的项宿主从模型表文件读（docs/26 §3.4） */
 export const DEFAULT_AGENT_MODEL = 'default'
 
-const AGENT_NAME_REGEX = /^[a-z][a-z0-9-]{0,47}$/
+/** agent 名（文字技能的名字同一条规则，`text-skills.ts`）：小写字母开头，小写字母、数字、`-`，最长 48 */
+export const AGENT_NAME_REGEX = /^[a-z][a-z0-9-]{0,47}$/
 
 const FRONTMATTER_KEYS = new Set(['name', 'description', 'tools', 'model'])
-
-/** 同 pi 的 `extractFrontmatter`：去 BOM、统一换行，`---` 开头到下一个 `\n---` 是 YAML，之后的去掉首尾空白是正文 */
-function extractFrontmatter(content: string): { yaml: string | null; body: string } {
-  const normalized = content.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-  if (!normalized.startsWith('---')) return { yaml: null, body: normalized }
-  const end = normalized.indexOf('\n---', 3)
-  if (end === -1) return { yaml: null, body: normalized }
-  return { yaml: normalized.slice(4, end), body: normalized.slice(end + 4).trim() }
-}
 
 /**
  * 同 pi 的 `parseToolList`：逗号分隔的字符串或 YAML 数组都认。不同的是写坏了（别的类型、数组里有非字符串、
@@ -68,17 +60,7 @@ function parseToolList(value: unknown, where: string): string[] {
 /** 解析一个定义文件。只做形状上的检查（frontmatter、字段类型）；名字、工具、模型、重名在 {@link createAgentRegistry} 里判 */
 export function parseAgentConfig(text: string, filePath: string): AgentConfig {
   const where = `agent 定义 ${filePath}`
-  const { yaml, body } = extractFrontmatter(text)
-  if (yaml === null) throw new Error(`${where}：没有 frontmatter（文件要以 --- 开头，写 name / description）`)
-  let parsed: unknown
-  try {
-    parsed = parseYaml(yaml)
-  } catch (err) {
-    throw new Error(`${where}：frontmatter 不是合法的 YAML：${err instanceof Error ? err.message : String(err)}`, { cause: err })
-  }
-  parsed ??= {}
-  if (typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`${where}：frontmatter 必须是键值对`)
-  const fields = parsed as Record<string, unknown>
+  const { fields, body } = readFrontmatter(text, where)
   // 不认识的键（多半是拼错的 tools / model）不放过：拼错的白名单会悄悄变成「全部工具」
   const unknown = Object.keys(fields).filter((key) => !FRONTMATTER_KEYS.has(key))
   if (unknown.length > 0) throw new Error(`${where}：不认识的字段 ${unknown.join('、')}（只认 name / description / tools / model）`)

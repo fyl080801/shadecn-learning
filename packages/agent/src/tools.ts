@@ -127,8 +127,12 @@ export interface CanvasToolDetails {
   summary: string
   /** 这次调用新建 / 修改 / 删除了哪些元素（写进工具调用日志） */
   elementIds: string[]
-  /** 只有 `load_skill` 成功加载时有：新加载的技能 id（runner 据此把它的工具并进来，docs/23 §3.3） */
-  loadedSkill?: string
+  /**
+   * 只有 `load_skill` 成功加载时有：这次新加载的**内置**技能 id（runner 据此把它们的工具并进来，docs/23 §3.3）。
+   * 加载一个内置技能 = 它一个；加载一个文字技能 = 它依赖、这次一起加载的那几个（可能为空）—— 文字技能自己没有工具，
+   * 它的 id 永远不进这里（runner 不认识文字技能，docs/26 §3.8）。第 9 版起是数组（之前是单个的 `loadedSkill`）
+   */
+  loadedSkills?: string[]
   /**
    * 读类工具：这次把哪些节点的内容**完整**交给了模型（docs/20 §3.10.8：读过就移出「改过」集合，结果里标出占用）。
    * 只在服务端用 —— 编排层（`session.ts`）取走之后从结果里删掉，不发给 runner、不进模型上下文。

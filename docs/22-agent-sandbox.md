@@ -6,7 +6,9 @@
 > 本文里的「父 agent / 子 agent」按 [REQ-AGENT-DEF](26-agent-definitions.md) 改称「入口 agent / 被调用的 agent」（同一沙箱里对等协作，差别只在角色）；
 > 那边的 P3 **已实现**（`RUNNER_PROTOCOL_VERSION` 7 → 8，沙箱镜像要重建）：`/agent/delegate`、`/agent/finish` 改成 `/agent/task/start`、`/agent/task/finish`，
 > 发起请求带调用方的 agent id 与 `{ agent, task, nodeIds }`；`RunnerInput` 的入口 agent 和任务输入各带这个 agent 自己的技能、工具白名单（runner 按它滤工具）和模型元数据，
-> 外加可调用的 agent 目录。那边的 P4 **已实现**（协议不变）：各 agent 按自己定义里的模型调上游（网关按发请求的 agent 选上游）、费用按各自模型算（§4.3 第 5 步的「一轮一行合计」不变）。下面的实现说明保留实现时的称呼。
+> 外加可调用的 agent 目录。那边的 P4 **已实现**（协议不变）：各 agent 按自己定义里的模型调上游（网关按发请求的 agent 选上游）、费用按各自模型算（§4.3 第 5 步的「一轮一行合计」不变）。
+> 那边的 P5（文字技能）**已实现**（`RUNNER_PROTOCOL_VERSION` 8 → 9，沙箱镜像要重建）：`/canvas/tool` 回 `load_skill` 成功时，`details.loadedSkill`（一个 id）改成 `loadedSkills`（这次新加载的内置技能 id 数组 ——
+> 加载一个文字技能会连同它依赖的几个内置技能一起加载），runner 逐个并进工具表；文字技能本身不过线，runner 不认识它们。下面的实现说明保留实现时的称呼。
 > 一期已实现：Grant / scope 表（`agent_grant` / `agent_grant_scope`，签发时 scope = 请求的 ∩ 发起人当时的权限 ∩ 服务端配置）；
 > run 状态机 running → success / cancelled / error / expired（线上 RUN_FINISHED 仍只有 success / cancelled，expired 在线上是 cancelled）；
 > 全部工具执行前、每次请求模型前、画布每次读写前 `authorize(capability)`；失效即 `stop`（整轮立即停，cancelled + 原因，Grant 标撤销）；

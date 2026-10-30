@@ -434,8 +434,8 @@ describe('旧数据（runner 协议第 8 版之前存的）', () => {
 })
 
 describe('协议版本', () => {
-  it('第 8 版：路由是 /agent/task/start 与 /agent/task/finish', () => {
-    expect(RUNNER_PROTOCOL_VERSION).toBe(8)
+  it('第 8 版起：路由是 /agent/task/start 与 /agent/task/finish', () => {
+    expect(RUNNER_PROTOCOL_VERSION).toBeGreaterThanOrEqual(8)
     expect(GATEWAY_ROUTES).toMatchObject({ taskStart: '/agent/task/start', taskFinish: '/agent/task/finish' })
     expect(GATEWAY_ROUTES).not.toHaveProperty('delegate')
   })

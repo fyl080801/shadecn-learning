@@ -10,6 +10,8 @@
  *                              `process` 沙箱驱动 spawn 的就是它（docs/22 §7），环境变量只有网关地址 + 一次性凭证
  *   output/server/agents/      agent 定义（packages/agent/agents/*.md，docs/26 §3.1）：服务端启动时读、校验
  *                              （apps/server/config.ts 的 agentDefinitionsDir）。只给服务端，不进沙箱镜像
+ *   output/server/skills/      文字技能（packages/agent/skills/ 里的 *.md，保留子目录，docs/26 §3.8）：服务端启动时读、校验
+ *                              （config.ts 的 agentTextSkillsDir；源目录不存在就不拷 = 没有文字技能）。只给服务端，不进沙箱镜像
  *   output/Dockerfile          构建上下文就是 output/ 本身
  *   output/.dockerignore、output/README.md
  *   output/agent-sandbox/      `oci` 沙箱镜像的构建上下文（docs/22 §7.2，`pnpm build:sandbox-image`）：
@@ -38,6 +40,7 @@
  *                              好让产物和迁移前逐字节一致。
  */
 import { randomBytes } from 'node:crypto'
+import { existsSync, statSync } from 'node:fs'
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { build } from 'esbuild'
@@ -54,6 +57,8 @@ const sandboxOutDir = path.join(outDir, 'agent-sandbox')
 const sandboxTemplateDir = path.join(serverDir, 'scripts/agent-sandbox')
 /** agent 定义的源目录：原样拷到 output/server/agents/（只拷 *.md） */
 const agentDefinitionsDir = path.join(rootDir, 'packages/agent/agents')
+/** 文字技能的源目录：拷到 output/server/skills/（目录结构不变，只拷 *.md） */
+const agentTextSkillsDir = path.join(rootDir, 'packages/agent/skills')
 /** runner 入口（esbuild 的第三个入口）；沙箱镜像只装它这一支用得到的东西 */
 const RUNNER_ENTRY = 'packages/agent/src/runner/main.ts'
 
@@ -129,6 +134,13 @@ await cp(agentDefinitionsDir, path.join(serverOutDir, 'agents'), {
   recursive: true,
   filter: (source) => source === agentDefinitionsDir || source.endsWith('.md'),
 })
+// 文字技能同样随产物发布（服务端从 index.js 旁边的 skills/ 读）。子目录要进（<name>/SKILL.md），技能目录里别的文件不读、不拷
+if (existsSync(agentTextSkillsDir)) {
+  await cp(agentTextSkillsDir, path.join(serverOutDir, 'skills'), {
+    recursive: true,
+    filter: (source) => source.endsWith('.md') || statSync(source).isDirectory(),
+  })
+}
 
 // 老产物（Prisma 时代）留下的 schema 和 CLI 配置：现在的产物用不上，留着只会误导人
 await rm(path.join(outDir, 'prisma'), { recursive: true, force: true })

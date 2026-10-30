@@ -58,7 +58,7 @@ import type { CanvasToolDetails } from './tools.ts'
  * 回 {@link PROTOCOL_MISMATCH_STATUS} + {@link ProtocolMismatchBody}（和 401 能区分），编排层以 `runner_protocol_mismatch` 收尾。
  * `process` 驱动直接跑源码，永远一致。
  */
-export const RUNNER_PROTOCOL_VERSION = 8
+export const RUNNER_PROTOCOL_VERSION = 9
 
 /** 版本不一致时网关的 HTTP 状态码与 `error` 字段（不要和 401 混：令牌失效是另一回事） */
 export const PROTOCOL_MISMATCH_STATUS = 409
@@ -246,7 +246,7 @@ export type ToolCallResponse =
   | {
       isError: false
       content: AgentToolResult<CanvasToolDetails>['content']
-      /** `load_skill` 成功加载时 `loadedSkill` 是新技能：runner 在 pi 的 `prepareNextTurnWithContext` 里把它的工具并进下一次请求（docs/23 §3.3） */
+      /** `load_skill` 成功加载时 `loadedSkills` 是新加载的内置技能（第 9 版起是数组，docs/26 §3.8）：runner 在 pi 的 `prepareNextTurnWithContext` 里把它们的工具并进下一次请求（docs/23 §3.3） */
       details: CanvasToolDetails
     }
   /** 工具报错 / 参数不对 / 判权没过 / 超过上限 / `load_skill` 没单独调用：`message` 原样回给模型 */

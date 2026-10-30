@@ -2,6 +2,7 @@
 
 > 状态：**部分实现**：注册表、`load_skill`、首批四个技能（`canvas` / `canvas-edit` / `media-view` / `media-exec`）、
 > 会话记住技能、节点范围会话的契约与路由、导演台的 `director` 技能（写 + 量）已做；`director-view`、`director-script` 待做（节点范围会话的前端入口随导演台界面一起做）。
+> 文字技能（§7，即 REQ-AGENT §3.10.6 的「自定义技能」）的第一种来源 —— 仓库目录里的 pi `SKILL.md` —— 已随 [REQ-AGENT-DEF](26-agent-definitions.md) P5 实现（§3.8）。
 > **规划变更**：取消节点范围会话，所有会话都是全局 agent（[REQ-AGENT](20-agent-canvas.md) §3.10.9）；`canvas` 与 `canvas-edit` 合成一个 `canvas`（§4），`boundNode` 随之去掉。
 >
 > 前置：[REQ-AGENT](20-agent-canvas.md)（画布 agent、原子操作层、常驻观察）、
@@ -175,9 +176,12 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 
 - 自定义技能是成员写的**指令**，内置技能是平台提供的**工具集**。两者不合并成一种东西：自定义技能永远不能带代码或新增工具。
 - 自定义技能可以声明 `requires: AgentSkillId[]`。模型 `load_skill` 一个自定义技能时，它依赖的内置技能一起加载（同样受 S2 约束，缺了就说明哪项不可用）。
-- 技能目录里两种分开列：内置技能在前，自定义技能在后并标明「成员编写」。提示词层级：平台规则 > agent 定义正文 > 技能 > 用户人设 > 当前会话（[REQ-AGENT-DEF](26-agent-definitions.md) §3.2）。
+- 技能目录里两种分开列：内置技能在前，自定义技能在后并标明（仓库目录来源标「文字技能」；以后画布设置里成员写的再标「成员编写」）。提示词层级：平台规则 > agent 定义正文 > 技能 > 用户人设 > 当前会话（[REQ-AGENT-DEF](26-agent-definitions.md) §3.2）。
 - **格式**：pi / Agent Skills 标准的 `SKILL.md` —— frontmatter `name`、`description`、可选 `requires`（内置技能 id），正文是指令。
   `name` 不能和内置技能 id 重复；只能按需加载，一次 `load_skill` 连同依赖算一次加载。来源先只有仓库目录（[REQ-AGENT-DEF](26-agent-definitions.md) §3.8）。
+- **已实现**（仓库目录来源）：依赖的内置技能按加载它的那个 agent 自己的提供条件判（Grant、部署条件、工具白名单、调用深度），用不了的在加载结果里说明、不挡加载；
+  会话记住文字技能（下一轮一开始就加载，依赖一并预加载），移除了的按「本轮不可用」说明；对话里每个新加载的技能各一行「已加载：…」。
+  文字技能不进内置技能的注册表，runner 不认识它们（`load_skill` 交给 runner 的 `loadedSkills` 只有内置技能，runner 协议第 9 版）。
 - **agent 定义的工具白名单**在技能之上再收窄：技能加载时只交出白名单里的工具，全被滤掉的技能对这个 agent 不提供（[REQ-AGENT-DEF](26-agent-definitions.md) §3.3）。
 
 ## 8. 待确认

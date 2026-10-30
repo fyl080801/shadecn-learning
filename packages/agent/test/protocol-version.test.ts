@@ -27,6 +27,9 @@ const RECORDED_HASHES: Record<number, string> = {
   7: 'f91e3a89d6d32bbf',
   // 8：docs/26 P3 —— /agent/task/start、/agent/task/finish，run_agent 的 { agent, task }，每个 agent 的定义（技能、白名单、模型）进 RunnerInput / AgentTaskInput
   8: '598a496ca379ac49',
+  // 9：docs/26 P5 —— load_skill 的回复 `details.loadedSkill`（一个）改成 `loadedSkills`（数组：加载文字技能时一起加载的那几个内置技能）。
+  // 形状在 tools.ts 的 CanvasToolDetails 里（import 进来的类型不进哈希），这里的哈希变化只来自版本号本身
+  9: 'e0b61048d9fd3249',
 }
 
 function normalized(source: string): string {

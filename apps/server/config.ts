@@ -318,6 +318,15 @@ export const agentDefinitionsDir = isBundle
   : path.resolve(moduleDir, '..', '..', 'packages', 'agent', 'agents')
 
 /**
+ * 文字技能（docs/26 §3.8，pi `SKILL.md`）同 agent 定义：随代码发布、不可配 ——
+ * 源码 `packages/agent/skills/`（别和代码目录 `packages/agent/src/skills/` 混），产物 `output/server/skills/`（`build-server.mjs` 拷过去）。
+ * 目录不存在 = 没有文字技能（`agent/definitions.ts`）
+ */
+export const agentTextSkillsDir = isBundle
+  ? path.join(moduleDir, 'skills')
+  : path.resolve(moduleDir, '..', '..', 'packages', 'agent', 'skills')
+
+/**
  * 画布资源（图片 / 视频）的对象存储：S3 协议，path-style（`<endpoint>/<bucket>/<key>`）。
  *
  * - `S3_ENDPOINT`：**公开**地址，默认 `https://s3.fyl080801.uk`。节点 `data.src` 存的、浏览器直接读的都是 `<它>/<bucket>/<key>`，

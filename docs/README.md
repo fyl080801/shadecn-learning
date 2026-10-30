@@ -30,10 +30,10 @@
 | REQ-AGENT | 画布 Agent：服务端 agent 编辑画布，客户端实时可见 | [20-agent-canvas.md](20-agent-canvas.md) | 部分实现 |
 | REQ-NODEKIT | 节点扩展协议：部件 / 动作 / 模式 / 事件注册表 | [21-node-kit.md](21-node-kit.md) | 已实现 |
 | REQ-AGENT-SANDBOX | Agent 沙箱：身份、委托授权与执行运行时 | [22-agent-sandbox.md](22-agent-sandbox.md) | 一～四期已实现（四期未在真实集群验证） |
-| REQ-AGENT-SKILL | Agent 内置技能：按能力集组织工具、按需加载 | [23-agent-skills.md](23-agent-skills.md) | 规划中 |
+| REQ-AGENT-SKILL | Agent 内置技能：按能力集组织工具、按需加载 | [23-agent-skills.md](23-agent-skills.md) | 部分实现（注册表、首批技能、`director`、文字技能的仓库目录来源；`director-view` / `director-script` 待做） |
 | REQ-AGENT-HITL | Agent 人机交互：提问、审批、挂起等待与定向推送 | [24-agent-interaction.md](24-agent-interaction.md) | 规划中 |
 | REQ-ASSET-PRIVATE | 画布资源私有访问：桶私有，判权后跳转短期签名 URL | [25-private-asset-access.md](25-private-asset-access.md) | 规划中 |
-| REQ-AGENT-DEF | Agent 定义（pi 格式、服务端配置）与同一沙箱内的多 agent 协作：取代父 / 子 agent | [26-agent-definitions.md](26-agent-definitions.md) | 部分实现（P0～P3） |
+| REQ-AGENT-DEF | Agent 定义（pi 格式、服务端配置）与同一沙箱内的多 agent 协作：取代父 / 子 agent | [26-agent-definitions.md](26-agent-definitions.md) | 已实现（P0～P5） |
 
 ## 状态口径
 

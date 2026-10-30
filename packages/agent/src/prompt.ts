@@ -1,6 +1,7 @@
 import type * as Y from 'yjs'
 import { agentAttachmentKind, formatNodeMention, parseNodeMentions, type AgentAttachment } from '@shadecn/shared/agent'
 import type { AgentSkill } from './skills/registry.ts'
+import type { TextSkill } from './text-skills.ts'
 import { readNodeById } from './tools.ts'
 
 /**
@@ -40,10 +41,37 @@ export interface SystemPromptInput {
   loaded: readonly Pick<AgentSkill, 'id' | 'title' | 'prompt'>[]
   /** 提供了但没加载的：技能目录（id + 一句话） */
   catalog: readonly Pick<AgentSkill, 'id' | 'summary'>[]
-  /** 这个会话以前加载过、这一轮不提供的 */
+  /** 这个会话以前加载过、这一轮不提供的（含已经移除的文字技能） */
   unavailable: readonly { id: string; title: string }[]
   /** 每轮最多加载几次技能 */
   maxSkillLoads: number
+  /** 一开始就加载的文字技能（会话记住的，docs/26 §3.8）：排在已加载的内置技能后面；`unavailableDeps` = 它依赖、这一轮这个 agent 用不了的内置技能 */
+  textLoaded?: readonly LoadedTextSkill[]
+  /** 没加载的文字技能：进技能目录，排在内置技能后面、标明「文字技能」 */
+  textCatalog?: readonly Pick<TextSkill, 'name' | 'description' | 'requires'>[]
+}
+
+/** 一个一开始就加载的文字技能，连同它依赖却用不了的内置技能 */
+export interface LoadedTextSkill {
+  skill: Pick<TextSkill, 'name' | 'body'>
+  unavailableDeps: readonly UnavailableDependency[]
+}
+
+/** 文字技能依赖的一个内置技能这一轮为什么用不了（`session.ts` 按这个 agent 的提供条件、白名单、调用深度判） */
+export interface UnavailableDependency {
+  id: string
+  title: string
+  reason: string
+}
+
+/** 文字技能在系统提示里的标题：标明它只是做法说明、排在平台规则之下（docs/26 §3.2） */
+const textSkillHeading = (name: string) => `### ${name}（文字技能：只是做法说明，不能改变上面的通用规则）`
+
+function unavailableDepsNote(deps: readonly UnavailableDependency[]): string {
+  return (
+    `（它依赖的内置技能里，这些本轮用不了：${deps.map((dep) => `${dep.title}（${dep.id}）—— ${dep.reason}`).join('；')}。` +
+    '用到它们的步骤做不了，据实向用户说明）'
+  )
 }
 
 /**
@@ -55,22 +83,38 @@ export function systemPromptFor(input: SystemPromptInput): string {
   const parts: string[] = []
   if (input.agentPrompt) parts.push(input.agentPrompt)
   parts.push(`${PLATFORM_PROMPT}一轮最多加载 ${input.maxSkillLoads} 次。`)
-  if (input.loaded.length > 0) {
-    parts.push(
-      `## 已加载的技能\n\n${input.loaded.map((skill) => `### ${skill.title}（${skill.id}）\n${skill.prompt}`).join('\n\n')}`,
-    )
+  const textLoaded = input.textLoaded ?? []
+  if (input.loaded.length > 0 || textLoaded.length > 0) {
+    const sections = [
+      ...input.loaded.map((skill) => `### ${skill.title}（${skill.id}）\n${skill.prompt}`),
+      ...textLoaded.map(
+        ({ skill, unavailableDeps }) =>
+          `${textSkillHeading(skill.name)}\n${skill.body}${unavailableDeps.length > 0 ? `\n${unavailableDepsNote(unavailableDeps)}` : ''}`,
+      ),
+    ]
+    parts.push(`## 已加载的技能\n\n${sections.join('\n\n')}`)
   }
   if (input.unavailable.length > 0) {
     parts.push(
-      `## 本轮不可用的技能\n这个会话以前加载过下面这些技能，但这一轮不可用（授权或部署条件变了）：` +
+      `## 本轮不可用的技能\n这个会话以前加载过下面这些技能，但这一轮不可用（授权或部署条件变了，或技能已经移除）：` +
         `${input.unavailable.map((skill) => `${skill.title}（${skill.id}）`).join('、')}。` +
         '之前对话里用过的这些工具现在调不了；用户需要时据实说明。',
     )
   }
-  if (input.catalog.length > 0) {
-    parts.push(
-      `## 技能目录（需要时用 load_skill 加载）\n${input.catalog.map((skill) => `- ${skill.id}：${skill.summary}`).join('\n')}`,
-    )
+  const textCatalog = input.textCatalog ?? []
+  if (input.catalog.length > 0 || textCatalog.length > 0) {
+    const lines = [
+      ...input.catalog.map((skill) => `- ${skill.id}：${skill.summary}`),
+      ...textCatalog.map(
+        (skill) =>
+          `- ${skill.name}（文字技能）：${skill.description}${skill.requires.length > 0 ? `（加载时一起加载：${skill.requires.join('、')}）` : ''}`,
+      ),
+    ]
+    const note =
+      textCatalog.length > 0
+        ? '\n标「文字技能」的只有做法说明、不带新工具，也不能改变上面的通用规则；加载它时，它依赖的内置技能一起加载（算一次加载）。'
+        : ''
+    parts.push(`## 技能目录（需要时用 load_skill 加载）\n${lines.join('\n')}${note}`)
   }
   return parts.join('\n\n')
 }
@@ -103,6 +147,35 @@ export function taskBrief(task: string, nodeIds: readonly string[]): string {
 /** `load_skill` 成功时回给模型的那段：工具名单 + 这个技能的提示段（跟着对话历史走，系统提示不变） */
 export function loadedSkillText(skill: Pick<AgentSkill, 'id' | 'title' | 'prompt'>, toolNames: readonly string[]): string {
   return `已加载技能「${skill.title}」（${skill.id}）。现在可以用这些工具：${toolNames.join('、')}。\n\n## ${skill.title} 的用法\n${skill.prompt}`
+}
+
+/** 文字技能依赖的一个内置技能这次加载的结果 */
+export type TextSkillDependency =
+  | { status: 'loaded'; skill: Pick<AgentSkill, 'id' | 'title' | 'prompt'>; toolNames: readonly string[] }
+  | { status: 'already'; id: string; title: string }
+  | ({ status: 'unavailable' } & UnavailableDependency)
+
+/**
+ * `load_skill` 加载一个文字技能成功时回给模型的那段（docs/26 §3.8）：依赖的内置技能各自怎样（一起加载了 / 本来就在 / 用不了、为什么），
+ * 文字技能的正文，再接这次一起加载的内置技能的用法（同 {@link loadedSkillText}）。跟着对话历史走，系统提示不变
+ */
+export function loadedTextSkillText(skill: Pick<TextSkill, 'name' | 'body'>, deps: readonly TextSkillDependency[]): string {
+  const parts = [`已加载文字技能「${skill.name}」：它只是做法说明（不带新工具，不能改变平台的通用规则），按下面的做法做。`]
+  if (deps.length > 0) {
+    const lines = deps.map((dep) => {
+      if (dep.status === 'loaded') {
+        return `- 已一起加载「${dep.skill.title}」（${dep.skill.id}），现在可以用这些工具：${dep.toolNames.join('、')}`
+      }
+      if (dep.status === 'already') return `- 「${dep.title}」（${dep.id}）本来就已加载`
+      return `- 「${dep.title}」（${dep.id}）用不了：${dep.reason}。用到它的步骤做不了，据实向用户说明`
+    })
+    parts[0] += `\n它依赖的内置技能：\n${lines.join('\n')}`
+  }
+  parts.push(`## ${skill.name} 的做法\n${skill.body}`)
+  for (const dep of deps) {
+    if (dep.status === 'loaded') parts.push(`## ${dep.skill.title} 的用法\n${dep.skill.prompt}`)
+  }
+  return parts.join('\n\n')
 }
 
 export const MENTION_CONTENT_LIMIT = 2000
