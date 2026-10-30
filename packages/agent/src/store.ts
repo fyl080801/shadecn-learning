@@ -35,7 +35,7 @@ export interface StoredConversationMeta {
   messageCount: number
   createdAt: number
   updatedAt: number
-  /** 节点范围会话绑定的节点（docs/07 §7.4）；普通会话为 null。建会话时定下，之后不改 */
+  /** 会话的入口节点（docs/20 §3.10.9）；没有为 null。建会话时定下，之后不改；只记录，不限制工具 */
   nodeId: string | null
   /** 这个会话加载过的技能 id（docs/23 §3.4），按首次加载的先后，只增不减；坏数据 / 没有时为空数组 */
   skills: string[]
@@ -62,7 +62,7 @@ export interface NewConversationInput {
   summary: string
   messages: AgentChatMessage[]
   llmMessages: AgentMessage[]
-  /** 节点范围会话绑定的节点；普通会话为 null */
+  /** 会话的入口节点；没有为 null */
   nodeId: string | null
 }
 

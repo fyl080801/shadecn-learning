@@ -126,7 +126,7 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
       sandbox = await openLocalSandbox(options.workdir, options.pathEnv ? { pathEnv: options.pathEnv } : {})
       for (const [file, content] of Object.entries(input.files)) await sandbox.writeFile(file, content)
     }
-    const context = definitionContext('runner', input.boundNode, sandbox ?? undefined)
+    const context = definitionContext('runner', sandbox ?? undefined)
 
     /** 已经并进 pi 的技能 */
     const loaded = new Set<string>()

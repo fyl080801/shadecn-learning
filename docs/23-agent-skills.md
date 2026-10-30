@@ -47,7 +47,8 @@ interface AgentSkill {
   summary: string                // 一句话，放进系统提示的技能目录，模型据此判断要不要加载
   prompt: string                 // 加载后放进上下文的说明段（用法、规则、限额）
   tools(ctx: SkillContext): CanvasTool[]   // 工具定义；runner 和服务端从同一份构造（§3.5）
-  requires: AgentCapability[]    // Grant 里缺任何一项，这个技能就不提供
+  requires: AgentCapability[]    // 全部工具所需能力的并集；不给 offeredWith 时，Grant 里缺任何一项，这个技能就不提供
+  offeredWith?: AgentCapability[] // 提供的门槛（⊆ requires）：有这几项就提供，缺的能力对应的工具在网关逐个判权时被拒（canvas 只要 flow:read）
   available?(env: SkillAvailability): boolean   // 判断提不提供，此时还没打开画布：Grant 能力、部署条件（看图 / 对象存储 / 沙箱执行）
   workdirFiles?(ctx): Promise<Record<string, string>>   // 服务端钩子：提供了这个技能时往 runner 工作目录写的文件（如 canvas.json）
   activation: 'always' | 'auto' | 'on-demand'
@@ -55,7 +56,7 @@ interface AgentSkill {
 }
 ```
 
-- 每个工具仍然各自声明 `capability`。技能的 `requires` 是它全部工具所需能力的并集，**只用来判断提不提供**，不代替逐个工具的判权。
+- 每个工具仍然各自声明 `capability`。技能的 `requires` 是它全部工具所需能力的并集，和 `offeredWith` 一起**只用来判断提不提供**，不代替逐个工具的判权。
 - 工具名在所有技能里全局唯一，一个工具只属于一个技能。
 - **agent 的循环一律在沙箱里跑**（生产 `oci`，本地开发 `process` 弱隔离，[REQ-AGENT-SANDBOX §7](22-agent-sandbox.md)），所有技能都一样。
   技能之间的区别不在「有没有沙箱」，而在工具的执行位置，以及要不要在沙箱里起子进程、执行代码（`sandbox:exec`）。
@@ -114,7 +115,7 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 - 系统提示拆成「平台基础段（安全与通用规则，不可覆盖）+ 每个已加载技能的 `prompt` + 技能目录」。
   `SYSTEM_PROMPT` 里属于画布工具用法的那部分挪进 `canvas` 技能的 `prompt`。
 - 契约：`@shadecn/shared/agent` 增加 `AgentSkillId`（`string`，不是字面量联合：测试要注册任意技能）、会话视图上的 `skills`（`{ id, title }[]`，前端不 import 注册表）与 `nodeId`，以及 CUSTOM 事件 `agent.skill-loaded`（§3.6）。
-- 工具实现仍在 `tools.ts`，按技能导出工厂（`createCanvasReadTools` / `createCanvasEditTools` / `createViewMediaTool`），技能目录调用它们。
+- 工具实现仍在 `tools.ts`，按技能导出工厂（`createCanvasBaseTools` / `createViewMediaTool`），技能目录调用它们。
 - 重复加载已加载的技能不算错误，不计次数、也不结束这一批；`load_skill` 本身计入每轮工具调用上限，在网关判 `flow:read`。
 
 ### 3.6 界面

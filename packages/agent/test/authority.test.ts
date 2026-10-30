@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { fauxAssistantMessage, fauxToolCall } from '@mariozechner/pi-ai'
 import { AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
-import { nodesMap } from '@shadecn/shared/flow-doc'
+import { nodesMap, toYNode } from '@shadecn/shared/flow-doc'
+import { buildNodeRecord } from '@shadecn/shared/flow-node-types'
 import {
   createMemoryAuthorityProvider,
   isRunAuthorityError,
@@ -176,29 +177,35 @@ describe('签发与判权', () => {
     ])
   })
 
-  it('开了媒体工具才要 sandbox:exec；Grant 里缺技能要的能力，整个技能都不提供（docs/23 §3.2）', async () => {
+  it('开了媒体工具才要 sandbox:exec；Grant 里缺写 / 删能力时 canvas 照样提供，写工具在网关逐个判权被拒（docs/23 §4）', async () => {
     let toolNames: string[] = []
     let systemPrompt = ''
-    const { runtime, authorities } = runtimeWith(
+    const { runtime, authorities, runLog } = runtimeWith(
       [
         (context) => {
           toolNames = (context.tools ?? []).map((tool) => tool.name)
           systemPrompt = context.systemPrompt ?? ''
-          return fauxAssistantMessage('好')
+          return fauxAssistantMessage([fauxToolCall('delete_elements', { ids: ['n1'] })], { stopReason: 'toolUse' })
         },
+        fauxAssistantMessage('好'),
       ],
       { media: {}, authority: { withhold: ['flow:delete'] } },
     )
-    const { started } = await run(runtime)
+    const doc = new Y.Doc()
+    nodesMap(doc).set('n1', toYNode(buildNodeRecord({ id: 'n1', type: 'text', label: '留着', position: { x: 0, y: 0 } })))
+    const { started, events } = await run(runtime, doc)
     await started.done
     expect(authorities.grants[0]!.request.capabilities).toContain('sandbox:exec')
     // media-exec 是按需技能：提供了，在技能目录里，工具要 load_skill 之后才有
     expect(systemPrompt).toContain('- media-exec：')
     expect(toolNames).not.toContain('run_media_command')
-    // canvas-edit 要 flow:delete：Grant 里没有，整个技能（含 add_node）都不提供；只读的 canvas 照常
-    expect(toolNames).not.toContain('delete_elements')
-    expect(toolNames).not.toContain('add_node')
-    expect(toolNames).toContain('read_canvas')
+    // canvas 只要 flow:read 就提供：13 个工具都在，包括要 flow:delete 的
+    expect(toolNames).toEqual(expect.arrayContaining(['read_canvas', 'add_node', 'delete_elements']))
+    // delete_elements 到网关判 flow:delete 被拒：只拒这一次（denied 不停整轮），节点还在
+    expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
+    expect(authorities.grants[0]!.calls).toContain('flow:delete')
+    expect(runLog.toolCalls).toMatchObject([{ name: 'delete_elements', ok: false }])
+    expect(nodesMap(doc).has('n1')).toBe(true)
   })
 
   it('媒体工具在 runner 的工作目录里本地执行：不经网关判 sandbox:exec（docs/22 §3 沙箱内部动作），工作目录里有 canvas.json', async () => {

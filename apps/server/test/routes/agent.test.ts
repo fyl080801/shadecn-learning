@@ -13,6 +13,7 @@ import {
   AgentEventType,
   agentRunAbortPath,
   agentRunEventsPath,
+  formatNodeMention,
   type AgentActiveRunView,
   type AgentConversationSummary,
   type AgentConversationView,
@@ -214,8 +215,8 @@ describe('鉴权与参数', () => {
   })
 })
 
-describe('节点范围会话（docs/07 §7.4）', () => {
-  it('nodeId：节点不在这张画布上 → 404；续聊时给 → 400；存在 → 会话绑定它，画布只读（没有 canvas-edit 的工具）', async () => {
+describe('会话的入口节点（docs/20 §3.10.9）', () => {
+  it('nodeId：节点不在这张画布上 → 404；续聊时给 → 400；存在 → 会话记下它，工具不受限；提及导演台才自动加载 director', async () => {
     let tools: string[] = []
     useFaux([
       (context) => {
@@ -240,14 +241,13 @@ describe('节点范围会话（docs/07 §7.4）', () => {
     expect((await send(alice, flowId, { text: '你好', nodeId: 'a b' })).status).toBe(400)
     expect((await send(alice, flowId, { text: '你好', conversationId: 'c1', nodeId: 'n_dir' })).status).toBe(400)
 
-    const res = await send(alice, flowId, { text: '改一下场景', nodeId: 'n_dir' })
+    // 导演台里发起的新会话：消息开头带着这个导演台的提及（前端自动放上）
+    const res = await send(alice, flowId, { text: `${formatNodeMention('n_dir')} 改一下场景`, nodeId: 'n_dir' })
     expect(res.status).toBe(200)
     const events = parseSse(await res.text())
     expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
-    expect(tools).toContain('read_canvas')
-    expect(tools).not.toContain('add_node')
-    // 绑定的是导演台：导演台技能一开始就加载（auto）
-    expect(tools).toContain('add_objects')
+    // 全局 agent：画布写工具照常全在；提及了导演台，导演台技能一开始就加载（auto）
+    expect(tools).toEqual(expect.arrayContaining(['read_canvas', 'add_node', 'connect', 'delete_elements', 'add_objects']))
 
     const started = events[0]
     if (started?.type !== AgentEventType.RUN_STARTED) throw new Error('第一帧不是 RUN_STARTED')
@@ -255,7 +255,7 @@ describe('节点范围会话（docs/07 §7.4）', () => {
     expect(conversation).toMatchObject({
       nodeId: 'n_dir',
       skills: [
-        { id: 'canvas', title: '画布（只读）' },
+        { id: 'canvas', title: '画布' },
         { id: 'director', title: '导演台' },
       ],
     })

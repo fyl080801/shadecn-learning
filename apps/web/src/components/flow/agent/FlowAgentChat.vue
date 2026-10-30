@@ -64,11 +64,14 @@ import FlowAgentTitle from "./FlowAgentTitle.vue"
  * **收起不卸载**（`v-show`）：收起时这一轮照样在跑、流照样在读、输入框里的草稿也还在。
  * 连卸载（换画布、刷新）都不会停掉服务端那一轮 —— 下次打开这张画布时自动接回（`useFlowAgent`）。
  *
- * 导演台全屏层右上角也是这个组件：它读到的是导演台 provide 的那一份（绑定节点，文案换成导演台的，docs/07 §7.5），
+ * 导演台全屏层右上角也是这个组件：它读到的是导演台 provide 的那一份（入口是那个节点，文案换成导演台的，docs/07 §7.5），
  * 节点底部输入框来的话经 `submit` 发进当前会话。
+ *
+ * **点「新会话」时输入框为空，就在开头放上选中节点的提及**（`selectionMentions`，docs/20 §3.10.9）；已有草稿不动，续聊不加。
+ * 导演台默认打开的是新会话时同样放（`prefillMentions`，由导演台在挑会话时调）。
  */
 const { flowId } = useFlowEditor()
-const { agent, copy, open, onStarted } = useFlowAgentPanel()
+const { agent, copy, open, onStarted, selectionMentions } = useFlowAgentPanel()
 
 const draft = ref("")
 /** 面板里三选一：对话 / 历史会话列表 / 进行中的任务（同一个面板里切视图，不弹新窗口） */
@@ -185,11 +188,17 @@ async function submit(text: string): Promise<boolean> {
   return accepted === true
 }
 
-defineExpose({ submit })
+/** 新会话的空输入框开头放上选中节点的提及；已有草稿不动 */
+function prefillMentions() {
+  if (draft.value === "") draft.value = selectionMentions()
+}
+
+defineExpose({ submit, prefillMentions })
 
 /** 发起新会话：只清前端状态，第一条消息发出去时服务端才建会话；当前会话在跑也行（那一轮照跑） */
 function startNew() {
   agent.newConversation()
+  prefillMentions()
   view.value = "chat"
   void nextTick(() => {
     followToEnd()

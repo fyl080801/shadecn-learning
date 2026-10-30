@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { flushPromises, mount } from "@vue/test-utils"
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils"
 import { computed, defineComponent, h, ref } from "vue"
 import {
   formatAgentRunsMessage,
@@ -571,8 +571,8 @@ describe("画布 Agent 对话框", () => {
       sessionView({
         latest: view("c1", {
           skills: [
-            { id: "canvas", title: "画布（只读）" },
-            { id: "canvas-edit", title: "画布编辑" }
+            { id: "canvas", title: "画布" },
+            { id: "director", title: "导演台" }
           ]
         })
       })
@@ -599,9 +599,9 @@ describe("画布 Agent 对话框", () => {
 
     const wrapper = await mountOpened()
     const badges = () => wrapper.findAll('[data-testid="agent-skills"] [data-skill]').map((item) => item.text())
-    expect(badges()).toEqual(["画布（只读）", "画布编辑"])
+    expect(badges()).toEqual(["画布", "导演台"])
     expect(wrapper.find('[data-testid="agent-title"] [data-skill]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="agent-title"]').text()).not.toContain("画布编辑")
+    expect(wrapper.get('[data-testid="agent-title"]').text()).not.toContain("导演台")
 
     await type(wrapper, "看图")
     await wrapper.get('[data-testid="agent-send"]').trigger("click")
@@ -610,7 +610,7 @@ describe("画布 Agent 对话框", () => {
     const line = wrapper.get('[data-testid="agent-messages"] [data-role="skill-loaded"]')
     expect(line.text()).toBe("已加载：查看素材")
     expect(line.attributes("data-skill")).toBe("media-view")
-    expect(badges()).toEqual(["画布（只读）", "画布编辑", "查看素材"])
+    expect(badges()).toEqual(["画布", "导演台", "查看素材"])
   })
 
   it("有 latest → 默认显示它的消息和标题（含提及）", async () => {
@@ -1155,6 +1155,114 @@ describe("工具栏快捷输入", () => {
     quickInput(wrapper).vm.$emit("update:modelValue", "试试")
     await flushPromises()
     expect(quickSend().disabled).toBe(false)
+  })
+})
+
+/**
+ * 选中节点 → 新会话自动带上它们的提及（docs/20 §3.10.9、验收 18）。画布那份面板的「选中的节点」= 画布选区
+ * （`canvas.selectedNodeIds`，按选中的先后，只含节点 —— 只选中连线时它是空的）。
+ */
+describe("选中节点自动带上提及", () => {
+  const SelectionHost = defineComponent({
+    setup() {
+      provideFlowAgentPanel(host, { selection: () => selectedNodeIds.value })
+      return () => h(TooltipProvider, null, () => [h(FlowAgentChat), h(FlowAgentQuickPrompt)])
+    }
+  })
+
+  async function mountWithSelection() {
+    const wrapper = mount(SelectionHost, { attachTo: document.body })
+    await flushPromises()
+    return wrapper
+  }
+
+  const chatInput = (wrapper: VueWrapper) =>
+    wrapper.findAllComponents(PromptInput).find((item) => item.element.closest('[data-testid="agent-dialog"]'))!
+  const quickInput = (wrapper: VueWrapper) =>
+    wrapper.findAllComponents(PromptInput).find((item) => item.element.closest('[data-testid="agent-quick-prompt"]'))
+
+  async function toggleQuick(wrapper: VueWrapper) {
+    await wrapper.get('[data-testid="agent-quick-toggle"]').trigger("click")
+    await flushPromises()
+  }
+
+  beforeEach(() => {
+    nodes.value = [node("n1", "开场白"), node("n2", "结尾"), node("n3", "旁白")]
+  })
+
+  it("快捷会话：选中一个 → 一枚提及；选中三个 → 三枚，按选中的先后；发出去就是这段文字", async () => {
+    selectedNodeIds.value = ["n3", "n1", "n2"]
+    send.mockImplementation(() => new Promise(() => {}))
+    const wrapper = await mountWithSelection()
+    await toggleQuick(wrapper)
+    expect(quickInput(wrapper)!.props("modelValue")).toBe("@{node:n3} @{node:n1} @{node:n2} ")
+
+    quickInput(wrapper)!.vm.$emit("update:modelValue", "@{node:n3} @{node:n1} @{node:n2} 连起来")
+    await flushPromises()
+    document.querySelector<HTMLButtonElement>('[data-testid="agent-quick-prompt"] [data-testid="agent-send"]')!.click()
+    await flushPromises()
+    expect(send).toHaveBeenLastCalledWith(
+      "f1",
+      { text: "@{node:n3} @{node:n1} @{node:n2} 连起来", conversationId: null },
+      expect.anything()
+    )
+  })
+
+  it("快捷会话：没选中节点（含只选中了连线）→ 输入框是空的", async () => {
+    selectedNodeIds.value = []
+    const wrapper = await mountWithSelection()
+    await toggleQuick(wrapper)
+    expect(quickInput(wrapper)!.props("modelValue")).toBe("")
+  })
+
+  it("快捷会话：已有草稿不动；开着时换了选中，已经放进去的提及不跟着变", async () => {
+    selectedNodeIds.value = ["n1"]
+    const wrapper = await mountWithSelection()
+    await toggleQuick(wrapper)
+    expect(quickInput(wrapper)!.props("modelValue")).toBe("@{node:n1} ")
+    // 开着时换选中：不跟
+    selectedNodeIds.value = ["n2"]
+    await flushPromises()
+    expect(quickInput(wrapper)!.props("modelValue")).toBe("@{node:n1} ")
+
+    // 改成自己的草稿，收起再打开（选区已经换了）：草稿原样
+    quickInput(wrapper)!.vm.$emit("update:modelValue", "我的草稿")
+    await flushPromises()
+    await toggleQuick(wrapper)
+    await toggleQuick(wrapper)
+    expect(quickInput(wrapper)!.props("modelValue")).toBe("我的草稿")
+  })
+
+  it("对话框：点「新会话」→ 空输入框开头放上选中节点的提及；已有草稿不动；打开续聊的会话不加", async () => {
+    session.mockResolvedValue(sessionView({ latest: view("c1") }))
+    selectedNodeIds.value = ["n2", "n1"]
+    const wrapper = await mountWithSelection()
+    await wrapper.get('[data-testid="agent-toggle"]').trigger("click")
+    await flushPromises()
+    // 打开的是 latest（续聊）：不加
+    expect(chatInput(wrapper).props("modelValue")).toBe("")
+
+    await wrapper.get('[data-testid="agent-new"]').trigger("click")
+    await flushPromises()
+    expect(chatInput(wrapper).props("modelValue")).toBe("@{node:n2} @{node:n1} ")
+
+    chatInput(wrapper).vm.$emit("update:modelValue", "先问一句")
+    await flushPromises()
+    selectedNodeIds.value = ["n3"]
+    await wrapper.get('[data-testid="agent-new"]').trigger("click")
+    await flushPromises()
+    expect(chatInput(wrapper).props("modelValue")).toBe("先问一句")
+  })
+
+  it("对话框：没选中时点「新会话」→ 输入框是空的", async () => {
+    session.mockResolvedValue(sessionView({ latest: view("c1") }))
+    selectedNodeIds.value = []
+    const wrapper = await mountWithSelection()
+    await wrapper.get('[data-testid="agent-toggle"]').trigger("click")
+    await flushPromises()
+    await wrapper.get('[data-testid="agent-new"]').trigger("click")
+    await flushPromises()
+    expect(chatInput(wrapper).props("modelValue")).toBe("")
   })
 })
 

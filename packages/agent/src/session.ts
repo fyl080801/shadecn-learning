@@ -5,6 +5,7 @@ import {
   AGENT_SUMMARY_MAX_LENGTH,
   AGENT_TITLE_MAX_LENGTH,
   AgentEventType,
+  canonicalSkillIds,
   NODE_MENTION_PATTERN,
   parseNodeMentions,
   withMine,
@@ -62,7 +63,6 @@ import {
   NO_SANDBOX,
   type AgentSkill,
   type SkillAvailability,
-  type SkillBoundNode,
   type SkillContext,
   type SkillRegistry,
 } from './skills/index.ts'
@@ -161,7 +161,7 @@ import { readNodeById, type CanvasTool, type ToolRunState } from './tools.ts'
  *
  * ## 技能（docs/23）
  *
- * 工具按技能组织（`skills/`，runner 和这里从同一份注册表构造）。一轮开始时按 Grant + 部署条件 + 会话范围算出
+ * 工具按技能组织（`skills/`，runner 和这里从同一份注册表构造）。一轮开始时按 Grant + 部署条件 + 用户消息里的提及算出
  * **提供**哪些、**一开始就加载**哪些（`registry.plan`）；其余进系统提示的技能目录，模型 `load_skill` 加载。
  * 网关执行工具前有两道独立的检查：工具所属的技能本轮**已加载**（runner 不可信，可能直接点名没加载的），
  * 再判工具声明的能力。会话记着加载过的技能（只增不减），下一轮仍提供就预加载。
@@ -331,8 +331,9 @@ export interface StartRunInput {
    */
   conversationId: string | null
   /**
-   * 节点范围会话绑定的节点（docs/07 §7.4）：**只在新会话（`conversationId: null`）时用**，写进新建的会话；
+   * 会话的入口节点（docs/20 §3.10.9）：**只在新会话（`conversationId: null`）时用**，写进新建的会话；
    * 续聊时以会话里存的为准，这里给的被忽略。宿主应先确认这个节点在这张画布上（404 只能在开流之前定）。
+   * 只是记下来：不限制工具、不触发技能加载（加载看消息里的提及）。
    */
   nodeId?: string | null
   /**
@@ -450,8 +451,8 @@ export function validatePrompt(body: unknown): ValidatedPrompt {
   if (conversationId.length > AGENT_CONVERSATION_ID_MAX_LENGTH) {
     return { ok: false, error: `conversationId 超过 ${AGENT_CONVERSATION_ID_MAX_LENGTH} 字` }
   }
-  // 绑定的节点只在建会话时定（docs/07 §7.4）：续聊时再给一个，是想改绑 —— 不支持
-  if (nodeId !== null) return { ok: false, error: 'nodeId 只能在新建会话时给（续聊不能改绑节点）' }
+  // 入口节点只在建会话时记下（docs/20 §3.10.9）：续聊时再给一个，是想改它 —— 不支持
+  if (nodeId !== null) return { ok: false, error: 'nodeId 只能在新建会话时给（续聊不能改入口节点）' }
   return { ok: true, text, conversationId, nodeId: null }
 }
 
@@ -470,7 +471,7 @@ interface RunState {
   conversationId: string | null
   /** 会话标题（列表里给人看的）；准备好会话时定下 */
   conversationTitle: string
-  /** 节点范围会话绑定的节点（docs/07 §7.4）；普通会话、会话还没准备好时为 null */
+  /** 会话的入口节点（docs/20 §3.10.9）；没有入口、会话还没准备好时为 null */
   nodeId: string | null
   /** 发起人的展示信息；进列表之前查好 */
   owner: AgentUserView | null
@@ -768,7 +769,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       conversationTitle: run.conversationTitle,
       owner: run.owner ?? unknownUser(run.userId),
       startedAt: run.startedAt,
-      // 只有节点范围会话才带（普通会话的条目形状不变）
+      // 只有带入口节点的会话才带（导演台暂时据它显示「正在编辑」，之后由占用替换）
       ...(run.nodeId ? { nodeId: run.nodeId } : {}),
     }
   }
@@ -885,7 +886,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   }
 
   function skillViews(ids: readonly string[]): AgentSkillView[] {
-    return ids.map((id) => ({ id, title: registry.titleOf(id) }))
+    return canonicalSkillIds(ids).map((id) => ({ id, title: registry.titleOf(id) }))
   }
 
   async function viewOf(row: StoredConversation, viewerId: string): Promise<AgentConversationView> {
@@ -930,8 +931,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     let previousDigest: CanvasDigest | null = null
     /** 这个会话之前加载过的技能（只增不减，docs/23 §3.4） */
     let previousSkills: string[] = []
-    /** 节点范围会话绑定的节点（建会话时定下） */
-    let nodeId: string | null = null
+    /** 会话的入口节点（建会话时定下，只记录） */
+    let nodeId: string | null
     try {
       if (input.conversationId === null) {
         chat = [userMessage]
@@ -961,7 +962,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         llmHistory = asLlmMessages(existing.llmMessages)
         previousSummary = existing.summary
         previousDigest = existing.canvasDigest ?? null
-        previousSkills = existing.skills
+        // 旧 id（`canvas-edit`）读出时换成现在的；最后那次 save 写回的并集里就只有新 id
+        previousSkills = canonicalSkillIds(existing.skills)
         nodeId = existing.nodeId
         if (!(await store.save(flowId, userId, conversationId, { messages: chat, summary: previousSummary }))) {
           send([conversationGone()])
@@ -1116,13 +1118,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       const opened = canvas
 
       // —— 这一轮的技能（docs/23 §3.2）：提供哪些、一开始就加载哪些 ——
-      const boundNode: SkillBoundNode | null =
-        nodeId === null
-          ? null
-          : await opened.read((doc) => {
-              const node = readNodeById(doc, nodeId!)
-              return { id: nodeId!, type: node?.type ?? null, label: node ? node.metadata.label : null }
-            })
       const mentionedNodeTypes = await opened.read((doc) =>
         parseNodeMentions(text).flatMap((id) => {
           const node = readNodeById(doc, id)
@@ -1136,7 +1131,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           mediaReader: Boolean(options.mediaReader),
           sandboxExec: Boolean(options.mediaTool),
         },
-        boundNode,
       }
       const plan = registry.plan({ env, previous: previousSkills, mentionedNodeTypes })
       /** 一轮共享的预算：删除、图片字节 —— 所有技能的工具拿同一份 */
@@ -1147,7 +1141,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         runState,
         ...(options.mediaReader ? { media: options.mediaReader } : {}),
         sandbox: NO_SANDBOX,
-        boundNode,
       }
       const files: Record<string, string> = {}
       for (const skill of plan.offered) {
@@ -1190,7 +1183,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         if (!skill) {
           throw new Error(
             registry.get(id)
-              ? `技能 ${id} 这一轮不提供（授权、部署条件或会话范围不满足），不能加载；用已有的工具完成，或向用户说明`
+              ? `技能 ${id} 这一轮不提供（授权或部署条件不满足），不能加载；用已有的工具完成，或向用户说明`
               : `没有技能 ${id}；能加载的技能见系统提示里的技能目录`,
           )
         }
@@ -1228,13 +1221,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           loaded: plan.loaded,
           catalog: plan.catalog,
           unavailable: plan.unavailable.map((id) => ({ id, title: registry.titleOf(id) })),
-          boundNode,
           maxSkillLoads: limits.maxSkillLoads,
         }),
         prompt,
         llmMessages: llmHistory,
         skills: { loaded: plan.loaded.map((skill) => skill.id), offered: plan.offered.map((skill) => skill.id) },
-        boundNode,
         model: runnerModelOf(resolved.model),
         limits: { maxToolCalls: limits.maxToolCalls },
         files,

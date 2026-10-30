@@ -17,9 +17,7 @@ import { createGatewayClient } from '../src/runner/client.ts'
 import type { SandboxDriver, SandboxExit } from '../src/sandbox/driver.ts'
 import { createAgentRuntime, type AgentRuntimeOptions, type OpenedCanvas } from '../src/session.ts'
 import {
-  assertBoundNode,
   BUILTIN_SKILLS,
-  canvasEditSkill,
   canvasSkill,
   createSkillRegistry,
   defineSkill,
@@ -82,13 +80,13 @@ function readTool(name: string): CanvasTool {
   return tool as unknown as CanvasTool
 }
 
-/** 「导演台」的替身：auto，命中 director 类型；工具点名的节点在节点范围会话里必须是绑定的那个 */
+/** 「导演台」的替身：auto，命中 director 类型；工具点名哪个节点都照常执行（没有会话范围） */
 const directorFixture = defineSkill({
   id: 'director',
   title: '导演台（测试）',
   summary: '测试用的导演台技能',
   prompt: '测试用的导演台说明',
-  tools: (ctx) => {
+  tools: () => {
     const tool: CanvasTool<typeof nodeParams> = {
       name: 'get_director_scene',
       capability: 'flow:read',
@@ -97,7 +95,6 @@ const directorFixture = defineSkill({
       parameters: nodeParams,
       describe: (args) => `读场景 ${args.nodeId}`,
       async execute(_id, args) {
-        assertBoundNode(ctx, args.nodeId)
         return { content: [{ type: 'text', text: `场景 ${args.nodeId}` }], details: { summary: '读场景', elementIds: [] } }
       },
     }
@@ -164,7 +161,6 @@ const flakyFixture = onDemand('flaky', { available: () => flaky.on })
 
 const TEST_SKILLS = createSkillRegistry([
   canvasSkill,
-  canvasEditSkill,
   mediaViewSkill,
   mediaExecSkill,
   directorFixture,
@@ -299,13 +295,13 @@ describe('注册表与 §3.2 的集合计算', () => {
   const env = (overrides: Partial<SkillAvailability> = {}): SkillAvailability => ({
     scopes: new Set(['flow:read', 'flow:write', 'flow:delete', 'llm:invoke', 'sandbox:exec'] as const),
     deployment: { imageInput: true, mediaReader: true, sandboxExec: true },
-    boundNode: null,
     ...overrides,
   })
 
-  it('建表时校验：工具名重复、requires 没覆盖工具的能力、runner 工具不要 sandbox:exec、工具叫 load_skill 都抛', () => {
+  it('建表时校验：工具名重复、requires 没覆盖工具的能力、offeredWith 超出 requires、runner 工具不要 sandbox:exec、工具叫 load_skill 都抛', () => {
     expect(() => createSkillRegistry([onDemand('x1'), { ...onDemand('x2'), tools: () => [readTool('x1_tool')] }])).toThrow(/同时属于/)
     expect(() => createSkillRegistry([{ ...onDemand('x3'), requires: [] }])).toThrow(/没有覆盖/)
+    expect(() => createSkillRegistry([{ ...onDemand('x8'), offeredWith: ['flow:write'] }])).toThrow(/offeredWith/)
     expect(() =>
       createSkillRegistry([{ ...onDemand('x4'), tools: () => [{ ...readTool('t'), execution: 'runner' }] }]),
     ).toThrow(/sandbox:exec/)
@@ -313,24 +309,31 @@ describe('注册表与 §3.2 的集合计算', () => {
     expect(() => createSkillRegistry([onDemand('x6'), onDemand('x6')])).toThrow(/重复/)
     expect(() => defineSkill({ ...onDemand('x7'), activation: 'auto' })).toThrow(/activatesFor/)
     // 内置的那份本身是合法的
-    expect(BUILTIN_SKILLS.skills.map((skill) => skill.id)).toEqual(['canvas', 'canvas-edit', 'media-view', 'media-exec', 'director'])
+    expect(BUILTIN_SKILLS.skills.map((skill) => skill.id)).toEqual(['canvas', 'media-view', 'media-exec', 'director'])
   })
 
-  it('auto：会话绑定的节点类型命中、或用户提及了这种类型的节点 → 一开始就加载；否则进目录', () => {
+  it('画布技能合成一个 canvas：13 个工具，requires 是三项能力的并集，只要 flow:read 就提供', () => {
+    const canvas = BUILTIN_SKILLS.get('canvas')!
+    expect(canvas.activation).toBe('always')
+    expect(canvas.requires).toEqual(['flow:read', 'flow:write', 'flow:delete'])
+    expect(BUILTIN_SKILLS.get('canvas-edit')).toBeUndefined()
+    expect(CANVAS_TOOLS.map((name) => BUILTIN_SKILLS.skillOfTool(name)?.id)).toEqual(CANVAS_TOOLS.map(() => 'canvas'))
+    // 缺写 / 删权限：canvas 照样提供并一开始就加载（写工具到网关逐个判权时被拒）；要 flow:write 的别的技能不提供
+    const readOnly = TEST_SKILLS.plan({ env: env({ scopes: new Set(['flow:read', 'llm:invoke'] as const) }), previous: [], mentionedNodeTypes: [] })
+    expect(readOnly.loaded.map((skill) => skill.id)).toEqual(['canvas'])
+    expect(readOnly.offered.map((skill) => skill.id)).not.toContain('stamp')
+    // 连 flow:read 都没有：不提供
+    const none = TEST_SKILLS.plan({ env: env({ scopes: new Set(['llm:invoke'] as const) }), previous: [], mentionedNodeTypes: [] })
+    expect(none.offered.map((skill) => skill.id)).not.toContain('canvas')
+  })
+
+  it('auto：用户提及了这种类型的节点 → 一开始就加载；否则进目录', () => {
     const plain = TEST_SKILLS.plan({ env: env(), previous: [], mentionedNodeTypes: [] })
-    expect(plain.loaded.map((skill) => skill.id)).toEqual(['canvas', 'canvas-edit'])
+    expect(plain.loaded.map((skill) => skill.id)).toEqual(['canvas'])
     expect(plain.catalog.map((skill) => skill.id)).toContain('director')
 
     const mentioned = TEST_SKILLS.plan({ env: env(), previous: [], mentionedNodeTypes: ['text', 'director'] })
-    expect(mentioned.loaded.map((skill) => skill.id)).toEqual(['canvas', 'canvas-edit', 'director'])
-
-    const bound = TEST_SKILLS.plan({
-      env: env({ boundNode: { id: 'n_d', type: 'director', label: '场景' } }),
-      previous: [],
-      mentionedNodeTypes: [],
-    })
-    expect(bound.loaded.map((skill) => skill.id)).toEqual(['canvas', 'director'])
-    expect(bound.offered.map((skill) => skill.id)).not.toContain('canvas-edit')
+    expect(mentioned.loaded.map((skill) => skill.id)).toEqual(['canvas', 'director'])
   })
 
   it('之前加载过的：仍提供就预加载，不提供（含注册表里已没有的）进 unavailable', () => {
@@ -348,7 +351,7 @@ describe('注册表与 §3.2 的集合计算', () => {
 // —— docs/23 §6 验收 ——
 
 describe('验收 1：普通画布会话', () => {
-  it('第一次模型请求里只有 canvas + canvas-edit 的 13 个工具和 load_skill；技能目录里有其它提供了的技能', async () => {
+  it('第一次模型请求里只有 canvas 的 13 个工具和 load_skill；技能目录里有其它提供了的技能', async () => {
     const { requests, step } = probe()
     const runtime = runtimeWith([step(() => fauxAssistantMessage('好'))], {
       registry: null,
@@ -358,8 +361,8 @@ describe('验收 1：普通画布会话', () => {
 
     expect([...requests[0]!.tools].sort()).toEqual([...CANVAS_TOOLS, 'load_skill'].sort())
     const prompt = requests[0]!.systemPrompt
-    expect(prompt).toContain('### 画布（只读）（canvas）')
-    expect(prompt).toContain('### 画布编辑（canvas-edit）')
+    expect(prompt).toContain('### 画布（canvas）')
+    expect(prompt).not.toContain('canvas-edit')
     expect(prompt).toContain('## 技能目录')
     expect(prompt).toContain('- media-view：')
     expect(prompt).toContain('- media-exec：')
@@ -368,14 +371,13 @@ describe('验收 1：普通画布会话', () => {
   })
 })
 
-describe('验收 2：节点范围会话', () => {
-  it('导演台节点的会话：第一次请求就有 director 的工具、没有 canvas-edit 的；load_skill(canvas-edit) 被拒；nodeId 必须是绑定的节点', async () => {
+describe('验收 2：提及导演台节点（全局 agent，docs/20 §3.10.9）', () => {
+  it('消息提及导演台节点：第一次请求就有 director 的工具和 canvas 的全部工具；导演台工具对画布上任意导演台都能调用', async () => {
     const doc = new Y.Doc()
     seed(doc, 'n_dir', 'director', '片头')
     seed(doc, 'n_other', 'director', '别的')
     const { requests, step } = probe()
     const runtime = runtimeWith([
-      step(() => loadSkillStep('canvas-edit')),
       step(() =>
         fauxAssistantMessage(
           [fauxToolCall('get_director_scene', { nodeId: 'n_other' }), fauxToolCall('get_director_scene', { nodeId: 'n_dir' })],
@@ -384,45 +386,34 @@ describe('验收 2：节点范围会话', () => {
       ),
       step(() => fauxAssistantMessage('好')),
     ])
-    const { events, threadId } = await run(runtime, doc, { nodeId: 'n_dir' })
+    // 从导演台里发起：带入口 nodeId，消息开头是这个节点的提及（前端自动放上的）
+    const { events, threadId } = await run(runtime, doc, { nodeId: 'n_dir', text: `${formatNodeMention('n_dir')} 搭个场景` })
     expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
 
     const first = requests[0]!
-    expect(first.tools).toContain('get_director_scene')
-    expect(first.tools).toContain('read_canvas')
-    for (const name of ['add_node', 'update_node', 'connect', 'delete_elements', 'auto_layout']) expect(first.tools).not.toContain(name)
-    expect(first.systemPrompt).toContain('## 会话范围')
-    expect(first.systemPrompt).toContain('节点 n_dir 上（类型 director，名字「片头」）')
-    expect(first.systemPrompt).not.toContain('canvas-edit')
-
-    // load_skill('canvas-edit') 被拒，工具没有因此出现；点名别的节点被拒，绑定的节点照常
-    const results = storedResults(runtime, threadId)
-    expect(results).toMatchObject([
-      { name: 'load_skill', isError: true },
-      { name: 'get_director_scene', isError: true },
+    expect(first.tools).toEqual(expect.arrayContaining([...CANVAS_TOOLS, 'get_director_scene', 'load_skill']))
+    expect(first.systemPrompt).not.toContain('会话范围')
+    expect(storedResults(runtime, threadId)).toMatchObject([
+      { name: 'get_director_scene', isError: false, text: '场景 n_other' },
       { name: 'get_director_scene', isError: false, text: '场景 n_dir' },
     ])
-    expect(results[0]!.text).toContain('canvas-edit 这一轮不提供')
-    expect(results[1]!.text).toContain('只能操作它')
-    expect(requests[1]!.tools).not.toContain('add_node')
     expect(skillLoadedEvents(events)).toEqual([])
 
-    // 会话记着绑定的节点；加载过的技能（一开始加载的）进了会话
+    // 会话记着入口节点；一开始加载的技能进了会话
     const view = await runtime.getConversation('flow-1', 'u1', threadId)
     expect(view).toMatchObject({ nodeId: 'n_dir' })
     expect(view!.skills.map((skill) => skill.id)).toEqual(['canvas', 'director'])
   })
 
-  it('续聊时以会话里存的为准：节点被删了，下一轮照样只读，系统提示说明节点不在了', async () => {
+  it('入口 nodeId 只记录：消息里没提及时不自动加载 director，画布写工具照常全在', async () => {
     const doc = new Y.Doc()
     seed(doc, 'n_dir', 'director')
     const { requests, step } = probe()
-    const runtime = runtimeWith([step(() => fauxAssistantMessage('一')), step(() => fauxAssistantMessage('二'))])
-    const { threadId } = await run(runtime, doc, { nodeId: 'n_dir' })
-    nodesMap(doc).delete('n_dir')
-    await run(runtime, doc, { conversationId: threadId })
-    expect(requests[1]!.tools).not.toContain('add_node')
-    expect(requests[1]!.systemPrompt).toContain('已经不在画布上了')
+    const runtime = runtimeWith([step(() => fauxAssistantMessage('好'))])
+    const { threadId } = await run(runtime, doc, { nodeId: 'n_dir', text: '随便聊聊' })
+    expect([...requests[0]!.tools].sort()).toEqual([...CANVAS_TOOLS, 'load_skill'].sort())
+    expect(requests[0]!.systemPrompt).toContain('- director：')
+    expect(await runtime.getConversation('flow-1', 'u1', threadId)).toMatchObject({ nodeId: 'n_dir' })
   })
 
   it('普通会话里用户 @ 提及了导演台节点 → director 一开始就加载（auto）', async () => {
@@ -473,8 +464,7 @@ describe('验收 3：按需加载', () => {
     expect(view!.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'skill-loaded'])
     expect(view!.messages[2]).toEqual(loaded[0])
     expect(view!.skills).toEqual([
-      { id: 'canvas', title: '画布（只读）' },
-      { id: 'canvas-edit', title: '画布编辑' },
+      { id: 'canvas', title: '画布' },
       { id: 'notes', title: '技能 notes' },
     ])
     // 审计里有 load_skill 这一笔（网关执行过）
@@ -550,7 +540,7 @@ describe('验收 4：load_skill 必须单独成批', () => {
 })
 
 describe('验收 5：伪造的 runner', () => {
-  it('直接请求网关执行没加载的技能里的工具 → 拒绝，画布不变；节点范围会话里 canvas-edit 的工具同样拒绝', async () => {
+  it('直接请求网关执行没加载的技能里的工具 → 拒绝，画布不变；不提供的工具不存在；已加载（提及触发）的照常执行', async () => {
     const replies: { name: string; reply: unknown }[] = []
     /** 一个「被攻破」的 runner：不跑 pi，拿到令牌就直接点名工具 */
     const forged: SandboxDriver = {
@@ -562,7 +552,7 @@ describe('验收 5：伪造的 runner', () => {
           await client.input()
           for (const [name, args] of [
             ['stamp', {}],
-            ['add_node', { type: 'text', metadata: { label: '偷偷加的' } }],
+            ['run_scene_script', {}],
             ['get_director_scene', { nodeId: 'n_dir' }],
           ] as const) {
             replies.push({ name, reply: await client.tool({ toolCallId: `c_${name}`, name, args }) })
@@ -578,12 +568,12 @@ describe('验收 5：伪造的 runner', () => {
     const doc = new Y.Doc()
     seed(doc, 'n_dir', 'director')
     const before = Y.encodeStateAsUpdate(doc)
-    await run(runtime, doc, { nodeId: 'n_dir' })
+    await run(runtime, doc, { text: `看看 ${formatNodeMention('n_dir')}` })
 
     expect(replies[0]!.reply).toMatchObject({ isError: true })
     expect((replies[0]!.reply as { message: string }).message).toContain('未加载')
-    // canvas-edit 在节点范围会话里根本不提供：对网关来说就是不存在的工具
-    expect(replies[1]!.reply).toMatchObject({ isError: true, message: 'Tool add_node not found' })
+    // 脚本技能这一轮不提供（没开沙箱执行）：对网关来说就是不存在的工具
+    expect(replies[1]!.reply).toMatchObject({ isError: true, message: 'Tool run_scene_script not found' })
     // 已加载（auto）的技能里的工具照常执行
     expect(replies[2]!.reply).toMatchObject({ isError: false })
     expect(doc.getMap('stamps').size).toBe(0)
@@ -630,8 +620,29 @@ describe('验收 7：跨轮', () => {
     expect(second.systemPrompt).toContain('技能 flaky（flaky）')
     // 预加载的不再发「已加载」那一行；记录只增不减
     const view = await runtime.getConversation('flow-1', 'u1', threadId)
-    expect(view!.skills.map((skill) => skill.id)).toEqual(['canvas', 'canvas-edit', 'notes', 'flaky'])
+    expect(view!.skills.map((skill) => skill.id)).toEqual(['canvas', 'notes', 'flaky'])
     expect(view!.messages.filter((message) => message.role === 'skill-loaded')).toHaveLength(2)
+  })
+
+  it('会话里存着旧的 canvas-edit：读出时按 canvas 处理 —— 不算「本轮不可用」，视图里不出现，下一轮落库后只剩 canvas', async () => {
+    const { requests, step } = probe()
+    const runtime = runtimeWith([step(() => fauxAssistantMessage('一')), step(() => fauxAssistantMessage('二'))])
+    const doc = new Y.Doc()
+    const { threadId } = await run(runtime, doc)
+    // 模拟合并之前存下的记录
+    runtime.store.rows.get(threadId)!.skills = ['canvas', 'canvas-edit', 'notes']
+    const before = await runtime.getConversation('flow-1', 'u1', threadId)
+    expect(before!.skills).toEqual([
+      { id: 'canvas', title: '画布' },
+      { id: 'notes', title: '技能 notes' },
+    ])
+
+    await run(runtime, doc, { conversationId: threadId })
+    const second = requests[1]!
+    expect(second.tools).toEqual(expect.arrayContaining([...CANVAS_TOOLS, 'notes_tool']))
+    expect(second.systemPrompt).not.toContain('本轮不可用')
+    expect(second.systemPrompt).not.toContain('canvas-edit')
+    expect(runtime.store.rows.get(threadId)!.skills).toEqual(['canvas', 'notes'])
   })
 })
 

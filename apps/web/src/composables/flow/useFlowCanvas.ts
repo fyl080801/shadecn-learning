@@ -923,8 +923,30 @@ export function useFlowCanvas(
 
   // —— 打组 ——
 
-  /** 当前选中的节点 id（顺序同 Vue Flow 那份选中态），选区工具栏靠它定位 */
-  const selectedNodeIds = computed(() => getSelectedNodes.value.map((node) => node.id))
+  /**
+   * 当前选中的节点 id，**按选中的先后**：选区工具栏靠它定位，agent 新会话的输入框按这个顺序放提及（docs/20 §3.10.9）。
+   *
+   * Vue Flow 的 `getSelectedNodes` 是按画布上的顺序排的，不记先后，所以这里自己记：还选着的保持原位，新选中的接在后面
+   * （一次框选进来的一批之间按画布顺序）。用同步 watch 而不是 computed 里记状态 —— computed 是惰性的，
+   * 没人读的那几次变化会被跳过，先后就丢了。
+   */
+  const selectionOrder = ref<string[]>([])
+  watch(
+    getSelectedNodes,
+    (selected) => {
+      const ids = selected.map((node) => node.id)
+      const current = new Set(ids)
+      const kept = selectionOrder.value.filter((id) => current.has(id))
+      const known = new Set(kept)
+      const next = [...kept, ...ids.filter((id) => !known.has(id))]
+      // 拖动时每一帧都会重算 getSelectedNodes：没变就不换数组，免得依赖它的东西跟着每帧重渲染
+      const previous = selectionOrder.value
+      if (next.length === previous.length && next.every((id, index) => id === previous[index])) return
+      selectionOrder.value = next
+    },
+    { immediate: true, flush: "sync" }
+  )
+  const selectedNodeIds = computed(() => selectionOrder.value)
 
   /**
    * 这次选中里**能被圈进一个新分组**的那些。

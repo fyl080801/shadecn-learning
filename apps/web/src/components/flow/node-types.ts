@@ -177,7 +177,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
   }),
   /**
    * 导演台 —— body 是一个「打开导演台」按钮，点了全屏打开导演台（`FlowDirectorOverlay`）。底部输入框一直在，
-   * 回车把这段话交给绑定这个节点的会话（能力 `director-chat`）。
+   * 回车把这段话（开头补上这个节点的提及）交给导演台里的当前会话（能力 `director-chat`）。
    * 固定 240 × 240 的正方形（与方图同尺寸）：方块是 body（`aspect-square`），报错行接在它下面，方块不变形
    */
   director: defineNodeType("director", {
@@ -185,7 +185,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     icon: Clapperboard,
     view: { body: DirectorBody, class: "flex w-[240px] flex-col", fallbackLabel: "导演台" },
     parts: [definePromptComposerPart({ id: "director.composer", placeholder: "让助手搭场景、编排镜头（回车发送）" })],
-    // director-chat：输入框回车 = 打开导演台、在绑定这个节点的会话里发出去（docs/07 §7.4）
+    // director-chat：输入框回车 = 打开导演台、在那里的当前会话里发出去，开头补上这个节点的提及（docs/07 §7.5）
     features: [...COMPOSER_FEATURES, "director-chat"]
   }),
   /**

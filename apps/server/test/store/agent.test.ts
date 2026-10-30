@@ -42,7 +42,7 @@ function create(owner = alice.userId, flow = flowId, title = '标题', nodeId: s
 const later = () => new Promise((resolve) => setTimeout(resolve, 5))
 
 describe('会话', () => {
-  it('节点范围会话：nodeId 建会话时写下；skills 新会话为空，save 给了才改，列表里也带着（docs/23 §3.4）', async () => {
+  it('入口节点：nodeId 建会话时写下；skills 新会话为空，save 给了才改，列表里也带着（docs/23 §3.4）', async () => {
     const plain = await create()
     expect(plain).toMatchObject({ nodeId: null, skills: [] })
     const scoped = await create(alice.userId, flowId, '导演台', 'n_dir')
@@ -162,6 +162,15 @@ describe('会话', () => {
     expect(await read()).toBeNull()
     await agentConversations.save(flowId, alice.userId, created.id, { messages: [], summary: '', canvasDigest: null })
     expect(await read()).toBeNull()
+  })
+
+  it('库里存着合并前的旧技能 id canvas-edit：读出时换成 canvas，去重后保持先后（docs/23 §4）', async () => {
+    const created = await create()
+    await db().nativeUpdate(AgentConversation, { id: created.id }, { skills: JSON.stringify(['canvas', 'canvas-edit', 'director']) })
+    expect((await agentConversations.get(flowId, created.id))?.skills).toEqual(['canvas', 'director'])
+    expect((await agentConversations.getWithContext(flowId, alice.userId, created.id))?.skills).toEqual(['canvas', 'director'])
+    await db().nativeUpdate(AgentConversation, { id: created.id }, { skills: JSON.stringify(['canvas-edit', 'notes']) })
+    expect((await agentConversations.list(flowId)).find((row) => row.id === created.id)?.skills).toEqual(['canvas', 'notes'])
   })
 
   it('remove 删掉之后查不到；库里的 JSON 坏了读成空数组而不是抛', async () => {

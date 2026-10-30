@@ -22,18 +22,9 @@ export type { AgentSkillId } from '@shadecn/shared/agent'
  * ## 技能不授予权限
  *
  * 技能只决定「把哪些工具交给模型」。每个工具执行前照样按自己的 `capability` 在网关判权；
- * `requires` 是它全部工具所需能力的并集（注册表建立时校验），**只用来判断提不提供**。
+ * `requires` 是它全部工具所需能力的并集（注册表建立时校验），和 `offeredWith` 一起**只用来判断提不提供**。
  * 网关另外拒绝执行本轮没加载的技能里的工具（docs/23 §3.3）—— 两道检查，不合并。
  */
-
-/** 会话绑定的节点（节点范围会话，docs/07 §7.4）；普通会话没有 */
-export interface SkillBoundNode {
-  id: string
-  /** 一轮开始时读到的节点类型；节点已经不在画布上了为 null */
-  type: string | null
-  /** 节点名；节点已经不在了为 null */
-  label: string | null
-}
 
 /** 部署条件：宿主的配置与模型的能力（服务端一轮开始时算好） */
 export interface SkillDeployment {
@@ -50,14 +41,14 @@ export interface SkillAvailability {
   /** 这一轮 Grant 里的能力 */
   scopes: ReadonlySet<AgentCapability>
   deployment: SkillDeployment
-  /** 节点范围会话绑定的节点；普通会话为 null */
-  boundNode: SkillBoundNode | null
 }
 
 /**
  * 构造工具时给的上下文。服务端（`side: 'server'`）给真实画布、本轮共享的 `runState`、素材读取；
  * runner（`side: 'runner'`）的画布一读写就报错（工具只拿定义，执行走网关），`sandbox` 是它自己的工作目录。
- * 工具在 `execute` 里拿 `boundNode` 校验参数（{@link assertBoundNode}）—— 执行永远在服务端，那里的值才算数。
+ *
+ * 这里**没有会话范围**：所有会话都是全局 agent，作用域是整张画布（docs/20 §3.10.9）。会话的 `nodeId` 只记入口，
+ * 不进上下文 —— 别据它限制工具点名哪个节点，也别据它决定加载哪些技能（加载靠提及）。
  */
 export interface SkillContext {
   side: 'server' | 'runner'
@@ -71,7 +62,6 @@ export interface SkillContext {
    * 服务端是只给定义用的桩，一调就报错（网关从不代 runner 工具执行）
    */
   sandbox: Sandbox
-  boundNode: SkillBoundNode | null
 }
 
 export type SkillActivation = 'always' | 'auto' | 'on-demand'
@@ -79,7 +69,7 @@ export type SkillActivation = 'always' | 'auto' | 'on-demand'
 export interface AgentSkill {
   /** 发布后不改：对话记录里存的就是它。小写字母、数字、`-` */
   id: AgentSkillId
-  /** 给人看：「画布（只读）」 */
+  /** 给人看：「画布」「导演台」 */
   title: string
   /** 一句话，放进系统提示的技能目录，模型据此判断要不要加载 */
   summary: string
@@ -87,13 +77,21 @@ export interface AgentSkill {
   prompt: string
   /** 工具定义；runner 和服务端从同一份构造。工具名全局唯一，一个工具只属于一个技能 */
   tools(ctx: SkillContext): CanvasTool[]
-  /** Grant 里缺任何一项，这个技能就不提供。必须覆盖它全部工具的 `capability`（注册表建立时校验） */
+  /**
+   * 它全部工具所需能力的并集：必须覆盖每个工具的 `capability`（注册表建立时校验）。
+   * 不给 {@link offeredWith} 时，Grant 里缺任何一项，这个技能就不提供。
+   */
   requires: readonly AgentCapability[]
-  /** 部署 / 会话条件：模型吃不吃图、有没有对象存储、是不是节点范围会话……不给 = 总是可用 */
+  /**
+   * 提供的门槛（⊆ `requires`，注册表建立时校验）：Grant 里有这几项就提供，缺的那些能力对应的工具在网关逐个判权时被拒。
+   * 给基础技能用 —— `canvas` 只要 `flow:read` 就提供，没有写权限时照样能读（docs/23 §4）。不给 = `requires` 全部。
+   */
+  offeredWith?: readonly AgentCapability[]
+  /** 部署条件：模型吃不吃图、有没有对象存储、开没开沙箱执行……不给 = 总是可用 */
   available?(env: SkillAvailability): boolean
   /**
    * - `always`：提供了就一开始加载；
-   * - `auto`：命中 `activatesFor` 时一开始加载（会话绑定的节点是这种类型，或用户这条消息 `@` 提及了这种类型的节点），否则同 `on-demand`；
+   * - `auto`：命中 `activatesFor` 时一开始加载（用户这条消息 `@` 提及了这种类型的节点），否则同 `on-demand`；
    * - `on-demand`：进技能目录，模型调 `load_skill` 加载。
    */
   activation: SkillActivation
@@ -139,23 +137,8 @@ export const NO_SANDBOX: Sandbox = {
 }
 
 /** 只为拿工具定义（名字、schema、描述、能力、执行位置）的上下文 */
-export function definitionContext(
-  side: SkillContext['side'],
-  boundNode: SkillBoundNode | null = null,
-  sandbox: Sandbox = NO_SANDBOX,
-): SkillContext {
-  return { side, canvas: NO_CANVAS, runState: { deleted: 0, mediaBytes: 0 }, sandbox, boundNode }
-}
-
-/**
- * 节点范围会话里，技能工具点名的节点必须就是会话绑定的那个（docs/07 §7.4「只能改它绑定的这个导演台」）。
- * 普通会话不限制。在工具的 `execute` 里调（服务端执行，`ctx.boundNode` 是服务端读到的）。
- */
-export function assertBoundNode(ctx: Pick<SkillContext, 'boundNode'>, nodeId: string): void {
-  const bound = ctx.boundNode
-  if (bound && nodeId !== bound.id) {
-    throw new Error(`这个会话绑定节点 ${bound.id}，只能操作它；${nodeId} 不在本会话的范围内`)
-  }
+export function definitionContext(side: SkillContext['side'], sandbox: Sandbox = NO_SANDBOX): SkillContext {
+  return { side, canvas: NO_CANVAS, runState: { deleted: 0, mediaBytes: 0 }, sandbox }
 }
 
 // —— load_skill ——
@@ -208,7 +191,7 @@ export interface SkillPlanInput {
 
 /** 一轮的技能集合（docs/23 §3.2） */
 export interface SkillPlan {
-  /** 提供的：`requires` 全在 Grant 里、`available` 为真。按注册顺序 */
+  /** 提供的：门槛（`offeredWith`，缺省 `requires`）全在 Grant 里、`available` 为真。按注册顺序 */
   offered: AgentSkill[]
   /** 一开始就加载的（`always`、命中的 `auto`、之前加载过且这一轮仍提供的） */
   loaded: AgentSkill[]
@@ -232,7 +215,7 @@ export interface SkillRegistry {
 /**
  * 建注册表，并校验全部技能的工具（用没有画布的上下文造一遍定义）：
  * 技能 id 不重复；工具名全局唯一、不和 `load_skill` 撞；`requires` 覆盖每个工具的 `capability`；
- * `runner` 执行的工具所在技能必须要求 `sandbox:exec`。违反任何一条都在建表时抛出（开发期就炸，不留到某一轮）。
+ * `offeredWith` ⊆ `requires`；`runner` 执行的工具所在技能必须要求 `sandbox:exec`。违反任何一条都在建表时抛出（开发期就炸，不留到某一轮）。
  */
 export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistry {
   const byId = new Map<string, AgentSkill>()
@@ -240,6 +223,11 @@ export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistr
   for (const skill of skills) {
     if (byId.has(skill.id)) throw new Error(`技能 id 重复：${skill.id}`)
     byId.set(skill.id, skill)
+    for (const capability of skill.offeredWith ?? []) {
+      if (!skill.requires.includes(capability)) {
+        throw new Error(`技能 ${skill.id} 的 offeredWith 里的 ${capability} 不在 requires 里`)
+      }
+    }
     for (const tool of skill.tools(definitionContext('runner'))) {
       if (tool.name === LOAD_SKILL_TOOL_NAME) throw new Error(`技能 ${skill.id} 的工具不能叫 ${LOAD_SKILL_TOOL_NAME}`)
       const other = toolOwner.get(tool.name)
@@ -255,12 +243,11 @@ export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistr
   }
 
   const offers = (skill: AgentSkill, env: SkillAvailability) =>
-    skill.requires.every((capability) => env.scopes.has(capability)) && (skill.available?.(env) ?? true)
+    (skill.offeredWith ?? skill.requires).every((capability) => env.scopes.has(capability)) && (skill.available?.(env) ?? true)
 
   const autoHit = (skill: AgentSkill, input: SkillPlanInput) => {
     const types = skill.activatesFor?.nodeTypes ?? []
-    const bound = input.env.boundNode?.type
-    return (bound != null && types.includes(bound)) || input.mentionedNodeTypes.some((type) => types.includes(type))
+    return input.mentionedNodeTypes.some((type) => types.includes(type))
   }
 
   return {

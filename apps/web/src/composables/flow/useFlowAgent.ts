@@ -43,13 +43,13 @@ export interface FlowAgentOptions {
   isAdmin?: Ref<boolean>
   channel?: FlowAgentChannel
   /**
-   * 节点范围会话（docs/07 §7.4）：给了就是绑定这个节点的那一份对话 —— 新会话的第一条消息带上 `nodeId`
-   * （服务端建会话时绑定，之后一直绑着），续聊不带（服务端从会话里读）。
+   * 会话的入口节点（docs/20 §3.10.9、docs/07 §7.5）：给了就是导演台里的那一份对话 —— 新会话的第一条消息带上 `nodeId`
+   * （服务端只记下入口，不限制工具），续聊不带（服务端从会话里读）。
    */
   nodeId?: Ref<string | null>
   /**
    * 打开画布时要不要把服务端给的 `latest`（我最近的会话，不论绑没绑节点）摆到对话区，默认要。
-   * 导演台的对话面板不要：它自己挑绑定这个节点的那个会话。
+   * 导演台的对话面板不要：它自己挑入口是这个节点的那个会话。
    */
   adoptLatest?: boolean
 }
@@ -431,7 +431,7 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
   // —— 发送 ——
 
   /** 本窗口刚收到 RUN_STARTED：先把这一轮放进任务列表，不等推送（没连着协同时也有角标） */
-  function noteLocalRun(runId: string, threadId: string, prompt: string, boundNodeId: string | null) {
+  function noteLocalRun(runId: string, threadId: string, prompt: string, entryNodeId: string | null) {
     localRunIds.add(runId)
     if (finishedRuns.has(runId) || runList.value.some((run) => run.runId === runId)) return
     const me = options.user?.value
@@ -443,7 +443,7 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
         conversationTitle: title.value ?? prompt.slice(0, AGENT_TITLE_MAX_LENGTH),
         owner: { id: selfId.value ?? "", name: me?.name ?? "我", avatarUrl: me?.avatarUrl ?? null },
         startedAt: Date.now(),
-        ...(boundNodeId ? { nodeId: boundNodeId } : {})
+        ...(entryNodeId ? { nodeId: entryNodeId } : {})
       }
     ]
   }
@@ -479,9 +479,9 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
     stream = controller
     let accepted = false
     let runId: string | null = null
-    /** 新会话才带 nodeId（续聊时服务端从会话里读，给了反而 400）；节点范围会话续聊时绑定也还是它 */
-    const boundNodeId = options.nodeId?.value ?? null
-    const newNodeId = conversationId.value === null ? boundNodeId : null
+    /** 新会话才带 nodeId（续聊时服务端从会话里读，给了反而 400）；续聊时入口也还是它 */
+    const entryNodeId = options.nodeId?.value ?? null
+    const newNodeId = conversationId.value === null ? entryNodeId : null
     /** 流开了但没读到收尾：服务端那一轮多半还在跑，结束后去接回 / 重拉 */
     let interrupted = false
     try {
@@ -497,7 +497,7 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
             if (ticket !== generation) return
             if (event.type === "RUN_STARTED") {
               runId = event.runId
-              noteLocalRun(event.runId, event.threadId, prompt, boundNodeId)
+              noteLocalRun(event.runId, event.threadId, prompt, entryNodeId)
             }
             // 切走了：这一轮照跑，事件不再往对话区里折叠
             if (myView !== viewSeq) return

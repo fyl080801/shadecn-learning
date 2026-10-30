@@ -15,7 +15,7 @@ import type { NodeEventSource } from "@/components/flow/node-kit/protocol"
 import { useFlowStore } from "@/stores/flow"
 
 /**
- * 全屏导演台（`FlowDirectorOverlay`）：键盘路由、对话面板选会话、节点底部输入框发起节点范围会话。
+ * 全屏导演台（`FlowDirectorOverlay`）：键盘路由、对话面板选会话、自动带上这个导演台的提及、节点底部输入框发起的会话。
  *
  * 真的挂全屏层、工作区、对话面板（shadcn-vue / PromptInput 都是真的），舞台换成替身（jsdom 没有 WebGL）——
  * 替身只记下全屏层路由给它的快捷键。接口和编辑器上下文打桩。
@@ -269,7 +269,7 @@ describe("全屏导演台的键盘", () => {
     press(editable, { key: "Enter" })
     await flushPromises()
     expect(send).toHaveBeenCalledTimes(1)
-    // 新会话的第一条带 nodeId：服务端建成绑定这个导演台的节点范围会话
+    // 新会话的第一条带 nodeId：服务端只记下入口（会话是全局 agent）
     expect(send.mock.calls[0]!.slice(0, 2)).toEqual(["flow-1", { text: "搭一个客厅", conversationId: null, nodeId: "dc" }])
     expect(canvasActed()).toBe(0)
   })
@@ -340,7 +340,7 @@ describe("对话面板选会话", () => {
     expect(document.querySelector('[data-testid="director-overlay"] [data-testid="agent-title"]')?.textContent).toContain("c-new")
   })
 
-  it("有绑定这个节点的任务在跑：顶部显示「某某的助手正在编辑这个场景」，舞台据此高亮远端改动", async () => {
+  it("有入口是这个节点的任务在跑：顶部显示「某某的助手正在编辑这个场景」，舞台据此高亮远端改动", async () => {
     await mountOverlay()
     await openDirector()
     expect(document.querySelector('[data-testid="director-agent-editing"]')).toBeNull()
@@ -360,23 +360,91 @@ describe("对话面板选会话", () => {
   })
 })
 
-describe("节点底部输入框发起节点范围会话", () => {
-  it("composer:submit → 打开导演台，并在绑定这个节点的新会话里发出这条消息（带 nodeId）", async () => {
+const DC = "@{node:dc}"
+const chatInput = () =>
+  wrapper!
+    .findAllComponents(PromptInput)
+    .find((item) => item.element.closest('[data-testid="agent-dialog"]'))!
+const quickInput = () =>
+  wrapper!
+    .findAllComponents(PromptInput)
+    .find((item) => item.element.closest('[data-testid="agent-quick-prompt"]'))
+
+describe("打开导演台算选中这个导演台节点（docs/20 §3.10.9）", () => {
+  it("没有我在这个节点上的会话 → 新会话，对话框输入框开头是这个导演台的提及；空状态不再说「只改这个导演台」", async () => {
+    await mountOverlay()
+    await openDirector()
+    expect(chatInput().props("modelValue")).toBe(`${DC} `)
+    const dialog = document.querySelector('[data-testid="director-overlay"] [data-testid="agent-dialog"]')!
+    expect(dialog.textContent).not.toContain("只改这个导演台")
+  })
+
+  it("默认打开的是已有会话（续聊）→ 输入框为空，不加提及", async () => {
+    conversations.mockResolvedValue([summary("c-mine", { nodeId: "dc" })])
+    conversation.mockResolvedValue({ ...summary("c-mine", { nodeId: "dc" }), messages: [] })
+    await mountOverlay()
+    await openDirector()
+    expect(chatInput().props("modelValue")).toBe("")
+  })
+
+  it("点「新会话」→ 空输入框开头放上提及（可删；已有草稿不动）", async () => {
+    conversations.mockResolvedValue([summary("c-mine", { nodeId: "dc" })])
+    conversation.mockResolvedValue({ ...summary("c-mine", { nodeId: "dc" }), messages: [] })
+    await mountOverlay()
+    await openDirector()
+    ;(document.querySelector('[data-testid="director-overlay"] [data-testid="agent-new"]') as HTMLElement).click()
+    await flushPromises()
+    expect(chatInput().props("modelValue")).toBe(`${DC} `)
+
+    // 删掉提及、写点别的，再点一次新会话：草稿不动
+    chatInput().vm.$emit("update:modelValue", "只想问问")
+    await flushPromises()
+    ;(document.querySelector('[data-testid="director-overlay"] [data-testid="agent-new"]') as HTMLElement).click()
+    await flushPromises()
+    expect(chatInput().props("modelValue")).toBe("只想问问")
+  })
+
+  it("快捷会话：打开时输入框开头是这个导演台的提及（只它一个，不看画布选区），发出去带着它和 nodeId", async () => {
+    selectedNodeIds.value = ["t1"]
+    await mountOverlay()
+    await openDirector()
+    ;(document.querySelector('[data-testid="director-overlay"] [data-testid="agent-quick-toggle"]') as HTMLElement).click()
+    await flushPromises()
+    expect(quickInput()!.props("modelValue")).toBe(`${DC} `)
+    quickInput()!.vm.$emit("update:modelValue", `${DC} 加一盏灯`)
+    await flushPromises()
+    ;(document.querySelector('[data-testid="agent-quick-prompt"] [data-testid="agent-send"]') as HTMLElement).click()
+    await flushPromises()
+    expect(send.mock.lastCall!.slice(0, 2)).toEqual(["flow-1", { text: `${DC} 加一盏灯`, conversationId: null, nodeId: "dc" }])
+    selectedNodeIds.value = []
+  })
+})
+
+describe("节点底部输入框发起的会话", () => {
+  it("composer:submit → 打开导演台，在新会话里发出这条消息：开头补上这个节点的提及、带 nodeId；输入框不留提及", async () => {
     await mountOverlay()
     runtime.kit.emit("composer:submit", { text: "  镜头绕一圈  " }, sourceOf("dc", "director"))
     await flushPromises()
     expect(overlay()).not.toBeNull()
     expect(send).toHaveBeenCalledTimes(1)
-    expect(send.mock.calls[0]!.slice(0, 2)).toEqual(["flow-1", { text: "镜头绕一圈", conversationId: null, nodeId: "dc" }])
+    expect(send.mock.calls[0]!.slice(0, 2)).toEqual(["flow-1", { text: `${DC} 镜头绕一圈`, conversationId: null, nodeId: "dc" }])
+    expect(chatInput().props("modelValue")).toBe("")
   })
 
-  it("续聊绑定的会话时不再带 nodeId（服务端从会话里读）", async () => {
+  it("消息里已经提及了这个节点 → 不重复补", async () => {
+    await mountOverlay()
+    runtime.kit.emit("composer:submit", { text: `把 ${DC} 的灯调暗` }, sourceOf("dc", "director"))
+    await flushPromises()
+    expect(send.mock.calls[0]![1]).toMatchObject({ text: `把 ${DC} 的灯调暗` })
+  })
+
+  it("续聊入口是这个节点的会话时不再带 nodeId（服务端从会话里读），提及照样补", async () => {
     conversations.mockResolvedValue([summary("c-bound", { nodeId: "dc" })])
     conversation.mockResolvedValue({ ...summary("c-bound", { nodeId: "dc" }), messages: [] })
     await mountOverlay()
     runtime.kit.emit("composer:submit", { text: "再慢一点" }, sourceOf("dc", "director"))
     await flushPromises()
-    expect(send.mock.calls[0]!.slice(0, 2)).toEqual(["flow-1", { text: "再慢一点", conversationId: "c-bound" }])
+    expect(send.mock.calls[0]!.slice(0, 2)).toEqual(["flow-1", { text: `${DC} 再慢一点`, conversationId: "c-bound" }])
   })
 
   it("空提示词不打开；别的类型的 composer:submit 不归它管", async () => {

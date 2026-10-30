@@ -1,5 +1,6 @@
 import { computed, inject, provide, ref, watch, type InjectionKey, type Ref } from "vue"
 import { createEventHook } from "@vueuse/core"
+import { formatNodeMention } from "@shadecn/shared/agent"
 import type { FlowSummary } from "@shadecn/shared/canvas"
 import { projectApi } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
@@ -12,8 +13,11 @@ import { useFlowAgent, type FlowAgent, type FlowAgentChannel, type FlowAgentOpti
  * （`FlowAgentQuickPrompt`，输完直接开新会话执行）。两者必须是**同一个** agent 实例：
  * 各调一次 `useFlowAgent` 就是两条流、两份会话，快捷输入发出去的那一轮对话框里看不见。
  *
- * 导演台全屏层在自己的子树里**再 provide 一份**（绑定那个节点，docs/07 §7.5）：同样两个组件挂在导演台的
+ * 导演台全屏层在自己的子树里**再 provide 一份**（入口是那个节点，docs/07 §7.5）：同样两个组件挂在导演台的
  * 右上角和底部工具栏上，读到的是导演台这一份，和画布那份互不影响。
+ *
+ * **「选中的节点」也随面板走**（`selection`）：新会话的空输入框开头自动放上它们的提及（docs/20 §3.10.9）。
+ * 画布那份是画布选区（按选中的先后），导演台那份恒为这个导演台节点（打开导演台算选中它）。
  *
  * 不挂进 `provideFlowEditor`：agent 和画布交互无关，编辑器根视图单独 provide 一次。
  * 只 import 了 `useFlowAgent`（不碰 node-types），所以从 `components/flow/` 引它不会成环。
@@ -43,7 +47,7 @@ export const CANVAS_AGENT_COPY: FlowAgentPanelCopy = {
 export const DIRECTOR_AGENT_COPY: FlowAgentPanelCopy = {
   name: "导演台助手",
   emptyTitle: "让助手搭这个场景",
-  emptyDescription: "摆放几何体、机位和灯光，编排移动、旋转、缩放的动画。这个会话只改这个导演台。",
+  emptyDescription: "摆放几何体、机位和灯光，编排移动、旋转、缩放的动画。",
   quickTitle: "让助手改这个场景（新会话）",
   placeholder: "让助手改这个场景…（回车发送）",
   hideQuote: true
@@ -61,6 +65,16 @@ export interface FlowAgentPanel {
   startConversation: (text: string) => Promise<boolean>
   /** 快捷输入新开了一轮 —— 对话框借此切回对话视图、贴底 */
   onStarted: ReturnType<typeof createEventHook<void>>["on"]
+  /**
+   * 新会话输入框开头该放的提及：「选中的节点」每个一枚，按选中的先后，末尾留一个空格好接着打字；没选中为空串。
+   * 调用方只在**输入框为空**时用它（已有草稿不动、续聊不加，docs/20 §3.10.9）。
+   */
+  selectionMentions: () => string
+}
+
+/** 每个节点一枚提及，空格隔开，末尾留一个空格；没有节点为空串 */
+export function mentionsPrefix(nodeIds: readonly string[]): string {
+  return nodeIds.length === 0 ? "" : `${[...new Set(nodeIds)].map(formatNodeMention).join(" ")} `
 }
 
 /** 编辑器上下文里这里用得到的那几样（测试可以只给这些） */
@@ -75,7 +89,7 @@ const FLOW_AGENT_PANEL_KEY: InjectionKey<FlowAgentPanel> = Symbol("flow-agent-pa
 /**
  * 按编辑器上下文建一份 `useFlowAgent`（画布元信息、当前用户、项目角色、任务列表推送都接好）。
  *
- * 画布的对话框只能有一份（`provideFlowAgentPanel`）；导演台全屏层的对话面板是**另一份**（绑定那个节点，
+ * 画布的对话框只能有一份（`provideFlowAgentPanel`）；导演台全屏层的对话面板是**另一份**（入口是那个节点，
  * docs/07 §7.5）：它有自己的「当前会话」，切会话不该把画布对话框也切走。两份各自读各自的流，任务列表都来自同一条推送。
  */
 export function useHostFlowAgent(
@@ -108,9 +122,13 @@ export function useHostFlowAgent(
  */
 export function provideFlowAgentPanel(
   host: FlowAgentHost,
-  options: Pick<FlowAgentOptions, "nodeId" | "adoptLatest"> & { copy?: FlowAgentPanelCopy } = {}
+  options: Pick<FlowAgentOptions, "nodeId" | "adoptLatest"> & {
+    copy?: FlowAgentPanelCopy
+    /** 「选中的节点」（按选中的先后，只含节点、不含连线）；不给 = 没有选区 */
+    selection?: () => readonly string[]
+  } = {}
 ): FlowAgentPanel {
-  const { copy = CANVAS_AGENT_COPY, ...extra } = options
+  const { copy = CANVAS_AGENT_COPY, selection, ...extra } = options
   const agent = useHostFlowAgent(host, extra)
   const open = ref(false)
   const started = createEventHook<void>()
@@ -124,7 +142,14 @@ export function provideFlowAgentPanel(
     return (await agent.send(text)) === true
   }
 
-  const panel: FlowAgentPanel = { agent, copy, open, startConversation, onStarted: started.on }
+  const panel: FlowAgentPanel = {
+    agent,
+    copy,
+    open,
+    startConversation,
+    onStarted: started.on,
+    selectionMentions: () => mentionsPrefix(selection?.() ?? [])
+  }
   provide(FLOW_AGENT_PANEL_KEY, panel)
   return panel
 }

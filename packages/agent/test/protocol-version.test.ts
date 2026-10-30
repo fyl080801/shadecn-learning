@@ -19,6 +19,7 @@ import { RUNNER_PROTOCOL_VERSION } from '../src/protocol.ts'
 const RECORDED_HASHES: Record<number, string> = {
   1: '0d3852a34b787bb2',
   2: '9da56f1cae995d91',
+  3: 'fed5ea20f44fd633',
 }
 
 function normalized(source: string): string {

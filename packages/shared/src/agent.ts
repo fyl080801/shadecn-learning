@@ -58,9 +58,9 @@ export interface AgentPromptRequest {
    */
   conversationId?: string | null
   /**
-   * 节点范围会话（docs/07 §7.4）：新会话绑定画布上的这个节点。**只在新建会话时给**（和 `conversationId` 同时给 → 400），
-   * 之后这个会话一直绑定它；节点不在这张画布上 → 404。任何节点类型都行，一开始自动加载哪些技能看节点类型（docs/23 §3.2）。
-   * 节点范围会话里画布只读：写画布结构的技能（`canvas-edit`）不提供。
+   * 会话的入口节点（docs/20 §3.10.9、docs/07 §7.5）：从导演台里发起的新会话记下这个节点，只用来在那里默认打开
+   * 「我在这个节点上最近的会话」。**只在新建会话时给**（和 `conversationId` 同时给 → 400）；节点不在这张画布上 → 404。
+   * 它**不限制**工具、不影响占用、也不触发技能加载 —— 所有会话都是全局 agent，指定节点靠消息里的提及。
    */
   nodeId?: string | null
 }
@@ -99,15 +99,26 @@ export type AgentChatMessage =
 // —— 技能（docs/23） ——
 
 /**
- * 内置技能的 id（`canvas` / `canvas-edit` / `media-view` / `media-exec` / …）：发布后不改，对话记录里存的就是它。
+ * 内置技能的 id（`canvas` / `media-view` / `media-exec` / `director` / …）：发布后不改，对话记录里存的就是它。
  * 有哪些技能由服务端的注册表定（`@shadecn/agent` 的 `skills/`），这里不枚举 —— 前端只拿它做 key，显示用 {@link AgentSkillView.title}。
  */
 export type AgentSkillId = string
 
+/**
+ * 合并 / 改名掉的技能 id → 现在的 id。对话记录里存着旧的，**读出时**换成新的（{@link canonicalSkillIds}）。
+ * `canvas-edit`：原先写画布的技能，和只读的 `canvas` 合成了一个（docs/23 §4）。
+ */
+export const AGENT_SKILL_ID_ALIASES: ReadonlyMap<AgentSkillId, AgentSkillId> = new Map([['canvas-edit', 'canvas']])
+
+/** 存下来的技能 id 换成现在的：旧 id 按 {@link AGENT_SKILL_ID_ALIASES} 换掉，换完重复的只留第一次出现的位置 */
+export function canonicalSkillIds(ids: readonly AgentSkillId[]): AgentSkillId[] {
+  return [...new Set(ids.map((id) => AGENT_SKILL_ID_ALIASES.get(id) ?? id))]
+}
+
 /** 一个技能给人看的样子 */
 export interface AgentSkillView {
   id: AgentSkillId
-  /** 「画布（只读）」「查看素材」；服务端注册表里已经没有这个技能时就是 id 本身 */
+  /** 「画布」「查看素材」；服务端注册表里已经没有这个技能时就是 id 本身 */
   title: string
 }
 
@@ -210,8 +221,8 @@ export interface AgentRunEntry {
   /** UTC epoch 毫秒 */
   startedAt: number
   /**
-   * 这一轮所在的会话是节点范围会话时，绑定的节点（docs/07 §7.4、§7.5：导演台据它显示「某某的助手正在编辑这个场景」）。
-   * 普通会话没有这个字段（不是 null —— 老的载荷里本来就没有，读的一侧一律按「没有」处理）。
+   * 这一轮所在会话的入口节点（会话的 `nodeId`，docs/20 §3.10.9）：导演台暂时据它显示「某某的助手正在编辑这个场景」，
+   * 之后由占用（docs/20 §3.10.8 的 `occupies`）替换。没有入口的会话没有这个字段（不是 null —— 老的载荷里本来就没有，读的一侧一律按「没有」处理）。
    */
   nodeId?: string
 }
@@ -361,7 +372,7 @@ export interface AgentConversationSummary {
   mine: boolean
   /** 这个会话此刻正在跑一轮（只可能是它的发起人发起的） */
   running: boolean
-  /** 节点范围会话绑定的节点（docs/07 §7.4）；普通会话为 null。建会话时定下，之后不变 */
+  /** 会话的入口节点（从导演台里发起的会话记下它，docs/20 §3.10.9）；没有为 null。建会话时定下，之后不变；不限制工具 */
   nodeId: string | null
   /** 这个会话加载过的技能（只增不减，docs/23 §3.4），按首次加载的先后；还没跑完过一轮为空数组 */
   skills: AgentSkillView[]

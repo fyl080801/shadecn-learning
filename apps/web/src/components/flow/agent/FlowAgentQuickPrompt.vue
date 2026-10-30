@@ -19,10 +19,13 @@ import FlowAgentComposer from "./FlowAgentComposer.vue"
  * 不在这里续聊 —— 续聊、看历史、停止都在对话框里；这里只负责「起一个头」。
  * 别的任务在跑（别人的、我别的会话里的）不挡它：并发单位是会话，新会话总能发起（docs/20 §3.10.3）。
  * 输入框和对话框底部是同一个 `FlowAgentComposer`（含 @ 提及节点、引用选中）。
- * 导演台底部工具栏也挂它，读到的是导演台那一份（新会话绑定那个节点）。
+ * 导演台底部工具栏也挂它，读到的是导演台那一份（新会话的入口记成那个节点）。
+ *
+ * **打开时输入框为空，就在开头放上选中节点的提及**（docs/20 §3.10.9；画布选区按选中的先后，导演台里是这个导演台）：
+ * 和手动 @ 出来的一样，可以删。只在打开的那一下放 —— 开着时换了选中，已经放进去的不跟着变；已有草稿不动。
  */
 const { flowId } = useFlowEditor()
-const { agent, copy, startConversation } = useFlowAgentPanel()
+const { agent, copy, startConversation, selectionMentions } = useFlowAgentPanel()
 
 const open = ref(false)
 const draft = ref("")
@@ -36,7 +39,9 @@ const title = computed(() => {
 })
 
 watch(open, (value) => {
-  if (value) void nextTick(() => composer.value?.focus())
+  if (!value) return
+  if (draft.value === "") draft.value = selectionMentions()
+  void nextTick(() => composer.value?.focus())
 })
 
 // 换画布：收起、草稿清空 —— 草稿里的提及指向的是上一张画布的节点

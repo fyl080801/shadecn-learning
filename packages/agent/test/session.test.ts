@@ -286,7 +286,7 @@ describe('按会话并发与中止', () => {
     expect(runtime.store.rows.get(threadOf(outB.events))?.messages.map((m) => m.role)).toEqual(['user', 'assistant'])
   })
 
-  it('节点范围会话的那一轮在任务列表里带 nodeId（新建时绑定的、续聊时从会话里读的），普通会话不带', async () => {
+  it('带入口 nodeId 的会话，那一轮在任务列表里带 nodeId（新建时记下的、续聊时从会话里读的），没有入口的不带', async () => {
     const a = gated()
     const b = gated()
     const runtime = runtimeWith([a.step, fauxAssistantMessage('普通'), b.step])
@@ -307,7 +307,7 @@ describe('按会话并发与中止', () => {
     a.release()
     await bound.done
 
-    // 续聊：请求里不带 nodeId，绑定从会话里来
+    // 续聊：请求里不带 nodeId，入口从会话里来
     const conversationId = runtime.changes.find(({ runs }) => runs.some((run) => run.runId === bound.runId))!.runs.find(
       (run) => run.runId === bound.runId,
     )!.conversationId

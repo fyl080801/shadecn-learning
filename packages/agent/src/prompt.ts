@@ -1,6 +1,6 @@
 import type * as Y from 'yjs'
 import { formatNodeMention, parseNodeMentions } from '@shadecn/shared/agent'
-import type { AgentSkill, SkillBoundNode } from './skills/registry.ts'
+import type { AgentSkill } from './skills/registry.ts'
 import { readNodeById } from './tools.ts'
 
 /**
@@ -36,23 +36,16 @@ export interface SystemPromptInput {
   catalog: readonly Pick<AgentSkill, 'id' | 'summary'>[]
   /** 这个会话以前加载过、这一轮不提供的 */
   unavailable: readonly { id: string; title: string }[]
-  boundNode: SkillBoundNode | null
   /** 每轮最多加载几次技能 */
   maxSkillLoads: number
 }
 
-function boundNodeSection(node: SkillBoundNode): string {
-  const head =
-    node.type === null
-      ? `这个会话绑定的节点 ${node.id} 已经不在画布上了（可能已被删除），据实告诉用户。`
-      : `这个会话绑定在节点 ${node.id} 上（类型 ${node.type}，名字「${node.label || node.id}」）：你在编辑的就是这个节点。`
-  return `## 会话范围\n${head}\n画布对你只读：可以读画布上别的节点（这个节点可能引用它们），但不能新建、修改、连线、删除或重排画布上的节点；只能通过它所属技能的工具改这个节点本身。`
-}
-
-/** 这一轮的系统提示：平台基础段 + 会话范围 + 已加载技能的提示段 + 不可用说明 + 技能目录（一轮之内不变） */
+/**
+ * 这一轮的系统提示：平台基础段 + 已加载技能的提示段 + 不可用说明 + 技能目录（一轮之内不变）。
+ * 没有「会话范围」段：所有会话都是全局 agent，改哪个节点由用户的提及和画布内容决定（docs/20 §3.10.9）。
+ */
 export function systemPromptFor(input: SystemPromptInput): string {
   const parts = [`${PLATFORM_PROMPT}一轮最多加载 ${input.maxSkillLoads} 次。`]
-  if (input.boundNode) parts.push(boundNodeSection(input.boundNode))
   if (input.loaded.length > 0) {
     parts.push(
       `## 已加载的技能\n\n${input.loaded.map((skill) => `### ${skill.title}（${skill.id}）\n${skill.prompt}`).join('\n\n')}`,

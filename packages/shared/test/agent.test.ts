@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   agentRunAbortPath,
   agentRunEventsPath,
+  canonicalSkillIds,
   formatAgentRunsMessage,
   parseAgentRunsMessage,
   withMine,
@@ -71,7 +72,7 @@ describe('任务列表消息', () => {
     })
   })
 
-  it('节点范围会话的 nodeId 原样带回；不是非空字符串就当没有，不丢整项', () => {
+  it('入口节点 nodeId 原样带回；不是非空字符串就当没有，不丢整项', () => {
     const bound = run({ runId: 'run_bound', nodeId: 'n_dir' })
     const plain = run()
     const payload = JSON.stringify({
@@ -95,5 +96,14 @@ describe('任务列表消息', () => {
   it('接回与中止的路径都挂在那一轮下面，id 做 URL 编码', () => {
     expect(agentRunEventsPath('f 1', 'run/1')).toBe('/api/flows/f%201/agent/runs/run%2F1/events')
     expect(agentRunAbortPath('f1', 'run_1')).toBe('/api/flows/f1/agent/runs/run_1/abort')
+  })
+})
+
+describe('技能 id', () => {
+  it('canonicalSkillIds：合并掉的 canvas-edit 换成 canvas，换完去重、保持首次出现的先后；别的 id 原样', () => {
+    expect(canonicalSkillIds(['canvas', 'canvas-edit', 'director'])).toEqual(['canvas', 'director'])
+    expect(canonicalSkillIds(['canvas-edit', 'notes', 'canvas'])).toEqual(['canvas', 'notes'])
+    expect(canonicalSkillIds(['media-view', 'gone'])).toEqual(['media-view', 'gone'])
+    expect(canonicalSkillIds([])).toEqual([])
   })
 })

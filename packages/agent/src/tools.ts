@@ -684,10 +684,10 @@ function mediaFailure(err: unknown, what: string): string {
   return `${what}暂时读不到，可以稍后再试，或据实告诉用户`
 }
 
-/** 只读的画布工具（技能 `canvas`） */
+/** 画布技能 `canvas` 里只读的工具 */
 export const CANVAS_READ_TOOL_NAMES = ['read_canvas', 'get_node', 'check_connection'] as const
 
-/** 写画布结构的工具（技能 `canvas-edit`） */
+/** 画布技能 `canvas` 里写画布的工具 */
 export const CANVAS_EDIT_TOOL_NAMES = [
   'add_node',
   'update_node',
@@ -702,7 +702,7 @@ export const CANVAS_EDIT_TOOL_NAMES = [
 ] as const
 
 /**
- * 画布工具按技能分三组取（docs/23 §4）：只读 / 写结构 / 看图。实现都在下面同一个闭包里 ——
+ * 画布工具按技能分组取（docs/23 §4）：画布技能（读 + 写）/ 看图。实现都在下面同一个闭包里 ——
  * 它们共享这一轮的 `runState`（删除预算、图片字节预算），**同一轮里几组要传同一份 `runState`**。
  */
 function pickTools(options: CanvasToolsOptions, names: readonly string[]): CanvasTool[] {
@@ -714,8 +714,9 @@ function pickTools(options: CanvasToolsOptions, names: readonly string[]): Canva
   })
 }
 
-export const createCanvasReadTools = (options: CanvasToolsOptions) => pickTools(options, CANVAS_READ_TOOL_NAMES)
-export const createCanvasEditTools = (options: CanvasToolsOptions) => pickTools(options, CANVAS_EDIT_TOOL_NAMES)
+/** 画布技能 `canvas` 的 13 个工具：读在前、写在后 */
+export const createCanvasBaseTools = (options: CanvasToolsOptions) =>
+  pickTools(options, [...CANVAS_READ_TOOL_NAMES, ...CANVAS_EDIT_TOOL_NAMES])
 export const createViewMediaTool = (options: CanvasToolsOptions) => pickTools(options, [VIEW_MEDIA_TOOL_NAME])[0]!
 
 /** 全部画布工具（三组之和）—— 工具单测用；编排层按技能取（`skills/`） */

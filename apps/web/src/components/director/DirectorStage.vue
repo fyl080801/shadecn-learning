@@ -86,8 +86,8 @@ import { useDirectorShapeMaterial } from "./useDirectorShapeMaterial"
 const props = defineProps<{
   nodeId: string
   /**
-   * 有绑定这个节点的 agent 任务在跑。为真时远端来的改动短暂高亮 —— 分不清改动来自 agent 还是同伴，
-   * 所以近似成「有绑定本节点的任务在跑时的远端改动」（docs/07 §7.5）
+   * 有入口是这个节点的 agent 任务在跑（之后换成占用本节点）。为真时远端来的改动短暂高亮 —— 分不清改动来自 agent 还是同伴，
+   * 所以近似成「有这样的任务在跑时的远端改动」（docs/07 §7.5）
    */
   agentEditing?: boolean
 }>()

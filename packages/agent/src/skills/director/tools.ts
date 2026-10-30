@@ -28,7 +28,7 @@ import { nodeGroupMap } from '@shadecn/shared/flow-doc'
 import * as ops from '@shadecn/shared/flow-ops'
 import { FlowOpError, type FlowOpContext } from '@shadecn/shared/flow-ops'
 import { TOOL_LIMITS, type CanvasTool, type CanvasToolDetails } from '../../tools.ts'
-import { assertBoundNode, type SkillContext } from '../registry.ts'
+import type { SkillContext } from '../registry.ts'
 
 /**
  * 导演台技能 `director` 的工具（docs/07 §7.3.1 写、§7.3.2 量）。和画布工具同一套规矩：
@@ -38,8 +38,8 @@ import { assertBoundNode, type SkillContext } from '../registry.ts'
  * 2. **量只走 `@shadecn/shared/director-eval`**（`canvas.read`，不写）：前端播放和这里的测量是同一份插值，
  *    量出来的就是人播放到那一刻看到的。
  * 3. **面向模型的单位是米、度、秒**。ops 的入参出参本来就是这套单位；eval 的时间参数是毫秒，在这里换。
- * 4. **每个工具都带 `nodeId`**，执行前 `assertBoundNode`：节点范围会话只能动它绑定的那个导演台（docs/07 §7.4）。
- *    执行永远在服务端（runner 只拿定义），`ctx.boundNode` 是服务端一轮开始时读到的。
+ * 4. **每个工具都带 `nodeId`**：点名画布上任意一个导演台节点都行 —— 没有会话范围（docs/20 §3.10.9），
+ *    改哪个导演台由 agent 按用户的提及和画布内容决定；不存在 / 不是导演台由 ops 报错。
  * 5. 参数 schema 严格（枚举、范围、数组 ≤ {@link DIRECTOR_LIMITS}.batch）：网关按同一份 schema 再校验一次，
  *    ops 按 director-doc 再校验一次；有一项不合格整个拒绝、文档不变。
  * 6. `details.elementIds` 是 `<nodeId>/<data 键>`（docs/20 §3.4.1，例如 `n_1/dc.obj.obj_x`）；读 / 量的工具为空。
@@ -572,10 +572,9 @@ function countBy<T extends string>(list: readonly { status: T }[], status: T): n
 export function createDirectorTools(ctx: SkillContext): CanvasTool[] {
   const { canvas, runState } = ctx
 
-  /** 每个工具的开头：nodeId 合法、在本会话的范围内 */
+  /** 每个工具的开头：nodeId 格式合法（存在、是导演台由 ops 判） */
   const guard = (nodeId: string) => {
     assertId(nodeId, 'nodeId')
-    assertBoundNode(ctx, nodeId)
   }
 
   /** 读：编好时间轴交给 fn（不写） */

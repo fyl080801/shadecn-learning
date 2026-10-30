@@ -1,5 +1,5 @@
 import type { AgentMessage } from '@mariozechner/pi-agent-core'
-import type { AgentChatMessage } from '@shadecn/shared/agent'
+import { canonicalSkillIds, type AgentChatMessage } from '@shadecn/shared/agent'
 import {
   parseCanvasDigest,
   type AgentConversationStore,
@@ -38,7 +38,8 @@ function toMeta(row: ConversationRow): StoredConversationMeta {
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
     nodeId: row.nodeId ?? null,
-    skills: parseArray<unknown>(row.skills).filter((id): id is string => typeof id === 'string'),
+    // 合并掉的旧 id（`canvas-edit` → `canvas`）读出时就换掉（docs/23 §4）
+    skills: canonicalSkillIds(parseArray<unknown>(row.skills).filter((id): id is string => typeof id === 'string')),
   }
 }
 

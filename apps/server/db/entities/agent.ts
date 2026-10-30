@@ -38,8 +38,8 @@ export const AgentConversation = defineEntity({
      */
     canvasDigest: p.text().strictNullable().lazy(),
     /**
-     * 节点范围会话绑定的节点 id（docs/07 §7.4）；普通会话为 null。建会话时定下，之后不改。
-     * 只是 id、不是外键：节点在 Y.Doc 里，不在库里；节点被删了会话照样在（下一轮的系统提示里说明）
+     * 会话的入口节点 id（docs/20 §3.10.9：从导演台里发起的会话记下这个节点，只用来在那里默认打开最近的会话）；没有为 null。
+     * 建会话时定下，之后不改；不限制工具、不触发技能加载。只是 id、不是外键：节点在 Y.Doc 里，不在库里；节点被删了会话照样在
      */
     nodeId: p.text().strictNullable(),
     /** 这个会话加载过的技能 id，JSON 字符串数组（docs/23 §3.4，只增不减）。列表要显示，不 lazy */

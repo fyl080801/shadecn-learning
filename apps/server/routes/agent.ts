@@ -166,7 +166,7 @@ export const agent = new Hono<Env>()
    * 流一开就是 200 了。这一轮从 `start()` 起就在跑，开流之前吐出来的事件先攒着（见 {@link sseRelay}）。
    *
    * `conversationId` 为空 = 新会话：编排层在这一轮开始时建好它，id 经 RUN_STARTED 的 `threadId` 带回。
-   * 新会话可以带 `nodeId` = 节点范围会话（docs/07 §7.4）：节点不在这张画布上 → 404；续聊时给 → 400（不能改绑）。
+   * 新会话可以带 `nodeId` = 会话的入口节点（docs/20 §3.10.9，只记录、不限制工具）：节点不在这张画布上 → 404；续聊时给 → 400。
    *
    * **客户端断开不中止这一轮**：只是发起者不再收事件，这一轮照常跑完、照常落库；
    * 重新打开画布后经 `GET /runs/:runId/events` 接回。中止只有 `POST /runs/:runId/abort`、时长上限、失权、服务端退出。

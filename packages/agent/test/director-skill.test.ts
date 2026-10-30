@@ -16,7 +16,6 @@ import {
   DIRECTOR_WRITE_TOOL_NAMES,
   directorSkill,
   NO_SANDBOX,
-  type SkillBoundNode,
 } from '../src/skills/index.ts'
 import { createMemoryConversationStore, createMemoryRunLog } from '../src/store.ts'
 import { createInlineDriver, gatewayFetch, loadSkillStep, registerScriptedModel, type ScriptedStep } from '../src/testing.ts'
@@ -24,7 +23,7 @@ import { createCanvasTools, TOOL_LIMITS, type CanvasTool, type ToolRunState } fr
 
 /**
  * 导演台技能 `director`（docs/07 §7.3.1–§7.3.2、§7.4）：
- * - 端到端（scripted model + 进程内 runner，网关按 schema 再校验、按技能判加载）：自动加载 / 按需加载、节点范围会话、写 → 量的数值闭环；
+ * - 端到端（scripted model + 进程内 runner，网关按 schema 再校验、按技能判加载）：提及自动加载 / 按需加载、全局 agent（任意导演台）、写 → 量的数值闭环；
  * - 其余直接对 `createDocCanvasHandle` 上的工具测：删除预算、整批拒绝且文档不变、按秒取时刻、elementIds、画布工具不碰 dc.*。
  */
 
@@ -40,7 +39,7 @@ const json = (res: { content: { type: string; text?: string }[] }) => JSON.parse
 
 // —— 直接对工具测 ——
 
-function setup(options: { boundNode?: SkillBoundNode | null; runState?: ToolRunState } = {}) {
+function setup(options: { runState?: ToolRunState } = {}) {
   const doc = new Y.Doc()
   doc.transact(() => {
     seedNode(doc, 'n_dir', 'director', '片头')
@@ -54,10 +53,7 @@ function setup(options: { boundNode?: SkillBoundNode | null; runState?: ToolRunS
   const canvas = createDocCanvasHandle(doc, { flowId: 'f1', runId: 'run_1' })
   const runState = options.runState ?? { deleted: 0, mediaBytes: 0 }
   const tools = new Map(
-    createDirectorTools({ side: 'server', canvas, runState, sandbox: NO_SANDBOX, boundNode: options.boundNode ?? null }).map((tool) => [
-      tool.name,
-      tool,
-    ]),
+    createDirectorTools({ side: 'server', canvas, runState, sandbox: NO_SANDBOX }).map((tool) => [tool.name, tool]),
   )
   const canvasTools = new Map(createCanvasTools({ canvas, runState }).map((tool) => [tool.name, tool]))
   const toolOf = (name: string) => (tools.get(name) ?? canvasTools.get(name)) as CanvasTool
@@ -105,7 +101,7 @@ describe('技能定义', () => {
     expect(BUILTIN_SKILLS.get('director')).toBe(directorSkill)
     expect(directorSkill.activation).toBe('auto')
     expect(directorSkill.activatesFor?.nodeTypes).toEqual(['director'])
-    const tools = BUILTIN_SKILLS.get('director')!.tools({ side: 'runner', canvas: { flowId: '', read: vi.fn(), write: vi.fn() }, runState: { deleted: 0, mediaBytes: 0 }, sandbox: NO_SANDBOX, boundNode: null })
+    const tools = BUILTIN_SKILLS.get('director')!.tools({ side: 'runner', canvas: { flowId: '', read: vi.fn(), write: vi.fn() }, runState: { deleted: 0, mediaBytes: 0 }, sandbox: NO_SANDBOX })
     expect(tools.map((tool) => tool.name).sort()).toEqual([...DIRECTOR_TOOLS].sort())
     for (const tool of tools) expect(tool.execution ?? 'gateway').toBe('gateway')
     const capability = Object.fromEntries(tools.map((tool) => [tool.name, tool.capability]))
@@ -375,19 +371,18 @@ describe('画布工具不碰 dc.*', () => {
   })
 })
 
-describe('节点范围（直接调工具）', () => {
-  it('绑定 n_dir：对 n_dir 照常；对别的导演台的读写量全部被拒', async () => {
-    const env = setup({ boundNode: { id: 'n_dir', type: 'director', label: '片头' } })
-    const { cube } = await addTableAndCube(env)
-    for (const [name, args] of [
-      ['get_director_scene', { nodeId: 'n_b' }],
-      ['add_objects', { nodeId: 'n_b', objects: [{ kind: 'box' }] }],
-      ['measure_objects', { nodeId: 'n_b' }],
-      ['check_scene', { nodeId: 'n_b' }],
-      ['delete_director_elements', { nodeId: 'n_b', objectIds: [cube] }],
-    ] as const) {
-      expect(await rejected(env, () => env.call(name, args))).toContain('只能操作它')
-    }
+describe('没有会话范围（直接调工具，docs/20 §3.10.9）', () => {
+  it('同一套工具对画布上任意导演台都能读写量；点名不是导演台的节点由 ops 拒绝、文档不变', async () => {
+    const env = setup()
+    await addTableAndCube(env)
+    const added = json(await env.call('add_objects', { nodeId: 'n_b', objects: [{ kind: 'box', name: '箱子' }] }))
+    expect(json(await env.call('get_director_scene', { nodeId: 'n_b' })).objects.map((object: { name: string }) => object.name)).toEqual(['箱子'])
+    expect(json(await env.call('measure_objects', { nodeId: 'n_b' })).objects).toHaveLength(1)
+    await env.call('delete_director_elements', { nodeId: 'n_b', objectIds: [added.objects[0].id] })
+    expect(sceneOf(env.doc, 'n_b').objects.size).toBe(0)
+    // 另一个导演台没被碰
+    expect(sceneOf(env.doc, 'n_dir').objects.size).toBe(2)
+    await rejected(env, () => env.call('add_objects', { nodeId: 'n_txt', objects: [{ kind: 'box' }] }))
   })
 })
 
@@ -501,8 +496,8 @@ describe('端到端：自动加载与按需加载', () => {
   })
 })
 
-describe('端到端：节点范围会话（绑定导演台 A）', () => {
-  it('canvas-edit 不在；对 A 写 → 量闭环成功（底面误差 < 1mm），elementIds 进审计；对 B 的写和量都被拒、B 不变', async () => {
+describe('端到端：从导演台 A 发起的会话（入口 nodeId + 提及 A，全局 agent）', () => {
+  it('canvas 工具全在；对 A 写 → 量闭环成功（底面误差 < 1mm），elementIds 进审计；也能改导演台 B、加画布节点', async () => {
     const doc = new Y.Doc()
     seedNode(doc, 'n_a', 'director', '片头')
     seedNode(doc, 'n_b', 'director', '片尾')
@@ -526,18 +521,19 @@ describe('端到端：节点范围会话（绑定导演台 A）', () => {
       }),
       step(() => toolCall('measure_objects', { nodeId: 'n_a', objectIds: [ids.cube] })),
       step(() => toolCall('check_scene', { nodeId: 'n_a' })),
-      step(() => toolCall('add_objects', { nodeId: 'n_b', objects: [{ kind: 'box' }] })),
-      step(() => toolCall('measure_objects', { nodeId: 'n_b' })),
+      step(() => toolCall('add_objects', { nodeId: 'n_b', objects: [{ kind: 'box', name: '片尾的箱子' }] })),
+      step(() => toolCall('add_node', { type: 'text', metadata: { label: '分镜说明' } })),
       step(() => fauxAssistantMessage('搭好了')),
     ])
-    const before = JSON.stringify(dataOf(doc, 'n_b'))
-    const { events, threadId } = await run(runtime, doc, { nodeId: 'n_a' })
+    // 导演台里发起的新会话：前端在开头放上这个导演台的提及，第一条消息带入口 nodeId
+    const { events, threadId } = await run(runtime, doc, { nodeId: 'n_a', text: `${formatNodeMention('n_a')} 搭个桌子` })
     expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
 
-    // 第一次请求：导演台工具自动加载，写画布结构的工具不在
+    // 第一次请求：提及触发导演台工具自动加载，画布工具一个不少
     const first = requests[0]!
-    expect(first.tools).toEqual(expect.arrayContaining([...DIRECTOR_TOOLS, 'read_canvas', 'get_node']))
-    for (const name of ['add_node', 'update_node', 'connect', 'delete_elements', 'auto_layout']) expect(first.tools).not.toContain(name)
+    expect(first.tools).toEqual(
+      expect.arrayContaining([...DIRECTOR_TOOLS, 'read_canvas', 'get_node', 'add_node', 'update_node', 'connect', 'delete_elements', 'auto_layout']),
+    )
 
     // 量出来的底面高度就是桌面高度
     const measured = lastResult(requests[3]!.context)
@@ -550,12 +546,11 @@ describe('端到端：节点范围会话（绑定导演台 A）', () => {
       ['place_object', false],
       ['measure_objects', false],
       ['check_scene', false],
-      ['add_objects', true],
-      ['measure_objects', true],
+      ['add_objects', false],
+      ['add_node', false],
     ])
-    expect(results[4]!.text).toContain('只能操作它')
-    expect(results[5]!.text).toContain('只能操作它')
-    expect(JSON.stringify(dataOf(doc, 'n_b'))).toBe(before)
+    expect([...sceneOf(doc, 'n_b').objects.values()].map((object) => object.name)).toEqual(['片尾的箱子'])
+    expect([...nodesMap(doc).values()].map((node) => (node.get('metadata') as Y.Map<unknown>).get('label'))).toContain('分镜说明')
 
     // 审计里的 elementIds：写的是 <nodeId>/<键>，读 / 量的为空
     const calls = runtime.runLog.toolCalls.map((call) => [call.name, call.ok, call.elementIds] as const)

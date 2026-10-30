@@ -1,7 +1,7 @@
 import type { AgentEvent, AgentMessage, AgentToolResult } from '@mariozechner/pi-agent-core'
 import type { Api, Model } from '@mariozechner/pi-ai'
 import { withoutImages } from './media.ts'
-import type { AgentSkillId, SkillBoundNode } from './skills/registry.ts'
+import type { AgentSkillId } from './skills/registry.ts'
 import type { CanvasToolDetails } from './tools.ts'
 
 /**
@@ -45,7 +45,7 @@ import type { CanvasToolDetails } from './tools.ts'
  * 回 {@link PROTOCOL_MISMATCH_STATUS} + {@link ProtocolMismatchBody}（和 401 能区分），编排层以 `runner_protocol_mismatch` 收尾。
  * `process` 驱动直接跑源码，永远一致。
  */
-export const RUNNER_PROTOCOL_VERSION = 2
+export const RUNNER_PROTOCOL_VERSION = 3
 
 /** 版本不一致时网关的 HTTP 状态码与 `error` 字段（不要和 401 混：令牌失效是另一回事） */
 export const PROTOCOL_MISMATCH_STATUS = 409
@@ -140,8 +140,6 @@ export interface RunnerInput {
    * 网关的回复带着新加载的技能 id，runner 再把它的工具并进来。runner 不可信：网关只执行服务端记着「已加载」的技能里的工具。
    */
   skills: { loaded: AgentSkillId[]; offered: AgentSkillId[] }
-  /** 节点范围会话绑定的节点（docs/07 §7.4）；普通会话为 null。工具定义可以按它措辞，校验在服务端 */
-  boundNode: SkillBoundNode | null
   model: RunnerModel
   limits: {
     /** 一轮里最多几次工具调用；网关另外按同一个数硬拦画布工具 */

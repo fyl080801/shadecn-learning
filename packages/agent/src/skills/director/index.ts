@@ -7,7 +7,7 @@ export { createDirectorTools, DIRECTOR_READ_TOOL_NAMES, DIRECTOR_WRITE_TOOL_NAME
 
 /**
  * 导演台技能 `director`：写 + 量（docs/07 §7.3.1–§7.3.2，docs/23 §4）。全是网关工具，不要 `sandbox:exec`、不要渲染服务，
- * 任何部署都能用。`auto`：会话绑定的是导演台节点、或用户这条消息 `@` 了导演台节点时一开始就加载，否则进技能目录。
+ * 任何部署都能用。`auto`：用户这条消息 `@` 了导演台节点时一开始就加载，否则进技能目录。
  *
  * `requires` 比 docs/23 §4 的表多一项 `flow:delete`：`delete_director_elements` 和画布的删除类工具同一个口径
  * （`flow:delete`，花同一份每轮删除预算），注册表要求 `requires` 覆盖每个工具的能力。
@@ -21,7 +21,7 @@ export const directorSkill = defineSkill({
   id: 'director',
   title: '导演台',
   summary: '编辑导演台节点里的 3D 场景与动画：新建 / 摆放 / 对齐几何体、机位、灯光，打关键帧、运动预设，并精确测量包围盒、距离、穿插和机位取景',
-  prompt: `导演台（director 节点）里是一个可播放的 3D 场景：对象（几何体 box / sphere / cone / cylinder / plane、机位 camera、灯光 light）、轨道和关键帧。所有工具都要给 nodeId（导演台节点的 id）。场景只能用这里的工具读写，不能用 update_node 改 data 里的 dc.* 键。
+  prompt: `导演台（director 节点）里是一个可播放的 3D 场景：对象（几何体 box / sphere / cone / cylinder / plane、机位 camera、灯光 light）、轨道和关键帧。所有工具都要给 nodeId（导演台节点的 id）：画布上任何一个导演台都能改，用户 \`@\` 提及的导演台就是他指的那个；没有提及、画布上又有好几个导演台时，按名字和内容判断，拿不准就先问用户。场景只能用这里的工具读写，不能用 update_node 改 data 里的 dc.* 键。
 
 坐标与单位：
 - 单位一律是米、度、秒（存储时工具自己换算，你不用碰弧度和毫秒）。

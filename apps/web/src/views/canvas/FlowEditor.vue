@@ -30,7 +30,8 @@ const router = useRouter()
 const editor = provideFlowEditor(props)
 useFlowShortcuts(editor)
 // 右上角对话框和工具栏快捷输入共用的那一份 agent（docs/20）；任务列表经 `editor.sync` 的 stateless 推送更新
-provideFlowAgentPanel(editor)
+// 画布选区就是「选中的节点」：快捷会话 / 新会话的空输入框开头自动带上它们的提及（docs/20 §3.10.9）
+provideFlowAgentPanel(editor, { selection: () => editor.canvas.selectedNodeIds.value })
 
 const { sync, document: doc } = editor
 
