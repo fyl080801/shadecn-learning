@@ -227,7 +227,7 @@ GitHub OAuth App 的 Authorization callback URL 填 `$APP_ORIGIN/api/auth/callba
 
 | 资源 | key | 说明 |
 |---|---|---|
-| ConfigMap `dev/shadecn-learning-agent` | `AGENT_PROVIDER`、`AGENT_MODEL`、`AGENT_BASE_URL`、`AGENT_API`、`AGENT_IMAGE_INPUT` | 非密钥的模型配置 |
+| ConfigMap `dev/shadecn-learning-agent` | `AGENT_PROVIDER`、`AGENT_MODEL`、`AGENT_BASE_URL`、`AGENT_API`、`AGENT_IMAGE_INPUT` | 非密钥的模型配置（需要时可另加 `AGENT_CONTEXT_WINDOW`、`AGENT_MAX_TOKENS`：自建端点的上下文窗口 / 单次输出，不配按 128000 / 8192） |
 | Secret `dev/shadecn-learning-agent` | `AGENT_API_KEY`、`AGENT_TOKEN_SECRET` | 模型 key、签 run 短令牌的密钥 |
 | ConfigMap `dev/shadecn-learning-s3` | `S3_ENDPOINT`、`S3_INTERNAL_ENDPOINT`、`S3_REGION`、`S3_BUCKET` | 画布资源（图片 / 视频）上传的对象存储（[13-flow-canvas-management.md](13-flow-canvas-management.md)「资源上传」） |
 | Secret `dev/shadecn-learning-s3` | `S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY` | 对象存储的凭据 |

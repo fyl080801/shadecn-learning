@@ -45,6 +45,31 @@ describe('resolveAgentModel', () => {
     expect(again.ok && again.value.model.input).toContain('image')
   })
 
+  it('上下文窗口 / 单次输出：自定义端点默认 128000 / 8192，给了就覆盖（注册表里的模型也能改，且不改注册表本身）', () => {
+    const custom = { provider: 'my-proxy', model: 'qwen-max', baseUrl: 'http://llm.internal/v1', api: 'openai-completions', apiKey: 'k' }
+    const plain = resolveAgentModel(custom)
+    expect(plain.ok && plain.value.model).toMatchObject({ contextWindow: 128_000, maxTokens: 8192 })
+    const big = resolveAgentModel({ ...custom, contextWindow: 1_000_000, maxTokens: 32_768 })
+    expect(big.ok && big.value.model).toMatchObject({ contextWindow: 1_000_000, maxTokens: 32_768 })
+
+    const registered = resolveAgentModel({ provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    const window = registered.ok ? registered.value.model.contextWindow : 0
+    const small = resolveAgentModel({ provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'k', contextWindow: 50_000, maxTokens: 4096 })
+    expect(small.ok && small.value.model).toMatchObject({ contextWindow: 50_000, maxTokens: 4096 })
+    const again = resolveAgentModel({ provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    expect(again.ok && again.value.model.contextWindow).toBe(window)
+  })
+
+  it('上下文窗口 / 单次输出不是正整数，或单次输出不小于窗口 → 未启用并说明原因', () => {
+    const custom = { provider: 'my-proxy', model: 'qwen-max', baseUrl: 'http://llm.internal/v1', api: 'openai-completions', apiKey: 'k' }
+    expect(resolveAgentModel({ ...custom, contextWindow: 0 })).toMatchObject({ ok: false, reason: expect.stringContaining('contextWindow 必须是正整数') })
+    expect(resolveAgentModel({ ...custom, maxTokens: 1.5 })).toMatchObject({ ok: false, reason: expect.stringContaining('maxTokens 必须是正整数') })
+    expect(resolveAgentModel({ ...custom, contextWindow: 8192 })).toMatchObject({
+      ok: false,
+      reason: 'maxTokens（8192）必须小于 contextWindow（8192）',
+    })
+  })
+
   it('自定义 baseUrl：注册表模型的「对话中途 system 消息 / 工具变更」compat 强制关掉，其余 compat 保留；官方地址保持注册表默认', () => {
     // claude-opus-5 在 pi 1.4 的注册表里两项都是 true
     const official = resolveAgentModel({ provider: 'anthropic', model: 'claude-opus-5', apiKey: 'k' })

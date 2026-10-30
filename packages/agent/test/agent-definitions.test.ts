@@ -109,9 +109,12 @@ describe('解析 pi 格式的定义文件', () => {
 })
 
 describe('注册表的启动校验', () => {
-  it('仓库里的定义：只有 canvas，没写 tools / model，正文是原来平台段的第一句', () => {
+  it('仓库里的定义：canvas 没写 tools / model，正文是原来平台段的第一句；reviewer 只有读工具、不能调用别的 agent', () => {
     const registry = testAgentRegistry()
-    expect(registry.agents.map((agent) => agent.name)).toEqual([ENTRY_AGENT_NAME])
+    expect(registry.agents.map((agent) => agent.name)).toEqual([ENTRY_AGENT_NAME, 'reviewer'])
+    const reviewer = registry.agents.find((agent) => agent.name === 'reviewer')!
+    expect(reviewer.tools).toEqual(['read_canvas', 'get_node'])
+    expect(reviewer.model).toBeUndefined()
     expect(registry.entry).toMatchObject({ name: 'canvas', systemPrompt: OLD_IDENTITY })
     expect(registry.entry.tools).toBeUndefined()
     expect(registry.entry.model).toBeUndefined()

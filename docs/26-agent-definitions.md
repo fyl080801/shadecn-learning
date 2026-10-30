@@ -98,7 +98,9 @@ model: default                                          # 可省略 = default
 
 ### 3.4 模型
 
-- 服务端配置一张**模型表**：每项一个 key，内容同 `AgentModelOptions`（provider / model / baseUrl / api / apiKey / imageInput）。
+- 服务端配置一张**模型表**：每项一个 key，内容同 `AgentModelOptions`（provider / model / baseUrl / api / apiKey / imageInput / contextWindow / maxTokens）。
+  `contextWindow` / `maxTokens` 不写按 pi 注册表的元数据，注册表里没有的（自建端点、ollama）按保守默认 128000 / 8192；`default` 用 `AGENT_CONTEXT_WINDOW` / `AGENT_MAX_TOKENS`。
+  `maxTokens` 必须小于 `contextWindow`，否则这一项不可用（同解析不出来的模型）。
   - **`default`** 就是 `AGENT_PROVIDER` / `AGENT_MODEL` / `AGENT_BASE_URL` / `AGENT_API` / `AGENT_API_KEY` / `AGENT_IMAGE_INPUT`（行为不变，含没给 key 时按提供方自己的环境变量退回）；
   - **其余的项**在一个 JSON 文件里，默认 `<DATA_DIR>/agent-models.json`（不在仓库里），`AGENT_MODELS_FILE` 可换路径（相对路径按应用根目录算；k8s 上可以挂一个 ConfigMap 文件）。
     文件不存在 = 模型表只有 `default`：

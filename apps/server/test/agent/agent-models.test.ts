@@ -16,11 +16,11 @@ describe('解析模型表文件（形状不对 → 启动失败）', () => {
     expect(
       parse({
         fast: { provider: 'anthropic', model: 'claude-haiku-4-5', apiKey: '$AGENT_FAST_KEY' },
-        vision: { provider: 'my-proxy', model: 'qwen-vl', baseUrl: 'https://llm.internal/v1', api: 'openai-completions', imageInput: true },
+        vision: { provider: 'my-proxy', model: 'qwen-vl', baseUrl: 'https://llm.internal/v1', api: 'openai-completions', imageInput: true, contextWindow: 32768, maxTokens: 4096 },
       })(),
     ).toEqual({
       fast: { provider: 'anthropic', model: 'claude-haiku-4-5', apiKeyEnv: 'AGENT_FAST_KEY' },
-      vision: { provider: 'my-proxy', model: 'qwen-vl', baseUrl: 'https://llm.internal/v1', api: 'openai-completions', imageInput: true },
+      vision: { provider: 'my-proxy', model: 'qwen-vl', baseUrl: 'https://llm.internal/v1', api: 'openai-completions', imageInput: true, contextWindow: 32768, maxTokens: 4096 },
     })
     expect(parse({})()).toEqual({})
   })
@@ -40,6 +40,8 @@ describe('解析模型表文件（形状不对 → 启动失败）', () => {
   it('不认识的字段、字段类型不对、缺 provider / model → 抛错', () => {
     expect(parse({ fast: { provider: 'anthropic', model: 'x', apikey: '$K' } })).toThrow(/「fast」：不认识的字段 apikey/)
     expect(parse({ fast: { provider: 'anthropic', model: 'x', imageInput: 'yes' } })).toThrow(/imageInput 必须是 true \/ false/)
+    expect(parse({ fast: { provider: 'anthropic', model: 'x', contextWindow: '200000' } })).toThrow(/contextWindow 必须是正整数/)
+    expect(parse({ fast: { provider: 'anthropic', model: 'x', maxTokens: -1 } })).toThrow(/maxTokens 必须是正整数/)
     expect(parse({ fast: { provider: 'anthropic', model: 3 } })).toThrow(/model 必须是字符串/)
     expect(parse({ fast: { model: 'x' } })).toThrow(/缺少 provider/)
     expect(parse({ fast: { provider: 'anthropic', model: '  ' } })).toThrow(/缺少 model/)
@@ -84,6 +86,18 @@ describe('解析每一项（用不了 → 不可用，不抛）', () => {
     expect(resolveAgentModelTable(specs, {}).fast).toEqual({ ok: false, reason: '没有 anthropic 的 API key' })
     // ollama 不要 key（预设补占位）
     expect(resolveAgentModelTable({ local: { provider: 'ollama', model: 'qwen3' } }, {}).local).toMatchObject({ ok: true })
+  })
+
+  it('contextWindow / maxTokens 交给解析：覆盖自定义端点的默认值；单次输出不小于窗口 → 不可用（不是启动错误）', () => {
+    const table = resolveAgentModelTable(
+      {
+        local: { provider: 'ollama', model: 'qwen3', contextWindow: 262_144, maxTokens: 32_768 },
+        wrong: { provider: 'ollama', model: 'qwen3', contextWindow: 4096 },
+      },
+      {},
+    )
+    expect(table.local).toMatchObject({ ok: true, value: { model: { contextWindow: 262_144, maxTokens: 32_768 } } })
+    expect(table.wrong).toMatchObject({ ok: false, reason: 'maxTokens（8192）必须小于 contextWindow（4096）' })
   })
 
   it('pi 注册表里没有、线协议不支持：不可用，带原因；imageInput 照样覆盖', () => {

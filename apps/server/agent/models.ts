@@ -10,7 +10,7 @@ import { agentModelsFile, agentProviderApiKey } from '../config.ts'
  * ```json
  * { "fast":   { "provider": "anthropic", "model": "claude-haiku-5-5", "apiKey": "$AGENT_FAST_KEY" },
  *   "vision": { "provider": "my-proxy", "model": "qwen-vl", "baseUrl": "https://…", "api": "openai-completions",
- *               "apiKey": "$AGENT_VISION_KEY", "imageInput": true } }
+ *               "apiKey": "$AGENT_VISION_KEY", "imageInput": true, "contextWindow": 32768, "maxTokens": 4096 } }
  * ```
  *
  * 解析文件、读环境变量是宿主的事（`@shadecn/agent/model` 只收显式的参数对象）。两类错误分开：
@@ -31,6 +31,9 @@ export interface AgentModelSpec {
   /** 环境变量名（文件里写 `"$NAME"`）；不写 = 按提供方退回 */
   apiKeyEnv?: string
   imageInput?: boolean
+  /** 上下文窗口 / 单次最多输出（正整数）；不写 = 按注册表元数据，自建端点按保守默认（同 `default` 的 `AGENT_CONTEXT_WINDOW` / `AGENT_MAX_TOKENS`） */
+  contextWindow?: number
+  maxTokens?: number
 }
 
 /** 模型表的 key：同 agent 定义的 `name`（小写字母开头，小写字母、数字、`-`） */
@@ -39,7 +42,9 @@ const MODEL_KEY_REGEX = /^[a-z][a-z0-9-]{0,47}$/
 const ENV_REF_REGEX = /^\$([A-Za-z_][A-Za-z0-9_]*)$/
 
 const STRING_FIELDS = ['provider', 'model', 'baseUrl', 'api', 'apiKey'] as const
-const KNOWN_FIELDS = new Set<string>([...STRING_FIELDS, 'imageInput'])
+const INTEGER_FIELDS = ['contextWindow', 'maxTokens'] as const
+const KNOWN_FIELDS = new Set<string>([...STRING_FIELDS, 'imageInput', ...INTEGER_FIELDS])
+const FIELD_LIST = 'provider / model / baseUrl / api / apiKey / imageInput / contextWindow / maxTokens'
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -61,15 +66,19 @@ export function parseAgentModelTable(text: string, filePath: string): Record<str
       throw new Error(`${at}：${DEFAULT_AGENT_MODEL} 不能写在文件里，它来自 AGENT_PROVIDER / AGENT_MODEL / AGENT_BASE_URL / AGENT_API / AGENT_API_KEY`)
     }
     if (!MODEL_KEY_REGEX.test(key)) throw new Error(`${at}：key 不合法（小写字母开头，只能有小写字母、数字、-，最长 48）`)
-    if (!isRecord(value)) throw new Error(`${at}：必须是对象（provider / model / baseUrl / api / apiKey / imageInput）`)
+    if (!isRecord(value)) throw new Error(`${at}：必须是对象（${FIELD_LIST}）`)
     const unknown = Object.keys(value).filter((field) => !KNOWN_FIELDS.has(field))
     if (unknown.length > 0) {
-      throw new Error(`${at}：不认识的字段 ${unknown.join('、')}（只认 provider / model / baseUrl / api / apiKey / imageInput）`)
+      throw new Error(`${at}：不认识的字段 ${unknown.join('、')}（只认 ${FIELD_LIST}）`)
     }
     for (const field of STRING_FIELDS) {
       if (value[field] !== undefined && typeof value[field] !== 'string') throw new Error(`${at}：${field} 必须是字符串`)
     }
     if (value.imageInput !== undefined && typeof value.imageInput !== 'boolean') throw new Error(`${at}：imageInput 必须是 true / false`)
+    for (const field of INTEGER_FIELDS) {
+      const raw = value[field]
+      if (raw !== undefined && !(typeof raw === 'number' && Number.isInteger(raw) && raw > 0)) throw new Error(`${at}：${field} 必须是正整数`)
+    }
     const provider = (value.provider as string | undefined)?.trim() ?? ''
     const model = (value.model as string | undefined)?.trim() ?? ''
     if (!provider) throw new Error(`${at}：缺少 provider`)
@@ -88,6 +97,8 @@ export function parseAgentModelTable(text: string, filePath: string): Record<str
       ...(typeof value.api === 'string' && value.api.trim() ? { api: value.api.trim() } : {}),
       ...(apiKeyEnv ? { apiKeyEnv } : {}),
       ...(typeof value.imageInput === 'boolean' ? { imageInput: value.imageInput } : {}),
+      ...(typeof value.contextWindow === 'number' ? { contextWindow: value.contextWindow } : {}),
+      ...(typeof value.maxTokens === 'number' ? { maxTokens: value.maxTokens } : {}),
     }
   }
   return table
@@ -132,6 +143,8 @@ export function resolveAgentModelTable(
       ...(spec.api !== undefined ? { api: spec.api } : {}),
       apiKey,
       ...(spec.imageInput !== undefined ? { imageInput: spec.imageInput } : {}),
+      ...(spec.contextWindow !== undefined ? { contextWindow: spec.contextWindow } : {}),
+      ...(spec.maxTokens !== undefined ? { maxTokens: spec.maxTokens } : {}),
     }
     table[key] = resolveAgentModel(options)
   }

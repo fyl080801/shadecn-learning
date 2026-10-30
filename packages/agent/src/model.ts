@@ -35,6 +35,16 @@ export interface AgentModelOptions {
    * 给了就覆盖：自建的多模态端点声明 `true`，注册表里的模型也可以用 `false` 关掉。
    */
   imageInput?: boolean
+  /**
+   * 上下文窗口（token）。不给 = 按注册表的元数据，自定义端点 / 预设是 {@link CUSTOM_DEFAULTS} 的保守值；
+   * 给了就覆盖（注册表里的模型也可以改）。它决定跨轮历史的 token 预算和「超出上下文窗口」的判断
+   */
+  contextWindow?: number
+  /**
+   * 模型单次最多输出多少 token（模型的能力，不是每次请求的上限）。不给 = 按注册表 / {@link CUSTOM_DEFAULTS}；
+   * 每次请求实际的输出上限还要再和宿主的上限取小（`model-stream.ts` 的 `outputTokenLimit`）
+   */
+  maxTokens?: number
 }
 
 export interface ResolvedAgentModel {
@@ -48,7 +58,7 @@ export type ModelResolution =
   | { ok: true; value: ResolvedAgentModel }
   | { ok: false; reason: string }
 
-/** 自定义端点没有元数据可查，给一组保守的默认值 */
+/** 自定义端点没有元数据可查，给一组保守的默认值（`contextWindow` / `maxTokens` 可用 {@link AgentModelOptions} 覆盖） */
 const CUSTOM_DEFAULTS = {
   reasoning: false,
   input: ['text'] as ('text' | 'image')[],
@@ -160,6 +170,17 @@ export function resolveAgentModel(options: AgentModelOptions): ModelResolution {
   // 声明了就覆盖（注册表里的对象是共享的，复制一份再改）
   if (options.imageInput !== undefined) {
     model = { ...model, input: options.imageInput ? ['text', 'image'] : ['text'] }
+  }
+  for (const field of ['contextWindow', 'maxTokens'] as const) {
+    const value = options[field]
+    if (value !== undefined && !(Number.isInteger(value) && value > 0)) {
+      return { ok: false, reason: `${field} 必须是正整数（现在是 ${value}）` }
+    }
+  }
+  if (options.contextWindow !== undefined) model = { ...model, contextWindow: options.contextWindow }
+  if (options.maxTokens !== undefined) model = { ...model, maxTokens: options.maxTokens }
+  if (model.maxTokens >= model.contextWindow) {
+    return { ok: false, reason: `maxTokens（${model.maxTokens}）必须小于 contextWindow（${model.contextWindow}）` }
   }
 
   return { ok: true, value: { model, apiKey, label: model.name || modelId } }

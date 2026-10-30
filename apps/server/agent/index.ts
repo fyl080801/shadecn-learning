@@ -226,6 +226,8 @@ function buildRuntime(): AgentRuntime {
     api: agentConfig.api,
     apiKey,
     ...(agentConfig.imageInput !== undefined ? { imageInput: agentConfig.imageInput } : {}),
+    ...(agentConfig.contextWindow !== undefined ? { contextWindow: agentConfig.contextWindow } : {}),
+    ...(agentConfig.maxTokens !== undefined ? { maxTokens: agentConfig.maxTokens } : {}),
   })
   // 入口 agent（canvas）的模型不可用 = agent 没开（同以前没配模型）；别的 agent 的不可用到 run_agent 点名它时才报
   const entryKey = agentModelKey(agentDefinitions.entry)
