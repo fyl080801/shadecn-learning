@@ -655,7 +655,7 @@ export function agentConversationPath(flowId: string, conversationId?: string): 
 //
 // 为什么自己声明而不依赖 `@ag-ui/core`：本包只放类型和纯函数、不引第三方运行时，
 // 而这里只用得到十来个字段；协议字段名照抄，将来前端换 `@ag-ui/client` 直接能读。
-// pi（`@mariozechner/pi-agent-core`）自己没有对外的线上协议 —— 它的 `AgentEvent`
+// pi（`@earendil-works/pi-agent-core`）自己没有对外的线上协议 —— 它的 `AgentEvent`
 // 只在进程内 `subscribe`，映射成 AG-UI 在 `@shadecn/agent` 里集中做。
 //
 // 顺序：

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentEvent } from '@mariozechner/pi-agent-core'
+import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import { AGENT_CANVAS_CHANGE_EVENT, AGENT_SUBTASK_EVENT, AGENT_USER_MESSAGE_EVENT, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { createRunEventMapper } from '../src/events.ts'
 

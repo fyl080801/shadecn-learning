@@ -1,25 +1,21 @@
-import {
-  getModel,
-  type Api,
-  type KnownProvider,
-  type Model,
-  type OpenAICompletionsCompat,
-} from '@mariozechner/pi-ai'
+import type { Api, Model, OpenAICompletionsCompat } from '@earendil-works/pi-ai'
+import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all'
 
 /**
  * 选模型 —— 输入是一个**显式的参数对象**，本包不读 `process.env`。
  *
  * 环境变量怎么解析（`AGENT_PROVIDER` / `AGENT_MODEL` / `AGENT_BASE_URL` / `AGENT_API` /
- * `AGENT_API_KEY`，以及没给 key 时退回 pi 的 `getEnvApiKey(provider)`）是宿主的事，
+ * `AGENT_API_KEY`，以及没给 key 时按提供方退回它自己的环境变量）是宿主的事，
  * 在 `apps/server/config.ts` 和 `apps/server/agent/` 里。这样这个包测起来不用摆弄环境，
  * 换一个宿主（CLI、别的服务）也不会被一份它不认识的环境约定绑住。
  *
  * 三条路：
  * - **内置预设**（目前只有 `ollama`，见 {@link PROVIDER_PRESETS}）：pi 的注册表里没有它，
  *   但地址、线协议、兼容开关都是固定的，不该让每个人在环境变量里重抄一遍；
- * - **注册表里有的**（`provider` + `model` 能被 pi 的 `getModel` 认出来）：直接用；
+ * - **注册表里有的**（`provider` + `model` 能被 pi 的 `getBuiltinModel` 认出来）：直接用；
  * - **给了 `baseUrl`**：OpenAI 兼容端点 / 代理 —— 构造一个自定义 `Model`，`api` 决定走哪种线协议。
- *   注册表里恰好也有这个模型的话，以它的元数据（上下文窗口、价格）为底，只换掉地址。
+ *   注册表里恰好也有这个模型的话，以它的元数据（上下文窗口、价格）为底，只换掉地址 ——
+ *   但**对话中途的系统消息一律关掉**（{@link CUSTOM_ENDPOINT_COMPAT}）。
  */
 
 /** 自定义端点支持的线协议。只开这两种：OpenAI 兼容端点和 Anthropic 兼容代理覆盖了几乎所有自建场景 */
@@ -98,6 +94,21 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
   },
 }
 
+/**
+ * 自定义端点上强制关掉的 compat 开关。
+ *
+ * pi 1.x 的注册表给新一代 Anthropic / OpenAI 模型标了 `supportsMidConvoSystemMessages`（Anthropic 的还有
+ * `supportsMidConvoToolChanges`）：`load_skill` 之后 pi 在 transcript 里插一条带 `toolsAdded` 的 system 消息，
+ * 开着这两个开关时 SDK 把它发成对话中途的 system 块 / `tool_addition` 块并带上相应的 beta 头。
+ * 这是官方端点刚有的能力，自建的兼容端点、代理（LiteLLM、one-api、各家「Anthropic 兼容」网关）多半不认 ——
+ * 轻则 400，重则静默丢掉新工具的定义。关掉之后 SDK 退回老写法：system 消息并进开头的系统提示、工具表整份重发。
+ * 只在给了 `baseUrl` 的分支里改；官方地址（注册表分支）保持注册表的默认。
+ */
+export const CUSTOM_ENDPOINT_COMPAT = {
+  supportsMidConvoSystemMessages: false,
+  supportsMidConvoToolChanges: false,
+} as const
+
 function isCustomApi(value: string): value is CustomModelApi {
   return (CUSTOM_MODEL_APIS as readonly string[]).includes(value)
 }
@@ -116,8 +127,8 @@ export function resolveAgentModel(options: AgentModelOptions): ModelResolution {
     return { ok: false, reason: `不支持的线协议 ${api}（只支持 ${CUSTOM_MODEL_APIS.join(' / ')}）` }
   }
 
-  // getModel 的类型按注册表字面量收窄；这里的值来自配置，只能放宽了查
-  const registered = getModel(provider as KnownProvider, modelId as never) as Model<Api> | undefined
+  // getBuiltinModel 的类型按注册表字面量收窄；这里的值来自配置，只能放宽了查
+  const registered = getBuiltinModel(provider as never, modelId as never) as Model<Api> | undefined
 
   let model: Model<Api>
   if (baseUrl) {
@@ -129,7 +140,8 @@ export function resolveAgentModel(options: AgentModelOptions): ModelResolution {
       provider,
       api: (api || registered?.api || 'openai-completions') as Api,
       baseUrl,
-      ...(preset?.compat ? { compat: preset.compat } : {}),
+      // 预设的 compat 整份替换注册表的；两种情况都再压上「不发对话中途的 system 消息」
+      compat: { ...(preset?.compat ?? registered?.compat ?? {}), ...CUSTOM_ENDPOINT_COMPAT },
     }
   } else if (registered) {
     if (api && api !== registered.api) {

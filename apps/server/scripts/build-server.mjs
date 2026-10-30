@@ -190,7 +190,7 @@ async function writeSandboxContext(metafile) {
     version: identity.version,
     private: true,
     type: 'module',
-    engines: { node: '>=22' },
+    engines: { node: '>=22.19' },
     dependencies,
   }
   await writeFile(path.join(sandboxOutDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`)
@@ -235,7 +235,7 @@ async function writeOutputPackageJson(deps) {
     version: identity.version,
     private: true,
     type: 'module',
-    engines: { node: '>=22' },
+    engines: { node: '>=22.19' },
     scripts: {
       start: 'NODE_ENV=production node server/index.js',
       /**

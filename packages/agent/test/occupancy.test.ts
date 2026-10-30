@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxToolCall, type AssistantMessage, type Context } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxToolCall, type AssistantMessage, type Context, type JsonObject } from '@earendil-works/pi-ai'
 import { AgentEventType, type AgentRunEntry, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { edgesMap, nodeGroupMap, nodesMap, toYEdge, toYNode } from '@shadecn/shared/flow-doc'
 import { buildNodeRecord } from '@shadecn/shared/flow-node-types'
@@ -71,7 +71,7 @@ async function start(runtime: ReturnType<typeof runtimeWith>, doc: Y.Doc, userId
   return Object.assign(started, { events })
 }
 
-const call = (name: string, args: Record<string, unknown>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' })
+const call = (name: string, args: JsonObject) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' })
 
 /** 上下文里最后一条工具结果的文字（脚本化上游从 OpenAI 请求还原上下文，`isError` 还原不出来，看文字） */
 function lastToolResult(context: Context): { text: string } {

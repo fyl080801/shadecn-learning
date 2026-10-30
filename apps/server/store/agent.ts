@@ -1,4 +1,4 @@
-import type { AgentMessage } from '@mariozechner/pi-agent-core'
+import type { AgentMessage } from '@earendil-works/pi-agent-core'
 import { canonicalSkillIds, type AgentChatMessage } from '@shadecn/shared/agent'
 import {
   parseCanvasDigest,

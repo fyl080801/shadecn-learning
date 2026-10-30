@@ -1,4 +1,4 @@
-import type { ImageContent, TextContent } from '@mariozechner/pi-ai'
+import type { ImageContent, TextContent } from '@earendil-works/pi-ai'
 
 /**
  * 节点素材的读取接口与图片内容的处理 —— `view_node_media` 工具（docs/20 §3.10.7）用。

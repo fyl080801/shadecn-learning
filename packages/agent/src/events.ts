@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@mariozechner/pi-agent-core'
+import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import {
   AGENT_CANVAS_CHANGE_EVENT,
   AGENT_SKILL_LOADED_EVENT,

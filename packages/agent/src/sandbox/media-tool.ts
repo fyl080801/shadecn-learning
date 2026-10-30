@@ -1,4 +1,4 @@
-import { StringEnum, Type } from '@mariozechner/pi-ai'
+import { StringEnum, Type } from '@earendil-works/pi-ai'
 import type { CanvasTool } from '../tools.ts'
 import { DEFAULT_SANDBOX_COMMANDS } from './local.ts'
 import type { Sandbox } from './types.ts'

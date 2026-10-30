@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxText, fauxToolCall } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai'
 import type { AgentRuntimeOptions } from '@shadecn/agent/session'
 import type { ScriptedStep } from '@shadecn/agent/testing'
 import type { AgentConversationStore, AgentRunLog } from '@shadecn/agent/store'

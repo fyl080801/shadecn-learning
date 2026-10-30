@@ -1,4 +1,4 @@
-import { StringEnum, Type } from '@mariozechner/pi-ai'
+import { StringEnum, Type } from '@earendil-works/pi-ai'
 import * as Y from 'yjs'
 import {
   DIRECTOR_ASPECTS,

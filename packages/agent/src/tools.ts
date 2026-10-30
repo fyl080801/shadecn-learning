@@ -1,5 +1,5 @@
-import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
-import { StringEnum, Type, type Static, type TSchema } from '@mariozechner/pi-ai'
+import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core'
+import { StringEnum, Type, type Static, type TSchema } from '@earendil-works/pi-ai'
 import * as Y from 'yjs'
 import { DIRECTOR_NODE_TYPE, msToSeconds, readDirectorScene } from '@shadecn/shared/director-doc'
 import { edgesMap, fromYEdge, nodeGroupMap, nodesMap, readNodes, type FlowNodeGroup } from '@shadecn/shared/flow-doc'

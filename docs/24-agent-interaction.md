@@ -26,7 +26,7 @@
 
 ### 1.2 参考：pi 的做法
 
-底层的 `@mariozechner/pi-agent-core` 只是 agent 循环，**没有 UI 概念**；可用的挂钩是 `beforeToolCall`（`{ block, reason }` 拦一次调用）、
+底层的 `@earendil-works/pi-agent-core` 只是 agent 循环，**没有 UI 概念**；可用的挂钩是 `beforeToolCall`（`{ block, reason }` 拦一次调用）、
 工具结果的 `terminate`、`steer()` / follow-up 队列和 `AbortSignal`。交互在上层 `pi-coding-agent`（仓库 `earendil-works/pi`）里：
 
 | pi | 形式 | 说明 |

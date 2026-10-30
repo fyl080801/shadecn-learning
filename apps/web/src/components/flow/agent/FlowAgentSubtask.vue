@@ -5,6 +5,7 @@ import { useNow } from "@vueuse/core"
 import type { AgentSubtaskView } from "@shadecn/shared/agent"
 import { Spinner } from "@/components/ui/spinner"
 import { formatDuration } from "@/lib/format"
+import FlowAgentError from "./FlowAgentError.vue"
 import FlowAgentMarkdown from "./FlowAgentMarkdown.vue"
 import FlowAgentMention from "./FlowAgentMention.vue"
 
@@ -98,10 +99,10 @@ const hasDetails = computed(
         <CircleQuestionMark class="mt-0.5 size-3 shrink-0" />
         <span class="break-words">{{ props.task.question }}</span>
       </p>
-      <p v-if="props.task.error" class="flex items-start gap-1.5 text-destructive" data-role="subtask-error">
+      <div v-if="props.task.error" class="flex items-start gap-1.5 text-destructive" data-role="subtask-error">
         <CircleAlert class="mt-0.5 size-3 shrink-0" />
-        <span class="break-words">{{ props.task.error }}</span>
-      </p>
+        <FlowAgentError :text="props.task.error" />
+      </div>
 
       <div v-if="props.task.text" class="text-sm" data-role="subtask-reply">
         <FlowAgentMarkdown :text="props.task.text" />

@@ -54,8 +54,8 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  * 画布 Agent 的模型配置（REQ-AGENT，`docs/20-agent-canvas.md`）。
  *
  * 这里只做**环境变量 → 参数对象**这一步；拿它选模型（注册表 / 自定义端点 / 缺 key）是
- * `@shadecn/agent/model` 的事，没给 `AGENT_API_KEY` 时退回 pi 自己的环境变量约定
- * （`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`…）在 `apps/server/agent/index.ts`。
+ * `@shadecn/agent/model` 的事；没给 `AGENT_API_KEY` 时按提供方退回它自己的环境变量
+ * （`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`…，映射见 {@link AGENT_PROVIDER_KEY_ENV}，由 `apps/server/agent/index.ts` 调用）。
  * 那个包刻意不读 `process.env`，环境约定只在宿主这一处。
  *
  * **拿不到模型或 key = agent 没开**，不是配错了：`GET …/agent` 回 `enabled: false`，
@@ -67,7 +67,7 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  *   此时按这两项构造一个自定义模型，`AGENT_PROVIDER` 只当名字用；
  * - `AGENT_IMAGE_INPUT`：模型吃不吃图片（`1` / `0`）。不配按 pi 注册表的元数据，自建端点和 ollama 默认只吃文字；
  *   吃图片的模型才拿得到 `view_node_media`（看节点上的图，docs/20 §3.10.7），所以自建的多模态端点要显式配 `1`；
- * - `AGENT_API_KEY`：显式的 key，优先于 pi 的环境变量约定。**只在服务端**：沙箱里的 runner 拿到的是 run 短令牌，
+ * - `AGENT_API_KEY`：显式的 key，优先于按提供方的环境变量（{@link AGENT_PROVIDER_KEY_ENV}）。**只在服务端**：沙箱里的 runner 拿到的是 run 短令牌，
  *   真实 key 由网关的模型代理注入（docs/22 §4.1）；
  * - `AGENT_SANDBOX`：沙箱驱动（docs/22 §7）—— pi 的推理循环跑在每轮一个的沙箱里：
  *   `process`（默认：本机 `node` 子进程，**不是强隔离**，`NODE_ENV=production` 时拒绝，除非 `AGENT_SANDBOX_ALLOW_PROCESS=1`）；
@@ -147,6 +147,74 @@ export const agentConfig = {
   runIdleTimeoutMs: Math.floor(positive(Number(process.env.AGENT_RUN_IDLE_TIMEOUT_MS ?? 120_000), 120_000)),
   runTotalTimeoutMs: Math.floor(positive(Number(process.env.AGENT_RUN_TOTAL_TIMEOUT_MS ?? 1_800_000), 1_800_000)),
 } as const
+
+/**
+ * 没配 `AGENT_API_KEY` 时，按 `AGENT_PROVIDER` 退回的环境变量（按顺序取第一个非空的）。
+ *
+ * 我们自己维护这份表，不用 pi 的 `getEnvApiKey`（pi 1.x 起它只在 `/compat` 兼容层里）：取值照 pi 0.73.1 / 1.4.0
+ * `env-api-keys` 里纯 key 的那些提供方抄的，两版不一致时保持 0.73.1 的行为（我们之前一直按它跑）。
+ * 刻意**不收**的：
+ * - `google-vertex` / `amazon-bedrock` 的 ADC / AWS 凭据链（pi 那边回一个 `<authenticated>` 占位）——
+ *   网关的模型代理只会把 key 注入成 `Authorization` / `x-api-key`，这两家的线协议它也不转发；
+ * - `ANTHROPIC_AUTH_TOKEN`（pi 1.x 新加，它把它当 Bearer 头而不是 key 用），同理。
+ *
+ * **不要 key 的本地端点**（`ollama`）：列成空表 —— 不读任何变量，由 `@shadecn/agent/model` 的预设补占位 key；
+ * 远端带鉴权的 ollama 用 `AGENT_API_KEY`。表里没有的提供方（自建端点只拿 `AGENT_PROVIDER` 当名字）同样只认 `AGENT_API_KEY`。
+ */
+export const AGENT_PROVIDER_KEY_ENV: Readonly<Record<string, readonly string[]>> = {
+  // OAuth token 在前（pi 0.73 的顺序）
+  anthropic: ['ANTHROPIC_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'],
+  openai: ['OPENAI_API_KEY'],
+  'azure-openai-responses': ['AZURE_OPENAI_API_KEY'],
+  azure: ['AZURE_OPENAI_API_KEY'],
+  deepseek: ['DEEPSEEK_API_KEY'],
+  google: ['GEMINI_API_KEY'],
+  groq: ['GROQ_API_KEY'],
+  cerebras: ['CEREBRAS_API_KEY'],
+  xai: ['XAI_API_KEY'],
+  openrouter: ['OPENROUTER_API_KEY'],
+  'vercel-ai-gateway': ['AI_GATEWAY_API_KEY'],
+  zai: ['ZAI_API_KEY'],
+  'zai-coding-cn': ['ZAI_CODING_CN_API_KEY'],
+  mistral: ['MISTRAL_API_KEY'],
+  minimax: ['MINIMAX_API_KEY'],
+  'minimax-cn': ['MINIMAX_CN_API_KEY'],
+  moonshotai: ['MOONSHOT_API_KEY'],
+  'moonshotai-cn': ['MOONSHOT_API_KEY'],
+  'kimi-coding': ['KIMI_API_KEY'],
+  huggingface: ['HF_TOKEN'],
+  fireworks: ['FIREWORKS_API_KEY'],
+  together: ['TOGETHER_API_KEY'],
+  baseten: ['BASETEN_API_KEY'],
+  nvidia: ['NVIDIA_API_KEY'],
+  opencode: ['OPENCODE_API_KEY'],
+  'opencode-go': ['OPENCODE_API_KEY'],
+  'cloudflare-workers-ai': ['CLOUDFLARE_API_KEY'],
+  'cloudflare-ai-gateway': ['CLOUDFLARE_API_KEY'],
+  'qwen-token-plan': ['QWEN_TOKEN_PLAN_API_KEY'],
+  'qwen-token-plan-cn': ['QWEN_TOKEN_PLAN_CN_API_KEY'],
+  'qwen-token-plan-individual': ['QWEN_TOKEN_PLAN_API_KEY'],
+  xiaomi: ['XIAOMI_API_KEY'],
+  'xiaomi-token-plan-cn': ['XIAOMI_TOKEN_PLAN_CN_API_KEY'],
+  'xiaomi-token-plan-ams': ['XIAOMI_TOKEN_PLAN_AMS_API_KEY'],
+  'xiaomi-token-plan-sgp': ['XIAOMI_TOKEN_PLAN_SGP_API_KEY'],
+  'github-copilot': ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'],
+  // 本机端点不鉴权：不读变量，预设补占位
+  ollama: [],
+}
+
+/**
+ * 按 {@link AGENT_PROVIDER_KEY_ENV} 从环境变量取 `provider` 的 key；没有（表里没有 / 都没配 / 只有空白）= `''`。
+ * `AGENT_API_KEY` 不在这里：它优先，由调用方先看（`agentConfig.apiKey || agentProviderApiKey(…)`）。
+ */
+export function agentProviderApiKey(provider: string, env: NodeJS.ProcessEnv = process.env): string {
+  const names = (Object.hasOwn(AGENT_PROVIDER_KEY_ENV, provider) && AGENT_PROVIDER_KEY_ENV[provider]) || []
+  for (const name of names) {
+    const value = env[name]?.trim()
+    if (value) return value
+  }
+  return ''
+}
 
 /** 沙箱驱动的取值；认不出的原样带着，由 agent 装配点写成「未启用」的原因 */
 export type AgentSandboxDriver = 'process' | 'oci' | 'k8s' | { unknown: string }

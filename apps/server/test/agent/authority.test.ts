@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fauxAssistantMessage, fauxToolCall } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai'
 import type { AgentRuntimeOptions } from '@shadecn/agent/session'
 import type { ScriptedStep } from '@shadecn/agent/testing'
 import { agentApiPath, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'

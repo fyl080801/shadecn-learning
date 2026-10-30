@@ -63,7 +63,7 @@ export default defineConfig({
       REDIS_URL: '',
       TEST_REDIS_URL: process.env.TEST_REDIS_URL ?? '',
       /**
-       * 画布 Agent 默认按「没配模型」跑：key 一律清空，连 pi 自己认的 `ANTHROPIC_API_KEY` /
+       * 画布 Agent 默认按「没配模型」跑：key 一律清空，连按提供方退回的 `ANTHROPIC_API_KEY` /
        * `ANTHROPIC_OAUTH_TOKEN` 也清 —— 开发者 shell 里要是 export 过，漏进来就会让「未启用 → 503」
        * 这类断言变成碰运气。要跑 agent 的用例用 `replaceAgentRuntime()` 换一个假模型驱动的。
        */

@@ -1,5 +1,5 @@
-import type { AgentTool } from '@mariozechner/pi-agent-core'
-import { Type } from '@mariozechner/pi-ai'
+import type { AgentTool } from '@earendil-works/pi-agent-core'
+import { Type } from '@earendil-works/pi-ai'
 import { AGENT_DELEGATE_TOOL_NAME } from '@shadecn/shared/agent'
 import { DELEGATE_BRIEF_MAX, DELEGATE_NODE_IDS_MAX } from '../../protocol.ts'
 import type { CanvasTool } from '../../tools.ts'
@@ -13,7 +13,7 @@ import { defineSkill, REQUEST_CONFIRMATION_TOOL_NAME, type SkillContext } from '
  * 再在**同一个进程**里建一个独立的 pi `Agent` 跑子 agent，**等它做完**才返回 —— 子 agent 的每一次模型请求、画布工具调用
  * 都是正常的网关请求（判权、预算照旧），所以它不起子进程，也就不要求 `sandbox:exec`（`spawnsProcess` 不设）。
  *
- * 并行：它是 `executionMode: 'parallel'`，别的工具一律 `sequential`（runner 统一设）；pi 0.73 的规则是**一批里只要有一个
+ * 并行：它是 `executionMode: 'parallel'`，别的工具一律 `sequential`（runner 统一设）；pi 的规则（1.4 仍然如此）是**一批里只要有一个
  * sequential 就整批顺序执行**，所以「同一批全是 delegate_task」才并行，混了别的工具就整批按顺序。
  */
 

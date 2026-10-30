@@ -1,4 +1,4 @@
-import { fauxAssistantMessage, fauxToolCall, type Api, type AssistantMessage, type Context, type Message, type Model, type Tool } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxToolCall, type Api, type AssistantMessage, type Context, type JsonObject, type Message, type Model, type Tool } from '@earendil-works/pi-ai'
 import type { AgentGatewayConfig, AgentRuntimeOptions } from './session.ts'
 import type { ResolvedAgentModel } from './model.ts'
 import { AGENT_GATEWAY_PATH } from './protocol.ts'
@@ -93,7 +93,7 @@ function contextOf(body: { messages?: OpenAiRequestMessage[]; tools?: { function
         type: 'toolCall' as const,
         id: call.id,
         name: call.function.name,
-        arguments: JSON.parse(call.function.arguments || '{}') as Record<string, unknown>,
+        arguments: JSON.parse(call.function.arguments || '{}') as JsonObject,
       }))
       messages.push({
         role: 'assistant',

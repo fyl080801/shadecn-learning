@@ -45,6 +45,38 @@ describe('resolveAgentModel', () => {
     expect(again.ok && again.value.model.input).toContain('image')
   })
 
+  it('自定义 baseUrl：注册表模型的「对话中途 system 消息 / 工具变更」compat 强制关掉，其余 compat 保留；官方地址保持注册表默认', () => {
+    // claude-opus-5 在 pi 1.4 的注册表里两项都是 true
+    const official = resolveAgentModel({ provider: 'anthropic', model: 'claude-opus-5', apiKey: 'k' })
+    expect(official.ok).toBe(true)
+    if (!official.ok) return
+    expect(official.value.model.baseUrl).toBe('https://api.anthropic.com')
+    expect(official.value.model.compat).toMatchObject({ supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true })
+
+    const proxied = resolveAgentModel({ provider: 'anthropic', model: 'claude-opus-5', baseUrl: 'http://claude-proxy.internal', apiKey: 'k' })
+    expect(proxied.ok).toBe(true)
+    if (!proxied.ok) return
+    expect(proxied.value.model).toMatchObject({ api: 'anthropic-messages', baseUrl: 'http://claude-proxy.internal' })
+    expect(proxied.value.model.compat).toMatchObject({
+      supportsMidConvoSystemMessages: false,
+      supportsMidConvoToolChanges: false,
+      // 注册表里别的 compat 照旧（上下文窗口、价格等元数据同理）
+      supportsStrictTools: true,
+    })
+    expect(proxied.value.model.contextWindow).toBe(official.value.model.contextWindow)
+
+    // 注册表里的对象是共享的：改的是副本
+    const again = resolveAgentModel({ provider: 'anthropic', model: 'claude-opus-5', apiKey: 'k' })
+    expect(again.ok && again.value.model.compat).toMatchObject({ supportsMidConvoSystemMessages: true })
+  })
+
+  it('自定义 baseUrl 的纯自建模型、ollama 预设同样不发对话中途的 system 消息', () => {
+    const custom = resolveAgentModel({ provider: 'my-proxy', model: 'qwen-max', baseUrl: 'http://llm.internal/v1', api: 'anthropic-messages', apiKey: 'k' })
+    expect(custom.ok && custom.value.model.compat).toEqual({ supportsMidConvoSystemMessages: false, supportsMidConvoToolChanges: false })
+    const ollama = resolveAgentModel({ provider: 'ollama', model: 'qwen3' })
+    expect(ollama.ok && ollama.value.model.compat).toMatchObject({ supportsMidConvoSystemMessages: false, supportsDeveloperRole: false })
+  })
+
   it('没有 key → 未启用', () => {
     const resolved = resolveAgentModel({ provider: 'anthropic', model: 'claude-sonnet-4-6' })
     expect(resolved).toMatchObject({ ok: false })

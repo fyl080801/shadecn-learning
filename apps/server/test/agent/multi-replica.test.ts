@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxText, fauxToolCall, type AssistantMessage, type Context } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxText, fauxToolCall, type AssistantMessage, type Context } from '@earendil-works/pi-ai'
 import { AgentEventType, type AgentRunEntry, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { nodeGroupMap, nodesMap, toYNode } from '@shadecn/shared/flow-doc'
 import { buildNodeRecord } from '@shadecn/shared/flow-node-types'

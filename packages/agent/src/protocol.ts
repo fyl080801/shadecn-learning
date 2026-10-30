@@ -1,5 +1,5 @@
-import type { AgentEvent, AgentMessage, AgentToolResult } from '@mariozechner/pi-agent-core'
-import type { Api, Model } from '@mariozechner/pi-ai'
+import type { AgentEvent, AgentMessage, AgentToolResult } from '@earendil-works/pi-agent-core'
+import type { Api, Model } from '@earendil-works/pi-ai'
 import { withoutImages } from './media.ts'
 import type { AgentSkillId } from './skills/registry.ts'
 import type { CanvasToolDetails } from './tools.ts'
@@ -54,7 +54,7 @@ import type { CanvasToolDetails } from './tools.ts'
  * 回 {@link PROTOCOL_MISMATCH_STATUS} + {@link ProtocolMismatchBody}（和 401 能区分），编排层以 `runner_protocol_mismatch` 收尾。
  * `process` 驱动直接跑源码，永远一致。
  */
-export const RUNNER_PROTOCOL_VERSION = 4
+export const RUNNER_PROTOCOL_VERSION = 5
 
 /** 版本不一致时网关的 HTTP 状态码与 `error` 字段（不要和 401 混：令牌失效是另一回事） */
 export const PROTOCOL_MISMATCH_STATUS = 409
@@ -332,6 +332,8 @@ export function runnerEventOf(event: AgentEvent, steerIdOf: (message: AgentMessa
       return null
     }
     case 'message_end': {
+      // pi 1.x 的 system 消息（开头的系统提示、load_skill 之后的 `toolsAdded`）是给模型的，不上报；服务端也不收 system 角色
+      if (event.message.role === 'system') return null
       const steerId = event.message.role === 'user' ? steerIdOf(event.message) : undefined
       return { type: 'message_end', message: slimMessage(event.message), ...(steerId ? { steerId } : {}) }
     }

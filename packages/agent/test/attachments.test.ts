@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxToolCall, type Context } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxToolCall, type Context } from '@earendil-works/pi-ai'
 import { AgentEventType, type AgentAttachment, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { createMemoryAuthorityProvider } from '../src/authority.ts'
 import { createDocCanvasHandle } from '../src/canvas.ts'

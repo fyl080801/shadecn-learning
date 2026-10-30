@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto'
-import { getEnvApiKey } from '@mariozechner/pi-ai'
 import { resolveAgentModel } from '@shadecn/agent/model'
 import { AGENT_GATEWAY_PATH } from '@shadecn/agent/protocol'
 import {
@@ -18,7 +17,7 @@ import {
   type SandboxDriver,
 } from '@shadecn/agent/sandbox/drivers'
 import { createAgentRuntime, type AgentRuntime, type AgentRuntimeOptions } from '@shadecn/agent/session'
-import { agentConfig, agentWorkspaceDir, host, isDev, s3Enabled } from '../config.ts'
+import { agentConfig, agentProviderApiKey, agentWorkspaceDir, host, isDev, s3Enabled } from '../config.ts'
 import { agentConversations, agentRunLog } from '../store/agent.ts'
 import { users } from '../store/users.ts'
 import { agentAuthority } from './authority.ts'
@@ -32,7 +31,7 @@ import { broadcastAgentRuns } from './runs-broadcast.ts'
  * 画布 Agent 在本服务里的装配点：环境变量 → `@shadecn/agent` 的显式参数。
  *
  * 那个包不读 `process.env`（见 `@shadecn/agent/model`），所以「没给 `AGENT_API_KEY` 时退回
- * pi 自己的环境变量约定」「沙箱子进程的 PATH」「生产环境拒绝 process 驱动」这类环境相关的决定都在这里做。
+ * 提供方自己的环境变量（`config.ts` 的 `AGENT_PROVIDER_KEY_ENV`）」「沙箱子进程的 PATH」「生产环境拒绝 process 驱动」这类环境相关的决定都在这里做。
  *
  * **二期～四期（docs/22 §9 第 2～4 项）**：pi 的推理循环跑在每轮一个的沙箱里（`process` 驱动 = 本机 node 子进程；
  * `oci` 驱动 = 每轮一个 Docker / Podman 容器；`k8s` 驱动 = 每轮一个 Pod），经网关（`routes/agent-gateway.ts`，挂在 `AGENT_GATEWAY_PATH`）说话。
@@ -205,7 +204,7 @@ function buildRuntime(): AgentRuntime {
     return createAgentRuntime({ model: null, disabledReason: reason, driver: NO_DRIVER, gateway, ...agentHostOptions })
   }
 
-  const apiKey = agentConfig.apiKey || getEnvApiKey(agentConfig.provider) || ''
+  const apiKey = agentConfig.apiKey || agentProviderApiKey(agentConfig.provider)
   const resolved = resolveAgentModel({
     provider: agentConfig.provider,
     model: agentConfig.model,

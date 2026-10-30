@@ -27,13 +27,13 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "peerDependencies": {
-    "@mariozechner/pi-agent-core": "0.73.1",
-    "@mariozechner/pi-ai": "0.73.1",
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
     "yjs": "^13.6.32"
   },
   "devDependencies": {
-    "@mariozechner/pi-agent-core": "0.73.1",
-    "@mariozechner/pi-ai": "0.73.1",
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
     "@shadecn/shared": "workspace:*",
     "@types/node": "^24.10.1",
     "typescript": "~5.9.3",

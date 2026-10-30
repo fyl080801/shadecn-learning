@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxToolCall } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai'
 import { IncomingMessage, MessageReceiver, OutgoingMessage, type Connection } from '@hocuspocus/server'
 import { isAgentOrigin } from '@shadecn/shared/agent'
 import { nodesMap, toYNode } from '@shadecn/shared/flow-doc'

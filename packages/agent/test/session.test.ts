@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxText, fauxToolCall } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai'
 import { AgentEventType, formatNodeMention, type AgentRunEntry, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { nodesMap, toYNode } from '@shadecn/shared/flow-doc'
 import { buildNodeRecord } from '@shadecn/shared/flow-node-types'
@@ -723,8 +723,75 @@ describe('失败的收尾', () => {
   it('模型报错 → RUN_ERROR', async () => {
     const runtime = runtimeWith([fauxAssistantMessage([], { stopReason: 'error', errorMessage: '额度用完' })])
     const out = await runOnce(runtime, '一')
-    // 上游的报错经 runner 里真实的 OpenAI SDK 传回来：SDK 在原因前面加上 HTTP 状态码
-    expect(out.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_ERROR, message: '400 额度用完', code: 'model_error' })
+    // 上游的报错经 runner 里真实的 OpenAI SDK 传回来：pi 1.x 把它格式化成「状态码: 上游的 JSON 错误体」（formatProviderError），
+    // 服务端原样转发，不还原；前端展示时再解析（apps/web 的 parseModelError）
+    expect(out.events.at(-1)).toMatchObject({
+      type: AgentEventType.RUN_ERROR,
+      message: '400: {"message":"额度用完","type":"invalid_request_error"}',
+      code: 'model_error',
+    })
+  })
+
+  /**
+   * pi 1.x 的 `handleRunFailure`（循环本身抛错，不是模型流报错）照常发 message_start / message_end + turn_end：
+   * 失败消息只上报一次（收尾的兜底补报不重复）、pi 自己的 system 消息不上报不落库、这一下算一步（服务端按 turn_end 数）。
+   * 这里让 runner 在一批调过工具的 turn_end 里取别人改动时网关回 500 —— 那是 pi 的事件监听器里抛的。
+   */
+  function failChangesFetch(runtime: ReturnType<typeof runtimeWith>, uploaded: { type: string; message?: { role: string; stopReason?: string } }[]) {
+    vi.stubGlobal(
+      'fetch',
+      gatewayFetch(async (request) => {
+        const path = new URL(request.url).pathname
+        if (path.endsWith('/canvas/changes')) {
+          return new Response(JSON.stringify({ error: 'boom', message: '取改动失败' }), { status: 500, headers: { 'content-type': 'application/json' } })
+        }
+        if (path.endsWith('/events')) {
+          const body = (await request.clone().json()) as { events: typeof uploaded }
+          uploaded.push(...body.events)
+        }
+        return runtime.gateway.handle(request)
+      }),
+    )
+  }
+
+  it('循环本身出错（handleRunFailure）→ 失败消息只报一次、算一步，RUN_ERROR 带原因；system 消息不上报、不落库', async () => {
+    const runtime = runtimeWith([
+      fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: 'x' } })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage('不该走到这'),
+    ])
+    const uploaded: { type: string; message?: { role: string; stopReason?: string } }[] = []
+    failChangesFetch(runtime, uploaded)
+    const out = await runOnce(runtime, '一')
+
+    const ended = uploaded.filter((event) => event.type === 'message_end').map((event) => event.message!)
+    expect(ended.map((message) => message.role)).toEqual(['user', 'assistant', 'toolResult', 'assistant'])
+    expect(ended.at(-1)).toMatchObject({ role: 'assistant', stopReason: 'error' })
+    // 两步：调工具的那一步 + 失败的那一下
+    expect(uploaded.filter((event) => event.type === 'turn_end')).toHaveLength(2)
+    expect(faux!.state.callCount).toBe(1)
+
+    const last = out.events.at(-1)
+    expect(last).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'model_error' })
+    expect(last?.type === AgentEventType.RUN_ERROR && last.message).toContain('取改动失败')
+
+    const row = runtime.store.rows.get(threadOf(out.events))!
+    expect(row.llmMessages.map((message) => message.role)).not.toContain('system')
+  })
+
+  it('失败的那一下也算一步：撞上步数上限时按超限停下（和模型流报错同一套计数）', async () => {
+    const runtime = runtimeWith(
+      [fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: 'x' } })], { stopReason: 'toolUse' })],
+      { limits: { maxTurns: 2 } },
+    )
+    const uploaded: { type: string; message?: { role: string; stopReason?: string } }[] = []
+    failChangesFetch(runtime, uploaded)
+    const out = await runOnce(runtime, '一')
+    expect(out.events.at(-1)).toMatchObject({
+      type: AgentEventType.RUN_FINISHED,
+      outcome: { type: 'cancelled' },
+      result: { error: '超过本轮步数上限 2，已停止' },
+    })
+    expect(uploaded.filter((event) => event.type === 'turn_end')).toHaveLength(2)
   })
 
   it('未启用：start 拒绝，view 说 enabled=false', async () => {

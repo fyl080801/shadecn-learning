@@ -6,6 +6,7 @@ import AssetPreview from "@/components/flow/asset-upload/AssetPreview.vue"
 import { Attachment, AttachmentGroup, AttachmentMedia, AttachmentTrigger } from "@/components/ui/attachment"
 import { Message, MessageContent } from "@/components/ui/message"
 import { Spinner } from "@/components/ui/spinner"
+import FlowAgentError from "./FlowAgentError.vue"
 import FlowAgentMarkdown from "./FlowAgentMarkdown.vue"
 import FlowAgentMention from "./FlowAgentMention.vue"
 import FlowAgentSubtask from "./FlowAgentSubtask.vue"
@@ -17,7 +18,7 @@ import { splitMentions } from "./nodeMention"
  * 用户消息：文字 + 提及 badge（和输入框里同一个组件，名字现查，删了的节点灰掉）；带了附件时文字上方一排缩略图
  * （docs/20 §3.10.12，`ui/attachment` 的小方块，预览和输入区里的附件同一个组件，地址是对象存储的；点开在新标签页里看原文件）。只有附件没写字时不画文字气泡。
  * assistant 消息：工具调用条目（名字 / 一句话 / 运行中·完成·出错）+ 流式的 Markdown 正文（docs/20 F16），
- * 一轮以失败或中止收尾时在最后挂一行原因。用户消息和 assistant 消息用 shadcn 的 `Message` 排版。
+ * 一轮以失败或中止收尾时在最后挂一行原因（模型报错按「状态码 + 上游错误体」拆开显示，见 `FlowAgentError`）。用户消息和 assistant 消息用 shadcn 的 `Message` 排版。
  * 画布改动通知（docs/20 §3.10.2）：灰色的一行系统提示（图标 + 概括），有条目时可以展开看每一处。
  * 技能加载（docs/23 §3.6）：同样灰色的一行「已加载：<技能标题>」。
  * 子任务（docs/20 §3.10.11）：父 agent 的 `delegate_task` 那一条工具调用画成可展开的子任务条目（`FlowAgentSubtask`，按 `toolCallId` 对上）；
@@ -170,14 +171,14 @@ const subtaskOf = (call: { id: string; name: string }) =>
         思考中…
       </p>
 
-      <p
+      <div
         v-if="assistant.error"
         class="flex items-start gap-1.5 text-xs text-destructive"
         data-role="assistant-error"
       >
         <CircleAlert class="mt-0.5 size-3.5 shrink-0" />
-        <span class="break-words">{{ assistant.error }}</span>
-      </p>
+        <FlowAgentError :text="assistant.error" />
+      </div>
     </MessageContent>
   </Message>
 </template>

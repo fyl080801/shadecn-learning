@@ -4,8 +4,8 @@
 #   pnpm build:sandbox-image                       # = pnpm build:server + 用 podman / docker 构建本目录
 #   podman build -t shadecn-agent-sandbox:latest output/agent-sandbox
 #
-# 镜像里有什么：node 22（只有 node 本体，npm / yarn / corepack 都删了）、ffmpeg / ffprobe、runner 和它的 4 个第三方包
-# （pi-agent-core、pi-ai、yjs、@dagrejs/dagre），一个非 root 用户 sandbox（10001）。
+# 镜像里有什么：node 22（≥ 22.19，pi 1.x 的 engines；只有 node 本体，npm / yarn / corepack 都删了）、ffmpeg / ffprobe、runner 和它的 4 个第三方包
+# （@earendil-works/pi-agent-core、@earendil-works/pi-ai、yjs、@dagrejs/dagre），一个非 root 用户 sandbox（10001）。
 # **没有**：服务端代码以外的任何源码、数据库驱动、.env、任何密钥（构建上下文里本来就没有）。
 #
 # 最终阶段是 `FROM scratch` + 整个文件系统拷过去：这样镜像配置里只有下面声明的 PATH，

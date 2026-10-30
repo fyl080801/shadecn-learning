@@ -252,6 +252,19 @@ describe('装配', () => {
   // ollama 预设不要 key：模型这一关一定过，测的是驱动那一关
   const ollama = { AGENT_PROVIDER: 'ollama', AGENT_MODEL: 'qwen3', AGENT_BASE_URL: '' }
 
+  it('key：AGENT_API_KEY 优先；没配时退回提供方自己的变量（ANTHROPIC_API_KEY）；都没有 → 未启用并写明', async () => {
+    const none = await runtimeWith({ AGENT_SANDBOX: 'process' })
+    expect(none.enabled).toBe(false)
+    expect(none.disabledReason).toBe('没有 anthropic 的 API key')
+
+    const fromProvider = await runtimeWith({ AGENT_SANDBOX: 'process', ANTHROPIC_API_KEY: 'sk-ant-test' })
+    expect(fromProvider.enabled).toBe(true)
+
+    vi.unstubAllEnvs()
+    const explicit = await runtimeWith({ AGENT_SANDBOX: 'process', AGENT_API_KEY: 'sk-explicit' })
+    expect(explicit.enabled).toBe(true)
+  })
+
   it('开发环境：process 驱动，启用', async () => {
     const runtime = await runtimeWith({ ...ollama, AGENT_SANDBOX: 'process' })
     expect(runtime.enabled).toBe(true)

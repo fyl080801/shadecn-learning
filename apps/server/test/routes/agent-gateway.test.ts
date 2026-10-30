@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fauxAssistantMessage } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage } from '@earendil-works/pi-ai'
 import { AGENT_GATEWAY_PATH, RUNNER_PROTOCOL_VERSION, type RunnerInput, type StsTokenResponse } from '@shadecn/agent/protocol'
 import type { SandboxDriver } from '@shadecn/agent/sandbox/drivers'
 import { createInlineDriver, SCRIPTED_API_KEY, SCRIPTED_UPSTREAM_URL } from '@shadecn/agent/testing'

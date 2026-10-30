@@ -1,5 +1,5 @@
-import type { AgentToolResult } from '@mariozechner/pi-agent-core'
-import { Type } from '@mariozechner/pi-ai'
+import type { AgentToolResult } from '@earendil-works/pi-agent-core'
+import { Type } from '@earendil-works/pi-ai'
 import type { AgentAttachment, AgentSkillId } from '@shadecn/shared/agent'
 import type { AgentCapability } from '../authority.ts'
 import type { CanvasHandle } from '../canvas.ts'

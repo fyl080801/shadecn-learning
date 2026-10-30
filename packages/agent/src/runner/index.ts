@@ -1,4 +1,4 @@
-import { Agent, type AgentMessage, type AgentTool } from '@mariozechner/pi-agent-core'
+import { Agent, type AgentMessage, type AgentTool } from '@earendil-works/pi-agent-core'
 import { AGENT_DELEGATE_TOOL_NAME } from '@shadecn/shared/agent'
 import { MAIN_AGENT_ID, runnerEventOf, slimMessage, type SubagentFinishRequest, type SubagentInput } from '../protocol.ts'
 import { openLocalSandbox } from '../sandbox/local.ts'
@@ -24,6 +24,7 @@ import {
   type GatewayClient,
   type Uplink,
 } from './client.ts'
+import { runnerStreamFn } from './stream.ts'
 
 export { GatewayUnauthorizedError, RunnerProtocolMismatchError } from './client.ts'
 
@@ -142,8 +143,10 @@ interface LoopSpec {
 
 interface LoopResult {
   agent: Agent
-  /** 已经上报过的 message_end 条数 */
+  /** 已经上报过的 message_end 条数（不含 pi 自己的 system 消息） */
   ended: number
+  /** 构造后 transcript 的长度：带进来的历史 + pi 补在开头的那条 system 消息（系统提示 + 初始工具表） */
+  base: number
   /** 步数用完、被 runner 停下的（只有子 agent 会） */
   exhausted: boolean
 }
@@ -229,9 +232,11 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
           tools,
           messages: spec.messages,
         },
+        // 三种线协议直接分派（pi 1.x 起必填），见 stream.ts
+        streamFn: runnerStreamFn,
         // 交给 SDK 的「key」是 run 短令牌（快过期时先续期）；网关的模型代理每次请求都判 llm:invoke
         getApiKey: () => client.token(),
-        // 并行只给 delegate_task：别的工具都标了 sequential，一批里只要有一个就整批顺序执行（pi 0.73 的规则）
+        // 并行只给 delegate_task：别的工具都标了 sequential，一批里只要有一个就整批顺序执行（pi 的规则，1.4 仍然如此）
         toolExecution: 'parallel',
         steeringMode: 'all',
         beforeToolCall: async ({ toolCall, assistantMessage }) => {
@@ -253,7 +258,10 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
       let ended = 0
       let turns = 0
       let exhausted = false
+      const base = agent.state.messages.length
       agent.subscribe(async (event) => {
+        // pi 自己的 system 消息（load_skill 之后续上的 `toolsAdded`）只给模型看：不上报、不计数（runnerEventOf 同样丢掉）
+        if (event.type === 'message_end' && event.message.role === 'system') return
         if (event.type === 'message_end') ended += 1
         const slim = runnerEventOf(event, (message) => steered.get(message))
         // 子 agent 的事件带上它的 id：服务端据此归到它的子任务条目，不进父 agent 的上下文
@@ -301,7 +309,7 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
       } finally {
         spec.signal?.removeEventListener('abort', stop)
       }
-      return { agent, ended, exhausted }
+      return { agent, ended, exhausted, base }
     }
 
     /** 跑一个子 agent 到结束，判它怎么结束的（服务端可能改判） */
@@ -380,8 +388,16 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
       extraTools: [],
       ...(options.signal ? { signal: options.signal } : {}),
     })
-    // pi 自己兜住的失败消息不走 message_end：收尾时补报
-    for (const message of main.agent.state.messages.slice(input.llmMessages.length + main.ended)) {
+    /*
+     * 兜底补报：进了 transcript、却没经过 message_end 的消息。pi 0.73 兜住的失败（`handleRunFailure`）就是这样；
+     * pi 1.x 改成照常发 message_start / message_end + turn_end（服务端照常把它算一步），所以正常情况下这里什么都不补。
+     * 对齐时去掉 pi 的 system 消息：它们不上报，也不在 `ended` 里。
+     */
+    const unreported = main.agent.state.messages
+      .slice(main.base)
+      .filter((message) => message.role !== 'system')
+      .slice(main.ended)
+    for (const message of unreported) {
       uplink.push({ type: 'message_end', message: slimMessage(message) })
     }
     await uplink.flush()

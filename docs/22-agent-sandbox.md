@@ -235,8 +235,8 @@ Docker 与 Podman 的 compat API 都按各自的当前版本处理）。runner�
 | `AGENT_GATEWAY_URL` | `http://host.docker.internal:<PORT>` | 容器里看到的这个实例。Podman 5 与 Docker Desktop 都给容器加了这个名字（Podman 另有 `host.containers.internal`）；Linux 上的 Docker 没有，要显式配（如 `docker0` 的地址，服务端监听在上面） |
 
 **沙箱镜像**（`apps/server/scripts/agent-sandbox/Dockerfile`，`pnpm build` 把它和 runner 一起放进 `output/agent-sandbox/`）：
-node 22 alpine 的 node 本体（npm / yarn / corepack 删掉）+ ffmpeg / ffprobe + runner 和它 import 到的 chunk +
-runner 的 4 个第三方包（`@mariozechner/pi-agent-core`、`@mariozechner/pi-ai`、`yjs`、`@dagrejs/dagre`，版本锁到构建时装的那一个；
+node 22 alpine（≥ 22.19，pi 1.x 的要求）的 node 本体（npm / yarn / corepack 删掉）+ ffmpeg / ffprobe + runner 和它 import 到的 chunk +
+runner 的 4 个第三方包（`@earendil-works/pi-agent-core`、`@earendil-works/pi-ai`、`yjs`、`@dagrejs/dagre`，版本锁到构建时装的那一个；
 不含服务端的 hono / MikroORM / 数据库驱动）+ 非 root 用户 `sandbox`。构建期自检：架构与目标一致、runner 的 import 全部解析得到。
 镜像里没有 `.env`、没有任何密钥（构建上下文里本来就没有）。**改了 `packages/agent` 的 runner 侧或协议就要重建镜像**：
 镜像里的 runner 和服务端协议对不上时，网关会拒绝这一轮（见下面「版本一致性检查」）。

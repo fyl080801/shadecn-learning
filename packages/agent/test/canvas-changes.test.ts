@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxToolCall } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai'
 import {
   AGENT_CANVAS_CHANGE_EVENT,
   AGENT_USER_MESSAGE_EVENT,

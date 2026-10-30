@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxToolCall, type AssistantMessage, type Context } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxToolCall, type AssistantMessage, type Context, type JsonObject } from '@earendil-works/pi-ai'
 import {
   AGENT_SUBTASK_EVENT,
   AgentEventType,
@@ -71,11 +71,11 @@ function turnOf(context: Context): Turn {
   }
 }
 
-const call = (name: string, args: Record<string, unknown>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' })
-const calls = (...items: [string, Record<string, unknown>][]) =>
+const call = (name: string, args: JsonObject) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' })
+const calls = (...items: [string, JsonObject][]) =>
   fauxAssistantMessage(items.map(([name, args]) => fauxToolCall(name, args)), { stopReason: 'toolUse' })
 const say = (text: string) => fauxAssistantMessage(text)
-const delegate = (brief: string, nodeIds?: string[]) => ['delegate_task', { brief, ...(nodeIds ? { nodeIds } : {}) }] as [string, Record<string, unknown>]
+const delegate = (brief: string, nodeIds?: string[]) => ['delegate_task', { brief, ...(nodeIds ? { nodeIds } : {}) }] as [string, JsonObject]
 
 /** 被叫停之前一直挂着（脚本化上游在 abort 时让它失败） */
 const hang = (signal?: AbortSignal) =>

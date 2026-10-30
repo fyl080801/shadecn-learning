@@ -1,5 +1,5 @@
-import type { AgentMessage } from '@mariozechner/pi-agent-core'
-import { validateToolArguments, type Api, type Model, type ToolCall, type ToolResultMessage } from '@mariozechner/pi-ai'
+import type { AgentMessage } from '@earendil-works/pi-agent-core'
+import { validateToolArguments, type Api, type JsonObject, type Model, type ToolCall, type ToolResultMessage } from '@earendil-works/pi-ai'
 import {
   AGENT_DELEGATE_TOOL_NAME,
   AGENT_PROMPT_MAX_LENGTH,
@@ -2035,7 +2035,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             type: 'toolCall',
             id: request.toolCallId,
             name: request.name,
-            arguments: (request.args ?? {}) as Record<string, unknown>,
+            arguments: (request.args ?? {}) as JsonObject,
           })
         } catch (err) {
           return { isError: true, message: errorText(err) }

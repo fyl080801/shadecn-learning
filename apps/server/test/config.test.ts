@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { isApiPath } from '../config.ts'
+import { AGENT_PROVIDER_KEY_ENV, agentProviderApiKey, isApiPath } from '../config.ts'
 
 /**
  * config.ts 的值都是模块加载时从 process.env 算出来的常量，
@@ -26,6 +26,46 @@ describe('isApiPath()', () => {
 
   it.each([['/'], ['/apixyz'], ['/login'], ['/ws/room'], ['']])('%s 归前端', (input) => {
     expect(isApiPath(input)).toBe(false)
+  })
+})
+
+describe('agentProviderApiKey()：没配 AGENT_API_KEY 时按提供方退回的环境变量', () => {
+  it('常用提供方读各自的变量', () => {
+    expect(agentProviderApiKey('anthropic', { ANTHROPIC_API_KEY: 'sk-ant' })).toBe('sk-ant')
+    expect(agentProviderApiKey('openai', { OPENAI_API_KEY: 'sk-oai' })).toBe('sk-oai')
+    expect(agentProviderApiKey('deepseek', { DEEPSEEK_API_KEY: 'sk-ds' })).toBe('sk-ds')
+    expect(agentProviderApiKey('openrouter', { OPENROUTER_API_KEY: 'sk-or' })).toBe('sk-or')
+    expect(agentProviderApiKey('moonshotai-cn', { MOONSHOT_API_KEY: 'sk-ms' })).toBe('sk-ms')
+  })
+
+  it('anthropic：ANTHROPIC_OAUTH_TOKEN 优先于 ANTHROPIC_API_KEY（同 pi 0.73）；ANTHROPIC_AUTH_TOKEN 不当 key', () => {
+    expect(agentProviderApiKey('anthropic', { ANTHROPIC_OAUTH_TOKEN: 'oat', ANTHROPIC_API_KEY: 'key' })).toBe('oat')
+    expect(agentProviderApiKey('anthropic', { ANTHROPIC_OAUTH_TOKEN: '', ANTHROPIC_API_KEY: 'key' })).toBe('key')
+    expect(agentProviderApiKey('anthropic', { ANTHROPIC_AUTH_TOKEN: 'bearer' })).toBe('')
+  })
+
+  it('空串 / 只有空白的变量跳过，取下一个；值去掉首尾空白', () => {
+    expect(agentProviderApiKey('github-copilot', { COPILOT_GITHUB_TOKEN: '  ', GH_TOKEN: ' gh ' })).toBe('gh')
+    expect(agentProviderApiKey('openai', { OPENAI_API_KEY: '   ' })).toBe('')
+  })
+
+  it('ollama 不读任何变量（预设补占位 key）；表外的提供方和原型链上的名字都是空', () => {
+    expect(AGENT_PROVIDER_KEY_ENV.ollama).toEqual([])
+    expect(agentProviderApiKey('ollama', { OLLAMA_API_KEY: 'x' })).toBe('')
+    expect(agentProviderApiKey('my-proxy', { MY_PROXY_API_KEY: 'x' })).toBe('')
+    expect(agentProviderApiKey('constructor', {})).toBe('')
+    expect(agentProviderApiKey('toString', {})).toBe('')
+  })
+
+  it('不收 ADC / AWS 凭据链：google-vertex、amazon-bedrock 不在表里', () => {
+    expect(agentProviderApiKey('google-vertex', { GOOGLE_CLOUD_API_KEY: 'x', GOOGLE_CLOUD_PROJECT: 'p' })).toBe('')
+    expect(agentProviderApiKey('amazon-bedrock', { AWS_ACCESS_KEY_ID: 'a', AWS_SECRET_ACCESS_KEY: 'b' })).toBe('')
+  })
+
+  it('不传 env 时读 process.env', () => {
+    vi.stubEnv('XAI_API_KEY', 'xai-from-env')
+    expect(agentProviderApiKey('xai')).toBe('xai-from-env')
+    vi.unstubAllEnvs()
   })
 })
 

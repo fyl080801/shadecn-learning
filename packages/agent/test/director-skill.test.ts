@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxToolCall, validateToolArguments, type Context } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxToolCall, validateToolArguments, type Context, type JsonObject } from '@earendil-works/pi-ai'
 import { AgentEventType, formatNodeMention, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { DIRECTOR_LIMITS, readDirectorScene } from '@shadecn/shared/director-doc'
 import { compileDirectorTimeline, objectStateAt } from '@shadecn/shared/director-eval'
@@ -58,7 +58,7 @@ function setup(options: { runState?: ToolRunState } = {}) {
   const canvasTools = new Map(createCanvasTools({ canvas, runState }).map((tool) => [tool.name, tool]))
   const toolOf = (name: string) => (tools.get(name) ?? canvasTools.get(name)) as CanvasTool
   /** 照网关的做法：先按 schema 校验，再执行 */
-  const call = async (name: string, args: Record<string, unknown>) => {
+  const call = async (name: string, args: JsonObject) => {
     const tool = toolOf(name)
     const checked = validateToolArguments(tool, { type: 'toolCall', id: 'c', name, arguments: args })
     return tool.execute('c', checked as never)
@@ -460,7 +460,7 @@ function storedResults(runtime: ReturnType<typeof runtimeWith>, threadId: string
   )
 }
 
-const toolCall = (name: string, args: Record<string, unknown>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' })
+const toolCall = (name: string, args: JsonObject) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' })
 
 describe('端到端：自动加载与按需加载', () => {
   it('普通会话里 @ 提及导演台节点：第一次请求就有导演台工具（和画布编辑工具一起）', async () => {
@@ -501,7 +501,7 @@ describe('端到端：从导演台 A 发起的会话（入口 nodeId + 提及 A�
     const doc = new Y.Doc()
     seedNode(doc, 'n_a', 'director', '片头')
     seedNode(doc, 'n_b', 'director', '片尾')
-    const ids: { table?: string; cube?: string } = {}
+    const ids = { table: '', cube: '' }
     const { requests, step } = probe()
     const runtime = runtimeWith([
       step(() =>

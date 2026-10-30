@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { createAdaptorServer } from '@hono/node-server'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxText, fauxToolCall } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai'
 import { AGENT_GATEWAY_PATH } from '@shadecn/agent/protocol'
 import {
   createK8sDriver,
