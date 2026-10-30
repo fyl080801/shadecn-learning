@@ -472,3 +472,37 @@ describe('对象存储的两个地址', () => {
     })
   })
 })
+
+describe('agent 租约与时长配置', () => {
+  const names = ['AGENT_LEASE_TTL_MS', 'AGENT_RUN_IDLE_TIMEOUT_MS', 'AGENT_RUN_TOTAL_TIMEOUT_MS']
+  beforeEach(() => names.forEach((name) => vi.stubEnv(name, undefined)))
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('不配 → 默认 30 秒 / 120 秒 / 30 分钟', async () => {
+    expect((await loadConfig()).agentConfig).toMatchObject({
+      leaseTtlMs: 30_000,
+      runIdleTimeoutMs: 120_000,
+      runTotalTimeoutMs: 1_800_000,
+    })
+  })
+
+  it('配了合法数值 → 采用', async () => {
+    vi.stubEnv('AGENT_LEASE_TTL_MS', '5000')
+    vi.stubEnv('AGENT_RUN_IDLE_TIMEOUT_MS', '60000')
+    vi.stubEnv('AGENT_RUN_TOTAL_TIMEOUT_MS', '600000')
+    expect((await loadConfig()).agentConfig).toMatchObject({
+      leaseTtlMs: 5000,
+      runIdleTimeoutMs: 60_000,
+      runTotalTimeoutMs: 600_000,
+    })
+  })
+
+  it.each(['abc', '0', '-1', ''])('坏值 %j → 退回默认', async (bad) => {
+    for (const name of names) vi.stubEnv(name, bad)
+    expect((await loadConfig()).agentConfig).toMatchObject({
+      leaseTtlMs: 30_000,
+      runIdleTimeoutMs: 120_000,
+      runTotalTimeoutMs: 1_800_000,
+    })
+  })
+})

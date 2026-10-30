@@ -115,6 +115,55 @@ for (const candidate of candidates) {
         expect(await map.get('7')).toBe('socket-new')
       })
 
+      it('compareAndSet：值相等才写，续期不改值，不相等或键不存在返回 false', async () => {
+        const map = backend.createMap('m9', stringCodec)
+        expect(await map.compareAndSet('k', 'a', 'b')).toBe(false)
+        expect(await map.get('k')).toBeUndefined()
+
+        await map.set('k', 'run-1')
+        expect(await map.compareAndSet('k', 'run-2', 'run-3')).toBe(false)
+        expect(await map.get('k')).toBe('run-1')
+
+        // 转交：父 run → 子 run
+        expect(await map.compareAndSet('k', 'run-1', 'run-child')).toBe(true)
+        expect(await map.get('k')).toBe('run-child')
+      })
+
+      it('compareAndSet 续期：重设 TTL，值不变；过期被别人 claim 走后续不回来', async () => {
+        const map = backend.createMap('m10', stringCodec)
+        expect(await map.claim('k', 'me', 80)).toBe(true)
+        await sleep(50)
+        expect(await map.compareAndSet('k', 'me', 'me', 150)).toBe(true)
+        await sleep(60)
+        // 原 TTL 早该到了，续期后还在
+        expect(await map.get('k')).toBe('me')
+
+        await sleep(150)
+        expect(await map.get('k')).toBeUndefined()
+        expect(await map.claim('k', 'other', 1000)).toBe(true)
+        expect(await map.compareAndSet('k', 'me', 'me', 1000)).toBe(false)
+        expect(await map.get('k')).toBe('other')
+      })
+
+      it('compareAndSet 比的是编码后的值（对象不靠引用）', async () => {
+        const map = backend.createMap<{ run: string }>('m11', jsonCodec())
+        await map.set('k', { run: 'a' })
+        expect(await map.compareAndSet('k', { run: 'a' }, { run: 'b' })).toBe(true)
+        expect(await map.get('k')).toEqual({ run: 'b' })
+      })
+
+      it('deleteIfEquals：只删自己的，别人的（含过期后易主的）删不掉', async () => {
+        const map = backend.createMap('m12', stringCodec)
+        expect(await map.deleteIfEquals('k', 'me')).toBe(false)
+
+        await map.set('k', 'other')
+        expect(await map.deleteIfEquals('k', 'me')).toBe(false)
+        expect(await map.get('k')).toBe('other')
+
+        expect(await map.deleteIfEquals('k', 'other')).toBe(true)
+        expect(await map.get('k')).toBeUndefined()
+      })
+
       it('entries 按前缀筛，deleteByPrefix 只删这一片', async () => {
         const map = backend.createMap('m6', stringCodec)
         await map.set('room-a:1', 'x')

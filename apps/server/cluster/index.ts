@@ -94,6 +94,12 @@ class LazyMap<V> extends SharedMap<V> {
   claim(key: string, value: V, ttlMs?: number) {
     return this.#target.claim(key, value, ttlMs)
   }
+  compareAndSet(key: string, expected: V, next: V, ttlMs?: number) {
+    return this.#target.compareAndSet(key, expected, next, ttlMs)
+  }
+  deleteIfEquals(key: string, expected: V) {
+    return this.#target.deleteIfEquals(key, expected)
+  }
   delete(key: string) {
     return this.#target.delete(key)
   }

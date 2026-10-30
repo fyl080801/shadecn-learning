@@ -77,7 +77,25 @@ export abstract class SharedMap<V> {
    */
   abstract claim(key: string, value: V, ttlMs?: number): Promise<boolean>
 
+  /**
+   * 比较后写：当前值（按 codec 编码后的字符串比）等于 `expected` 时写入 `next`
+   * 并（可选）重设 TTL，返回 true；键不存在或值不同返回 false，原样不动。
+   *
+   * 用于持有者续期（expected = next = 自己的值）和占用转交（父 run → 子 run）。
+   * **必须是一次原子的判断加写入**：键过期后可能已被别人 claim 走，先 get 再 set
+   * 会让旧持有者在两步之间把别人的占用覆盖掉，或者把已经易主的键「续」回来。
+   */
+  abstract compareAndSet(key: string, expected: V, next: V, ttlMs?: number): Promise<boolean>
+
   abstract delete(key: string): Promise<void>
+
+  /**
+   * 比较后删：当前值（编码后）等于 `expected` 时删除并返回 true，否则不动返回 false。
+   *
+   * 用于「只删自己的占用」。同样必须原子：过期后被别人 claim 走的键，
+   * 旧持有者收尾时的 delete 不能把新主人的占用一并删掉。
+   */
+  abstract deleteIfEquals(key: string, expected: V): Promise<boolean>
 
   /** 前缀扫描。用在断连清理这种冷路径上，别放进每帧都跑的地方 */
   abstract entries(prefix?: string): Promise<[string, V][]>

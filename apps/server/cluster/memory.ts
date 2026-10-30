@@ -51,6 +51,25 @@ class MemoryMap<V> extends SharedMap<V> {
     return Promise.resolve(true)
   }
 
+  compareAndSet(key: string, expected: V, next: V, ttlMs?: number): Promise<boolean> {
+    const entry = this.#alive(key)
+    // 和 Redis 实现一致：比较的是编码后的字符串，对象值不能靠引用相等
+    if (!entry || this.codec.encode(entry.value) !== this.codec.encode(expected)) {
+      return Promise.resolve(false)
+    }
+    this.#entries.set(key, { value: next, expiresAt: ttlMs ? Date.now() + ttlMs : null })
+    return Promise.resolve(true)
+  }
+
+  deleteIfEquals(key: string, expected: V): Promise<boolean> {
+    const entry = this.#alive(key)
+    if (!entry || this.codec.encode(entry.value) !== this.codec.encode(expected)) {
+      return Promise.resolve(false)
+    }
+    this.#entries.delete(key)
+    return Promise.resolve(true)
+  }
+
   delete(key: string): Promise<void> {
     this.#entries.delete(key)
     return Promise.resolve()

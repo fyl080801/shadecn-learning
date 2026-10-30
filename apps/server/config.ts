@@ -101,6 +101,9 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  *   两个都没有（只可能在开发环境，生产缺 `SESSION_SECRET` 起不来）就每次启动随机一把 —— 令牌本来就只在发起它的进程里有效；
  * - `AGENT_GRANT_MARGIN_MS`：委托授权（Grant，docs/22）的绝对过期时间 = 签发时刻 + 这一轮的时长上限 + 这个余量（默认 60 秒）。
  *   正常情况下一轮先撞上自己的时长上限（cancelled）；Grant 到期（expired）是兜底。
+ * - `AGENT_LEASE_TTL_MS`：任务登记、会话槽位、节点占用这些共享表条目的 TTL（默认 30 秒），持有者按它的一部分续期；
+ * - `AGENT_RUN_IDLE_TIMEOUT_MS`：一个 run 的空闲上限（默认 120 秒）：网关上既没有在途请求、也这么久没有新请求就停下；
+ * - `AGENT_RUN_TOTAL_TIMEOUT_MS`：含子 run 的总时长上限（默认 30 分钟）。
  */
 export const agentConfig = {
   provider: process.env.AGENT_PROVIDER?.trim() || 'anthropic',
@@ -139,6 +142,9 @@ export const agentConfig = {
   gatewayUrl: (process.env.AGENT_GATEWAY_URL?.trim() || defaultGatewayUrl(process.env.AGENT_SANDBOX)).replace(/\/+$/, ''),
   tokenSecret: resolveAgentTokenSecret(),
   grantMarginMs: nonNegative(Number(process.env.AGENT_GRANT_MARGIN_MS ?? 60_000), 60_000),
+  leaseTtlMs: Math.floor(positive(Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000), 30_000)),
+  runIdleTimeoutMs: Math.floor(positive(Number(process.env.AGENT_RUN_IDLE_TIMEOUT_MS ?? 120_000), 120_000)),
+  runTotalTimeoutMs: Math.floor(positive(Number(process.env.AGENT_RUN_TOTAL_TIMEOUT_MS ?? 1_800_000), 1_800_000)),
 } as const
 
 /** 沙箱驱动的取值；认不出的原样带着，由 agent 装配点写成「未启用」的原因 */

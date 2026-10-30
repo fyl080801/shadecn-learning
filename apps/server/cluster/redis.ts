@@ -15,6 +15,7 @@ import {
  * |---|---|
  * | `SharedMap.get/set` | `GET` / `SET [PX]` |
  * | `SharedMap.claim` | `SET NX` —— 判断加写入必须是一个原子动作 |
+ * | `SharedMap.compareAndSet` / `deleteIfEquals` | Lua（`EVAL`）—— 比较加写入 / 删除在服务端一步完成 |
  * | `SharedMap.entries` | `SCAN MATCH` + `MGET`（冷路径专用） |
  * | `SharedCounter.next` | `INCR`，键不存在时先按库里的最大值播种 |
  * | `SharedLock.run` | `SET NX PX` + 带 token 的 Lua 释放 |
@@ -26,6 +27,33 @@ import {
 
 /** 释放锁：只有还持有 token 的人才删得掉，避免删掉别人续上的那把 */
 const RELEASE_LOCK = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('del', KEYS[1])
+end
+return 0
+`
+
+/**
+ * 比较后写：值（编码后的字符串）相等才写。
+ * ARGV[1]=expected，ARGV[2]=next，ARGV[3]=ttl 毫秒（0 = 不过期）。
+ *
+ * 必须在服务端一步做完：键过期后可能已被别人 claim 走，客户端先 GET 再 SET
+ * 会让旧持有者把新主人的占用覆盖掉。
+ */
+const COMPARE_AND_SET = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  if tonumber(ARGV[3]) > 0 then
+    redis.call('set', KEYS[1], ARGV[2], 'PX', ARGV[3])
+  else
+    redis.call('set', KEYS[1], ARGV[2])
+  end
+  return 1
+end
+return 0
+`
+
+/** 比较后删：值相等才删，旧持有者收尾时删不掉已经易主的键 */
+const DELETE_IF_EQUALS = `
 if redis.call('get', KEYS[1]) == ARGV[1] then
   return redis.call('del', KEYS[1])
 end
@@ -80,6 +108,28 @@ class RedisMap<V> extends SharedMap<V> {
       ? await this.#redis.set(this.#full(key), encoded, 'PX', ttlMs, 'NX')
       : await this.#redis.set(this.#full(key), encoded, 'NX')
     return result === 'OK'
+  }
+
+  async compareAndSet(key: string, expected: V, next: V, ttlMs?: number): Promise<boolean> {
+    const result = await this.#redis.eval(
+      COMPARE_AND_SET,
+      1,
+      this.#full(key),
+      this.codec.encode(expected),
+      this.codec.encode(next),
+      String(ttlMs ?? 0),
+    )
+    return result === 1
+  }
+
+  async deleteIfEquals(key: string, expected: V): Promise<boolean> {
+    const result = await this.#redis.eval(
+      DELETE_IF_EQUALS,
+      1,
+      this.#full(key),
+      this.codec.encode(expected),
+    )
+    return result === 1
   }
 
   async delete(key: string): Promise<void> {
