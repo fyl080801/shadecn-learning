@@ -51,6 +51,8 @@ export interface UpstreamRequest {
 
 export interface ScriptedModel {
   readonly model: ResolvedAgentModel
+  /** 它的上游地址（`baseUrl`）：模型表里有多项时，按地址分辨请求打到了哪一个 */
+  readonly upstreamUrl: string
   readonly state: { callCount: number }
   readonly requests: UpstreamRequest[]
   setResponses(steps: ScriptedStep[]): void
@@ -187,21 +189,26 @@ function abortError(): Error {
  * `imageInput`：模型声明吃图片（`model.input` 含 `image`），测多模态工具用。
  * `cost`：模型的价格（每百万 token 的美元价，同 pi 的 `Model.cost`）；不给 = 全 0（没有价格信息，同自定义端点）。
  *
+ * `id` / `baseUrl` / `apiKey`：模型表里要第二个模型时（docs/26 §3.4）给它另一个模型 id、上游地址和 key，
+ * 两个上游用 {@link combineUpstreams} 合成一个 `upstreamFetch`；不给 = `scripted-model` / {@link SCRIPTED_UPSTREAM_URL} / {@link SCRIPTED_API_KEY}。
+ *
  * 一步的 `usage` 给了 token 数就随流发一个用量块（pi-ai 据此算 `usage` 与费用）。`stopReason: 'error'` 的一步：
  * 没给用量 = 上游直接回 400；给了用量 = 开流、发完内容和用量块后流断掉（上游中途失败，pi 报出已有的那部分用量）。
  */
 export function registerScriptedModel(
-  options: { label?: string; imageInput?: boolean; cost?: Model<Api>['cost'] } = {},
+  options: { label?: string; imageInput?: boolean; cost?: Model<Api>['cost']; id?: string; baseUrl?: string; apiKey?: string } = {},
 ): ScriptedModel {
+  const upstreamUrl = options.baseUrl ?? SCRIPTED_UPSTREAM_URL
+  const apiKey = options.apiKey ?? SCRIPTED_API_KEY
   const queue: ScriptedStep[] = []
   const state = { callCount: 0 }
   const requests: UpstreamRequest[] = []
   const model: Model<Api> = {
-    id: 'scripted-model',
+    id: options.id ?? 'scripted-model',
     name: options.label ?? 'Faux',
     api: 'openai-completions',
     provider: 'scripted',
-    baseUrl: SCRIPTED_UPSTREAM_URL,
+    baseUrl: upstreamUrl,
     reasoning: false,
     input: options.imageInput ? ['text', 'image'] : ['text'],
     cost: options.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -216,7 +223,7 @@ export function registerScriptedModel(
       maxTokensField: 'max_tokens',
     },
   } as Model<Api>
-  const resolved: ResolvedAgentModel = { model, apiKey: SCRIPTED_API_KEY, label: options.label ?? 'Faux' }
+  const resolved: ResolvedAgentModel = { model, apiKey, label: options.label ?? 'Faux' }
 
   const upstream: typeof fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
@@ -234,8 +241,8 @@ export function registerScriptedModel(
         status,
         headers: { 'content-type': 'application/json' },
       })
-    if (url !== `${SCRIPTED_UPSTREAM_URL}/chat/completions`) return errorReply(404, `脚本化上游没有 ${url}`)
-    if (headers.get('authorization') !== `Bearer ${SCRIPTED_API_KEY}`) return errorReply(401, '上游 key 不对')
+    if (url !== `${upstreamUrl}/chat/completions`) return errorReply(404, `脚本化上游没有 ${url}`)
+    if (headers.get('authorization') !== `Bearer ${apiKey}`) return errorReply(401, '上游 key 不对')
 
     const signal = init?.signal ?? undefined
     if (signal?.aborted) throw abortError()
@@ -277,6 +284,7 @@ export function registerScriptedModel(
 
   const scripted: ScriptedModel = {
     model: resolved,
+    upstreamUrl,
     state,
     requests,
     setResponses(steps) {
@@ -299,6 +307,18 @@ export function registerScriptedModel(
     },
   }
   return scripted
+}
+
+/**
+ * 几个脚本化上游合成一个 `upstreamFetch`（服务端的网关只有一个 fetch）：按请求地址交给 `baseUrl` 对得上的那个，
+ * 都对不上交给第一个（它回 404）。模型表里有多个模型时用（docs/26 §3.4：每个 agent 的请求打到它自己模型的上游）
+ */
+export function combineUpstreams(...models: ScriptedModel[]): typeof fetch {
+  return (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    const target = models.find((item) => url.startsWith(`${item.upstreamUrl}/`)) ?? models[0]!
+    return target.fetch(input, init)
+  }
 }
 
 /** 仓库里的 agent 定义目录（`packages/agent/agents/`，按本文件的位置找 —— 只在源码里成立，所以只给测试用；生产由宿主传目录） */

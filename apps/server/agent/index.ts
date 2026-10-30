@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { agentModelKey, DEFAULT_AGENT_MODEL } from '@shadecn/agent/agents'
 import { resolveAgentModel } from '@shadecn/agent/model'
 import { AGENT_GATEWAY_PATH } from '@shadecn/agent/protocol'
 import {
@@ -22,6 +23,7 @@ import { agentConversations, agentRunLog } from '../store/agent.ts'
 import { users } from '../store/users.ts'
 import { agentAuthority } from './authority.ts'
 import { agentDefinitions } from './definitions.ts'
+import { agentModels } from './models.ts'
 import { agentNodeLeases } from './leases.ts'
 import { agentRunRegistry } from './runs.ts'
 import { agentMediaReader } from './media.ts'
@@ -210,11 +212,12 @@ function buildRuntime(): AgentRuntime {
   }
   const disabled = (reason: string) => {
     console.warn(`[agent] 未启用：${reason}`)
-    return createAgentRuntime({ model: null, disabledReason: reason, driver: NO_DRIVER, gateway, ...agentHostOptions })
+    return createAgentRuntime({ model: null, disabled: reason, models: agentModels, driver: NO_DRIVER, gateway, ...agentHostOptions })
   }
 
+  // 模型表的 default（docs/26 §3.4）：AGENT_PROVIDER / AGENT_MODEL / …；其余的项在 models.ts（启动时已读、已解析）
   const apiKey = agentConfig.apiKey || agentProviderApiKey(agentConfig.provider)
-  const resolved = resolveAgentModel({
+  const defaultModel = resolveAgentModel({
     provider: agentConfig.provider,
     model: agentConfig.model,
     baseUrl: agentConfig.baseUrl,
@@ -222,14 +225,25 @@ function buildRuntime(): AgentRuntime {
     apiKey,
     ...(agentConfig.imageInput !== undefined ? { imageInput: agentConfig.imageInput } : {}),
   })
-  if (!resolved.ok) return disabled(resolved.reason)
+  // 入口 agent（canvas）的模型不可用 = agent 没开（同以前没配模型）；别的 agent 的不可用到 run_agent 点名它时才报
+  const entryKey = agentModelKey(agentDefinitions.entry)
+  const resolved = entryKey === DEFAULT_AGENT_MODEL ? defaultModel : agentModels[entryKey]!
+  if (!resolved.ok) {
+    return disabled(
+      entryKey === DEFAULT_AGENT_MODEL
+        ? resolved.reason
+        : `入口 agent ${agentDefinitions.entry.name} 的模型「${entryKey}」不可用：${resolved.reason}`,
+    )
+  }
 
   const built = sandboxDriver()
   if (!built.ok) return disabled(built.reason)
   if (sandboxProblem !== null) return disabled(sandboxProblem)
 
   const created = createAgentRuntime({
-    model: resolved.value,
+    model: defaultModel.ok ? defaultModel.value : null,
+    ...(defaultModel.ok ? {} : { disabledReason: defaultModel.reason }),
+    models: agentModels,
     driver: built.driver,
     gateway,
     mediaTool: agentConfig.sandboxExec,

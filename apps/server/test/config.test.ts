@@ -69,6 +69,26 @@ describe('agentProviderApiKey()：没配 AGENT_API_KEY 时按提供方退回的�
   })
 })
 
+describe('模型表文件的路径（docs/26 §3.4）', () => {
+  beforeEach(() => {
+    vi.stubEnv('DATA_DIR', undefined)
+    vi.stubEnv('AGENT_MODELS_FILE', undefined)
+  })
+
+  it('默认 <dataDir>/agent-models.json，跟着 DATA_DIR 走', async () => {
+    expect((await loadConfig()).agentModelsFile).toBe(path.join(rootDir, 'data', 'agent-models.json'))
+    vi.stubEnv('DATA_DIR', '/app/data')
+    expect((await loadConfig()).agentModelsFile).toBe('/app/data/agent-models.json')
+  })
+
+  it('AGENT_MODELS_FILE 整个换掉：相对路径按仓库根目录算，绝对路径直接用', async () => {
+    vi.stubEnv('AGENT_MODELS_FILE', 'conf/models.json')
+    expect((await loadConfig()).agentModelsFile).toBe(path.join(rootDir, 'conf/models.json'))
+    vi.stubEnv('AGENT_MODELS_FILE', '/etc/agent/models.json')
+    expect((await loadConfig()).agentModelsFile).toBe('/etc/agent/models.json')
+  })
+})
+
 describe('数据库路径解析', () => {
   beforeEach(() => {
     // 测试环境默认给了 DATABASE_URL / DB_PROVIDER，这几个用例要从零开始算

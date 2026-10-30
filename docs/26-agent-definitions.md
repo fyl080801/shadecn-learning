@@ -1,9 +1,10 @@
 # REQ-AGENT-DEF Agent 定义与同一沙箱内的多 agent 协作
 
-> 状态：**部分实现**（P0～P3 已完成，P4～P5 未做）。原来是一个隐含的「画布 agent」加上从属于它的「子 agent」（[REQ-AGENT](20-agent-canvas.md) §3.10.11）；
+> 状态：**部分实现**（P0～P4 已完成，P5 未做）。原来是一个隐含的「画布 agent」加上从属于它的「子 agent」（[REQ-AGENT](20-agent-canvas.md) §3.10.11）；
 > 本文把它改成**对等的 agent 定义 + 同一轮里的任务**，分期见 §4。P2 起定义读自 `packages/agent/agents/*.md`（仓库里目前只有 `canvas.md`），工具白名单在服务端生效；
 > P3 起发起任务用 `run_agent({ agent, task, nodeIds? })`，被调用的 agent 用它自己的定义（正文、白名单 —— runner 里也按它滤 —— 、模型键），
-> 调用深度有上限（默认 1，深度大于 1 也可用，嵌套的任务条目挂在发起它的任务条目里），runner 协议第 8 版。模型表仍只有 `default`（P4）。
+> 调用深度有上限（默认 1，深度大于 1 也可用，嵌套的任务条目挂在发起它的任务条目里），runner 协议第 8 版。
+> P4 起模型表 = `default`（环境变量）+ 模型表文件里的项（§3.4），每个 agent 按自己定义的 `model` 调上游、算费用与看图能力，runner 协议不变。
 >
 > 前置：[REQ-AGENT](20-agent-canvas.md)（画布 agent、占用、§3.10.11 的协作规则）、
 > [REQ-AGENT-SANDBOX](22-agent-sandbox.md)（runner / 网关、§4.3 服务端调模型与权威 transcript）、
@@ -95,15 +96,30 @@ model: default                                          # 可省略 = default
 
 ### 3.4 模型
 
-- 服务端配置一张**模型表**：每项一个 key，内容同现在的 `AgentModelOptions`（provider / model / baseUrl / api / apiKey / imageInput）。
-  现在的 `AGENT_PROVIDER` / `AGENT_MODEL` / `AGENT_BASE_URL` / `AGENT_API` / `AGENT_API_KEY` 就是 `default` 这一项；
-  其他项怎么配（环境变量还是配置文件）在 P4 定。**密钥只在服务端配置里**，不进定义文件、不进沙箱。
+- 服务端配置一张**模型表**：每项一个 key，内容同 `AgentModelOptions`（provider / model / baseUrl / api / apiKey / imageInput）。
+  - **`default`** 就是 `AGENT_PROVIDER` / `AGENT_MODEL` / `AGENT_BASE_URL` / `AGENT_API` / `AGENT_API_KEY` / `AGENT_IMAGE_INPUT`（行为不变，含没给 key 时按提供方自己的环境变量退回）；
+  - **其余的项**在一个 JSON 文件里，默认 `<DATA_DIR>/agent-models.json`（不在仓库里），`AGENT_MODELS_FILE` 可换路径（相对路径按应用根目录算；k8s 上可以挂一个 ConfigMap 文件）。
+    文件不存在 = 模型表只有 `default`：
+
+    ```json
+    { "fast":   { "provider": "anthropic", "model": "claude-haiku-4-5", "apiKey": "$AGENT_FAST_KEY" },
+      "vision": { "provider": "my-proxy", "model": "qwen-vl", "baseUrl": "https://llm.internal/v1",
+                  "api": "openai-completions", "apiKey": "$AGENT_VISION_KEY", "imageInput": true } }
+    ```
+
+  - key 同 agent 名（小写字母开头，小写字母、数字、`-`）；文件里不能有 `default`；只认上面六个字段。
+  - **`apiKey` 只能写成 `"$环境变量名"`**，写明文启动失败 —— **密钥只在服务端的环境变量里**，不进模型表文件、不进定义文件、不进沙箱。
+    不写 `apiKey` = 同 `default` 的退回规则（按提供方自己的环境变量）；写了引用而那个变量没设 = 这一项不可用（不再退回）。
+- **启动时校验**：文件不是合法 JSON、key 不合法、写了 `default`、不认识的字段、类型不对、`apiKey` 写了明文、定义的 `model` 引用了表里没有的 key
+  → 服务端起不来（同定义文件，§3.1）。一项**能读懂但用不了**（引用的环境变量没设、pi 的注册表里没有、线协议服务端调不了）不是启动错误：启动时打一行警告，到用时才报（见本节最后一条）。
 - 每个 agent 用自己定义里的模型：服务端按 agent 调上游（网关的模型路由本来就带 `agentId`），runner 只拿到它那一份模型的元数据（`RunnerModel`，`streamProxy` 要用）。
-- 跟着模型走的东西按 **agent 自己的模型**算：看不看得了图（`media-view` 只给吃图片的模型）、上下文超长判断、历史裁剪的 token 预算。
+- 跟着模型走的东西按 **agent 自己的模型**算：看不看得了图（`media-view` 只给吃图片的模型；这一轮提供的是各 agent 的并，每个 agent 只拿到自己那份）、
+  上下文超长判断、历史裁剪的 token 预算（这两样只有入口 agent 有：被调用的 agent 的上下文不跨轮、不落库，没有历史可裁）。
 - **用量**：token 照旧全轮合计；费用按每次请求**它自己的模型**的价格算再相加，这一轮里**只要有一次请求的模型没有定价，费用记 `null`**
   （不报一个偏低的数）。`agent_run.model` 记入口 agent 的模型；会话上显示的模型也是入口 agent 的。
-- 一个模型表项在这一轮开始时解析不出来（配置错、线协议不支持服务端调用）：入口 agent 的模型不可用 → 这一轮不开始（同现在没配模型）；
-  被调用的 agent 的不可用 → 那次 `run_agent` 返回错误，调用方自己决定怎么办。
+- 一个模型表项解析不出来（引用的环境变量没设、注册表里没有、线协议不支持服务端调用）：入口 agent 的模型不可用 → agent 未启用、这一轮不开始
+  （同没配模型；原因写明是哪一项）；被调用的 agent 的不可用 → 那次 `run_agent` 返回错误（「agent X 的模型「k」不可用，没有发起任务：原因」），调用方自己决定怎么办。
+  `run_agent` 的可调用目录照旧列出全部定义（不因模型不可用而变）。
 
 ### 3.5 调用：`run_agent`
 
@@ -197,7 +213,7 @@ requires: [director]        # 可省略：依赖的内置技能 id
 | P1 ✅ | 只改名（§3.9 表里不随协议升级的那些）、规则文件同步 | 不变 | 无 |
 | P2 ✅ | 读入 `agents/*.md`（只有 `canvas.md`）、启动校验、拆 `PLATFORM_PROMPT`、工具白名单在服务端生效 | 不变（系统提示与工具表第 7 版起本来就只在服务端） | 无 |
 | P3 ✅ | `run_agent({ agent, task, nodeIds? })`、可调用 agent 目录、调用深度上限、按角色给 `request_confirmation`、任务条目带 `agent`、任务输入带它的 `model` | 7 → 8，重建沙箱镜像 | 能调用不同的 agent（模型仍只有 `default`） |
-| P4 | 模型表、按 agent 选模型、费用与历史预算按 agent 的模型算 | 不变（P3 已带 `model`） | 不同 agent 可用不同模型 |
+| P4 ✅ | 模型表（`default` + 模型表文件）、按 agent 选模型、费用与历史预算按 agent 的模型算 | 不变（P3 已带 `model`） | 不同 agent 可用不同模型 |
 | P5 | 文字技能（`SKILL.md`，仓库目录一种来源） | 不变 | 能扩展技能 |
 
 ## 5. 功能需求
@@ -240,5 +256,6 @@ requires: [director]        # 可省略：依赖的内置技能 id
 2. ~~`run_agent` 的 `agent` 参数要不要必填~~ —— **已定**：必填。
 3. ~~定义文件放在哪~~ —— **已定**：只随仓库打包，不读外部目录。
 4. ~~混用模型时的费用~~ —— **已定**：只要有一次请求的模型没有定价，这一轮费用记 `null`。
-5. 模型表除 `default` 以外的项怎么配置（一组带前缀的环境变量，还是一个配置文件），P4 定。
+5. ~~模型表除 `default` 以外的项怎么配置~~ —— **已定**（P4）：一个 JSON 文件（默认 `<DATA_DIR>/agent-models.json`，`AGENT_MODELS_FILE` 可换），
+   密钥只能写成 `"$环境变量名"` 引用，`default` 仍来自 `AGENT_*` 环境变量（§3.4）。
 6. 定义文件与文字技能在仓库里的目录 —— agent 定义**已定**（P2）：`packages/agent/agents/`，产物里拷到 `output/server/agents/`；文字技能的目录 P5 定。

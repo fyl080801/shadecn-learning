@@ -69,6 +69,8 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  *   吃图片的模型才拿得到 `view_node_media`（看节点上的图，docs/20 §3.10.7），所以自建的多模态端点要显式配 `1`；
  * - `AGENT_API_KEY`：显式的 key，优先于按提供方的环境变量（{@link AGENT_PROVIDER_KEY_ENV}）。**只在服务端**：沙箱里的 runner 拿到的是 run 短令牌，
  *   真实 key 由网关的模型代理注入（docs/22 §4.1）；
+ * - 以上几项是模型表里的 `default`（docs/26 §3.4）。其余的项在模型表文件里（{@link agentModelsFile}，`AGENT_MODELS_FILE` 可换路径），
+ *   解析在 `apps/server/agent/models.ts`；
  * - `AGENT_SANDBOX`：沙箱驱动（docs/22 §7）—— pi 的推理循环跑在每轮一个的沙箱里：
  *   `process`（默认：本机 `node` 子进程，**不是强隔离**，`NODE_ENV=production` 时拒绝，除非 `AGENT_SANDBOX_ALLOW_PROCESS=1`）；
  *   `oci`（每轮一个 Docker / Podman 容器，经 Engine API 的 unix socket；生产可用）；
@@ -295,6 +297,15 @@ function nonNegative(value: number, fallback: number): number {
 
 /** 沙箱工作目录的根：`<dataDir>/agent-workspaces/<flowId>/<runId>`，一张画布一个项目目录 */
 export const agentWorkspaceDir = path.join(dataDir, 'agent-workspaces')
+
+/**
+ * 模型表文件（docs/26 §3.4）：`default` 以外的模型，`{ "<key>": { provider, model, baseUrl?, api?, apiKey?: "$ENV", imageInput? } }`。
+ * 默认 `<dataDir>/agent-models.json`（不在仓库里；k8s 上就是数据卷里的那个文件），`AGENT_MODELS_FILE` 整个换掉（相对路径按应用根目录算；
+ * 例如挂一个 ConfigMap 文件）。文件不存在 = 模型表只有 `default`，不是错误。读和校验在 `agent/models.ts`
+ */
+export const agentModelsFile = process.env.AGENT_MODELS_FILE?.trim()
+  ? resolveFromRoot(process.env.AGENT_MODELS_FILE.trim())
+  : path.join(dataDir, 'agent-models.json')
 
 /**
  * agent 定义（docs/26 §3.1，`<name>.md`）随代码发布，不读外部目录、不可配：

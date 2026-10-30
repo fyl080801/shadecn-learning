@@ -34,20 +34,6 @@ import { TOOL_LIMITS } from '../src/tools.ts'
 
 const SECRET = 'gateway-test-secret'
 const BASE = `http://gw.test${AGENT_GATEWAY_PATH}`
-const UPSTREAM_KEY = 'sk-real-upstream-key'
-
-const model = {
-  id: 'm-1',
-  name: 'M1',
-  api: 'openai-completions',
-  provider: 'p',
-  baseUrl: 'http://upstream.test/v1',
-  reasoning: false,
-  input: ['text'],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 1000,
-  maxTokens: 100,
-} as Model<Api>
 
 function handlers(overrides: Partial<GatewayRunHandlers> = {}): GatewayRunHandlers & { batches: RunnerEvent[][]; llmChecks: number; mismatches: { runnerVersion: number | null; serverVersion: number }[] } {
   const out = {
@@ -77,7 +63,7 @@ function handlers(overrides: Partial<GatewayRunHandlers> = {}): GatewayRunHandle
 
 function setup(options: { now?: () => number; buildId?: string; handlers?: Partial<GatewayRunHandlers> } = {}) {
   // 这里的用例不打上游（模型请求的用例在最后一组，用脚本化的上游）
-  const gateway = createAgentGateway({ secret: SECRET, upstream: { model, apiKey: UPSTREAM_KEY }, ...(options.now ? { now: options.now } : {}), ...(options.buildId ? { buildId: options.buildId } : {}) })
+  const gateway = createAgentGateway({ secret: SECRET, ...(options.now ? { now: options.now } : {}), ...(options.buildId ? { buildId: options.buildId } : {}) })
   const abort = new AbortController()
   const h = handlers(options.handlers)
   const run = gateway.open({ runId: 'run_1', userId: 'u1', grantId: 'g1', scope: 'flow:f:read', signal: abort.signal, handlers: h })
@@ -308,7 +294,6 @@ describe('服务端调用模型（docs/22 §4.3）', () => {
     const upstreamModel = { ...scripted.model.model, compat: { ...scripted.model.model.compat, ...options.compat } } as Model<Api>
     const gateway = createAgentGateway({
       secret: SECRET,
-      upstream: { model: upstreamModel, apiKey: scripted.model.apiKey },
       fetch: scripted.fetch,
       maxRetries: 0,
       ...(options.maxOutputTokens !== undefined ? { maxOutputTokens: options.maxOutputTokens } : {}),
@@ -323,6 +308,8 @@ describe('服务端调用模型（docs/22 §4.3）', () => {
         decisions.push(agentId)
         return {
           kind: 'stream',
+          // 上游随判定给（编排层按发请求的 agent 的模型选，docs/26 §3.4）
+          upstream: { model: upstreamModel, apiKey: scripted.model.apiKey },
           sessionId: `sess-${agentId}`,
           step: decisions.length,
           // 上下文是编排层给的（服务端 transcript）；runner 送的 context 不用
@@ -507,11 +494,6 @@ describe('服务端调用模型（docs/22 §4.3）', () => {
     await expectError(await t.post('/model/main/api/stream', streamBody(), bearer(token)), 401, '失权了')
     expect(t.scripted.requests).toHaveLength(0)
     expect(t.run.activity().inflight).toBe(0)
-
-    // 没配模型 → 503
-    const bare = createAgentGateway({ secret: SECRET, upstream: null })
-    const res = await bare.handle(new Request(`${BASE}/model/main/api/stream`, { method: 'POST', body: '{}' }))
-    await expectError(res, 503, '服务端没有配置模型')
 
     // streamProxy 把它变成「Proxy error: <原因>」交给 pi
     kind = 'denied'

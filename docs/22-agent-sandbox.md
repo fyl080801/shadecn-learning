@@ -6,7 +6,7 @@
 > 本文里的「父 agent / 子 agent」按 [REQ-AGENT-DEF](26-agent-definitions.md) 改称「入口 agent / 被调用的 agent」（同一沙箱里对等协作，差别只在角色）；
 > 那边的 P3 **已实现**（`RUNNER_PROTOCOL_VERSION` 7 → 8，沙箱镜像要重建）：`/agent/delegate`、`/agent/finish` 改成 `/agent/task/start`、`/agent/task/finish`，
 > 发起请求带调用方的 agent id 与 `{ agent, task, nodeIds }`；`RunnerInput` 的入口 agent 和任务输入各带这个 agent 自己的技能、工具白名单（runner 按它滤工具）和模型元数据，
-> 外加可调用的 agent 目录。P4 起各 agent 按自己定义里的模型调上游、费用按各自模型算（§4.3 第 5 步的「一轮一行合计」不变）。下面的实现说明保留实现时的称呼。
+> 外加可调用的 agent 目录。那边的 P4 **已实现**（协议不变）：各 agent 按自己定义里的模型调上游（网关按发请求的 agent 选上游）、费用按各自模型算（§4.3 第 5 步的「一轮一行合计」不变）。下面的实现说明保留实现时的称呼。
 > 一期已实现：Grant / scope 表（`agent_grant` / `agent_grant_scope`，签发时 scope = 请求的 ∩ 发起人当时的权限 ∩ 服务端配置）；
 > run 状态机 running → success / cancelled / error / expired（线上 RUN_FINISHED 仍只有 success / cancelled，expired 在线上是 cancelled）；
 > 全部工具执行前、每次请求模型前、画布每次读写前 `authorize(capability)`；失效即 `stop`（整轮立即停，cancelled + 原因，Grant 标撤销）；
@@ -394,6 +394,8 @@ runner 上报的只剩 runner 执行的工具的开始 / 结束。顺序天然�
   只能用五种列类型（没有小数 / decimal），浮点列又不能精确求和，所以存整数；微美元在最便宜的模型上也分得出几十个 token，
   PG 的 32 位 `int` 上限约 2147 美元一轮（token 列同理，一轮到不了 21 亿），超出按上限记。
   **模型没有价格信息**（价格表全是 0：自定义端点、`ollama` 预设）→ 费用为空，而不是 0：「不知道多少钱」不能被预算当成「免费」。
+  一轮里不同 agent 用不同模型时（REQ-AGENT-DEF §3.4），每次请求按它自己的模型计价再相加；**只要有一次请求的模型没有价格，整轮费用为空**。
+  `model` 列记入口 agent 的模型。
 - **空值**：`startRun` 写的那一行五列都是空，`finishRun` 才写（按 runId upsert，同其他收尾字段）；进程被硬杀、停在 `running` 的行和加列之前的旧行都是空 = 「没记」，与「一个 token 都没用」的 0 分得开。
   写失败照旧 fail open（运行日志是旁路）。
 - **不展示**：这一步只落库，接口与前端都不出用量；每用户预算是规划（docs/20 §3.10.6）。

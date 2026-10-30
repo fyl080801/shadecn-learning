@@ -73,6 +73,11 @@ export default defineConfig({
       AGENT_API: '',
       AGENT_API_KEY: '',
       AGENT_SANDBOX: '',
+      /**
+       * 模型表文件（docs/26 §3.4）默认在 `<dataDir>/agent-models.json`，测试的 dataDir 是仓库的 `data/` ——
+       * 开发者自己配的那份不能漏进来（坏了整轮测试起不来，多了 key 改变定义校验）。指到每次清空的 data/test 下，即「没有文件」
+       */
+      AGENT_MODELS_FILE: 'data/test/agent-models.json',
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_OAUTH_TOKEN: '',
       /**

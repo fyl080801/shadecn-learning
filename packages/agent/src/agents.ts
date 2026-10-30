@@ -36,7 +36,7 @@ export interface AgentConfig {
 /** 入口 agent（docs/26 §3.7）：会话固定用它，定义里必须有 */
 export const ENTRY_AGENT_NAME = 'canvas'
 
-/** 模型表里的默认项（P2～P3 只有它：`AGENT_PROVIDER` / `AGENT_MODEL` / … 配的那一个） */
+/** 模型表里的默认项（`AGENT_PROVIDER` / `AGENT_MODEL` / … 配的那一个；定义不写 `model` 就用它）。其余的项宿主从模型表文件读（docs/26 §3.4） */
 export const DEFAULT_AGENT_MODEL = 'default'
 
 const AGENT_NAME_REGEX = /^[a-z][a-z0-9-]{0,47}$/
@@ -152,7 +152,7 @@ export interface AgentRegistry {
 export interface AgentRegistryOptions {
   /** 技能注册表：`tools` 里的名字按它判 */
   skills: SkillRegistry
-  /** 模型表的 key（P2～P3 只有 {@link DEFAULT_AGENT_MODEL}，P4 起是模型表）：`model` 按它判 */
+  /** 模型表的全部 key（含 {@link DEFAULT_AGENT_MODEL}；宿主：`default` + 模型表文件里的 key）：`model` 按它判 */
   models: readonly string[]
 }
 

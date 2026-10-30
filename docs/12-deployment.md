@@ -237,6 +237,10 @@ GitHub OAuth App 的 Authorization callback URL 填 `$APP_ORIGIN/api/auth/callba
 - **Deployment 的 `env` 里不写这几项**：`env` 优先于 `envFrom`，写一个就把这几份资源里的值盖掉了（清单测试钉住；`env` 里的 S3 只有 `S3_MAX_UPLOAD_MB`）。
   `envFrom` 里同名的键以后面的为准（`shadecn-learning-auth` → agent 的 ConfigMap → agent 的 Secret → S3 的 ConfigMap → S3 的 Secret）。
 - **改完要重启才生效**：`envFrom` 只在容器启动时读一次 —— `kubectl -n dev rollout restart deploy/shadecn-learning`（`Recreate`，有短暂中断）。
+- **`default` 以外的模型**（给不同的 agent 定义用不同模型，[REQ-AGENT-DEF](26-agent-definitions.md) §3.4）在模型表文件里，默认 `<DATA_DIR>/agent-models.json`，
+  即数据卷上的 `/app/data/agent-models.json`（放进 PVC 即可，同样启动时读一次）；要放进 ConfigMap 就把它挂成文件、再在 agent 的 ConfigMap 里加 `AGENT_MODELS_FILE=<挂载路径>`
+  （清单里目前没有这个挂载，需要时再加）。文件里的 `apiKey` 只能写 `"$环境变量名"`，对应的 key 照样放进 Secret `shadecn-learning-agent`（`envFrom` 整份注入）。
+  文件格式不对服务端起不来；引用的变量没设只是那一项不可用（启动日志有警告）。
 - 例：用集群里 `dev` 命名空间的 ollama（不要 key，`AGENT_API_KEY` 留空即可）：
 
   ```bash

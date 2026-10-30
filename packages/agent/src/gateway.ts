@@ -65,7 +65,7 @@ import {
  * runner 的 `streamFn` 是 pi 的 `streamProxy`：`POST /model/<agentId>/api/stream`，`Authorization: Bearer <run 短令牌>`，
  * 请求体 `{ model, context, options }`：**一个字段都不用**（只校验大小、是个 JSON 对象；runner 只送空的上下文，上限随之是 {@link MODEL_BODY_LIMIT}）。
  * 上下文是编排层给的、服务端维护的 transcript（{@link ModelRequestDecision} 的 `context`，docs/22 §4.3 第 2 步）；
- * 模型是服务端解析的那个，`maxTokens`（有上限）、重试、`sessionId`、`identity`、请求头都由服务端定，runner 送的 `model` / `options` 一概不看。
+ * 模型是服务端解析的那个（发请求的 agent 的模型表项，编排层随判定一起给 —— 路由里的 `agentId` 就是为这个），`maxTokens`（有上限）、重试、`sessionId`、`identity`、请求头都由服务端定，runner 送的 `model` / `options` 一概不看。
  * 服务端带真实 key 用 pi-ai 的 `streamSimple` 调上游（`model-stream.ts`），把事件流换成 `ProxyAssistantMessageEvent` 以 SSE 下发。
  *
  * - 开流之前的拒绝回 `{ error: <字符串> }` + 状态码（`streamProxy` 只认字符串 `error`）；开流之后的失败都是 `error` 帧；
@@ -73,7 +73,7 @@ import {
  * - 上游的信号 = 这一轮的 `signal` ∪ 这次 HTTP 请求的 `signal` ∪ 掐断（参数过长、runner 断开）；被叫停时补一帧 `error { reason: 'aborted' }` 再正常结束
  *   （中断是预期内的结局，不让它变成 HTTP 层的流错误）；
  * - 在途从请求进来算到服务端的流结束（或断开）为止，空闲上限据此判断；结束时打一行用量日志；累计进运行日志的是同一个数，经 `release` 交回的定稿里的 `usage`（docs/22 §4.3 第 5 步）。
- * 支持的线协议见 `model-stream.ts` 的 `SERVED_MODEL_APIS`；其余的宿主据此把 agent 标成未启用。
+ * 支持的线协议见 `model-stream.ts` 的 `SERVED_MODEL_APIS`；编排层按模型表逐项判，调不了的那一项算不可用（入口 agent 的 = 未启用）。
  */
 
 /** 叫停时在途的模型请求怎么收尾：`error { reason: 'aborted' }` 带上这句 */
@@ -104,6 +104,11 @@ const DEFAULT_MAX_RETRY_DELAY_MS = 60_000
 export type ModelRequestDecision =
   | {
       kind: 'stream'
+      /**
+       * 这次调哪个上游（地址 + key 只在服务端）：**发请求的那个 agent 的模型**（docs/26 §3.4，编排层按 agentId 查它的定义的模型表项）。
+       * 同一轮里不同的 agent 可以打到不同的上游
+       */
+      upstream: ModelUpstream
       sessionId: string
       step: number
       context: TranscriptContext
@@ -177,8 +182,6 @@ export interface ModelUpstream {
 export interface AgentGatewayOptions {
   /** 签 run 短令牌的密钥（只在服务端） */
   secret: string | Uint8Array
-  /** null = 没配模型（模型请求一律 503） */
-  upstream: ModelUpstream | null
   /** 打上游用的 fetch（pi-ai 的 `ProviderRequestOptions.fetch`）；不给用 SDK 默认的全局 fetch（测试注入脚本化的上游） */
   fetch?: typeof fetch
   /** 输出 token 的上限（`AGENT_MAX_OUTPUT_TOKENS`）；实际取 min(模型的 maxTokens, 它)，不给按 16384 */
@@ -400,8 +403,6 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
 
   /** `/model/<agentId>/api/stream`：判权、判这个 agent 能不能请求，然后服务端调上游、SSE 下发 */
   async function modelStream(request: Request, agentId: string): Promise<Response> {
-    const upstream = options.upstream
-    if (!upstream) return modelError(503, '服务端没有配置模型')
     let entry: Entry
     try {
       entry = authenticate(bearerOf(request.headers))
@@ -453,7 +454,7 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
       }
       handedOff = true
       // 上下文用编排层给的服务端 transcript（docs/22 §4.3 第 2 步），请求体里的不看
-      return serveModel(request, entry, upstream, agentId, decision, end)
+      return serveModel(request, entry, decision.upstream, agentId, decision, end)
     } finally {
       if (!handedOff) end()
     }

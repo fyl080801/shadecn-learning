@@ -61,8 +61,8 @@ import type { ConversationSlot, ReplayEntry, ReplayRecord, RunRecord, RunRegistr
 import { createAgentGateway, type GatewayRun, type ModelRequestDecision } from './gateway.ts'
 import { isServedModelApi, SERVED_MODEL_APIS, type ModelTurnResult } from './model-stream.ts'
 import { withoutImages, type MediaReader } from './media.ts'
-import type { ResolvedAgentModel } from './model.ts'
-import { agentModelKey, agentToolWhitelist, assertAgentTools, type AgentConfig, type AgentRegistry } from './agents.ts'
+import type { ModelResolution, ResolvedAgentModel } from './model.ts'
+import { agentModelKey, agentToolWhitelist, assertAgentTools, DEFAULT_AGENT_MODEL, type AgentConfig, type AgentRegistry } from './agents.ts'
 import {
   attachmentsPrompt,
   expandMentions,
@@ -396,10 +396,24 @@ export interface OpenedCanvas extends CanvasHandle {
 }
 
 export interface AgentRuntimeOptions {
-  /** `null` = 没配模型，agent 未启用 */
+  /**
+   * 模型表里 `default` 那一项（docs/26 §3.4，宿主的 `AGENT_PROVIDER` / `AGENT_MODEL` / …）；`null` = 没配 / 解析不出来。
+   * 入口 agent 用它（`canvas.md` 没写 `model`）时 `null` = agent 未启用
+   */
   model: ResolvedAgentModel | null
-  /** 未启用时给人看的原因（日志 / 503 的 message） */
+  /** `default` 不可用的原因（入口 agent 用它时就是未启用的原因：日志 / 503 的 message） */
   disabledReason?: string
+  /**
+   * 模型表里 `default` 以外的项（docs/26 §3.4）：key → 解析结果（宿主读配置、解析，本包不读文件和环境变量）。
+   * **不可用的项照样放进来**（带原因）：那不是启动错误，到有 agent 用它时才报 —— 入口 agent 的不可用 = 未启用（这一轮不开始），
+   * 被调用的 agent 的不可用 = 那次 `run_agent` 返回错误。不能有 `default`；全部定义的 `model` 键都要在表里（含 `default`），否则抛错
+   */
+  models?: Readonly<Record<string, ModelResolution>>
+  /**
+   * 宿主判定的「agent 不开」（沙箱驱动不可用、k8s 自检没过……），原因就是它：给了就未启用，不看模型表。
+   * 入口 agent 不一定用 `default`，所以「不开」不能再借 `model: null` 表达
+   */
+  disabled?: string
   /** 会话持久化。**必填**：没有默认实现，免得「忘了接库」悄悄变成「重启即丢」 */
   store: AgentConversationStore
   /** 运行日志。必填，理由同上 */
@@ -835,8 +849,9 @@ interface RunAgent {
   /** 调用深度（docs/26 §3.5）：入口 agent 0，被调用的 agent = 调用方 + 1。`depth < maxCallDepth` 才能发起任务 */
   depth: number
   /**
-   * 它用的模型（docs/26 §3.4，按定义的 `model` 键查模型表）。P3 的模型表只有 `default`，查出来都是 runtime 的那一个；
-   * P4 只换 {@link modelFor} 的查法（网关按 agent 调上游、费用按各自模型算也在 P4）
+   * 它用的模型（docs/26 §3.4，按**它自己定义**的 `model` 键查模型表，不继承调用方的）。跟着它走的：网关调的上游（地址 + key，
+   * `modelRequest` 交给网关）、交给 runner 的模型元数据（`RunnerAgentSpec.model`）、技能的提供条件（看不看得了图）、
+   * 这次请求的费用（{@link addRunUsage}）。登记时一定可用：入口 agent 的不可用 = 这一轮不开始，被调用的 = 不发起
    */
   model: ResolvedAgentModel
   /** 提供给它的技能（Grant、部署条件、它的白名单、调用深度都满足；⊆ 这一轮提供的）：`load_skill` 只认这些 */
@@ -1171,7 +1186,7 @@ export function modelHasPricing(model: Pick<Model<Api>, 'cost'>): boolean {
   return rates.some((rate) => typeof rate === 'number' && rate > 0)
 }
 
-/** 一轮开始时的用量：全 0；模型没有价格信息时费用为 null */
+/** 一轮开始时的用量：全 0；入口 agent 的模型没有价格信息时费用为 null */
 export function emptyRunUsage(model: Pick<Model<Api>, 'cost'>): AgentRunUsage {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: modelHasPricing(model) ? 0 : null }
 }
@@ -1179,8 +1194,13 @@ export function emptyRunUsage(model: Pick<Model<Api>, 'cost'>): AgentRunUsage {
 /** 非负有限数，否则 0（上游 / SDK 给了怪值也不让累计变成 NaN） */
 const usageNumber = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0)
 
-/** 把一次模型请求的 `usage`（服务端拿到的，pi-ai 已按模型价格算好 `cost`）加进这一轮的累计；没有 usage 的不加 */
-export function addRunUsage(totals: AgentRunUsage, usage: AssistantMessage['usage'] | undefined): void {
+/**
+ * 把一次模型请求的 `usage`（服务端拿到的，pi-ai 已按**这次请求的模型**的价格算好 `cost`）加进这一轮的累计；没有 usage 的不加 token。
+ * `model` 是这次请求实际用的模型（发请求的 agent 的，docs/26 §3.4）：它没有价格信息，这一轮的费用就记 `null` 且不再回来 ——
+ * 混用模型时只要有一次请求的价钱不知道，合计就不知道（报一个偏低的数比不报更糟）
+ */
+export function addRunUsage(totals: AgentRunUsage, usage: AssistantMessage['usage'] | undefined, model: Pick<Model<Api>, 'cost'>): void {
+  if (!modelHasPricing(model)) totals.costUsd = null
   if (!usage) return
   totals.inputTokens += usageNumber(usage.input)
   totals.outputTokens += usageNumber(usage.output)
@@ -1212,13 +1232,36 @@ const conversationKey = (flowId: string, conversationId: string) => `${flowId}\n
 
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   const limits: RunLimits = { ...DEFAULT_RUN_LIMITS, ...options.limits }
-  // 模型由服务端调（docs/22 §4.3）：调不了的线协议 = agent 没开（而不是每一轮都失败）
-  const unproxied =
-    options.model && !isServedModelApi(options.model.model.api)
-      ? `模型的线协议 ${options.model.model.api} 暂不支持由服务端调用（支持：${SERVED_MODEL_APIS.join(' / ')}）`
-      : null
-  const resolved = unproxied ? null : options.model
-  const disabledReason = unproxied ?? options.disabledReason ?? '没有配置模型'
+  /**
+   * 模型表（docs/26 §3.4）：key → 解析结果。模型由服务端调（docs/22 §4.3），**每一项各自**判线协议：调不了的那一项 = 不可用
+   * （入口 agent 的不可用 = agent 没开，而不是每一轮都失败；被调用的 agent 的 = 那次 `run_agent` 返回错误）
+   */
+  const servedOrNot = (resolution: ModelResolution): ModelResolution =>
+    resolution.ok && !isServedModelApi(resolution.value.model.api)
+      ? { ok: false, reason: `模型的线协议 ${resolution.value.model.api} 暂不支持由服务端调用（支持：${SERVED_MODEL_APIS.join(' / ')}）` }
+      : resolution
+  const modelTable = new Map<string, ModelResolution>([
+    [
+      DEFAULT_AGENT_MODEL,
+      servedOrNot(options.model ? { ok: true, value: options.model } : { ok: false, reason: options.disabledReason ?? '没有配置模型' }),
+    ],
+  ])
+  for (const [key, resolution] of Object.entries(options.models ?? {})) {
+    if (key === DEFAULT_AGENT_MODEL) throw new Error(`模型表的 ${DEFAULT_AGENT_MODEL} 由 model / disabledReason 给，不能出现在 models 里`)
+    const served = servedOrNot(resolution)
+    // 宿主只判得了「解析不出来」；线协议这一条只有这里知道，同样只是警告（不可用到用时才报）
+    if (resolution.ok && !served.ok) console.warn(`[agent] 模型表的「${key}」不可用（用它的 agent 到时会报错）：${served.reason}`)
+    modelTable.set(key, served)
+  }
+  // 定义里的模型键按**这个** runtime 的模型表再判一次（建定义注册表时判的那份是宿主的 key 列表，两者不该对不上）
+  for (const config of options.agents.agents) {
+    const key = agentModelKey(config)
+    if (!modelTable.has(key)) {
+      throw new Error(`agent 定义 ${config.filePath}：model「${key}」不在模型表里（现有：${[...modelTable.keys()].join('、')}）`)
+    }
+  }
+  /** 一个 agent 定义用的模型（按它的 `model` 键查模型表；键在上面判过一定在） */
+  const modelOf = (definition: AgentConfig): ModelResolution => modelTable.get(agentModelKey(definition))!
   const { store, runLog, leases, runRegistry } = options
   /** 技能注册表：runner 那边用的必须是同一份（生产都是内置的，测试显式传同一个） */
   const registry = options.skills ?? BUILTIN_SKILLS
@@ -1226,9 +1269,22 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   for (const config of options.agents.agents) assertAgentTools(config, registry)
   /** 入口 agent 的定义（docs/26 §3.7：固定 `canvas`）；被调用的 agent 用 `run_agent` 点名的那份（`options.agents.get`） */
   const entryDefinition = options.agents.entry
+  /**
+   * 入口 agent 的模型：它可用 agent 才开（同以前「没配模型」）。会话上显示的模型、运行日志的 `model`、Grant 上记的模型、
+   * 跨轮历史的 token 预算、上下文超长判断都按它（docs/26 §3.4）
+   */
+  const entryModel = modelOf(entryDefinition)
+  const resolved = entryModel.ok && options.disabled === undefined ? entryModel.value : null
+  const disabledReason =
+    options.disabled !== undefined
+      ? options.disabled
+      : entryModel.ok
+        ? ''
+        : agentModelKey(entryDefinition) === DEFAULT_AGENT_MODEL
+          ? entryModel.reason
+          : `入口 agent ${entryDefinition.name} 的模型「${agentModelKey(entryDefinition)}」不可用：${entryModel.reason}`
   const gateway = createAgentGateway({
     secret: options.gateway.secret,
-    upstream: resolved ? { model: resolved.model, apiKey: resolved.apiKey } : null,
     ...(options.gateway.upstreamFetch ? { fetch: options.gateway.upstreamFetch } : {}),
     ...(options.gateway.maxOutputTokens !== undefined ? { maxOutputTokens: options.gateway.maxOutputTokens } : {}),
   })
@@ -1839,15 +1895,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
   async function execute(input: StartRunInput, run: RunState): Promise<void> {
     if (!resolved) return
-    const runtimeModel = resolved
-    /**
-     * 一个 agent 定义用的模型（docs/26 §3.4）：按它的 `model` 键查模型表。P3 的模型表只有 `default`（启动时已校验过键），
-     * 所以都是这个 runtime 的那一个；P4 只换这里的查法（和网关按 agent 调上游、费用按各自模型算一起）
-     */
-    const modelFor = (definition: AgentConfig): ResolvedAgentModel => {
-      void agentModelKey(definition)
-      return runtimeModel
-    }
     const { flowId, userId, text } = input
     const { startedAt } = run
     // 和准备会话并行：进列表之前要有发起人的名字头像
@@ -1965,7 +2012,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
      */
     const tools = new Map<string, CanvasTool>()
     /** 这一轮里的 agent（docs/20 §3.10.11）：入口 agent 一开始就在；被调用的 agent 在发起登记时加进来、交回时标成结束 */
-    const mainAgent = newRunAgent(ENTRY_AGENT_ID, null, entryDefinition, 0, modelFor(entryDefinition), new Map())
+    const mainAgent = newRunAgent(ENTRY_AGENT_ID, null, entryDefinition, 0, resolved, new Map())
     const agents = new Map<string, RunAgent>([[ENTRY_AGENT_ID, mainAgent]])
     /** 入口 agent 已加载的技能 id（一开始加载的 + `load_skill` 加载的）：会话记住的就是它们 */
     const loadedSkills = mainAgent.loadedSkills
@@ -2249,21 +2296,25 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           return node ? [node.type] : []
         }),
       )
-      const env: SkillAvailability = {
+      /**
+       * 技能的提供条件（docs/23 §3.2）按 **agent 自己的模型** 算（docs/26 §3.4）：`media-view` 只给吃图片的模型 ——
+       * 同一轮里入口 agent 和被调用的 agent 可以一个能看图、一个不能
+       */
+      const envFor = (model: ResolvedAgentModel): SkillAvailability => ({
         scopes: gate.scopes,
         deployment: {
-          imageInput: resolved.model.input.includes('image'),
+          imageInput: model.model.input.includes('image'),
           mediaReader: Boolean(options.mediaReader),
           sandboxExec: Boolean(options.mediaTool),
         },
-      }
+      })
       /*
        * 入口 agent 的技能（白名单把某个技能的工具全滤掉了，它就不提供；调用深度上限是 0 时不提供 `agents`）。
        * 会话记着的 `agents`（旧 id `delegate` 读出时已换成它）在上限 0 时不算「本轮不可用」：那是部署的选择，不是授权变了
        */
       const entryExclude = canCall(mainAgent) ? [] : [AGENTS_SKILL_ID]
       const plan = registry.plan({
-        env,
+        env: envFor(mainAgent.model),
         previous: previousSkills.filter((id) => !entryExclude.includes(id)),
         mentionedNodeTypes,
         allowedTools: mainAgent.allowed,
@@ -2281,7 +2332,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       const reachable = plan.offered.some((skill) => skill.id === AGENTS_SKILL_ID) ? options.agents.agents : [entryDefinition]
       const runOffered = new Set(plan.offered.map((skill) => skill.id))
       for (const definition of reachable) {
-        const own = registry.plan({ env, previous: [], mentionedNodeTypes: [], allowedTools: agentToolWhitelist(definition) })
+        // 各按自己的模型（看图与否）；模型不可用的定义跑不起来（点名它的 run_agent 被拒），不提供任何东西
+        const model = modelOf(definition)
+        if (!model.ok) continue
+        const own = registry.plan({ env: envFor(model.value), previous: [], mentionedNodeTypes: [], allowedTools: agentToolWhitelist(definition) })
         for (const skill of own.offered) runOffered.add(skill.id)
       }
       /** 可调用的 agent 目录（`run_agent` 的 enum 与描述）：全部定义，按加载顺序 */
@@ -2365,7 +2419,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           if (id === AGENTS_SKILL_ID && !canCall(agent)) throw new Error(depthLimitReason(agent))
           const known = registry.get(id)
           // 授权、部署条件都满足，是这个 agent 定义的工具白名单把它整个滤掉了（docs/26 §3.3）
-          if (known && agent.allowed !== null && registry.offers(known, env)) {
+          if (known && agent.allowed !== null && registry.offers(known, envFor(agent.model))) {
             throw new Error(`技能 ${id} 不在这个 agent 能用的工具范围里，不能加载；用已有的工具完成，或向用户说明`)
           }
           throw new Error(
@@ -2782,6 +2836,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         // 它的定义（docs/26 §3.6：正文、白名单、模型都是它自己的，不继承调用方的）。schema 的 enum 已经挡住了不存在的名字，这里是兜底
         const definition = options.agents.get(args.agent)
         if (!definition) return refuseBound(`没有叫 ${args.agent} 的 agent，没有发起任务`)
+        // 它的模型不可用（docs/26 §3.4：配置错 / 引用的环境变量没设 / 线协议不支持服务端调用）：这次 run_agent 返回错误，调用方自己决定怎么办
+        const model = modelOf(definition)
+        if (!model.ok) {
+          return refuseBound(`agent ${definition.name} 的模型「${agentModelKey(definition)}」不可用，没有发起任务：${model.reason}`)
+        }
         if (run.activeTasks >= limits.maxConcurrentTasks) {
           return refuseBound(`同时最多 ${limits.maxConcurrentTasks} 个任务在跑，这一个没有发起；等前面的做完再发起，或自己做`)
         }
@@ -2811,7 +2870,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           if (run.stopped !== null) throw new Error('这一轮已经停止')
           const depth = caller.depth + 1
           const plan = registry.plan({
-            env,
+            env: envFor(model.value),
             previous: [],
             mentionedNodeTypes: types,
             // 深度到了上限：不提供 `agents`（工具表里没有 run_agent）
@@ -2833,7 +2892,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             { callerId: caller.id, toolCallId: request.toolCallId, task, nodeIds, bound: entry },
             definition,
             depth,
-            modelFor(definition),
+            model.value,
             own,
           )
           for (const skill of loaded) agent.loadedSkills.add(skill.id)
@@ -3179,6 +3238,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           // 缓存键（docs/22 §4.3 已定第 5 条）：入口 agent 用会话 id（前后几轮都能命中），被调用的 agent 每个一份
           sessionId: agent.sub ? `${run.runId}:${agent.id}` : conversationId,
           step: agent.turns,
+          // 上游按发请求的 agent 的模型选（docs/26 §3.4）：地址、key 都是服务端模型表里它那一项的
+          upstream: { model: agent.model.model, apiKey: agent.model.apiKey },
           context: requestContext(transcript),
           // 调用方的文字流：服务端自己的流里的增量（被调用的 agent 的文字不逐帧显示，回复定稿时才更新条目，同以前）
           ...(agent.sub ? {} : { frame: (frame: ProxyAssistantMessageEvent) => streamFrame(agent, frame) }),
@@ -3187,7 +3248,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             released = true
             agent.requesting = false
             // 用量先记（这一轮已停、回复不进上下文的也算：请求发出去了，钱就花了）
-            addRunUsage(usage, result?.message.usage)
+            addRunUsage(usage, result?.message.usage, agent.model.model)
             unsettledRequests.delete(settling)
             settled()
             onReply(agent, result)
@@ -3301,14 +3362,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
               .map(({ name, description, parameters }) => ({ name, description, parameters })),
           ),
         )
-      nextLlm = trimLlmHistory([...llmHistory, ...received], limits.llmMessages, llmHistoryTokenBudget(resolved.model, fixedTokens))
+      // 预算按入口 agent 的模型（docs/26 §3.4）：落库、跨轮的只有它的上下文；被调用的 agent 的 transcript 不落库，没有跨轮预算
+      nextLlm = trimLlmHistory([...llmHistory, ...received], limits.llmMessages, llmHistoryTokenBudget(mainAgent.model.model, fixedTokens))
       // 两者都在回调里赋值，TS 的收窄看不见：显式放宽
       const finishReport = runnerFinish as FinishRequest | null
       const exitInfo = sandboxExit as SandboxExit | null
       const mismatch = protocolMismatch as { runnerVersion: number | null; serverVersion: number } | null
       const last = received.at(-1)
       // 模型报「上下文超长」：单独一个 code，原因说人话（原文接在后面）
-      const overflow = mapper.modelError ? contextOverflowError(received, resolved.model, mapper.modelError) : null
+      const overflow = mapper.modelError ? contextOverflowError(received, mainAgent.model.model, mapper.modelError) : null
       outcome = stopped
         ? stoppedOutcome(stopped)
         : mismatch
