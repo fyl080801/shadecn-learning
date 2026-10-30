@@ -42,7 +42,7 @@ import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/r
  * - 思考内容（thinking）不外发：那是模型的草稿，不是给人看的回复。
  * - 画布改动通知（docs/20 §3.10.2）：CUSTOM `agent.canvas-change`，`value` 就是对话里存的那条
  *   `canvas-change` 消息。什么时候发由编排层定（跨轮差异紧跟用户消息回显；运行中的那种在它真正进入
- *   模型上下文时 —— pi 把 steer 的消息放进上下文的那一刻），这里只管形状。
+ *   模型上下文时 —— pi 把 runner 交给它的那条消息放进上下文的那一刻），这里只管形状。
  * - 技能加载（docs/23 §3.6）：`load_skill` **不作为工具调用条目出现**（不发 TOOL_CALL_*，也不进 assistant 消息的
  *   `toolCalls`）；网关加载成功时发 CUSTOM `agent.skill-loaded`，`value` 就是对话里存的那条 `skill-loaded` 消息。
  * - 子任务（docs/20 §3.10.11）：父 agent 的 `delegate_task` 照常是一条工具调用；子 agent 的事件（runner 带着它的 agent id 上报）

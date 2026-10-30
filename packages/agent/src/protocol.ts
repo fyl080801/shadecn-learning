@@ -23,8 +23,8 @@ import type { CanvasToolDetails } from './tools.ts'
  *    模型上下文、这一轮提供 / 一开始就加载的技能（runner 按同一份注册表展开成工具）、模型描述（不含地址和 key）；
  * 3. 跑 pi：模型请求走 `/llm/*`（OpenAI / Anthropic 兼容的透传代理）；画布工具走 `/canvas/tool`；
  *    pi 的事件裁成 {@link RunnerEvent} 分批 `/events` 上报（服务端经 `events.ts` 映射成 AG-UI —— 映射只在服务端）；
- *    **一批工具调用结束时**（`turn_end` 且这一批调过工具）先把事件冲完，再 `/canvas/changes` 取别人的改动通知，
- *    有就 `steer` 进去（docs/20 §3.10.2 的插入时机，规则在 runner 里执行）；
+ *    **一批工具调用结束时**（`turn_end` 先把事件冲完；循环要接着请求模型时，pi 的 `prepareNextTurnWithContext` 里）
+ *    `/canvas/changes` 取别人的改动通知，有就作为下一次请求前追加的消息交给 pi（docs/20 §3.10.2 的插入时机，规则在 runner 里执行）；
  * 4. 事件冲完后 `/run/finish`，然后进程退出。
  *
  * ## 子 agent（docs/20 §3.10.11）
@@ -186,7 +186,8 @@ export type ToolCallResponse =
       details: CanvasToolDetails
       /**
        * 提前结束这一批（pi 的 `terminate`）：只有 `load_skill` 成功加载时为 true（`details.loadedSkill` 是新技能）。
-       * runner 把它原样交给 pi；这一批全是它时循环提前结束，runner 并入新工具后 `continue()`（docs/23 §3.3）
+       * 服务端照旧带上（老镜像靠它结束这一批、并入新工具后 `continue()`）；现在的 runner 对 `load_skill` 剥掉它，
+       * 在 pi 的 `prepareNextTurnWithContext` 里把新工具并进下一次请求（docs/23 §3.3）
        */
       terminate?: boolean
     }
@@ -197,7 +198,7 @@ export type ToolCallResponse =
 
 /**
  * `/canvas/changes` 的回复：服务端先把合并窗口里攒着的冲掉，排着的通知并成一条（docs/20 §3.10.2）。
- * runner 拿 `text` 作为一条用户消息 `steer` 进去；pi 把它放进上下文时，上报的 `message_end` 带上 `steerId = id`，
+ * runner 拿 `text` 作为一条用户消息交给 pi（`prepareNextTurnWithContext` 返回的 `messages`）；pi 把它放进上下文时，上报的 `message_end` 带上 `steerId = id`，
  * 服务端那时才发 `agent.canvas-change`、记进对话。没交出去的那些留给跨轮差异。
  */
 export interface CanvasChangesResponse {

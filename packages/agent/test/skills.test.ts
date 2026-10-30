@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { fauxAssistantMessage, fauxToolCall, Type, type Context } from '@earendil-works/pi-ai'
 import {
+  AGENT_CANVAS_CHANGE_EVENT,
   AGENT_SKILL_LOADED_EVENT,
   AgentEventType,
   formatNodeMention,
@@ -446,6 +447,8 @@ describe('验收 3：按需加载', () => {
     const { events, threadId } = await run(runtime, new Y.Doc())
     expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
 
+    // 加载不结束循环、不多请求：三步正好三次请求
+    expect(requests).toHaveLength(3)
     expect(requests[0]!.tools).not.toContain('notes_tool')
     expect(requests[0]!.systemPrompt).toContain('- notes：测试技能 notes')
     expect(requests[1]!.tools).toContain('notes_tool')
@@ -479,7 +482,7 @@ describe('验收 3：按需加载', () => {
     expect(runtime.runLog.toolCalls.map((call) => call.name)).toEqual(['load_skill', 'notes_tool'])
   })
 
-  it('加载技能的那一批不 steer 别人的改动（否则 pi 带着旧工具接着请求）；改动留到下一批调过工具的 turn_end 再交', async () => {
+  it('加载技能的那一批也照常交付别人的改动：下一次请求同时带上新工具和那条通知（同一个 prepareNextTurn），不多请求一次模型', async () => {
     const doc = new Y.Doc()
     seed(doc, 'n1', 'text', '大纲')
     const { requests, step } = probe()
@@ -492,14 +495,23 @@ describe('验收 3：按需加载', () => {
       step(() => fauxAssistantMessage([fauxToolCall('notes_tool', {})], { stopReason: 'toolUse' })),
       step(() => fauxAssistantMessage('好')),
     ])
-    await run(runtime, doc)
-    const userTexts = (index: number) =>
-      requests[index]!.context.messages.flatMap((message) =>
-        message.role === 'user' ? [typeof message.content === 'string' ? message.content : JSON.stringify(message.content)] : [],
-      )
+    const { events, threadId } = await run(runtime, doc)
+    expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
+    expect(requests).toHaveLength(3)
+    // 第二次请求：新工具在，通知是最后一条消息，排在 load_skill 的结果之后
     expect(requests[1]!.tools).toContain('notes_tool')
-    expect(userTexts(1)).toHaveLength(1)
-    expect(userTexts(2).at(-1)).toContain('画布改动通知')
+    const messages = requests[1]!.context.messages
+    const notice = messages.at(-1)!
+    expect(notice.role).toBe('user')
+    expect(JSON.stringify(notice.content)).toContain('画布改动通知')
+    expect(messages.findIndex((message) => message.role === 'toolResult')).toBeLessThan(messages.length - 1)
+    // 交付了：发了 canvas-change，对话里排在「已加载」之后；第三次请求不再重复这条通知
+    const changes = events.filter((event) => event.type === AgentEventType.CUSTOM && event.name === AGENT_CANVAS_CHANGE_EVENT)
+    expect(changes).toHaveLength(1)
+    const view = await runtime.getConversation('flow-1', 'u1', threadId)
+    expect(view!.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'skill-loaded', 'canvas-change'])
+    const notices = requests[2]!.context.messages.filter((message) => message.role === 'user' && JSON.stringify(message.content).includes('画布改动通知'))
+    expect(notices).toHaveLength(1)
   })
 
   it('runner 执行的工具（execution: runner）加载后在 runner 本地跑，不经网关', async () => {

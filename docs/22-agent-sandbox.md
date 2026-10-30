@@ -93,7 +93,7 @@
 沙箱（runner：pi 推理循环，环境变量只有网关地址 + 一次性 bootstrap token + 工作目录 + PATH）
    ├─ 画布工具 = /canvas/tool 的代理（schema / 描述 / 能力来自同一份 tools.ts）
    ├─ 模型：pi 自带的 provider，baseUrl = 网关 /llm、apiKey = run 短令牌
-   ├─ steer：只在调过工具的那一批的 turn_end 取通知并 steer（docs/20 §3.10.2 的时机规则在这里执行）
+   ├─ 改动通知：一批调过工具之后、下一次请求模型之前（pi 的 prepareNextTurnWithContext）取通知并交给 pi（docs/20 §3.10.2 的时机规则在这里执行）
    └─ ffmpeg / ffprobe 在自己的工作目录里跑（runner 就是沙箱，sandbox:exec 不经网关）
 ```
 

@@ -173,8 +173,8 @@ const loadSkillParams = Type.Object(
 
 /**
  * `load_skill` 的定义。服务端传 `load`（判提供集合 / 是否已加载 / 每轮上限，见 `session.ts`）；
- * runner 不传，只拿定义包成网关代理。成功加载时结果带 `terminate: true` 和 `details.loadedSkill`：
- * 这一批就此结束，runner 把新技能的工具并进 `agent.state.tools` 再 `continue()`（docs/23 §3.3）。
+ * runner 不传，只拿定义包成网关代理。成功加载时结果带 `details.loadedSkill`（和给老镜像的 `terminate: true`）：
+ * runner 的代理剥掉 `terminate`，在 pi 的 `prepareNextTurnWithContext` 里把新技能的工具并进下一次请求（docs/23 §3.3）。
  */
 export function createLoadSkillTool(
   load?: (id: string) => Promise<AgentToolResult<CanvasToolDetails>>,

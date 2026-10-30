@@ -1,5 +1,16 @@
 import type { AgentMessage } from '@earendil-works/pi-agent-core'
-import { validateToolArguments, type Api, type JsonObject, type Model, type ToolCall, type ToolResultMessage } from '@earendil-works/pi-ai'
+import {
+  isContextOverflow,
+  validateToolArguments,
+  type Api,
+  type AssistantMessage,
+  type JsonObject,
+  type Message,
+  type Model,
+  type ToolCall,
+  type ToolResultMessage,
+} from '@earendil-works/pi-ai'
+import { estimateMessageTokens, estimateTextTokens } from '@earendil-works/pi-ai/utils/estimate'
 import {
   AGENT_DELEGATE_TOOL_NAME,
   AGENT_PROMPT_MAX_LENGTH,
@@ -229,9 +240,9 @@ import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunS
  *
  * 开画布时挂上常驻观察（`canvas-changes.ts` 的 {@link createCanvasWatch}）：
  * - 本轮自己的写入不报；别的轮次报成「某某 的 agent」，人报成他自己，认不出的报成「其他协作者」；
- * - 改动按 `changeWindowMs` 合并成一条通知，排队；**只在一批调过工具的 turn_end（下一次请求模型之前）**
- *   由 runner 来取（`/canvas/changes`：先把窗口里攒着的冲掉，排着的并成一条），runner 把它 `steer()` 进去 ——
- *   模型正在写最终回复时到的改动不交出去（否则 pi 会为它再开一轮），留给跨轮差异；这条时机规则由 runner 执行；
+ * - 改动按 `changeWindowMs` 合并成一条通知，排队；**只在一批调过工具之后、下一次请求模型之前**
+ *   由 runner 来取（`/canvas/changes`：先把窗口里攒着的冲掉，排着的并成一条），runner 在 pi 的 `prepareNextTurnWithContext` 里交给 pi ——
+ *   模型正在写最终回复时到的改动不交出去（pi 那时不调这个钩子），留给跨轮差异；这条时机规则由 runner 执行；
  * - 那条消息真正进入模型上下文（runner 上报 pi 的 message_end，带着这条通知的 `steerId`）时，
  *   发 CUSTOM `agent.canvas-change`、记进对话记录；
  * - 收尾时存一份画布摘要（没交给模型的通知涉及的元素退回改动之前），下一轮开始时对比，
@@ -692,7 +703,12 @@ function runnerModelOf(model: Model<Api>): RunnerModel {
   return copy as RunnerModel
 }
 
-/** 被杀时最后一批工具调用缺的结果：补成错误结果，下一轮的上下文才合法（各家 API 都拒「有调用没结果」） */
+/**
+ * 被杀时最后一批工具调用缺的结果：补成错误结果，下一轮的上下文才合法（各家 API 都拒「有调用没结果」）。
+ * pi-ai 的 `transformMessages` 发请求前也会给孤立的工具调用补一条结果（所以只靠它模型那头也不会报错），
+ * 这里仍然自己补：补的是**画布语义**的那句话（结果未知、需要时重读画布），而且落库的上下文、对话里的工具条目与下一轮
+ * 实际发给模型的是同一份 —— 不依赖 pi-ai 在请求时临时补、库里却缺着。
+ */
 const TOOL_INTERRUPTED = '这一轮在这次工具调用完成之前被停止，结果未知；需要时请重新读取画布确认'
 
 export function completeToolResults(messages: AgentMessage[]): AgentMessage[] {
@@ -863,16 +879,61 @@ export function digestArgs(args: unknown): string {
 }
 
 /**
- * 裁剪模型上下文：留最后 `max` 条，**切口落在一条用户消息上** ——
+ * 裁剪模型上下文：留最后 `max` 条、并且估算不超过 `maxTokens`（{@link llmHistoryTokenBudget}），**切口落在一条用户消息上** ——
  * 从中间切开会留下一个没有对应 tool_use 的 tool_result，各家 API 都会拒。
+ *
+ * token 按 pi-ai 的 `estimateMessageTokens` 逐条估（字符数 / 3.5，图片按固定值）再从后往前累加。
+ * 不用 `estimateContextTokens`：它以最近一条 assistant 的 `usage` 为锚，那个数含当时的系统提示和工具定义、覆盖整段前缀，
+ * 给不出「从这条往后一共多少」。两条规则取更紧的那个；都满足就原样返回（不要求开头是用户消息，和只按条数时一样）。
  */
-export function trimLlmHistory(messages: AgentMessage[], max: number): AgentMessage[] {
-  if (messages.length <= max) return messages
-  for (let index = messages.length - max; index < messages.length; index += 1) {
+export function trimLlmHistory(messages: AgentMessage[], max: number, maxTokens = Number.POSITIVE_INFINITY): AgentMessage[] {
+  /** 两条规则都满足的最早下标 */
+  let earliest = Math.max(0, messages.length - max)
+  if (Number.isFinite(maxTokens)) {
+    let total = 0
+    let index = messages.length
+    while (index > earliest) {
+      total += estimateMessageTokens(messages[index - 1] as Message)
+      if (total > maxTokens) break
+      index -= 1
+    }
+    earliest = index
+  }
+  if (earliest === 0) return messages
+  for (let index = earliest; index < messages.length; index += 1) {
     if (messages[index]?.role === 'user') return messages.slice(index)
   }
-  // 最近 max 条里一条用户消息都没有（一轮里工具调用极多）：宁可清空也不留半截
+  // 放得下的那一段里一条用户消息都没有（一轮里工具调用极多 / 一条结果就很长）：宁可清空也不留半截
   return []
+}
+
+/**
+ * 跨轮留下的模型上下文最多估多少 token（{@link trimLlmHistory} 的 `maxTokens`）。余量规则：
+ * - 一次请求里留给消息的 = `contextWindow` − 输出预留 − 固定部分；
+ *   - 输出预留 = min(`maxTokens`, `contextWindow` / 4)：有的模型把 `maxTokens` 报得和窗口一样大，照单全收就什么都不剩；
+ *   - 固定部分（`fixedTokens`，调用方估）= 这一轮的系统提示 + 这一轮**提供的**全部工具定义 —— 下一轮可能加载其中任意几个，按全量算，宁紧勿松；
+ * - 历史只占留给消息的**一半**：另一半给下一轮自己 —— 新的用户消息（跨轮差异、提及展开、附件说明）和它这一轮的工具往返
+ *   （`read_canvas` 的结果动辄几千字，一轮最多几十次调用）。
+ * 估算本身是字符数 / 3.5，对中文偏低估（一个汉字常常就是 1 token 以上），留一半也是在给这个误差兜底。
+ * 模型没报窗口（0 / 非数）→ `Infinity`：只按条数裁。
+ */
+export function llmHistoryTokenBudget(model: Pick<Model<Api>, 'contextWindow' | 'maxTokens'>, fixedTokens: number): number {
+  const window = model.contextWindow
+  if (!Number.isFinite(window) || window <= 0) return Number.POSITIVE_INFINITY
+  const output = Math.min(Number.isFinite(model.maxTokens) && model.maxTokens > 0 ? model.maxTokens : window / 4, window / 4)
+  return Math.max(0, Math.floor((window - output - fixedTokens) / 2))
+}
+
+/**
+ * 模型报的「上下文超长」（pi-ai 的 `isContextOverflow` 认各家的报错写法，也认「usage.input 超过窗口」的静默超长）：
+ * 认出来就换一句人话放在前面，原文接在后面照常展示（前端 `modelError.ts` 认不出这种写法就整句显示，原文一个字不丢）。
+ */
+function contextOverflowError(messages: readonly AgentMessage[], model: Model<Api>, raw: string): string | null {
+  const failed = [...messages]
+    .reverse()
+    .find((message): message is AssistantMessage => message.role === 'assistant' && message.stopReason === 'error')
+  if (!failed || !isContextOverflow(failed, model.contextWindow)) return null
+  return `对话太长，超出了模型的上下文窗口（${model.contextWindow} tokens）。较早的历史这次已按长度裁掉，可以直接重试；仍然不行就新开一个对话。模型原文：${raw}`
 }
 
 /** 对话记录只留最后 `max` 条（前端看的，没有配对约束，直接切） */
@@ -1734,7 +1795,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     const noticeLimits: NoticeLimits = { maxItems: limits.changeItems, maxChars: limits.changeChars }
     /** 合并好、还没交给 runner 的通知（按时间先后） */
     const queuedNotices: CanvasChangeNotice[] = []
-    /** 已经交给 runner（它会 steer）、等 pi 把它放进上下文的那条 → 它对应的通知与对话里的那条 */
+    /** 已经交给 runner（它再交给 pi）、等 pi 把它放进上下文的那条 → 它对应的通知与对话里的那条 */
     const steered = new Map<string, { notice: CanvasChangeNotice; display: AgentCanvasChangeMessage }>()
     /** 对话记录里这一轮的通知：跨轮差异那条排在 assistant 之前，运行中的排在之后（和前端折叠的顺序一致） */
     let sinceLastRun: AgentCanvasChangeMessage | null = null
@@ -1939,7 +2000,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
       /**
        * `load_skill`（docs/23 §3.3）：判提供集合、是否已加载、本轮次数；通过就记进已加载、发「已加载：…」那一行，
-       * 结果带上这个技能的提示段与工具名单，并 `terminate` 这一批（runner 并入新工具后 continue）
+       * 结果带上这个技能的提示段与工具名单，并带 `terminate`（给老镜像：它们靠提前结束这一批再 continue；
+       * 现在的 runner 剥掉它，在 prepareNextTurnWithContext 里并进新工具）
        */
       const loadSkill = async (id: string, agent: RunAgent) => {
         const skill = (agent.sub ? agent.sub.offered : offeredSkills).get(id)
@@ -2363,7 +2425,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       }
 
       /**
-       * 一批调过工具的 turn_end（runner 来取，pi 接着就取 steer 队列、再请求模型）：把窗口里攒着的先合并，
+       * 一批调过工具之后、下一次请求模型之前（runner 在 pi 的 `prepareNextTurnWithContext` 里来取）：把窗口里攒着的先合并，
        * 排着的通知并成**一条**交出去。叫停中的不交 —— 没有下一次请求了。
        */
       const takeChanges = async (): Promise<CanvasChangesResponse> => {
@@ -2445,7 +2507,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
               agent.turns += 1
               // 到了上限还要接着调工具（这一步调过工具）= 步数用完；最后一步正好是不调工具的回复不算
               if (agent.turns >= limits.maxTurns && event.toolResultCount > 0) agent.exhausted = true
-              // runner 到了上限就停下它（被停的那一下还会报一次 turn_end）；再多就是 runner 不守规矩：整轮停
+              // runner 到了上限就结束它的循环（finishTurn，不再请求模型）；多一步算宽限（老镜像停它时还会报一次 turn_end），再多就是 runner 不守规矩：整轮停
               if (agent.turns > limits.maxTurns + 1) stopRun(run, `子任务 ${agent.id} 超过步数上限 ${limits.maxTurns}，已停止`)
             }
             batch.push(...mapper.subtaskEvent(agent.id, event))
@@ -2543,12 +2605,18 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
       const stopped = run.stopped
       const received = completeToolResults(appended)
-      nextLlm = trimLlmHistory([...llmHistory, ...received], limits.llmMessages)
+      // 跨轮的上下文按条数、也按 token 裁（余量规则见 llmHistoryTokenBudget）：固定部分 = 这一轮的系统提示 + 提供的全部工具定义
+      const fixedTokens =
+        estimateTextTokens(runnerInput.systemPrompt) +
+        estimateTextTokens(JSON.stringify([...tools.values()].map(({ name, description, parameters }) => ({ name, description, parameters }))))
+      nextLlm = trimLlmHistory([...llmHistory, ...received], limits.llmMessages, llmHistoryTokenBudget(resolved.model, fixedTokens))
       // 两者都在回调里赋值，TS 的收窄看不见：显式放宽
       const finishReport = runnerFinish as FinishRequest | null
       const exitInfo = sandboxExit as SandboxExit | null
       const mismatch = protocolMismatch as { runnerVersion: number | null; serverVersion: number } | null
       const last = received.at(-1)
+      // 模型报「上下文超长」：单独一个 code，原因说人话（原文接在后面）
+      const overflow = mapper.modelError ? contextOverflowError(received, resolved.model, mapper.modelError) : null
       outcome = stopped
         ? stoppedOutcome(stopped)
         : mismatch
@@ -2560,7 +2628,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
               : last?.role === 'assistant' && last.stopReason === 'aborted'
                 ? { type: 'cancelled', reason: '已中止' }
                 : mapper.modelError
-                  ? { type: 'error', message: mapper.modelError, code: 'model_error' }
+                  ? overflow
+                    ? { type: 'error', message: overflow, code: 'context_overflow' }
+                    : { type: 'error', message: mapper.modelError, code: 'model_error' }
                   : { type: 'success' }
     } catch (err) {
       // 签发失败（发起时就已失权）、打开画布失败（画布已删 / 配额锁定）、沙箱起不来……这一轮直接失败

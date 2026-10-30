@@ -79,15 +79,16 @@ interface AgentSkill {
 
 ### 3.3 按需加载：`load_skill`
 
-pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` 拍一次快照，一轮循环中途改工具列表不生效。
-所以加载要借 pi 提前结束这一轮循环的钩子：
+pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` 拍一次快照，一轮循环中途改 `state.tools` 不生效；
+下一次请求用的工具表只能经 pi 的 `prepareNextTurnWithContext`（一批工具执行完、循环要接着请求模型之前调的钩子）换掉。所以：
 
 1. 模型调 `load_skill({ id })`。它是网关工具（`flow:read`），由服务端判断：这个技能在不在本轮的提供集合里、是不是已经加载过、本轮加载次数有没有超限。
-   通过后服务端把它记进本轮的已加载集合，返回这个技能的 `prompt` 和工具名单，并带上 `terminate: true`。
-2. **`load_skill` 必须单独成批**。pi 只在一批工具结果**全部**带 `terminate` 时才提前结束，所以 runner 在 `beforeToolCall` 里检查这条 assistant 消息：
-   同一批里还有别的工具调用，就拦下 `load_skill`，告诉模型「请单独调用 load_skill」。系统提示里也写明这一条。
-3. 循环结束、`agent.prompt()` 返回后，runner 发现这一轮有新加载的技能，就把它们的工具代理并入 `agent.state.tools`，然后 `agent.continue()`。
-   模型的下一次请求带上了新工具，接着做事。
+   通过后服务端把它记进本轮的已加载集合，返回这个技能的 `prompt` 和工具名单（`details.loadedSkill` 标出新技能；结果另带 `terminate: true`，
+   只给旧版沙箱镜像用 —— 它们靠提前结束这一批、再 `continue()` 并入新工具；现在的 runner 把它去掉，循环不在这一批结束）。
+2. **`load_skill` 必须单独成批**：runner 在 `beforeToolCall` 里检查这条 assistant 消息，同一批里还有别的工具调用，就拦下 `load_skill`，
+   告诉模型「请单独调用 load_skill」（同批的别的调用是模型读到技能说明之前定的）。系统提示里也写明这一条。
+3. 这一批执行完、下一次请求模型之前，runner 在 `prepareNextTurnWithContext` 里把新加载的技能的工具代理并进返回的工具表（同时写回 `agent.state.tools`）。
+   模型的下一次请求带上了新工具，接着做事；同一时刻排着的画布改动通知也在这里一起交给模型（docs/20 §3.10.2），不必等到下一批。
 4. 每轮最多加载 3 次（`limits.maxSkillLoads`），超了 `load_skill` 返回错误，防止模型反复加载。
 
 其它约束：

@@ -10,6 +10,7 @@ import {
   conversationSummary,
   conversationTitle,
   createAgentRuntime,
+  llmHistoryTokenBudget,
   trimLlmHistory,
   validatePrompt,
   type AbortActor,
@@ -735,7 +736,8 @@ describe('失败的收尾', () => {
   /**
    * pi 1.x 的 `handleRunFailure`（循环本身抛错，不是模型流报错）照常发 message_start / message_end + turn_end：
    * 失败消息只上报一次（收尾的兜底补报不重复）、pi 自己的 system 消息不上报不落库、这一下算一步（服务端按 turn_end 数）。
-   * 这里让 runner 在一批调过工具的 turn_end 里取别人改动时网关回 500 —— 那是 pi 的事件监听器里抛的。
+   * 这里让 runner 在一批调过工具之后取别人改动时网关回 500 —— 那是在 pi 的 `prepareNextTurnWithContext` 里抛的
+   * （和以前在 turn_end 监听器里抛一样走 `handleRunFailure`；不再请求模型）。
    */
   function failChangesFetch(runtime: ReturnType<typeof runtimeWith>, uploaded: { type: string; message?: { role: string; stopReason?: string } }[]) {
     vi.stubGlobal(
@@ -776,6 +778,17 @@ describe('失败的收尾', () => {
 
     const row = runtime.store.rows.get(threadOf(out.events))!
     expect(row.llmMessages.map((message) => message.role)).not.toContain('system')
+  })
+
+  it('模型报「上下文超长」→ RUN_ERROR context_overflow：先说人话，模型原文接在后面', async () => {
+    const raw = "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens."
+    const runtime = runtimeWith([fauxAssistantMessage([], { stopReason: 'error', errorMessage: raw })])
+    const out = await runOnce(runtime, '一')
+    const last = out.events.at(-1)
+    expect(last).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'context_overflow' })
+    const message = last?.type === AgentEventType.RUN_ERROR ? last.message : ''
+    expect(message.startsWith('对话太长，超出了模型的上下文窗口（128000 tokens）')).toBe(true)
+    expect(message).toContain(`模型原文：400: {"message":${JSON.stringify(raw)}`)
   })
 
   it('失败的那一下也算一步：撞上步数上限时按超限停下（和模型流报错同一套计数）', async () => {
@@ -1048,6 +1061,45 @@ describe('输入与历史', () => {
     ] as never[]
     expect(trimLlmHistory(msgs, 3)).toEqual([{ role: 'user' }, { role: 'assistant' }])
     expect(trimLlmHistory(msgs, 10)).toBe(msgs)
+  })
+
+  it('裁剪模型上下文也按 token：从后往前累加估算，超了就在放得下的那段里找最早的用户消息切；一条就超了宁可清空', () => {
+    // 35 字 ≈ 10 token（pi-ai 的估算：字符数 / 3.5）
+    const user = (text: string) => ({ role: 'user', content: text, timestamp: 0 })
+    const reply = (text: string) => ({ role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop', timestamp: 0 })
+    const ten = 'x'.repeat(35)
+    const msgs = [user(ten), reply(ten), user(ten), reply(ten), user(ten), reply(ten)] as never[]
+    expect(trimLlmHistory(msgs, 100, 60)).toBe(msgs)
+    // 50 token 放得下后 5 条，切口挪到最早的那条用户消息上
+    expect(trimLlmHistory(msgs, 100, 50)).toEqual(msgs.slice(2))
+    expect(trimLlmHistory(msgs, 100, 20)).toEqual(msgs.slice(4))
+    // 两条规则取更紧的那个
+    expect(trimLlmHistory(msgs, 3, 1000)).toEqual(msgs.slice(4))
+    expect(trimLlmHistory([user(ten), reply('y'.repeat(3500))] as never[], 100, 500)).toEqual([])
+  })
+
+  it('token 预算：窗口 − 输出预留（maxTokens，至多窗口的 1/4）− 系统提示和工具，剩下的一半；没报窗口就不按 token 裁', () => {
+    expect(llmHistoryTokenBudget({ contextWindow: 128_000, maxTokens: 8192 }, 10_000)).toBe(54_904)
+    expect(llmHistoryTokenBudget({ contextWindow: 32_000, maxTokens: 32_000 }, 4_000)).toBe(10_000)
+    expect(llmHistoryTokenBudget({ contextWindow: 8_000, maxTokens: 2_000 }, 10_000)).toBe(0)
+    expect(llmHistoryTokenBudget({ contextWindow: 0, maxTokens: 0 }, 0)).toBe(Number.POSITIVE_INFINITY)
+  })
+
+  it('保存时按模型的上下文窗口裁：同样一条很长的回复，窗口大的会话留着，窗口小的裁掉', async () => {
+    const long = '长'.repeat(100_000) // ≈ 2.9 万 token
+    const kept = runtimeWith([fauxAssistantMessage(long)])
+    const keptId = threadOf((await runOnce(kept, '一')).events)
+    expect(kept.store.rows.get(keptId)!.llmMessages.map((m) => m.role)).toEqual(['user', 'assistant'])
+
+    // 4 万窗口：历史预算至多 (40000 − 8192) / 2 ≈ 1.6 万 token，装不下这一条（脚本化模型的描述每份都一样，借一份改窗口）
+    const template = registerScriptedModel().model
+    const narrow = runtimeWith([fauxAssistantMessage(long), fauxAssistantMessage('好')], {
+      model: { ...template, model: { ...template.model, contextWindow: 40_000 } },
+    })
+    const narrowId = threadOf((await runOnce(narrow, '一')).events)
+    expect(narrow.store.rows.get(narrowId)!.llmMessages).toEqual([])
+    await runOnce(narrow, '二', narrowId)
+    expect(narrow.store.rows.get(narrowId)!.llmMessages.map((m) => m.role)).toEqual(['user', 'assistant'])
   })
 
   it('对话记录与模型上下文在保存时按上限裁剪', async () => {

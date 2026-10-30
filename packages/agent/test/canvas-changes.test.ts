@@ -323,6 +323,34 @@ describe('运行中：别人的改动 steer 进模型上下文', () => {
     expect(JSON.stringify(row.llmMessages)).toContain('画布改动通知')
   })
 
+  it('取改动的时机：每批调过工具之后、下一次请求模型之前取一次（那一批的 turn_end 已经报上去），最终回复之后不取（取失败的收尾见 session.test）', async () => {
+    const doc = new Y.Doc()
+    addNode(doc, 'n1', '大纲', 'seed')
+    const runtime = runtimeWith([
+      fauxAssistantMessage([fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([fauxToolCall('get_node', { nodeId: 'n1' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage('好了'),
+    ])
+    /** runner 打网关的顺序：取改动记 changes，上报事件记里面的 turn_end 个数 */
+    const trail: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      gatewayFetch(async (request) => {
+        const path = new URL(request.url).pathname
+        if (path.endsWith('/canvas/changes')) trail.push('changes')
+        if (path.endsWith('/events')) {
+          const body = (await request.clone().json()) as { events: { type: string }[] }
+          for (const event of body.events) if (event.type === 'turn_end') trail.push('turn_end')
+        }
+        return runtime.gateway.handle(request)
+      }),
+    )
+    const { events } = await run(runtime, doc, '看看')
+    expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
+    expect(trail).toEqual(['turn_end', 'changes', 'turn_end', 'changes', 'turn_end'])
+    expect(faux!.state.callCount).toBe(3)
+  })
+
   it('本轮自己的写入不报；另一轮 agent 的写入报成「发起人 的 agent」', async () => {
     const doc = new Y.Doc()
     addNode(doc, 'n1', '甲', 'seed')

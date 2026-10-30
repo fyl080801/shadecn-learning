@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxToolCall, type AssistantMessage, type Context, type JsonObject } from '@earendil-works/pi-ai'
+import { fauxAssistantMessage, fauxText, fauxToolCall, type AssistantMessage, type Context, type JsonObject } from '@earendil-works/pi-ai'
 import {
   AGENT_SUBTASK_EVENT,
   AgentEventType,
@@ -320,6 +320,28 @@ describe('只有一层：子 agent 不能再派（验收 21）', () => {
   })
 })
 
+describe('子 agent 按需加载技能（docs/23 §3.3）', () => {
+  it('子 agent load_skill 之后，它的下一次请求就带上新工具；只有父 agent 去取别人的改动', async () => {
+    const doc = new Y.Doc()
+    seedText(doc, 'n1')
+    const runtime = setup(async (turn) => {
+      if (turn.brief === null) return turn.step === 1 ? calls(delegate('先加载导演台再读')) : say('好')
+      if (turn.step === 1) return call('load_skill', { id: 'director' })
+      if (turn.step === 2) return call('read_canvas', {})
+      return say('读完了')
+    })
+    const run = await start(runtime, doc)
+    await run.done
+    expect(finished(run.events).outcome).toEqual({ type: 'success' })
+    const sub = runtime.turns.filter((turn) => turn.brief !== null)
+    expect(sub).toHaveLength(3)
+    expect(sub[0]!.tools).not.toContain('get_director_scene')
+    expect(sub[1]!.tools).toContain('get_director_scene')
+    // 子 agent 两批调过工具也不取；父 agent 只在它那一批 delegate_task 之后取一次
+    expect(runtime.sent.filter((entry) => entry.route === GATEWAY_ROUTES.changes)).toHaveLength(1)
+  })
+})
+
 describe('上限服务端判（验收 21）', () => {
   it('同时上限 2、累计上限 3：第一批三个里一个因「同时」被拒；第二批两个里一个因「累计」被拒 —— 拒绝是给父 agent 的工具错误，不停整轮', async () => {
     const doc = new Y.Doc()
@@ -501,7 +523,7 @@ describe('占用按 agent（验收 16）', () => {
 })
 
 describe('预算：步数按 agent 各算，工具调用次数全轮共用', () => {
-  it('单轮步数上限 3：子 agent 自己用满 3 步被停下（子任务失败），父 agent 的步数不受它影响、照常收尾', async () => {
+  it('单轮步数上限 3：子 agent 自己用满 3 步被结束（子任务失败），父 agent 的步数不受它影响、照常收尾', async () => {
     const doc = new Y.Doc()
     let parentSaw = ''
     const runtime = setup(
@@ -511,7 +533,8 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
           parentSaw = turn.lastResult
           return say('它步数用完了')
         }
-        return call('read_canvas', {})
+        // 每一步都带一句话再调工具：结束时子任务的文字是最后这一步的真回复
+        return fauxAssistantMessage([fauxText(`读第 ${turn.step} 遍`), fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' })
       },
       { limits: { maxTurns: 3 } },
     )
@@ -521,7 +544,16 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
     expect(finished(run.events).outcome).toEqual({ type: 'success' })
     expect(parentSaw).toContain('子任务失败')
     expect(parentSaw).toContain('步数上限 3')
+    // runner 用 pi 的 finishTurn 结束它的循环：第 3 步之后不再请求模型（没有一次被掐断的第 4 次请求），上报的 turn_end 正好 3 个
     expect(runtime.turns.filter((turn) => turn.brief !== null)).toHaveLength(3)
+    const reported = runtime.sent
+      .filter((entry) => entry.route === GATEWAY_ROUTES.events)
+      .flatMap((entry) => (entry.body as { events: { type: string; agentId?: string }[] }).events)
+    expect(reported.filter((event) => event.type === 'turn_end' && event.agentId !== undefined)).toHaveLength(3)
+    // 子任务的文字是第 3 步的回复（不是一条被中止的空消息）
+    expect(parentSaw).toContain('读第 3 遍')
+    const last = subtaskFrames(run.events).at(-1) as AgentSubtaskView
+    expect(last).toMatchObject({ status: 'failed', text: '读第 3 遍', error: '超过子任务的步数上限 3' })
   })
 
   it('工具调用上限 3（父子共用）：delegate_task 算一次，子 agent 再用两次就到顶；之后子 agent、父 agent 的调用都被拦下', async () => {
