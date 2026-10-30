@@ -186,8 +186,9 @@ export type AgentChatMessage =
       /** 这一轮以失败 / 中止收尾时的说明 */
       error?: string
       /**
-       * 这一轮发起的任务（docs/20 §3.10.11）：每个 `delegate_task` 工具调用一项（`toolCallId` 对得上 {@link toolCalls} 里那一条），
-       * 按发起的先后。没派过任务就没有这个字段。
+       * 这一轮发起的任务（docs/20 §3.10.11）：每个 `run_agent` 工具调用一项，按发起的先后，**平铺**（被调用的 agent 再发起的任务也在这里，
+       * 用 {@link AgentSubtaskView.parentId} 指向发起它的那个任务）。入口 agent 发起的 `toolCallId` 对得上 {@link toolCalls} 里那一条，
+       * 嵌套的对得上父任务条目的 `toolCalls` 里那一条。没发起过任务就没有这个字段。
        */
       subtasks?: AgentSubtaskView[]
     }
@@ -196,15 +197,36 @@ export type AgentChatMessage =
 
 // —— 任务（docs/20 §3.10.11） ——
 
-/** `delegate_task` 的工具名：前端据此把那一条工具调用画成任务条目 */
-export const AGENT_DELEGATE_TOOL_NAME = 'delegate_task'
+/** 发起任务的工具名（docs/26 §3.5）：前端据此把那一条工具调用画成任务条目 */
+export const AGENT_RUN_TOOL_NAME = 'run_agent'
+
+/**
+ * 发起任务的工具**原来的**名字（runner 协议第 8 版之前，docs/26 P3）。只为读旧数据保留：会话里已经存着的 assistant 消息
+ * （`toolCalls`）、模型上下文（`llmMessages`）、工具调用日志里还是它，不迁移 —— 前端认它和 {@link AGENT_RUN_TOOL_NAME} 一样画成任务条目。
+ * **不要删**，也不要再用它发起新的调用（服务端的工具表里已经没有它）。
+ */
+export const LEGACY_AGENT_DELEGATE_TOOL_NAME = 'delegate_task'
+
+/** 这条工具调用是不是发起任务的那种（含旧名字，见 {@link LEGACY_AGENT_DELEGATE_TOOL_NAME}） */
+export function isAgentRunToolName(name: string): boolean {
+  return name === AGENT_RUN_TOOL_NAME || name === LEGACY_AGENT_DELEGATE_TOOL_NAME
+}
+
+/**
+ * 旧的任务条目（第 8 版之前落库的）没有 `agent` 字段：那时被调用的 agent 只有 `canvas` 一种（docs/26 P2），读出时按它补上。
+ * 和 `@shadecn/agent` 的入口 agent 名（`ENTRY_AGENT_NAME`）同值，但这里只管旧数据的显示，别拿它判别的
+ */
+export const LEGACY_TASK_AGENT_NAME = 'canvas'
 
 /** 任务的状态：进行中 / 完成 / 失败 / 需要确认（被调用的 agent 不直接问人，以「需要确认 + 问题」交回调用方） */
 export type AgentSubtaskStatus = 'running' | 'done' | 'failed' | 'needs_confirmation'
 
 /**
- * 会话里的一个任务条目：调用方的一次 `delegate_task`。被调用的 agent 在这一轮的沙箱里跑，**没有自己的会话**；
+ * 会话里的一个任务条目：调用方的一次 `run_agent`（旧数据里是 `delegate_task`）。被调用的 agent 在这一轮的沙箱里跑，**没有自己的会话**；
  * 它的工具调用和最终回复只在这里给人看（只读），不进入口 agent 的模型上下文。
+ *
+ * **嵌套**（调用深度上限 > 1 时，docs/26 §3.5）：被调用的 agent 再发起的任务同样是 `subtasks` 里平铺的一项，`parentId` 是发起它的那个任务，
+ * `toolCallId` 是父任务条目 `toolCalls` 里那一条；前端按它们把子条目挂到父条目里显示。
  *
  * 实时流里：发起时一帧 CUSTOM {@link AGENT_SUBTASK_EVENT}，`value` 是完整条目（前端按 `id` 整条替换）；
  * 之后每次变化一帧 CUSTOM {@link AGENT_SUBTASK_UPDATE_EVENT}，只带变了的（{@link AgentSubtaskUpdate}，前端用 {@link applyAgentSubtaskUpdate} 合并）。
@@ -213,12 +235,16 @@ export type AgentSubtaskStatus = 'running' | 'done' | 'failed' | 'needs_confirma
 export interface AgentSubtaskView {
   /** 被调用的 agent 的 id（服务端分配，一轮之内唯一） */
   id: string
+  /** 执行它的 agent 定义的名字（docs/26 §3.1，如 `canvas`）。旧条目没有，读出时按 {@link LEGACY_TASK_AGENT_NAME} 补 */
+  agent: string
+  /** 发起它的那个任务的 `id`；入口 agent 发起的没有这个字段 */
+  parentId?: string
   /**
-   * 调用方那次 `delegate_task` 在 assistant 消息 `toolCalls` 里那一条的 `id`（一条消息里唯一：上游复用调用 id 时
-   * 服务端给后来的那条加后缀，见 `@shadecn/agent` 的 `events.ts`）
+   * 调用方那次 `run_agent` 的显示 id：入口 agent 发起的是 assistant 消息 `toolCalls` 里那一条的 `id`，嵌套的是父任务条目 `toolCalls` 里那一条的
+   * （各自在自己的列表里唯一：上游复用调用 id 时服务端给后来的那条加后缀，见 `@shadecn/agent` 的 `events.ts`）
    */
   toolCallId: string
-  /** 任务说明（调用方写的） */
+  /** 任务说明（调用方写的，`run_agent` 的 `task`；字段名沿用落库的形状） */
   brief: string
   /** 派给它处理的节点 */
   nodeIds: string[]
@@ -269,7 +295,7 @@ function stringIds(value: unknown, max: number): string[] {
  */
 export function parseAgentSubtask(value: unknown): AgentSubtaskView | null {
   if (!isObject(value)) return null
-  const { id, toolCallId, brief, status, startedAt, finishedAt, text, question, error } = value
+  const { id, agent, parentId, toolCallId, brief, status, startedAt, finishedAt, text, question, error } = value
   if (typeof id !== 'string' || !id || typeof toolCallId !== 'string' || !toolCallId) return null
   if (typeof brief !== 'string') return null
   if (!SUBTASK_STATUSES.includes(status as AgentSubtaskStatus)) return null
@@ -284,6 +310,9 @@ export function parseAgentSubtask(value: unknown): AgentSubtaskView | null {
   }
   return {
     id,
+    // 旧条目（第 8 版之前）没有 agent：那时只有 canvas
+    agent: typeof agent === 'string' && agent ? agent : LEGACY_TASK_AGENT_NAME,
+    ...(typeof parentId === 'string' && parentId ? { parentId } : {}),
     toolCallId,
     brief,
     nodeIds: stringIds(value.nodeIds, SUBTASK_NODE_IDS_MAX),
@@ -377,8 +406,12 @@ export type AgentSkillId = string
 /**
  * 合并 / 改名掉的技能 id → 现在的 id。对话记录里存着旧的，**读出时**换成新的（{@link canonicalSkillIds}）。
  * `canvas-edit`：原先写画布的技能，和只读的 `canvas` 合成了一个（docs/23 §4）。
+ * `delegate`：发起任务的技能，runner 协议第 8 版起改名 `agents`（工具 `delegate_task` → `run_agent`，docs/26 P3）。
  */
-export const AGENT_SKILL_ID_ALIASES: ReadonlyMap<AgentSkillId, AgentSkillId> = new Map([['canvas-edit', 'canvas']])
+export const AGENT_SKILL_ID_ALIASES: ReadonlyMap<AgentSkillId, AgentSkillId> = new Map([
+  ['canvas-edit', 'canvas'],
+  ['delegate', 'agents'],
+])
 
 /** 存下来的技能 id 换成现在的：旧 id 按 {@link AGENT_SKILL_ID_ALIASES} 换掉，换完重复的只留第一次出现的位置 */
 export function canonicalSkillIds(ids: readonly AgentSkillId[]): AgentSkillId[] {

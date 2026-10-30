@@ -2,7 +2,8 @@
 import { computed } from "vue"
 import { ChevronRight, CircleAlert, CircleCheck, CircleQuestionMark } from "@lucide/vue"
 import { useNow } from "@vueuse/core"
-import type { AgentSubtaskView } from "@shadecn/shared/agent"
+import { isAgentRunToolName, type AgentSubtaskView, type AgentToolCallView } from "@shadecn/shared/agent"
+import { Badge } from "@/components/ui/badge"
 import { Spinner } from "@/components/ui/spinner"
 import { formatDuration } from "@/lib/format"
 import FlowAgentError from "./FlowAgentError.vue"
@@ -10,13 +11,19 @@ import FlowAgentMarkdown from "./FlowAgentMarkdown.vue"
 import FlowAgentMention from "./FlowAgentMention.vue"
 
 /**
- * 会话里的一个任务条目（docs/20 §3.10.11）：调用方的一次 `delegate_task`，替换掉那条普通的工具调用行。
+ * 会话里的一个任务条目（docs/20 §3.10.11、docs/26）：调用方的一次 `run_agent`（旧会话里是 `delegate_task`），替换掉那条普通的工具调用行。
  *
- * 折叠时：状态图标、任务说明、状态（进行中 / 完成 / 失败 / 需要确认）和已运行时长；点开看它要处理的节点、
- * 被调用的 agent 的工具调用、需要确认的问题 / 失败原因和它的最终回复（Markdown，只读）。没有单独的子会话，也不能在这里对它说话。
+ * 折叠时：状态图标、任务说明、执行它的 agent（定义名，旧条目按 canvas）、状态（进行中 / 完成 / 失败 / 需要确认）和已运行时长；
+ * 点开看它要处理的节点、被调用的 agent 的工具调用、需要确认的问题 / 失败原因和它的最终回复（Markdown，只读）。
+ * 被调用的 agent 自己再发起的任务（`tasks` 里 `parentId` 是这一项的）嵌在它的工具调用列表里，替换掉那条 run_agent —— 这个组件递归画它。
+ * 没有单独的子会话，也不能在这里对它说话。
  * 已运行时长：在跑时每秒走一次（开始时刻是服务端打的，和本机时钟差出来的负数按 0 算），结束后固定为结束 − 开始。
  */
-const props = defineProps<{ task: AgentSubtaskView }>()
+const props = defineProps<{
+  task: AgentSubtaskView
+  /** 同一条消息的全部任务条目（平铺）：从里面找这一项发起的下层任务；不给 = 没有嵌套 */
+  tasks?: readonly AgentSubtaskView[]
+}>()
 
 const now = useNow({ interval: 1000 })
 
@@ -31,9 +38,23 @@ const elapsed = computed(() =>
   formatDuration((props.task.finishedAt ?? now.value.getTime()) - props.task.startedAt)
 )
 
+/** 这一项发起的下层任务，按它那次 run_agent 的 id 认 */
+const children = computed(() => (props.tasks ?? []).filter((item) => item.parentId === props.task.id))
+
+const childByCall = computed(() => new Map(children.value.map((item) => [item.toolCallId, item])))
+
+const childOf = (call: AgentToolCallView) => (isAgentRunToolName(call.name) ? childByCall.value.get(call.id) : undefined)
+
+/** 对不上它任何一条工具调用的下层任务（不该有，容错）：排在工具调用之后 */
+const looseChildren = computed(() => {
+  const ids = new Set(props.task.toolCalls.map((call) => call.id))
+  return children.value.filter((item) => !ids.has(item.toolCallId))
+})
+
 const hasDetails = computed(
   () =>
     props.task.nodeIds.length > 0 ||
+    looseChildren.value.length > 0 ||
     props.task.toolCalls.length > 0 ||
     Boolean(props.task.text) ||
     Boolean(props.task.question) ||
@@ -50,7 +71,7 @@ const hasDetails = computed(
   >
     <summary
       class="flex cursor-pointer list-none items-start gap-2 px-2 py-1.5 [&::-webkit-details-marker]:hidden"
-      :aria-label="`子任务：${props.task.brief}（${STATUS_LABEL[props.task.status]}）`"
+      :aria-label="`任务（${props.task.agent}）：${props.task.brief}（${STATUS_LABEL[props.task.status]}）`"
     >
       <Spinner v-if="props.task.status === 'running'" class="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
       <CircleCheck v-else-if="props.task.status === 'done'" class="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
@@ -62,7 +83,10 @@ const hasDetails = computed(
       <span class="min-w-0 flex-1">
         <span class="line-clamp-2 break-words" data-role="subtask-brief">{{ props.task.brief }}</span>
         <span class="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
-          <span data-role="subtask-status">子任务 · {{ STATUS_LABEL[props.task.status] }}</span>
+          <Badge as="span" variant="outline" class="h-4 px-1 py-0 font-mono text-[10px] font-normal" data-role="subtask-agent">
+            {{ props.task.agent }}
+          </Badge>
+          <span data-role="subtask-status">任务 · {{ STATUS_LABEL[props.task.status] }}</span>
           <span data-role="subtask-elapsed">已运行 {{ elapsed }}</span>
         </span>
       </span>
@@ -78,20 +102,27 @@ const hasDetails = computed(
         <FlowAgentMention v-for="nodeId in props.task.nodeIds" :key="nodeId" :node-id="nodeId" />
       </div>
 
-      <ul v-if="props.task.toolCalls.length > 0" class="space-y-1 border-l pl-2" data-role="subtask-tools">
-        <li
-          v-for="call in props.task.toolCalls"
-          :key="call.id"
-          class="flex items-start gap-1.5"
-          :data-tool-status="call.status"
-        >
-          <Spinner v-if="call.status === 'running'" class="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-          <CircleCheck v-else-if="call.status === 'done'" class="mt-0.5 size-3 shrink-0 text-emerald-600" />
-          <CircleAlert v-else class="mt-0.5 size-3 shrink-0 text-destructive" />
-          <span class="min-w-0 flex-1 break-words">
-            {{ call.summary || call.name }}
-            <span v-if="call.status === 'error' && call.error" class="block text-destructive">{{ call.error }}</span>
-          </span>
+      <ul
+        v-if="props.task.toolCalls.length > 0 || looseChildren.length > 0"
+        class="space-y-1 border-l pl-2"
+        data-role="subtask-tools"
+      >
+        <template v-for="call in props.task.toolCalls" :key="call.id">
+          <li v-if="childOf(call)">
+            <FlowAgentSubtask :task="childOf(call)!" :tasks="props.tasks" />
+          </li>
+          <li v-else class="flex items-start gap-1.5" :data-tool-status="call.status">
+            <Spinner v-if="call.status === 'running'" class="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+            <CircleCheck v-else-if="call.status === 'done'" class="mt-0.5 size-3 shrink-0 text-emerald-600" />
+            <CircleAlert v-else class="mt-0.5 size-3 shrink-0 text-destructive" />
+            <span class="min-w-0 flex-1 break-words">
+              {{ call.summary || call.name }}
+              <span v-if="call.status === 'error' && call.error" class="block text-destructive">{{ call.error }}</span>
+            </span>
+          </li>
+        </template>
+        <li v-for="child in looseChildren" :key="child.id">
+          <FlowAgentSubtask :task="child" :tasks="props.tasks" />
         </li>
       </ul>
 

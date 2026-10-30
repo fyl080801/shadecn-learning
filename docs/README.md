@@ -33,7 +33,7 @@
 | REQ-AGENT-SKILL | Agent 内置技能：按能力集组织工具、按需加载 | [23-agent-skills.md](23-agent-skills.md) | 规划中 |
 | REQ-AGENT-HITL | Agent 人机交互：提问、审批、挂起等待与定向推送 | [24-agent-interaction.md](24-agent-interaction.md) | 规划中 |
 | REQ-ASSET-PRIVATE | 画布资源私有访问：桶私有，判权后跳转短期签名 URL | [25-private-asset-access.md](25-private-asset-access.md) | 规划中 |
-| REQ-AGENT-DEF | Agent 定义（pi 格式、服务端配置）与同一沙箱内的多 agent 协作：取代父 / 子 agent | [26-agent-definitions.md](26-agent-definitions.md) | 部分实现（P0～P2） |
+| REQ-AGENT-DEF | Agent 定义（pi 格式、服务端配置）与同一沙箱内的多 agent 协作：取代父 / 子 agent | [26-agent-definitions.md](26-agent-definitions.md) | 部分实现（P0～P3） |
 
 ## 状态口径
 

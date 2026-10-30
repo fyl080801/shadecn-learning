@@ -40,7 +40,7 @@ interface Turn {
 function turnOf(context: Context): Turn {
   const lastResult = [...context.messages].reverse().find((message) => message.role === 'toolResult')
   return {
-    sub: (context.systemPrompt ?? '').includes('## 你是子 agent'),
+    sub: (context.systemPrompt ?? '').includes('## 你是被调用的 agent'),
     step: context.messages.filter((message) => message.role === 'assistant').length + 1,
     lastResult: lastResult ? textOf(lastResult.content) : '',
   }
@@ -255,15 +255,15 @@ describe('runner 伪造的上报不进事件流、不落库', () => {
     expect(everything(chat)).not.toContain('FORGED')
   })
 
-  it('伪造的任务内容：被调用的 agent 的回复（夹带的整批拒）、工具调用、/agent/finish 多带的状态 / 问题 / 文字都不用；条目和交回调用方的都是服务端那份', async () => {
+  it('伪造的任务内容：被调用的 agent 的回复（夹带的整批拒）、工具调用、/agent/task/finish 多带的状态 / 问题 / 文字都不用；条目和交回调用方的都是服务端那份', async () => {
     const context = setup(
       (turn) => {
-        if (turn.sub) return turn.step === 1 ? calls(['get_node', { id: 'n1' }]) : say('子任务的真回复：n1 看过了')
-        return turn.step === 1 ? calls(['delegate_task', { brief: '看一下 n1', nodeIds: ['n1'] }]) : say('父 agent 收尾')
+        if (turn.sub) return turn.step === 1 ? calls(['get_node', { id: 'n1' }]) : say('任务的真回复：n1 看过了')
+        return turn.step === 1 ? calls(['run_agent', { agent: 'canvas', task: '看一下 n1', nodeIds: ['n1'] }]) : say('父 agent 收尾')
       },
       {
         rewrite: (route, body) => {
-          if (route === GATEWAY_ROUTES.agentFinish) {
+          if (route === GATEWAY_ROUTES.taskFinish) {
             return { ...(body as object), status: 'needs_confirmation', question: 'FORGED_QUESTION', text: 'FORGED_FINISH_TEXT', error: 'FORGED_ERROR' }
           }
           if (route !== GATEWAY_ROUTES.events) return undefined
@@ -302,13 +302,13 @@ describe('runner 伪造的上报不进事件流、不落库', () => {
 
     expect(assistant?.subtasks).toHaveLength(1)
     const subtask = assistant!.subtasks![0]!
-    expect(subtask).toMatchObject({ status: 'done', text: '子任务的真回复：n1 看过了', brief: '看一下 n1' })
+    expect(subtask).toMatchObject({ status: 'done', text: '任务的真回复：n1 看过了', brief: '看一下 n1' })
     expect(subtask.question).toBeUndefined()
     expect(subtask.toolCalls).toEqual([expect.objectContaining({ name: 'get_node', status: 'done' })])
-    // 调用方那条 delegate_task：结束是服务端拼的结果，模型下一步看到的是同一段
-    expect(assistant?.toolCalls).toEqual([expect.objectContaining({ name: 'delegate_task', status: 'done', summary: '子任务完成：看一下 n1' })])
+    // 调用方那条 run_agent：结束是服务端拼的结果，模型下一步看到的是同一段
+    expect(assistant?.toolCalls).toEqual([expect.objectContaining({ name: 'run_agent', status: 'done', summary: '任务完成（canvas）：看一下 n1' })])
     const parentLast = context.turns.filter((turn) => !turn.sub).at(-1)!
-    expect(parentLast.lastResult).toContain('子任务的真回复：n1 看过了')
+    expect(parentLast.lastResult).toContain('任务的真回复：n1 看过了')
     expect(parentLast.lastResult).not.toContain('FORGED')
     expect(everything(events)).not.toContain('FORGED')
     expect(everything(chat)).not.toContain('FORGED')

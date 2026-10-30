@@ -99,8 +99,8 @@ describe('网关的挂载', () => {
     expect(input!).not.toHaveProperty('systemPrompt')
     expect(input!).not.toHaveProperty('llmMessages')
     expect(JSON.stringify(input)).not.toContain('你好')
-    expect(input!.skills.loaded).toEqual(['canvas', 'delegate'])
-    expect(input!.model).not.toHaveProperty('baseUrl')
+    expect(input!.entry.skills.loaded).toEqual(['canvas', 'agents'])
+    expect(input!.entry.model).not.toHaveProperty('baseUrl')
     expect(JSON.stringify(input)).not.toContain(SCRIPTED_API_KEY)
     expect(JSON.stringify(input)).not.toContain(SCRIPTED_UPSTREAM_URL)
 

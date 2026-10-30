@@ -20,8 +20,8 @@ import type { CanvasToolDetails } from './tools.ts'
  * ## 一轮的调用顺序（全部 `POST`，JSON，除了换令牌都带 `Authorization: Bearer <run 短令牌>`）
  *
  * 1. `/sts/token` `{ grantType: 'bootstrap', bootstrapToken }` → run 短令牌（bootstrap token 兑换一次即废）；
- * 2. `/run/input` → {@link RunnerInput}：这一轮提供 / 一开始就加载的技能（runner 按同一份注册表展开成工具）、
- *    模型描述（不含地址和 key）、runner 执行的工具的调用上限、要写进工作目录的文件。**没有**系统提示、提示词和之前几轮的上下文：
+ * 2. `/run/input` → {@link RunnerInput}：这一轮提供的技能、入口 agent 的那一份（{@link RunnerAgentSpec}：一开始就加载 / 能加载的技能、
+ *    定义的工具白名单、模型描述 —— 不含地址和 key）、可调用的 agent 目录、runner 执行的工具的调用上限、要写进工作目录的文件。**没有**系统提示、提示词和之前几轮的上下文：
  *    模型请求的上下文只用服务端的 transcript（docs/22 §4.3），runner 用不着它们；
  * 3. 跑 pi：模型请求走 `/model/<agentId>/api/stream`（pi 的 `streamProxy`：**只送空的上下文**，服务端用自己的 transcript、
  *    自己解析的模型、参数和 key 调上游，以 SSE 下发 `ProxyAssistantMessageEvent`，docs/22 §4.3）；画布工具走 `/canvas/tool`；
@@ -30,14 +30,15 @@ import type { CanvasToolDetails } from './tools.ts'
  *    每次画布工具调用、每次模型请求之前先把攒着的事件冲完（服务端在下一次请求时补齐上一批的结果，要先看到它们）；
  * 4. 事件冲完后 `/run/finish`，然后进程退出。
  *
- * ## 被调用的 agent（docs/20 §3.10.11）
+ * ## 被调用的 agent（docs/20 §3.10.11、docs/26 §3.5）
  *
- * 调用方的 `delegate_task` 在 runner 里执行：先 `/agent/delegate` 登记（服务端分配被调用的 agent id、判上限、转交占用、
- * 展开提及、定好它的系统提示与一开始加载的技能），runner 在**同一个进程**里再建一个 pi `Agent` 跑它，
- * 做完 `/agent/finish` 交回（服务端释放它的占用、汇总它改过的节点、拼好回给调用方的那段结果）。
+ * 调用方的 `run_agent` 在 runner 里执行：先 `/agent/task/start` 登记（服务端分配被调用的 agent id、判调用深度与上限、转交占用、
+ * 展开提及、按**被调用的 agent 自己的定义**定好它的系统提示、工具白名单、模型和一开始加载的技能），runner 在**同一个进程**里再建一个 pi `Agent` 跑它，
+ * 做完 `/agent/task/finish` 交回（服务端释放它的占用、汇总它改过的节点、拼好回给调用方的那段结果）。
+ * 任何 agent 都可以是调用方（深度没到上限、白名单里有 `run_agent` 时），所以发起请求带着**调用方**的 `agentId`。
  * 被调用的 agent 的工具调用 / 事件带上它的 {@link ToolCallRequest.agentId} / `agentId`；**不带 = 入口 agent**。
  * agent id 只用来在这一轮内部区分是谁（占用、「改过」、步数、事件归到哪个任务）—— 它们都还是这一轮的令牌，
- * 服务端只认自己分配过、还没结束的 id；被调用的 agent 不能再派（服务端拒绝 `agentId` 不是入口 agent 的发起）。
+ * 服务端只认自己分配过、还没结束的 id；调用深度到了上限的 agent 发起的任务服务端拒绝。
  *
  * 中止 / 超时 / 失权不经协议通知 runner：服务端当场作废令牌、由驱动杀掉沙箱（docs/22 §5 stop），
  * 收尾帧由服务端按它自己的记录补齐。所以 runner 被杀在任何一步都是合法的结局。
@@ -57,7 +58,7 @@ import type { CanvasToolDetails } from './tools.ts'
  * 回 {@link PROTOCOL_MISMATCH_STATUS} + {@link ProtocolMismatchBody}（和 401 能区分），编排层以 `runner_protocol_mismatch` 收尾。
  * `process` 驱动直接跑源码，永远一致。
  */
-export const RUNNER_PROTOCOL_VERSION = 7
+export const RUNNER_PROTOCOL_VERSION = 8
 
 /** 版本不一致时网关的 HTTP 状态码与 `error` 字段（不要和 401 混：令牌失效是另一回事） */
 export const PROTOCOL_MISMATCH_STATUS = 409
@@ -76,10 +77,10 @@ export const GATEWAY_ROUTES = {
   tool: '/canvas/tool',
   events: '/events',
   finish: '/run/finish',
-  /** 调用方发起任务（docs/20 §3.10.11）：登记、判上限、转交占用，回被调用的 agent 的输入 */
-  delegate: '/agent/delegate',
+  /** 调用方发起任务（docs/20 §3.10.11）：登记、判调用深度与上限、转交占用，回被调用的 agent 的输入 */
+  taskStart: '/agent/task/start',
   /** 一个被调用的 agent 做完了：交回结果，服务端释放它的占用、拼好给调用方的结果 */
-  agentFinish: '/agent/finish',
+  taskFinish: '/agent/task/finish',
   /**
    * 服务端调用模型的前缀（docs/22 §4.3）：完整路径是 `/model/<agentId>` + {@link MODEL_STREAM_SUFFIX}。
    * runner 交给 `streamProxy` 的 `proxyUrl` = 网关地址 + {@link modelProxyRoute}（`streamProxy` 自己补 `/api/stream`、
@@ -169,21 +170,53 @@ export interface StsTokenResponse {
 export type RunnerModel = Omit<Model<Api>, 'baseUrl' | 'headers'>
 
 /**
+ * 一个 agent 在 runner 里要的东西（入口 agent 的在 {@link RunnerInput.entry}，被调用的 agent 的在 {@link AgentTaskInput}），
+ * 全部由服务端按**这个 agent 自己的定义**定好（docs/26 §3.6：模型、工具白名单都不继承调用方的）。
+ */
+export interface RunnerAgentSpec {
+  /** 定义的名字（docs/26 §3.1，如 `canvas`）：只用于 runner 自己的日志 */
+  name: string
+  /**
+   * 这个 agent 的技能（docs/23 §3.2）：`offered` = 提供给它的（Grant、部署条件、它的白名单、调用深度都满足；⊆ 这一轮的
+   * {@link RunnerInput.offered}），`loaded` = 一开始就加载的（⊆ offered）。runner 按注册表把 `loaded` 展开成工具（外加平台工具 `load_skill`）；
+   * 之后模型 `load_skill` 成功时，网关的回复带着新加载的技能 id，runner 再把它的工具并进来。runner 不可信：网关只执行服务端记着「已加载」的技能里的工具。
+   * `offered` 里有发起任务的技能（`agents`）= 这个 agent 能调用别的 agent（深度没到上限）
+   */
+  skills: { loaded: AgentSkillId[]; offered: AgentSkillId[] }
+  /**
+   * 定义的工具白名单（docs/26 §3.3）；`null` = 全部。runner 造工具时按它滤 —— 尤其是 runner 自己执行的工具（到不了网关，
+   * 服务端只能在模型那头不声明它）：白名单外的不进 pi 的工具表，模型硬调也只得到 pi 的「Tool X not found」。
+   * 平台工具（`load_skill`、`request_confirmation`）不受它影响
+   */
+  tools: string[] | null
+  /** 它的模型的元数据（docs/26 §3.4：每个 agent 用自己定义里的模型；P3 起协议带上，P4 才有多项模型表） */
+  model: RunnerModel
+}
+
+/** 可调用的 agent 目录里的一项（`run_agent` 的 `agent` 参数的取值与工具描述，docs/26 §3.5） */
+export interface CallableAgent {
+  name: string
+  description: string
+}
+
+/**
  * runner 这一轮要的东西。系统提示、提示词、之前几轮的上下文**不给**（第 7 版起）：模型请求的上下文是服务端的 transcript，
  * runner 只送空的上下文（docs/22 §4.3），它们在 runner 里没有用处，也就不必进沙箱
  */
 export interface RunnerInput {
   runId: string
   /**
-   * 这一轮的技能（docs/23 §3.2）：`offered` = 提供的（Grant 与部署条件都满足），`loaded` = 一开始就加载的（⊆ offered）。
-   * runner 按注册表把 `loaded` 展开成工具（外加平台工具 `load_skill`）；之后模型 `load_skill` 成功时，
-   * 网关的回复带着新加载的技能 id，runner 再把它的工具并进来。runner 不可信：网关只执行服务端记着「已加载」的技能里的工具。
+   * 这一轮提供的技能：**这一轮可能跑起来的全部 agent 的并**（服务端按定义与调用深度算，见 `session.ts`）。
+   * runner 只拿它决定开不开工作目录（有技能要 `sandbox:exec`）；每个 agent 能加载什么看它自己的 {@link RunnerAgentSpec.skills}
    */
-  skills: { loaded: AgentSkillId[]; offered: AgentSkillId[] }
-  model: RunnerModel
+  offered: AgentSkillId[]
+  /** 入口 agent（docs/26 §3.7：固定是 `canvas`） */
+  entry: RunnerAgentSpec
+  /** 可调用的 agent（`run_agent` 的取值）：runner 和服务端造同一份工具定义（schema 里的 enum、描述）用 */
+  agents: CallableAgent[]
   limits: {
     /**
-     * 一轮里最多几次工具调用。网关执行的工具（含 `delegate_task`）由网关按全轮计数判（runner 不拦）；
+     * 一轮里最多几次工具调用。网关执行的工具（含 `run_agent`）由网关按全轮计数判（runner 不拦）；
      * runner 执行的工具（`run_media_command`）不经网关，只能由 runner 在执行前拦下 —— 这个数就是给它的（服务端另把它们计进同一个数）
      */
     maxToolCalls: number
@@ -201,7 +234,7 @@ export interface ToolCallRequest {
   toolCallId: string
   name: string
   args: unknown
-  /** 哪个 agent 调的（被调用的 agent 的 id，服务端在 `/agent/delegate` 里分配）；不带 = 入口 agent */
+  /** 哪个 agent 调的（被调用的 agent 的 id，服务端在 `/agent/task/start` 里分配）；不带 = 入口 agent */
   agentId?: string
 }
 
@@ -247,23 +280,26 @@ export type RunnerEventBody =
 
 // —— 被调用的 agent（docs/20 §3.10.11） ——
 
-/** `/agent/delegate` 的请求：`agentId` 是**发起任务的** agent（调用深度上限 1：只有入口 agent 能发起，服务端拒绝别的） */
+/**
+ * `/agent/task/start` 的请求：`agentId` 是**发起任务的** agent（调用方，入口 agent 是 {@link ENTRY_AGENT_ID}）；
+ * 调用深度到了上限的调用方服务端拒绝。`agent` / `task` / `nodeIds` 是调用方那次 `run_agent` 的参数 —— 服务端以它自己那条回复里的为准，这里的只用来核对
+ */
 export interface AgentTaskStartRequest {
   agentId: string
-  /** 调用方那次 `delegate_task` 调用的 id：任务条目挂在它上面 */
+  /** 调用方那次 `run_agent` 调用的 id：任务条目挂在它上面 */
   toolCallId: string
-  brief: string
+  /** 被调用的 agent 定义的名字 */
+  agent: string
+  task: string
   nodeIds: string[]
 }
 
 /**
- * 被调用的 agent 的输入（服务端定好）：runner 拿它在同一个进程里再建一个 pi `Agent`。它的系统提示、任务说明在服务端它自己的 transcript 里，
- * 不给 runner（同 {@link RunnerInput}）
+ * 被调用的 agent 的输入（服务端按**它自己的定义**定好）：runner 拿它在同一个进程里再建一个 pi `Agent`。
+ * 它的系统提示、任务说明在服务端它自己的 transcript 里，不给 runner（同 {@link RunnerInput}）
  */
-export interface AgentTaskInput {
+export interface AgentTaskInput extends RunnerAgentSpec {
   agentId: string
-  /** 一开始就加载的技能（runner 按注册表展开成工具，外加 `load_skill`）；不含 `delegate`（只有一层） */
-  skills: { loaded: AgentSkillId[] }
   limits: {
     /** 它自己的步数上限（每个 agent 各算，同单轮上限）；到了 runner 就停下它（服务端另按模型请求数硬拦，不靠这个） */
     maxTurns: number
@@ -273,14 +309,14 @@ export interface AgentTaskInput {
 export type AgentTaskStartResponse = { ok: true; agent: AgentTaskInput } | { ok: false; message: string }
 
 /**
- * `/agent/finish` 的请求：只说「这个被调用的 agent 的循环结束了」。它怎么结束的（完成 / 失败 / 需要确认）、问题、回复文字
+ * `/agent/task/finish` 的请求：只说「这个被调用的 agent 的循环结束了」。它怎么结束的（完成 / 失败 / 需要确认）、问题、回复文字
  * 全由服务端按它的 transcript 判（docs/22 §4.3 第 3 步），runner 不报
  */
 export interface AgentTaskFinishRequest {
   agentId: string
 }
 
-/** `/agent/finish` 的回复：交给调用方的 `delegate_task` 结果（服务端拼的，限长） */
+/** `/agent/task/finish` 的回复：交给调用方的 `run_agent` 结果（服务端拼的，限长） */
 export interface AgentTaskFinishResponse {
   /** 失败（或这一轮已经停了）：runner 把 `text` 作为工具错误回给调用方 */
   isError: boolean
@@ -353,9 +389,12 @@ export function runnerEventOf(event: AgentEvent): RunnerEvent | null {
 export const EVENTS_PER_BATCH = 500
 const ID_MAX = 256
 const NAME_MAX = 64
-/** 任务说明的上限（服务端回给调用方时另外再截到更短） */
-export const DELEGATE_BRIEF_MAX = 8000
-export const DELEGATE_NODE_IDS_MAX = 20
+/** 任务说明（`run_agent` 的 `task`）的上限（服务端回给调用方时另外再截到更短） */
+export const AGENT_TASK_MAX = 8000
+/** `run_agent` 的 `nodeIds` 最多几个 */
+export const AGENT_TASK_NODE_IDS_MAX = 20
+/** agent 定义名的格式（同 `agents.ts` 的校验） */
+const AGENT_NAME_PATTERN = /^[a-z][a-z0-9-]{0,47}$/
 /** 节点 id 的格式（同提及 `@{node:<id>}` 认的字符集） */
 const NODE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
@@ -419,17 +458,24 @@ export function parseToolCallRequest(body: unknown): ToolCallRequest | null {
   }
 }
 
-/** `/agent/delegate` 的请求体：说明非空、节点 id 合法且不多于上限（去重） */
+/** `/agent/task/start` 的请求体：agent 名合法、说明非空、节点 id 合法且不多于上限（去重） */
 export function parseAgentTaskStartRequest(body: unknown): AgentTaskStartRequest | null {
   if (!isObject(body) || !shortString(body.agentId, ID_MAX) || !shortString(body.toolCallId, ID_MAX)) return null
-  if (typeof body.brief !== 'string' || !body.brief.trim() || body.brief.length > DELEGATE_BRIEF_MAX) return null
+  if (typeof body.agent !== 'string' || !AGENT_NAME_PATTERN.test(body.agent)) return null
+  if (typeof body.task !== 'string' || !body.task.trim() || body.task.length > AGENT_TASK_MAX) return null
   const raw = body.nodeIds ?? []
-  if (!Array.isArray(raw) || raw.length > DELEGATE_NODE_IDS_MAX) return null
+  if (!Array.isArray(raw) || raw.length > AGENT_TASK_NODE_IDS_MAX) return null
   if (!raw.every((id) => typeof id === 'string' && NODE_ID_PATTERN.test(id))) return null
-  return { agentId: body.agentId, toolCallId: body.toolCallId, brief: body.brief.trim(), nodeIds: [...new Set(raw as string[])] }
+  return {
+    agentId: body.agentId,
+    toolCallId: body.toolCallId,
+    agent: body.agent,
+    task: body.task.trim(),
+    nodeIds: [...new Set(raw as string[])],
+  }
 }
 
-/** `/agent/finish` 的请求体：只取 `agentId`（别的字段一概不看） */
+/** `/agent/task/finish` 的请求体：只取 `agentId`（别的字段一概不看） */
 export function parseAgentTaskFinishRequest(body: unknown): AgentTaskFinishRequest | null {
   if (!isObject(body) || !shortString(body.agentId, ID_MAX)) return null
   return { agentId: body.agentId }

@@ -25,6 +25,8 @@ const RECORDED_HASHES: Record<number, string> = {
   6: 'bda69b3a658dc0d8',
   // 7 的哈希在 P1 改名时更新过一次（只改了 TS 标识符名，线上的路由 / 字段 / 版本号都没变；docs/26 §3.9）
   7: 'f91e3a89d6d32bbf',
+  // 8：docs/26 P3 —— /agent/task/start、/agent/task/finish，run_agent 的 { agent, task }，每个 agent 的定义（技能、白名单、模型）进 RunnerInput / AgentTaskInput
+  8: '598a496ca379ac49',
 }
 
 function normalized(source: string): string {

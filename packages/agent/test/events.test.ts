@@ -196,7 +196,7 @@ describe('任务条目（docs/20 §3.10.11）', () => {
 
   it('发起一帧完整条目，之后每次变化一帧 agent.subtask-update（只带变了的），不进 assistant 的文字和 toolCalls；依次合并 = 条目本身', () => {
     const m = mapper()
-    const started = m.subtaskStart({ id: 'sub_1', toolCallId: 'call_d', brief: '搭场景', nodeIds: ['d1'], startedAt: 500 })
+    const started = m.subtaskStart({ agent: 'canvas', id: 'sub_1', toolCallId: 'call_d', brief: '搭场景', nodeIds: ['d1'], startedAt: 500 })
     expect(started).toMatchObject([
       { name: AGENT_SUBTASK_EVENT, value: { id: 'sub_1', toolCallId: 'call_d', brief: '搭场景', status: 'running', toolCalls: [], text: '', nodeIds: ['d1'] } },
     ])
@@ -247,24 +247,24 @@ describe('任务条目（docs/20 §3.10.11）', () => {
 
   it('只调了工具 / 出错的那条回复没有文字：条目上留着上一条有文字的回复（subtaskReply 同）', () => {
     const m = mapper()
-    m.subtaskStart({ id: 'sub_1', toolCallId: 'call_d', brief: 'a', nodeIds: [], startedAt: 1 })
+    m.subtaskStart({ agent: 'canvas', id: 'sub_1', toolCallId: 'call_d', brief: 'a', nodeIds: [], startedAt: 1 })
     m.subtaskEvent('sub_1', { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '先说的' }], stopReason: 'toolUse' } as never })
     expect(m.subtaskEvent('sub_1', { type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'aborted' } as never })).toEqual([])
     expect(m.subtask('sub_1')!.text).toBe('先说的')
     expect(m.subtaskReply('sub_1')).toBe('先说的')
   })
 
-  it('上游复用调用 id：调用方和任务条目里后来的那条加后缀，end 归到最近一次 start；任务挂在当前那次 delegate_task 上', () => {
+  it('上游复用调用 id：调用方和任务条目里后来的那条加后缀，end 归到最近一次 start；任务挂在当前那次 run_agent 上', () => {
     const m = mapper()
     const end = (toolCallId: string, toolName: string) =>
       ({ type: 'tool_execution_end', toolCallId, toolName, result: { content: [] }, isError: false }) as const
-    m.handle({ type: 'tool_execution_start', toolCallId: 'call_0', toolName: 'delegate_task', args: {} })
-    m.subtaskStart({ id: 'sub_1', toolCallId: 'call_0', brief: 'a', nodeIds: [], startedAt: 1 })
-    m.handle(end('call_0', 'delegate_task'))
-    const second = m.handle({ type: 'tool_execution_start', toolCallId: 'call_0', toolName: 'delegate_task', args: {} })
+    m.handle({ type: 'tool_execution_start', toolCallId: 'call_0', toolName: 'run_agent', args: {} })
+    m.subtaskStart({ agent: 'canvas', id: 'sub_1', toolCallId: 'call_0', brief: 'a', nodeIds: [], startedAt: 1 })
+    m.handle(end('call_0', 'run_agent'))
+    const second = m.handle({ type: 'tool_execution_start', toolCallId: 'call_0', toolName: 'run_agent', args: {} })
     expect(second[0]).toMatchObject({ type: AgentEventType.TOOL_CALL_START, toolCallId: 'call_0#2' })
-    m.subtaskStart({ id: 'sub_2', toolCallId: 'call_0', brief: 'b', nodeIds: [], startedAt: 2 })
-    expect(m.handle(end('call_0', 'delegate_task'))[0]).toMatchObject({ type: AgentEventType.TOOL_CALL_RESULT, toolCallId: 'call_0#2' })
+    m.subtaskStart({ agent: 'canvas', id: 'sub_2', toolCallId: 'call_0', brief: 'b', nodeIds: [], startedAt: 2 })
+    expect(m.handle(end('call_0', 'run_agent'))[0]).toMatchObject({ type: AgentEventType.TOOL_CALL_RESULT, toolCallId: 'call_0#2' })
     expect(m.message.toolCalls.map((item) => [item.id, item.status])).toEqual([
       ['call_0', 'done'],
       ['call_0#2', 'done'],
@@ -282,9 +282,28 @@ describe('任务条目（docs/20 §3.10.11）', () => {
     expect(m.toolCall('call_0', 'sub_2')!.name).toBe('read_canvas')
   })
 
+  it('嵌套任务（调用深度 2）：平铺进同一条消息的 subtasks，带 parentId 和执行它的 agent 名；toolCallId 是父条目里那一条的显示 id', () => {
+    const m = mapper()
+    m.handle({ type: 'tool_execution_start', toolCallId: 'call_0', toolName: 'run_agent', args: {} })
+    m.subtaskStart({ agent: 'canvas', id: 'sub_1', toolCallId: 'call_0', brief: '外层', nodeIds: [], startedAt: 1 })
+    // 被调用的 agent 自己调 run_agent（复用 id 两次：第二次是 #2）
+    m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 'call_0', toolName: 'run_agent', args: {} })
+    m.subtaskEvent('sub_1', { type: 'tool_execution_end', toolCallId: 'call_0', toolName: 'run_agent', result: { content: [] }, isError: false })
+    m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 'call_0', toolName: 'run_agent', args: {} })
+    const nested = m.subtaskStart({ agent: 'reviewer', parentId: 'sub_1', id: 'sub_2', toolCallId: 'call_0', brief: '内层', nodeIds: [], startedAt: 2 })
+    expect(nested).toMatchObject([{ name: AGENT_SUBTASK_EVENT, value: { id: 'sub_2', agent: 'reviewer', parentId: 'sub_1', toolCallId: 'call_0#2' } }])
+    expect(m.message.subtasks!.map((task) => [task.id, task.agent, task.parentId ?? null])).toEqual([
+      ['sub_1', 'canvas', null],
+      ['sub_2', 'reviewer', 'sub_1'],
+    ])
+    // 嵌套的那项同样只发变化帧
+    const update = m.subtaskEvent('sub_2', { type: 'tool_execution_start', toolCallId: 't1', toolName: 'get_node', args: {} })
+    expect(valueOf(update[0])).toEqual({ id: 'sub_2', toolCalls: [{ id: 't1', name: 'get_node', status: 'running', summary: 'get_node:{}' }] })
+  })
+
   it('收尾时还在跑的任务标成失败（原因随结局），先各发一帧变化再发最后一帧；落定的消息里带着完整条目', () => {
     const m = mapper()
-    m.subtaskStart({ id: 'sub_1', toolCallId: 'call_d', brief: 'a', nodeIds: [], startedAt: 1 })
+    m.subtaskStart({ agent: 'canvas', id: 'sub_1', toolCallId: 'call_d', brief: 'a', nodeIds: [], startedAt: 1 })
     m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 't1', toolName: 'get_node', args: {} })
     const out = m.finish({ type: 'cancelled', reason: '已中止' })
     const frames = subtaskFrames(out)

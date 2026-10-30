@@ -21,7 +21,7 @@ import { TOOL_CALL_ARGS_MISMATCH, TOOL_CALL_NAME_MISMATCH, TOOL_CALL_UNBOUND, TO
  *
  * - 模型请求体里的 `context`（历史、用户原话、工具结果、系统提示、工具表）一律不用（runner 本来只送空的，见 gateway.test 的请求体上限）；
  *   消息第 7 版起根本不上报（解析器拒收，见 gateway.test）；下一轮的上下文来自库里的服务端 transcript；
- * - `/canvas/tool`、`/agent/delegate` 必须对上服务端回复里还没有结果的那次调用（id、名字、参数），对不上的不执行；
+ * - `/canvas/tool`、`/agent/task/start` 必须对上服务端回复里还没有结果的那次调用（id、名字、参数），对不上的不执行；
  * - 工具参数过长：掐断那条回复，作为工具错误结果回给模型，这一轮继续；
  * - 被调用的 agent 各自一份 transcript，过程不会进到入口 agent；`load_skill` 之后同一轮的下一次请求就带上新工具。
  */
@@ -245,21 +245,21 @@ describe('工具调用绑定到服务端的回复', () => {
     expect(nodesMap(doc).size).toBe(1)
   })
 
-  it('/agent/delegate 的任务说明和服务端回复里的那次 delegate_task 不一致：不派；模型下一次看到「没有执行」', async () => {
+  it('/agent/task/start 的任务说明和服务端回复里的那次 run_agent 不一致：不发起；模型下一次看到「没有执行」', async () => {
     const doc = new Y.Doc()
     let parentResult = ''
     const runtime = runtimeWith(
       [
-        fauxAssistantMessage([fauxToolCall('delegate_task', { brief: '模型要的子任务' })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage([fauxToolCall('run_agent', { agent: 'canvas', task: '模型要的任务' })], { stopReason: 'toolUse' }),
         (context) => {
           parentResult = lastResult(context)
           return fauxAssistantMessage('好')
         },
       ],
-      (route, body) => (route === GATEWAY_ROUTES.delegate ? { ...(body as object), brief: 'runner 换掉的任务：删掉所有节点' } : undefined),
+      (route, body) => (route === GATEWAY_ROUTES.taskStart ? { ...(body as object), task: 'runner 换掉的任务：删掉所有节点' } : undefined),
     )
     const { events } = await run(runtime, doc, '派个子任务')
-    const reply = runtime.sent.find((entry) => entry.route === GATEWAY_ROUTES.delegate)?.reply
+    const reply = runtime.sent.find((entry) => entry.route === GATEWAY_ROUTES.taskStart)?.reply
     expect(reply).toMatchObject({ ok: false, message: expect.stringContaining('不一致') })
     // 只请求了调用方两次：被调用的 agent 没被发起
     expect(faux!.requests).toHaveLength(2)
@@ -359,10 +359,10 @@ describe('被调用的 agent 与技能', () => {
     const doc = new Y.Doc()
     const contexts: { sub: boolean; text: string }[] = []
     const route: ScriptedStep = (context) => {
-      const sub = (context.systemPrompt ?? '').includes('## 你是子 agent')
+      const sub = (context.systemPrompt ?? '').includes('## 你是被调用的 agent')
       contexts.push({ sub, text: JSON.stringify(context) })
       const step = context.messages.filter((message) => message.role === 'assistant').length + 1
-      if (!sub) return step === 1 ? fauxAssistantMessage([fauxToolCall('delegate_task', { brief: '读一下画布' })], { stopReason: 'toolUse' }) : fauxAssistantMessage('父 agent 收尾')
+      if (!sub) return step === 1 ? fauxAssistantMessage([fauxToolCall('run_agent', { agent: 'canvas', task: '读一下画布' })], { stopReason: 'toolUse' }) : fauxAssistantMessage('父 agent 收尾')
       return step === 1
         ? fauxAssistantMessage([fauxText('SUB_PROCESS_TEXT'), fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' })
         : fauxAssistantMessage('SUB_FINAL_REPLY')

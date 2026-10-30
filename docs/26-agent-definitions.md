@@ -1,7 +1,9 @@
 # REQ-AGENT-DEF Agent 定义与同一沙箱内的多 agent 协作
 
-> 状态：**部分实现**（P0～P2 已完成，P3～P5 未做）。原来是一个隐含的「画布 agent」加上从属于它的「子 agent」（[REQ-AGENT](20-agent-canvas.md) §3.10.11）；
-> 本文把它改成**对等的 agent 定义 + 同一轮里的任务**，分期见 §4。P2 起定义读自 `packages/agent/agents/*.md`（目前只有 `canvas.md`），工具白名单在服务端生效。
+> 状态：**部分实现**（P0～P3 已完成，P4～P5 未做）。原来是一个隐含的「画布 agent」加上从属于它的「子 agent」（[REQ-AGENT](20-agent-canvas.md) §3.10.11）；
+> 本文把它改成**对等的 agent 定义 + 同一轮里的任务**，分期见 §4。P2 起定义读自 `packages/agent/agents/*.md`（仓库里目前只有 `canvas.md`），工具白名单在服务端生效；
+> P3 起发起任务用 `run_agent({ agent, task, nodeIds? })`，被调用的 agent 用它自己的定义（正文、白名单 —— runner 里也按它滤 —— 、模型键），
+> 调用深度有上限（默认 1，深度大于 1 也可用，嵌套的任务条目挂在发起它的任务条目里），runner 协议第 8 版。模型表仍只有 `default`（P4）。
 >
 > 前置：[REQ-AGENT](20-agent-canvas.md)（画布 agent、占用、§3.10.11 的协作规则）、
 > [REQ-AGENT-SANDBOX](22-agent-sandbox.md)（runner / 网关、§4.3 服务端调模型与权威 transcript）、
@@ -118,6 +120,8 @@ run_agent({
 - **`agent` 必填**：调同一个定义也要写出来（`canvas` 调 `canvas` 就是现在的行为）。工具描述里列出可调用的 agent（`name` + `description`），同技能目录。
 - **谁能调用**：定义的工具白名单里有 `run_agent`（省略 `tools` 即有），且**调用深度没到上限**。到上限的 agent 工具表里**没有** `run_agent`（不只是调用时拒绝），
   服务端也拒绝它发起的任务。**上限默认 1**：入口 agent 能调用，被调用的 agent 不能再调用 —— 和现在「只有一层」行为相同，但它是一个配置上限，不是类型规则。
+  上限调大时被调用的 agent 也能再调用，它发起的任务同样是一个任务条目，**嵌在发起它的那个任务条目里**显示（在它那条 `run_agent` 的位置）。
+  同时 / 累计上限、工具调用次数按全轮各层合计；被调用的 agent 的任务说明段会说明它还能不能再调用。
 - **并行、数量、预算、时长、停止、撤回、失败处理、结果怎么交回**：都不变，见 REQ-AGENT §3.10.11
   （同一批全是 `run_agent` 才并行；同时 3 个 / 一轮累计 10 个；步数各算、工具调用次数与删除上限全轮共用；等任务时暂停单轮计时、总时长上限照算；
   随这一轮一起停；只交回最终回复（限 2000 字）和改过的节点）。
@@ -138,6 +142,7 @@ run_agent({
 
 - 调用方把自己占用的节点作为 `nodeIds` 交出去时，占用原子地转给被调用的 agent；它结束时释放，不还给调用方（同现在）。
 - 被调用的 agent 用的模型、工具白名单、正文都来自**它自己的定义**，不继承调用方的；Grant、令牌、沙箱、会话、任务列表项是这一轮的，和调用方共用。
+- 调用方等它的时候，单轮时长照旧暂停（REQ-AGENT §3.10.11「时长」）：有任务在跑就等于入口 agent 在等（嵌套时下层的任务只在上层还在等它时才在跑）。
 
 ### 3.7 入口 agent
 
@@ -181,7 +186,8 @@ requires: [director]        # 可省略：依赖的内置技能 id
 
 **不改**：对外的事件与落库形状里的 `subtask`（CUSTOM `agent.subtask` / `agent.subtask-update`、消息上的 `subtasks`、`AgentSubtaskView`）——
 它指的是会话里的任务条目，概念本来就对，改它要做旧数据兼容。`AgentSubtaskView` 只**新增** `agent` 字段（P3）；旧条目没有这个字段，按 `canvas` 显示。
-会话里已经存着的 `delegate_task` 调用（`llmMessages`、工具调用日志）原样保留，不迁移。
+会话里已经存着的 `delegate_task` 调用（`llmMessages`、工具调用日志、assistant 消息的 `toolCalls`）原样保留，不迁移：
+界面照样把它画成任务条目，会话记着的技能 `delegate` 读出时换成 `agents`（不显示成「本轮不可用」）。
 
 ## 4. 分期
 
@@ -190,7 +196,7 @@ requires: [director]        # 可省略：依赖的内置技能 id
 | P0 ✅ | 文档：本文、REQ-AGENT §3.10.11 改成协作口径、REQ-AGENT-SKILL §7 | — | 无 |
 | P1 ✅ | 只改名（§3.9 表里不随协议升级的那些）、规则文件同步 | 不变 | 无 |
 | P2 ✅ | 读入 `agents/*.md`（只有 `canvas.md`）、启动校验、拆 `PLATFORM_PROMPT`、工具白名单在服务端生效 | 不变（系统提示与工具表第 7 版起本来就只在服务端） | 无 |
-| P3 | `run_agent({ agent, task, nodeIds? })`、可调用 agent 目录、调用深度上限、按角色给 `request_confirmation`、任务条目带 `agent`、任务输入带它的 `model` | 7 → 8，重建沙箱镜像 | 能调用不同的 agent（模型仍只有 `default`） |
+| P3 ✅ | `run_agent({ agent, task, nodeIds? })`、可调用 agent 目录、调用深度上限、按角色给 `request_confirmation`、任务条目带 `agent`、任务输入带它的 `model` | 7 → 8，重建沙箱镜像 | 能调用不同的 agent（模型仍只有 `default`） |
 | P4 | 模型表、按 agent 选模型、费用与历史预算按 agent 的模型算 | 不变（P3 已带 `model`） | 不同 agent 可用不同模型 |
 | P5 | 文字技能（`SKILL.md`，仓库目录一种来源） | 不变 | 能扩展技能 |
 

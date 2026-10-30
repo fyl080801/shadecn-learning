@@ -56,8 +56,8 @@ function handlers(overrides: Partial<GatewayRunHandlers> = {}): GatewayRunHandle
     mismatches: [] as { runnerVersion: number | null; serverVersion: number }[],
     input: async () => ({ runId: 'run_1' }) as never,
     tool: async () => ({ isError: true as const, message: 'x' }),
-    delegate: async () => ({ ok: false as const, message: '不派' }),
-    agentFinish: async () => ({ isError: true, text: 'x', summary: 'x', changedNodeIds: [] }),
+    taskStart: async () => ({ ok: false as const, message: '不派' }),
+    taskFinish: async () => ({ isError: true, text: 'x', summary: 'x', changedNodeIds: [] }),
     events(events: RunnerEvent[]) {
       out.batches.push(events)
     },
@@ -522,12 +522,12 @@ describe('服务端调用模型（docs/22 §4.3）', () => {
   })
 
   it('编排层判「不调上游、回 error 帧」（被调用的 agent 步数用完）：一帧 error，不打上游', async () => {
-    const t = modelSetup({ handlers: { modelRequest: () => ({ kind: 'fail', message: '子任务的步数已达上限 3，这次请求没有发给模型' }) } })
+    const t = modelSetup({ handlers: { modelRequest: () => ({ kind: 'fail', message: '任务的步数已达上限 3，这次请求没有发给模型' }) } })
     const token = await t.redeem()
     const res = await t.post('/model/sub_1/api/stream', streamBody(), bearer(token))
     expect(res.status).toBe(200)
     expect(await frames(res)).toEqual([
-      { type: 'error', reason: 'error', errorMessage: '子任务的步数已达上限 3，这次请求没有发给模型', usage: expect.any(Object) },
+      { type: 'error', reason: 'error', errorMessage: '任务的步数已达上限 3，这次请求没有发给模型', usage: expect.any(Object) },
     ])
     expect(t.scripted.requests).toHaveLength(0)
   })

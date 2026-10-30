@@ -313,14 +313,14 @@ describe('注册表与 §3.2 的集合计算', () => {
         { ...onDemand('x9'), requires: ['flow:read', 'sandbox:exec'], tools: () => [{ ...readTool('t9'), spawnsProcess: true }] },
       ]),
     ).toThrow(/只能在 runner 里执行/)
-    // 在 runner 里执行、但不起子进程（delegate_task 那种：每一步仍经网关）：不要求 sandbox:exec
+    // 在 runner 里执行、但不起子进程（run_agent 那种：每一步仍经网关）：不要求 sandbox:exec
     expect(() => createSkillRegistry([{ ...onDemand('x10'), tools: () => [{ ...readTool('t10'), execution: 'runner' }] }])).not.toThrow()
     expect(() => createSkillRegistry([{ ...onDemand('x5'), tools: () => [readTool('load_skill')] }])).toThrow(/load_skill/)
     expect(() => createSkillRegistry([{ ...onDemand('x11'), tools: () => [readTool('request_confirmation')] }])).toThrow(/request_confirmation/)
     expect(() => createSkillRegistry([onDemand('x6'), onDemand('x6')])).toThrow(/重复/)
     expect(() => defineSkill({ ...onDemand('x7'), activation: 'auto' })).toThrow(/activatesFor/)
     // 内置的那份本身是合法的
-    expect(BUILTIN_SKILLS.skills.map((skill) => skill.id)).toEqual(['canvas', 'media-view', 'media-exec', 'director', 'delegate'])
+    expect(BUILTIN_SKILLS.skills.map((skill) => skill.id)).toEqual(['canvas', 'media-view', 'media-exec', 'director', 'agents'])
   })
 
   it('画布技能合成一个 canvas：13 个工具，requires 是三项能力的并集，只要 flow:read 就提供', () => {
@@ -362,7 +362,7 @@ describe('注册表与 §3.2 的集合计算', () => {
 // —— docs/23 §6 验收 ——
 
 describe('验收 1：普通画布会话', () => {
-  it('第一次模型请求里只有 canvas 的 13 个工具、delegate_task 和 load_skill；技能目录里有其它提供了的技能', async () => {
+  it('第一次模型请求里只有 canvas 的 13 个工具、run_agent 和 load_skill；技能目录里有其它提供了的技能', async () => {
     const { requests, step } = probe()
     const runtime = runtimeWith([step(() => fauxAssistantMessage('好'))], {
       registry: null,
@@ -370,7 +370,7 @@ describe('验收 1：普通画布会话', () => {
     })
     await run(runtime, new Y.Doc())
 
-    expect([...requests[0]!.tools].sort()).toEqual([...CANVAS_TOOLS, 'delegate_task', 'load_skill'].sort())
+    expect([...requests[0]!.tools].sort()).toEqual([...CANVAS_TOOLS, 'run_agent', 'load_skill'].sort())
     const prompt = requests[0]!.systemPrompt
     expect(prompt).toContain('### 画布（canvas）')
     expect(prompt).not.toContain('canvas-edit')

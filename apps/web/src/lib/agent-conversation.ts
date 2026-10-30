@@ -151,7 +151,8 @@ function settleRunningTools(message: AssistantMessage | null) {
 
 /**
  * 任务条目（docs/20 §3.10.11）：发起时那一帧是这一项的完整样子 —— 解析过（畸形的丢掉）再按 id 整条替换进它所属的 assistant 消息。
- * 属于哪条消息：本轮那条；还没有（理论上不会：发起之前一定有那次 delegate_task 的 TOOL_CALL_START）就按 toolCallId 找。
+ * 属于哪条消息：本轮那条；还没有（理论上不会：发起之前一定有那次 run_agent 的 TOOL_CALL_START）就按 toolCallId 找 ——
+ * 嵌套的任务（`parentId`，被调用的 agent 发起的）找带着它父条目的那条。
  */
 function applySubtask(conversation: AgentConversation, value: unknown) {
   const task = parseAgentSubtask(value)
@@ -160,7 +161,10 @@ function applySubtask(conversation: AgentConversation, value: unknown) {
     findAssistant(conversation, conversation.assistantId) ??
     conversation.messages.find(
       (message): message is AssistantMessage =>
-        message.role === "assistant" && message.toolCalls.some((call) => call.id === task.toolCallId)
+        message.role === "assistant" &&
+        (task.parentId
+          ? (message.subtasks ?? []).some((item) => item.id === task.parentId)
+          : message.toolCalls.some((call) => call.id === task.toolCallId))
     ) ??
     null
   if (!owner) return

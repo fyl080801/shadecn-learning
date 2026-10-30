@@ -7,8 +7,12 @@ import {
   parseAgentAttachmentRefs,
   agentRunAbortPath,
   agentRunEventsPath,
+  AGENT_RUN_TOOL_NAME,
   canonicalSkillIds,
   formatAgentRunsMessage,
+  isAgentRunToolName,
+  LEGACY_AGENT_DELEGATE_TOOL_NAME,
+  LEGACY_TASK_AGENT_NAME,
   parseAgentRunsMessage,
   parseAgentSubtask,
   parseAgentSubtaskUpdate,
@@ -142,6 +146,9 @@ describe('技能 id', () => {
     expect(canonicalSkillIds(['canvas-edit', 'notes', 'canvas'])).toEqual(['canvas', 'notes'])
     expect(canonicalSkillIds(['media-view', 'gone'])).toEqual(['media-view', 'gone'])
     expect(canonicalSkillIds([])).toEqual([])
+    // 第 8 版起发起任务的技能改名：delegate → agents
+    expect(canonicalSkillIds(['canvas', 'delegate'])).toEqual(['canvas', 'agents'])
+    expect(canonicalSkillIds(['delegate', 'agents'])).toEqual(['agents'])
   })
 })
 
@@ -207,9 +214,10 @@ describe('任务（docs/20 §3.10.11）', () => {
     extra: 'drop me',
   }
 
-  it('防御式解析：认不出的字段丢掉、列表里不对的项只丢那一项、id 去重', () => {
+  it('防御式解析：认不出的字段丢掉、列表里不对的项只丢那一项、id 去重；旧条目没有 agent 按 canvas 补', () => {
     expect(parseAgentSubtask(valid)).toEqual({
       id: 'sub_1',
+      agent: LEGACY_TASK_AGENT_NAME,
       toolCallId: 'call_1',
       brief: '搭场景',
       nodeIds: ['d1', 'd2'],
@@ -224,6 +232,20 @@ describe('任务（docs/20 §3.10.11）', () => {
       question: '要等吗',
       finishedAt: 20,
     })
+    expect(LEGACY_TASK_AGENT_NAME).toBe('canvas')
+    // 第 8 版起带 agent；嵌套的带 parentId；形状不对的丢掉（agent 退回 canvas、parentId 不带）
+    expect(parseAgentSubtask({ ...valid, agent: 'reviewer', parentId: 'sub_0' })).toMatchObject({ agent: 'reviewer', parentId: 'sub_0' })
+    const bad = parseAgentSubtask({ ...valid, agent: 3, parentId: '' })!
+    expect(bad.agent).toBe('canvas')
+    expect(bad).not.toHaveProperty('parentId')
+  })
+
+  it('发起任务的工具名：run_agent，旧数据里的 delegate_task 也认', () => {
+    expect(AGENT_RUN_TOOL_NAME).toBe('run_agent')
+    expect(LEGACY_AGENT_DELEGATE_TOOL_NAME).toBe('delegate_task')
+    expect(isAgentRunToolName('run_agent')).toBe(true)
+    expect(isAgentRunToolName('delegate_task')).toBe(true)
+    expect(isAgentRunToolName('get_node')).toBe(false)
   })
 
   it('核心字段不对 → null，不抛', () => {

@@ -70,8 +70,8 @@ export interface GatewayClient {
   token(): Promise<string>
   input(): Promise<RunnerInput>
   tool(request: ToolCallRequest): Promise<ToolCallResponse>
-  delegate(request: AgentTaskStartRequest): Promise<AgentTaskStartResponse>
-  agentFinish(request: AgentTaskFinishRequest): Promise<AgentTaskFinishResponse>
+  taskStart(request: AgentTaskStartRequest): Promise<AgentTaskStartResponse>
+  taskFinish(request: AgentTaskFinishRequest): Promise<AgentTaskFinishResponse>
   events(request: EventsRequest): Promise<void>
   finish(request: FinishRequest): Promise<void>
 }
@@ -149,8 +149,8 @@ export function createGatewayClient(options: GatewayClientOptions): GatewayClien
     token,
     input: () => authed<RunnerInput>(GATEWAY_ROUTES.input, {}),
     tool: (request) => authed<ToolCallResponse>(GATEWAY_ROUTES.tool, request),
-    delegate: (request) => authed<AgentTaskStartResponse>(GATEWAY_ROUTES.delegate, request),
-    agentFinish: (request) => authed<AgentTaskFinishResponse>(GATEWAY_ROUTES.agentFinish, request),
+    taskStart: (request) => authed<AgentTaskStartResponse>(GATEWAY_ROUTES.taskStart, request),
+    taskFinish: (request) => authed<AgentTaskFinishResponse>(GATEWAY_ROUTES.taskFinish, request),
     events: async (request) => {
       await authed(GATEWAY_ROUTES.events, request)
     },

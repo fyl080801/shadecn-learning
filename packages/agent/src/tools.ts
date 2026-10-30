@@ -155,7 +155,7 @@ export interface CanvasTool<TParameters extends TSchema = TSchema>
   readonly execution?: 'gateway' | 'runner'
   /**
    * 要在 runner 的工作目录里**起子进程**（ffmpeg / ffprobe）：只能是 `execution: 'runner'` 的工具，所在技能必须要求 `sandbox:exec`
-   * （注册表建表时校验）。在 runner 里执行但不起进程的（`delegate_task`：被调用的 agent 的每一步仍经网关）不设它。
+   * （注册表建表时校验）。在 runner 里执行但不起进程的（`run_agent`：被调用的 agent 的每一步仍经网关）不设它。
    */
   readonly spawnsProcess?: boolean
   describe(args: Static<TParameters>): string

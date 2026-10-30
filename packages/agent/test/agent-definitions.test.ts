@@ -134,8 +134,8 @@ describe('注册表的启动校验', () => {
     expect(() => registryOf([canvas, config({ name: 'r', model: 'missing' })])).toThrow(/agents\/r\.md.*model「missing」/)
     expect(() => registryOf([config({ name: 'reviewer' })])).toThrow(/canvas/)
     // 合法的：白名单是技能的工具、model 在表里
-    const ok = registryOf([canvas, config({ name: 'reviewer', tools: ['read_canvas', 'delegate_task'], model: 'default' })])
-    expect(ok.get('reviewer')?.tools).toEqual(['read_canvas', 'delegate_task'])
+    const ok = registryOf([canvas, config({ name: 'reviewer', tools: ['read_canvas', 'run_agent'], model: 'default' })])
+    expect(ok.get('reviewer')?.tools).toEqual(['read_canvas', 'run_agent'])
     expect(ok.entry).toBe(canvas)
   })
 
@@ -243,14 +243,14 @@ function seed(doc: Y.Doc, id: string, type: string) {
 const READ_ONLY = registryOf([config({ systemPrompt: OLD_IDENTITY, tools: ['read_canvas', 'get_node', 'check_connection'] })])
 
 describe('工具白名单在服务端生效', () => {
-  it('不写 tools（仓库里的 canvas.md）：工具表与原来相同 —— 画布 13 个 + delegate_task + load_skill，技能目录照旧', async () => {
+  it('不写 tools（仓库里的 canvas.md）：工具表与原来相同 —— 画布 13 个 + run_agent + load_skill，技能目录照旧', async () => {
     const { requests, step } = probe()
     const runtime = runtimeWith([step(() => fauxAssistantMessage('好'))])
     await run(runtime, new Y.Doc())
     expect(requests[0]!.tools).toEqual([
       'load_skill',
       ...canvasSkill.tools({ side: 'runner' } as never).map((tool) => tool.name),
-      'delegate_task',
+      'run_agent',
     ])
     expect(requests[0]!.systemPrompt).toContain('- director：')
   })
@@ -270,7 +270,7 @@ describe('工具白名单在服务端生效', () => {
     const { threadId } = await run(runtime, doc)
 
     expect(requests[0]!.tools).toEqual(['load_skill', 'read_canvas', 'get_node', 'check_connection'])
-    // delegate（delegate_task）、director、media-view 的工具都不在白名单里：整个技能不提供，系统提示里没有技能目录
+    // agents（run_agent）、director、media-view 的工具都不在白名单里：整个技能不提供，系统提示里没有技能目录
     expect(requests[0]!.systemPrompt).not.toContain('## 技能目录')
     expect(requests[0]!.systemPrompt).toContain('### 画布（canvas）')
     // 模型调了没声明的工具：服务端按 pi 的「Tool X not found」记结果（runner 那边照样发到网关，网关同一句话拒）

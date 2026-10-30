@@ -21,7 +21,7 @@ import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME, type SkillRegistr
 export interface AgentConfig {
   /** agent 的 id：小写字母、数字、`-`。发布后不改 */
   name: string
-  /** 一句话：进调用方的「可调用的 agent」目录（P3） */
+  /** 一句话：进调用方的「可调用的 agent」目录（`run_agent` 的工具描述，docs/26 §3.5） */
   description: string
   /** 工具名白名单（docs/26 §3.3）；省略 = 全部。平台工具（`load_skill` / `request_confirmation`）不写在这里 */
   tools?: string[]
@@ -36,7 +36,7 @@ export interface AgentConfig {
 /** 入口 agent（docs/26 §3.7）：会话固定用它，定义里必须有 */
 export const ENTRY_AGENT_NAME = 'canvas'
 
-/** 模型表里的默认项（P2 只有它：`AGENT_PROVIDER` / `AGENT_MODEL` / … 配的那一个） */
+/** 模型表里的默认项（P2～P3 只有它：`AGENT_PROVIDER` / `AGENT_MODEL` / … 配的那一个） */
 export const DEFAULT_AGENT_MODEL = 'default'
 
 const AGENT_NAME_REGEX = /^[a-z][a-z0-9-]{0,47}$/
@@ -152,7 +152,7 @@ export interface AgentRegistry {
 export interface AgentRegistryOptions {
   /** 技能注册表：`tools` 里的名字按它判 */
   skills: SkillRegistry
-  /** 模型表的 key（P2 只有 {@link DEFAULT_AGENT_MODEL}）：`model` 按它判 */
+  /** 模型表的 key（P2～P3 只有 {@link DEFAULT_AGENT_MODEL}，P4 起是模型表）：`model` 按它判 */
   models: readonly string[]
 }
 

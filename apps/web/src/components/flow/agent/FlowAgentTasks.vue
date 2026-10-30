@@ -112,7 +112,7 @@ const now = useNow({ interval: 1000 })
             <div class="flex items-center gap-2 text-[11px] text-muted-foreground">
               <FlowAgentOwner v-if="props.showOwners" :owner="run.owner" :mine="run.mine" />
               <span class="shrink-0" data-role="elapsed">已运行 {{ formatDuration(now.getTime() - run.startedAt) }}</span>
-              <span v-if="run.subtasks" class="shrink-0" data-role="subtasks">含 {{ run.subtasks }} 个子任务进行中</span>
+              <span v-if="run.subtasks" class="shrink-0" data-role="subtasks">含 {{ run.subtasks }} 个任务进行中</span>
             </div>
           </ItemContent>
           <ItemActions>

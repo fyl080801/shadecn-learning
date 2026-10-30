@@ -277,6 +277,7 @@ describe("任务条目（docs/20 §3.10.11）", () => {
     parentMessageId: "a1",
     metadata: { summary: "子任务：搭场景", status: "running" }
   }
+  /** 第 8 版之前的帧形状（没有 agent）：旧会话补发 / 落库的就是它，解析时补成 canvas */
   const subtask = (patch: Record<string, unknown> = {}): AgentStreamEvent =>
     ({
       type: "CUSTOM",
@@ -293,7 +294,7 @@ describe("任务条目（docs/20 §3.10.11）", () => {
         changedNodeIds: [],
         ...patch
       }
-    }) as AgentStreamEvent
+    }) as unknown as AgentStreamEvent
 
   it("每帧按 id 整条替换进本轮 assistant 消息的 subtasks；补发里重复的帧不会多出一条", () => {
     const conversation = turn([
@@ -331,6 +332,8 @@ describe("任务条目（docs/20 §3.10.11）", () => {
     expect(assistant.subtasks).toEqual([
       {
         id: "sub_1",
+        // 这里的帧是第 8 版之前的形状（没有 agent、工具名 delegate_task）：解析时按 canvas 补上
+        agent: "canvas",
         toolCallId: "call_d",
         brief: "搭场景",
         nodeIds: ["d1"],
@@ -376,7 +379,7 @@ describe("任务条目（docs/20 §3.10.11）", () => {
           toolCalls: [{ id: "call_d", name: "delegate_task", summary: "子任务完成", status: "done" }],
           createdAt: 3,
           subtasks: [
-            { id: "sub_1", toolCallId: "call_d", brief: "搭场景", nodeIds: [], status: "done", startedAt: 10, finishedAt: 30, toolCalls: [], text: "好", changedNodeIds: [] }
+            { id: "sub_1", agent: "canvas", toolCallId: "call_d", brief: "搭场景", nodeIds: [], status: "done", startedAt: 10, finishedAt: 30, toolCalls: [], text: "好", changedNodeIds: [] }
           ]
         }
       }

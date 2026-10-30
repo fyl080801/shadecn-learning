@@ -76,24 +76,28 @@ export function systemPromptFor(input: SystemPromptInput): string {
 }
 
 /**
- * 被调用的 agent 的提示段（docs/20 §3.10.11），接在它的系统提示末尾：它是谁派来的、预算（步数、交回的回复多长）、做完怎么交回、
- * 不能问人、遇到占用 / 冲突怎么办。数字取服务端这一轮实际的上限（`maxTurns` / `taskReplyChars`），不写死。
+ * 被调用的 agent 的提示段（docs/20 §3.10.11、docs/26 §3.2「任务说明段」），接在它的系统提示末尾：按**角色**加、不按定义加 ——
+ * 它是被调用来做一件事的、预算（步数、交回的回复多长）、做完怎么交回、不能问人、遇到占用 / 冲突怎么办。
+ * 数字取服务端这一轮实际的上限（`maxTurns` / `taskReplyChars`），不写死；`canCall` = 它的调用深度没到上限、能再用 run_agent。
  * 平台基础段里「停下来、结束这一轮、问用户」的说法对被调用的 agent 不适用 —— 这一段明确改成「以需要确认结束」。
  */
-export function taskPrompt(input: { maxTurns: number; replyChars: number }): string {
-  return `## 你是子 agent
-你是另一个 agent（父 agent）为了一件具体的事派出来的子 agent，和它在同一张画布上、用同一套工具（不能再派子任务）。
-1. **只做任务说明（brief）里的事**。
-2. **预算**：你最多 ${input.maxTurns} 步（一步 = 你的一次回复连同它调的工具）；到了上限还没做完，这个子任务就按失败交回。工具调用次数和父 agent 共用，别做多余的读写。
-3. **结束时用一段简洁的文字回复**（不调工具）交回父 agent，写清：做了什么、改了 / 新建了哪些节点、还有什么没做完或要父 agent 注意的。这段回复是给父 agent 的，不是给用户看的；超过 ${input.replyChars} 字的部分会被截掉，所以要点放前面。
-4. **你不能直接问用户**。上面说「停下来问用户 / 结束这一轮」的情况 —— 要写的节点「正在被某某修改」（占用）、写入「在你读过之后被改过」且和你要做的冲突、任务说明不清楚做不下去 —— 一律调用 request_confirmation({ question })，把问题交回父 agent，由它决定。request_confirmation 必须单独调用，调了你就结束了。
-5. 别的子 agent 可能同时在改别的节点：只碰任务说明里给你的、和你要新建的节点。`
+export function taskPrompt(input: { maxTurns: number; replyChars: number; canCall: boolean }): string {
+  const calls = input.canCall
+    ? '需要时你也可以用 run_agent 把其中独立的一部分交给别的 agent（调用次数和预算全轮共用）。'
+    : '你不能再调用别的 agent（调用深度已到上限）。'
+  return `## 你是被调用的 agent
+你是被另一个 agent（调用方）请来做一件具体的事的，和它在同一张画布上、同一轮里工作；你用的是你自己的系统提示和工具。${calls}
+1. **只做任务说明里的事**。
+2. **预算**：你最多 ${input.maxTurns} 步（一步 = 你的一次回复连同它调的工具）；到了上限还没做完，这个任务就按失败交回。工具调用次数和这一轮的其他 agent 共用，别做多余的读写。
+3. **结束时用一段简洁的文字回复**（不调工具）交回调用方，写清：做了什么、改了 / 新建了哪些节点、还有什么没做完或要调用方注意的。这段回复是给调用方的，不是给用户看的；超过 ${input.replyChars} 字的部分会被截掉，所以要点放前面。
+4. **你不能直接问用户**。上面说「停下来问用户 / 结束这一轮」的情况 —— 要写的节点「正在被某某修改」（占用）、写入「在你读过之后被改过」且和你要做的冲突、任务说明不清楚做不下去 —— 一律调用 request_confirmation({ question })，把问题交回调用方，由它决定。request_confirmation 必须单独调用，调了你就结束了。
+5. 别的 agent 可能同时在改别的节点：只碰任务说明里给你的、和你要新建的节点。`
 }
 
 /** 被调用的 agent 的第一条用户消息：任务说明 + 要处理的节点（提及，之后由 {@link expandMentions} 附上它们当前的内容） */
-export function taskBrief(brief: string, nodeIds: readonly string[]): string {
+export function taskBrief(task: string, nodeIds: readonly string[]): string {
   const nodes = nodeIds.length > 0 ? `\n\n要处理的节点：${nodeIds.map((id) => formatNodeMention(id)).join(' ')}` : ''
-  return `【父 agent 交给你的任务】\n${brief}${nodes}`
+  return `【调用方交给你的任务】\n${task}${nodes}`
 }
 
 /** `load_skill` 成功时回给模型的那段：工具名单 + 这个技能的提示段（跟着对话历史走，系统提示不变） */

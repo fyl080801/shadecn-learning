@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue"
 import { ChevronRight, CircleAlert, CircleCheck, Eye, Puzzle } from "@lucide/vue"
-import { AGENT_DELEGATE_TOOL_NAME, agentAttachmentKind, type AgentChatMessage, type AgentSubtaskView } from "@shadecn/shared/agent"
+import { agentAttachmentKind, isAgentRunToolName, type AgentChatMessage, type AgentSubtaskView } from "@shadecn/shared/agent"
 import AssetPreview from "@/components/flow/asset-upload/AssetPreview.vue"
 import { Attachment, AttachmentGroup, AttachmentMedia, AttachmentTrigger } from "@/components/ui/attachment"
 import { Message, MessageContent } from "@/components/ui/message"
@@ -21,8 +21,9 @@ import { splitMentions } from "./nodeMention"
  * 一轮以失败或中止收尾时在最后挂一行原因（模型报错按「状态码 + 上游错误体」拆开显示，见 `FlowAgentError`）。用户消息和 assistant 消息用 shadcn 的 `Message` 排版。
  * 画布改动通知（docs/20 §3.10.2）：灰色的一行系统提示（图标 + 概括），有条目时可以展开看每一处。
  * 技能加载（docs/23 §3.6）：同样灰色的一行「已加载：<技能标题>」。
- * 任务（docs/20 §3.10.11）：调用方的 `delegate_task` 那一条工具调用画成可展开的任务条目（`FlowAgentSubtask`，按 `toolCallId` 对上）；
- * 被拒、没发起成的 delegate_task 没有条目，照常是一条出错的工具调用。
+ * 任务（docs/20 §3.10.11、docs/26）：入口 agent 的 `run_agent` 那一条工具调用画成可展开的任务条目（`FlowAgentSubtask`，按 `toolCallId` 对上；
+ * 旧会话里的工具名是 `delegate_task`，同样认，见 shared 的 `isAgentRunToolName`）；被调用的 agent 再发起的任务（`parentId`）嵌在父条目里。
+ * 被拒、没发起成的 run_agent 没有条目，照常是一条出错的工具调用。
  */
 const props = defineProps<{
   message: AgentChatMessage
@@ -44,21 +45,29 @@ const change = computed(() => (props.message.role === "canvas-change" ? props.me
 
 const skillLoaded = computed(() => (props.message.role === "skill-loaded" ? props.message : null))
 
-/** 任务条目按调用方那次 delegate_task 的 id 认 */
+/** 这条消息的全部任务条目（平铺；嵌套的由父条目自己挂） */
+const allSubtasks = computed(() => assistant.value?.subtasks ?? [])
+
+/** 入口 agent 发起的任务条目（没有 parentId，或父条目不在这条消息里 —— 容错，当顶层画）按它那次 run_agent 的 id 认 */
+const topSubtasks = computed(() => {
+  const ids = new Set(allSubtasks.value.map((task) => task.id))
+  return allSubtasks.value.filter((task) => !task.parentId || !ids.has(task.parentId))
+})
+
 const subtaskByCall = computed(() => {
   const map = new Map<string, AgentSubtaskView>()
-  for (const task of assistant.value?.subtasks ?? []) map.set(task.toolCallId, task)
+  for (const task of topSubtasks.value) map.set(task.toolCallId, task)
   return map
 })
 
-/** 对不上任何一条工具调用的任务（不该有，容错）：排在工具调用之后 */
+/** 对不上任何一条工具调用的顶层任务（不该有，容错）：排在工具调用之后 */
 const looseSubtasks = computed(() => {
   const ids = new Set(assistant.value?.toolCalls.map((call) => call.id) ?? [])
-  return (assistant.value?.subtasks ?? []).filter((task) => !ids.has(task.toolCallId))
+  return topSubtasks.value.filter((task) => !ids.has(task.toolCallId))
 })
 
 const subtaskOf = (call: { id: string; name: string }) =>
-  call.name === AGENT_DELEGATE_TOOL_NAME ? subtaskByCall.value.get(call.id) : undefined
+  isAgentRunToolName(call.name) ? subtaskByCall.value.get(call.id) : undefined
 </script>
 
 <template>
@@ -136,7 +145,7 @@ const subtaskOf = (call: { id: string; name: string }) =>
       <ul v-if="assistant.toolCalls.length > 0 || looseSubtasks.length > 0" class="space-y-1">
         <template v-for="call in assistant.toolCalls" :key="call.id">
           <li v-if="subtaskOf(call)">
-            <FlowAgentSubtask :task="subtaskOf(call)!" />
+            <FlowAgentSubtask :task="subtaskOf(call)!" :tasks="allSubtasks" />
           </li>
           <li
             v-else
@@ -159,7 +168,7 @@ const subtaskOf = (call: { id: string; name: string }) =>
           </li>
         </template>
         <li v-for="task in looseSubtasks" :key="task.id">
-          <FlowAgentSubtask :task="task" />
+          <FlowAgentSubtask :task="task" :tasks="allSubtasks" />
         </li>
       </ul>
 

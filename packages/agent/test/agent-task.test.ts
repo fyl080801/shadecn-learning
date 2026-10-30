@@ -27,7 +27,7 @@ import { buildNodeRecord } from '@shadecn/shared/flow-node-types'
 import { createMemoryAuthorityProvider } from '../src/authority.ts'
 import { createDocCanvasHandle } from '../src/canvas.ts'
 import { createMemoryLeaseRegistry, type NodeLease } from '../src/occupancy.ts'
-import { DELEGATE_BRIEF_MAX, GATEWAY_ROUTES } from '../src/protocol.ts'
+import { AGENT_TASK_MAX, GATEWAY_ROUTES } from '../src/protocol.ts'
 import type { SandboxDriver, SandboxSpec } from '../src/sandbox/driver.ts'
 import { createAgentRuntime, type AgentRuntimeOptions, type OpenedCanvas } from '../src/session.ts'
 import { createMemoryConversationStore, createMemoryRunLog } from '../src/store.ts'
@@ -73,7 +73,7 @@ function textOf(content: unknown): string {
 function turnOf(context: Context): Turn {
   const firstUser = context.messages.find((message) => message.role === 'user')
   const first = firstUser ? textOf(firstUser.content) : ''
-  const sub = (context.systemPrompt ?? '').includes('## 你是子 agent')
+  const sub = (context.systemPrompt ?? '').includes('## 你是被调用的 agent')
   const brief = sub ? (first.split('\n')[1] ?? '') : null
   const lastResult = [...context.messages].reverse().find((message) => message.role === 'toolResult')
   return {
@@ -92,7 +92,9 @@ const callWithId = (id: string, ...items: [string, JsonObject][]) =>
 const calls = (...items: [string, JsonObject][]) =>
   fauxAssistantMessage(items.map(([name, args]) => fauxToolCall(name, args)), { stopReason: 'toolUse' })
 const say = (text: string) => fauxAssistantMessage(text)
-const delegate = (brief: string, nodeIds?: string[]) => ['delegate_task', { brief, ...(nodeIds ? { nodeIds } : {}) }] as [string, JsonObject]
+/** 调用方的一次 `run_agent`（默认交给 canvas） */
+const delegate = (task: string, nodeIds?: string[], agent = 'canvas') =>
+  ['run_agent', { agent, task, ...(nodeIds ? { nodeIds } : {}) }] as [string, JsonObject]
 
 /** 被叫停之前一直挂着（脚本化上游在 abort 时让它失败） */
 const hang = (signal?: AbortSignal) =>
@@ -241,7 +243,7 @@ function latch(n: number, timeoutMs = 2000) {
 }
 
 describe('同批发起、并行执行、拿回结果摘要（验收 21）', () => {
-  it('调用方同一批调三个 delegate_task：三个被调用的 agent 同时在跑，各改各的节点，调用方收到三份结果；被调用的 agent 的过程不会进到入口 agent 的上下文', async () => {
+  it('调用方同一批调三个 run_agent：三个被调用的 agent 同时在跑，各改各的节点，调用方收到三份结果；被调用的 agent 的过程不会进到入口 agent 的上下文', async () => {
     const doc = new Y.Doc()
     for (const id of ['n1', 'n2', 'n3']) seedText(doc, id)
     const together = latch(3)
@@ -268,22 +270,22 @@ describe('同批发起、并行执行、拿回结果摘要（验收 21）', () =
     expect(parentResults).toHaveLength(3)
     for (const id of ['n1', 'n2', 'n3']) {
       const result = parentResults.find((text) => text.includes(`改 ${id}`))!
-      expect(result).toContain('子任务完成')
+      expect(result).toContain('任务完成')
       expect(result).toContain(`它改过的节点：${id}`)
       expect(result).toContain(`${id} 改好了`)
       expect(result).not.toContain('update_node')
     }
-    // 被调用的 agent 的工具里没有 delegate_task，有 request_confirmation；调用方有 delegate_task、没有 request_confirmation
+    // 被调用的 agent 的工具里没有 run_agent，有 request_confirmation；调用方有 run_agent、没有 request_confirmation
     const subTurn = runtime.turns.find((turn) => turn.brief !== null)!
-    expect(subTurn.tools).not.toContain('delegate_task')
+    expect(subTurn.tools).not.toContain('run_agent')
     expect(subTurn.tools).toContain('request_confirmation')
     const parentTurn = runtime.turns.find((turn) => turn.brief === null)!
-    expect(parentTurn.tools).toContain('delegate_task')
+    expect(parentTurn.tools).toContain('run_agent')
     expect(parentTurn.tools).not.toContain('request_confirmation')
 
     const last = finished(run.events)
     expect(last.outcome).toEqual({ type: 'success' })
-    // 任务条目：三条，完成，挂在各自的 delegate_task 上；调用方的 toolCalls 里只有三个 delegate_task
+    // 任务条目：三条，完成，挂在各自的 run_agent 上；调用方的 toolCalls 里只有三个 run_agent
     const subtasks = last.result.subtasks!
     expect(subtasks.map((task) => [task.brief, task.status, task.changedNodeIds])).toEqual(
       expect.arrayContaining([
@@ -292,7 +294,7 @@ describe('同批发起、并行执行、拿回结果摘要（验收 21）', () =
         ['改 n3', 'done', ['n3']],
       ]),
     )
-    expect(last.result.toolCalls.map((item) => item.name)).toEqual(['delegate_task', 'delegate_task', 'delegate_task'])
+    expect(last.result.toolCalls.map((item) => item.name)).toEqual(['run_agent', 'run_agent', 'run_agent'])
     for (const task of subtasks) {
       expect(last.result.toolCalls.map((item) => item.id)).toContain(task.toolCallId)
       expect(task.toolCalls).toMatchObject([{ name: 'update_node', status: 'done' }])
@@ -301,7 +303,7 @@ describe('同批发起、并行执行、拿回结果摘要（验收 21）', () =
     }
     // 实时流里被调用的 agent 的工具调用不是 TOOL_CALL_START（那只给调用方的）
     const toolStarts = run.events.filter((event) => event.type === AgentEventType.TOOL_CALL_START)
-    expect(toolStarts.map((event) => (event as { toolCallName: string }).toolCallName)).toEqual(['delegate_task', 'delegate_task', 'delegate_task'])
+    expect(toolStarts.map((event) => (event as { toolCallName: string }).toolCallName)).toEqual(['run_agent', 'run_agent', 'run_agent'])
 
     // 落库：assistant 消息带着任务条目（刷新后一样）；模型上下文里没有被调用的 agent 的消息
     const conversationId = (run.events[0] as { threadId: string }).threadId
@@ -309,9 +311,9 @@ describe('同批发起、并行执行、拿回结果摘要（验收 21）', () =
     const assistant = stored.messages.find((message): message is Extract<AgentChatMessage, { role: 'assistant' }> => message.role === 'assistant')!
     expect(assistant.subtasks).toEqual(subtasks)
     const llmText = JSON.stringify(stored.llmMessages)
-    expect(llmText).not.toContain('父 agent 交给你的任务')
+    expect(llmText).not.toContain('调用方交给你的任务')
     expect(llmText).not.toContain('update_node')
-    expect(llmText).toContain('delegate_task')
+    expect(llmText).toContain('run_agent')
     // 占用：被调用的 agent 结束时都释放了
     expect(await runtime.leases.list('flow-1')).toEqual(new Map())
   })
@@ -346,14 +348,14 @@ describe('同批发起、并行执行、拿回结果摘要（验收 21）', () =
   })
 })
 
-describe('只有一层：被调用的 agent 不能再派（验收 21）', () => {
-  it('被调用的 agent 的工具里没有 delegate_task；拿着这一轮的令牌伪造被调用的 agent 发起的发起、经 /canvas/tool 点名 delegate_task，都被拒', async () => {
+describe('调用深度上限 1（默认）：被调用的 agent 不能再调用（验收 5）', () => {
+  it('被调用的 agent 的工具里没有 run_agent；拿着这一轮的令牌伪造它发起的任务、经 /canvas/tool 点名 run_agent、加载 agents，都被拒', async () => {
     const doc = new Y.Doc()
     const forged: { delegate?: unknown; tool?: unknown; load?: unknown } = {}
     const runtime: ReturnType<typeof setup> = setup(async (turn) => {
       if (turn.brief === null) return turn.step === 1 ? calls(delegate('试试再派')) : say('好')
       // 被调用的 agent 第一次请求模型时：拿这一轮的令牌、以它自己的 agent id 伪造请求
-      const assigned = runtime.sent.find((item) => item.route === GATEWAY_ROUTES.delegate)!
+      const assigned = runtime.sent.find((item) => item.route === GATEWAY_ROUTES.taskStart)!
       const token = assigned.token!
       const agentId = (assigned.reply as { agent: { agentId: string } }).agent.agentId
       const post = async (route: string, body: unknown) =>
@@ -364,18 +366,18 @@ describe('只有一层：被调用的 agent 不能再派（验收 21）', () => 
             body: JSON.stringify(body),
           })
         ).json()
-      forged.delegate = await post(GATEWAY_ROUTES.delegate, { agentId, toolCallId: 'call_forged', brief: '孙子任务', nodeIds: [] })
-      forged.tool = await post(GATEWAY_ROUTES.tool, { agentId, toolCallId: 'call_forged2', name: 'delegate_task', args: { brief: 'x' } })
-      forged.load = await post(GATEWAY_ROUTES.tool, { agentId, toolCallId: 'call_forged3', name: 'load_skill', args: { id: 'delegate' } })
+      forged.delegate = await post(GATEWAY_ROUTES.taskStart, { agentId, toolCallId: 'call_forged', agent: 'canvas', task: '孙任务', nodeIds: [] })
+      forged.tool = await post(GATEWAY_ROUTES.tool, { agentId, toolCallId: 'call_forged2', name: 'run_agent', args: { agent: 'canvas', task: 'x' } })
+      forged.load = await post(GATEWAY_ROUTES.tool, { agentId, toolCallId: 'call_forged3', name: 'load_skill', args: { id: 'agents' } })
       return say('做完了')
     })
     const run = await start(runtime, doc)
     await run.done
     const subTurn = runtime.turns.find((turn) => turn.brief !== null)!
-    expect(subTurn.tools).not.toContain('delegate_task')
-    expect(forged.delegate).toMatchObject({ ok: false, message: expect.stringContaining('只有一层') })
-    expect(forged.tool).toMatchObject({ isError: true, message: 'Tool delegate_task not found' })
-    // load_skill('delegate') 以前到 loadSkill 才被「只有一层」拒；第 2 步起它先得对上被调用的 agent 回复里的一次调用 —— 伪造的对不上
+    expect(subTurn.tools).not.toContain('run_agent')
+    expect(forged.delegate).toMatchObject({ ok: false, message: expect.stringContaining('调用深度已达上限 1') })
+    expect(forged.tool).toMatchObject({ isError: true, message: 'Tool run_agent not found' })
+    // load_skill('agents') 以前到 loadSkill 才被深度上限拒；第 2 步起它先得对上被调用的 agent 回复里的一次调用 —— 伪造的对不上
     expect(forged.load).toMatchObject({ isError: true, message: TOOL_CALL_UNBOUND })
     // 只发起了调用方的那一个
     expect(finished(run.events).result.subtasks).toHaveLength(1)
@@ -425,10 +427,10 @@ describe('上限服务端判（验收 21）', () => {
     const run = await start(runtime, doc)
     await run.done
     expect(finished(run.events).outcome).toEqual({ type: 'success' })
-    expect(batches[0]!.filter((text) => text.includes('同时最多 2 个子任务'))).toHaveLength(1)
-    expect(batches[0]!.filter((text) => text.includes('子任务完成'))).toHaveLength(2)
+    expect(batches[0]!.filter((text) => text.includes('同时最多 2 个任务'))).toHaveLength(1)
+    expect(batches[0]!.filter((text) => text.includes('任务完成'))).toHaveLength(2)
     expect(batches[1]!.filter((text) => text.includes('达到上限 3'))).toHaveLength(1)
-    expect(batches[1]!.filter((text) => text.includes('子任务完成'))).toHaveLength(1)
+    expect(batches[1]!.filter((text) => text.includes('任务完成'))).toHaveLength(1)
     // 被拒的那几个没有任务条目
     expect(finished(run.events).result.subtasks).toHaveLength(3)
   })
@@ -482,7 +484,7 @@ describe('模型用量落进运行日志（docs/22 §4.3 第 5 步）', () => {
       async (turn) => {
         if (turn.brief === null) {
           if (turn.step === 1) return withUsage(calls(delegate('会断掉的事')), { input: 1000, output: 50, cacheRead: 200, cacheWrite: 100 })
-          return withUsage(say('子任务断了，到此为止'), { input: 1500, output: 30, cacheRead: 1000 })
+          return withUsage(say('任务断了，到此为止'), { input: 1500, output: 30, cacheRead: 1000 })
         }
         // 上游开了流、报了用量，然后中途断开
         return withUsage(fauxAssistantMessage('写了一半', { stopReason: 'error', errorMessage: '上游中途断了' }), { input: 400, output: 20 })
@@ -506,27 +508,27 @@ describe('模型用量落进运行日志（docs/22 §4.3 第 5 步）', () => {
 })
 
 describe('失败与需要确认交回调用方', () => {
-  it('被调用的 agent 的模型出错：delegate_task 回「失败 + 原因」，调用方接着做完这一轮', async () => {
+  it('被调用的 agent 的模型出错：run_agent 回「失败 + 原因」，调用方接着做完这一轮', async () => {
     const doc = new Y.Doc()
     let parentSaw = ''
     const runtime = setup(async (turn) => {
       if (turn.brief === null) {
         if (turn.step === 1) return calls(delegate('会失败的事'))
         parentSaw = turn.lastResult
-        return say('子任务失败了，我换个做法')
+        return say('任务失败了，我换个做法')
       }
       return fauxAssistantMessage('', { stopReason: 'error', errorMessage: '上游炸了' })
     })
     const run = await start(runtime, doc)
     await run.done
-    expect(parentSaw).toContain('子任务失败')
+    expect(parentSaw).toContain('任务失败')
     expect(parentSaw).toContain('上游炸了')
     const last = finished(run.events)
     expect(last.outcome).toEqual({ type: 'success' })
     expect(last.result.text).toContain('换个做法')
     expect(last.result.subtasks).toMatchObject([{ status: 'failed', error: expect.stringContaining('上游炸了') }])
-    // 调用方那条 delegate_task 是出错状态
-    expect(last.result.toolCalls).toMatchObject([{ name: 'delegate_task', status: 'error' }])
+    // 调用方那条 run_agent 是出错状态
+    expect(last.result.toolCalls).toMatchObject([{ name: 'run_agent', status: 'error' }])
   })
 
   it('被调用的 agent 调 request_confirmation：以「需要确认 + 问题」结束，调用方收到问题自己决定', async () => {
@@ -542,13 +544,13 @@ describe('失败与需要确认交回调用方', () => {
     })
     const run = await start(runtime, doc)
     await run.done
-    expect(parentSaw).toContain('子任务需要确认')
+    expect(parentSaw).toContain('任务需要确认')
     expect(parentSaw).toContain('这个节点要不要等对方改完？')
     const last = finished(run.events)
     expect(last.result.subtasks).toMatchObject([{ status: 'needs_confirmation', question: '这个节点要不要等对方改完？' }])
-    // request_confirmation 不列进它的工具调用；调用方的 delegate_task 不是错误
+    // request_confirmation 不列进它的工具调用；调用方的 run_agent 不是错误
     expect(last.result.subtasks![0]!.toolCalls).toEqual([])
-    expect(last.result.toolCalls).toMatchObject([{ name: 'delegate_task', status: 'done' }])
+    expect(last.result.toolCalls).toMatchObject([{ name: 'run_agent', status: 'done' }])
   })
 })
 
@@ -585,7 +587,7 @@ describe('占用按 agent（验收 16）', () => {
     expect(seen.afterSub).toBeNull()
     // 被调用的 agent 改过它的 data：调用方读过之后它被「别人」（同一轮的任务）改了，先重读
     expect(seen.parentWrite).toContain('在你读过之后被改过')
-    expect(seen.parentWrite).toContain('这一轮的子任务')
+    expect(seen.parentWrite).toContain('这一轮的任务')
   })
 
   it('两个被调用的 agent 写同一个节点：先写的占着；后写的先因「改过」被拒（同一轮的别的 agent 也算别人），重读后因「正在改」被拒，按规矩以「需要确认」交回', async () => {
@@ -613,16 +615,16 @@ describe('占用按 agent（验收 16）', () => {
       if (turn.step === 2) return call('get_node', { id: 'n2' })
       if (turn.step === 3) return call('update_node', { id: 'n2', data: { text: 'B' } })
       bDone()
-      return call('request_confirmation', { question: 'n2 正被另一个子任务改，要等吗？' })
+      return call('request_confirmation', { question: 'n2 正被另一个任务改，要等吗？' })
     })
     const run = await start(runtime, doc)
     await run.done
-    expect(b[0]).toContain('在你读过之后被改过（这一轮的子任务')
+    expect(b[0]).toContain('在你读过之后被改过（这一轮的任务')
     expect(b[0]).toContain('request_confirmation')
     // 读的结果里标出占用者是同一轮的另一个任务
     expect(b[1]).toContain('【节点占用】')
-    expect(b[1]).toContain('这一轮的另一个子任务')
-    expect(b[2]).toContain('正在被这一轮的另一个子任务')
+    expect(b[1]).toContain('这一轮的另一个任务')
+    expect(b[2]).toContain('正在被这一轮的另一个任务')
     expect(b[2]).toContain('request_confirmation')
     expect(dataText(doc, 'n2')).toBe('A')
     const subtasks = finished(run.events).result.subtasks!
@@ -650,7 +652,7 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
     await run.done
     // 调用方 2 步 + 被调用的 agent 3 步 > 3：按轮合计早就超了，但各算各的
     expect(finished(run.events).outcome).toEqual({ type: 'success' })
-    expect(parentSaw).toContain('子任务失败')
+    expect(parentSaw).toContain('任务失败')
     expect(parentSaw).toContain('步数上限 3')
     // runner 用 pi 的 finishTurn 结束它的循环：第 3 步之后不再请求模型（没有一次被网关拒掉的第 4 次请求），第 3 步的工具照常执行完
     expect(runtime.turns.filter((turn) => turn.brief !== null)).toHaveLength(3)
@@ -661,7 +663,7 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
     // 任务的文字是第 3 步的回复（不是一条被中止的空消息）
     expect(parentSaw).toContain('读第 3 遍')
     const last = foldSubtasks(run.events).at(-1)
-    expect(last).toMatchObject({ status: 'failed', text: '读第 3 遍', error: '超过子任务的步数上限 3' })
+    expect(last).toMatchObject({ status: 'failed', text: '读第 3 遍', error: '超过任务的步数上限 3' })
   })
 
   it('被调用的 agent 第 maxTurns + 1 次模型请求（不守规矩的 runner）：网关只回一帧 error、不调上游，它之后的工具调用被拒', async () => {
@@ -709,16 +711,16 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
     expect(JSON.parse(got!.text.trim().slice('data: '.length))).toMatchObject({
       type: 'error',
       reason: 'error',
-      errorMessage: '子任务的步数已达上限 3，这次请求没有发给模型',
+      errorMessage: '任务的步数已达上限 3，这次请求没有发给模型',
     })
     // 上游只收到调用方 2 次 + 被调用的 agent 3 次
     expect(runtime.turns).toHaveLength(5)
     expect(refused).toMatchObject({ isError: true })
-    expect(String((refused as { message?: string }).message)).toContain('子任务的步数已达上限 3')
+    expect(String((refused as { message?: string }).message)).toContain('任务的步数已达上限 3')
     expect(finished(run.events).outcome).toEqual({ type: 'success' })
   })
 
-  it('工具调用上限 3（调用方与被调用的 agent 共用）：delegate_task 算一次，被调用的 agent 再用两次就到顶；之后被调用的 agent、调用方的调用都被拦下', async () => {
+  it('工具调用上限 3（调用方与被调用的 agent 共用）：run_agent 算一次，被调用的 agent 再用两次就到顶；之后被调用的 agent、调用方的调用都被拦下', async () => {
     const doc = new Y.Doc()
     const results: { sub: string[]; parent: string } = { sub: [], parent: '' }
     const runtime = setup(
@@ -838,7 +840,7 @@ describe('任务条目的契约', () => {
 
   it('长任务说明 × 多次工具调用：补发量不再按「调用数 × 条目大小」放大 —— 说明只出现在发起那一帧，补发缓冲小也能中途接回', async () => {
     const doc = new Y.Doc()
-    const brief = `长说明${'很'.repeat(DELEGATE_BRIEF_MAX - 20)}`
+    const brief = `长说明${'很'.repeat(AGENT_TASK_MAX - 20)}`
     const steps = 12
     let gate!: () => void
     const held = new Promise<void>((resolve) => (gate = resolve))
@@ -892,11 +894,11 @@ describe('交回的结果文字（最后一条有文字的回复）', () => {
         return fauxAssistantMessage('', { stopReason: 'error', errorMessage: '上游炸了' })
       },
       // 不守规矩的 runner 多带的文字（第 7 版起 /agent/finish 只认 agentId）：服务端不看
-      { rewrite: (route, body) => (route === GATEWAY_ROUTES.agentFinish ? { ...(body as object), text: 'runner 编的' } : undefined) },
+      { rewrite: (route, body) => (route === GATEWAY_ROUTES.taskFinish ? { ...(body as object), text: 'runner 编的' } : undefined) },
     )
     const run = await start(runtime, doc)
     await run.done
-    expect(parentSaw).toContain('子任务失败')
+    expect(parentSaw).toContain('任务失败')
     expect(parentSaw).toContain('结论：画布是空的')
     expect(parentSaw).not.toContain('runner 编的')
     expect(foldSubtasks(run.events)).toMatchObject([{ status: 'failed', text: '结论：画布是空的' }])
@@ -905,7 +907,7 @@ describe('交回的结果文字（最后一条有文字的回复）', () => {
 })
 
 describe('调用 id：上游复用 / 不给', () => {
-  it('调用方两步都用 call_0 调 delegate_task、被调用的 agent 也每步用 call_0：两次都发起，条目各挂各的那次调用', async () => {
+  it('调用方两步都用 call_0 调 run_agent、被调用的 agent 也每步用 call_0：两次都发起，条目各挂各的那次调用', async () => {
     const doc = new Y.Doc()
     const results: string[] = []
     const runtime = setup(async (turn) => {
@@ -921,12 +923,12 @@ describe('调用 id：上游复用 / 不给', () => {
     const run = await start(runtime, doc)
     await run.done
     expect(results).toHaveLength(2)
-    for (const text of results) expect(text).toContain('子任务完成')
+    for (const text of results) expect(text).toContain('任务完成')
     const last = finished(run.events)
     expect(last.outcome).toEqual({ type: 'success' })
     expect(last.result.toolCalls.map((item) => [item.id, item.name, item.status])).toEqual([
-      ['call_0', 'delegate_task', 'done'],
-      ['call_0#2', 'delegate_task', 'done'],
+      ['call_0', 'run_agent', 'done'],
+      ['call_0#2', 'run_agent', 'done'],
     ])
     const subtasks = last.result.subtasks!
     expect(subtasks.map((task) => [task.brief, task.toolCallId, task.status])).toEqual([
@@ -997,9 +999,9 @@ describe('发起没成功：名额、计时、登记、占用全部退回', () =
       },
     }))
     await run.done
-    expect(results[0]).toContain('没有派出子任务')
+    expect(results[0]).toContain('没有发起任务')
     expect(results[0]).toContain('画布读不到')
-    expect(results[1]).toContain('子任务完成')
+    expect(results[1]).toContain('任务完成')
     const last = finished(run.events)
     expect(last.result.error).toContain('超过 0.4 秒')
     expect(last.result.subtasks).toMatchObject([{ brief: '再读 n1', status: 'done' }])
@@ -1041,7 +1043,7 @@ describe('发起没成功：名额、计时、登记、占用全部退回', () =
     }
     const run = await start(runtime, doc)
     await run.done
-    expect(seen.delegate).toContain('没有派出子任务')
+    expect(seen.delegate).toContain('没有发起任务')
     expect(seen.delegate).toContain('redis 不可用')
     // 已转交给被调用的 agent 的 n1 释放了（不还给调用方）；转交失败的 n2 仍是调用方的
     expect(seen.n1).toBeNull()
@@ -1050,7 +1052,7 @@ describe('发起没成功：名额、计时、登记、占用全部退回', () =
     // 没有被调用的 agent 跑过、没有条目
     expect(runtime.turns.filter((turn) => turn.brief !== null)).toEqual([])
     expect(finished(run.events).result.subtasks).toBeUndefined()
-    // get_node ×2 + update_node ×2 + delegate_task（被拒也算）+ read_canvas = 6：正好到顶，read_canvas 还能执行
+    // get_node ×2 + update_node ×2 + run_agent（被拒也算）+ read_canvas = 6：正好到顶，read_canvas 还能执行
     expect(seen.after).not.toContain('已达上限')
     expect(finished(run.events).outcome).toEqual({ type: 'success' })
     expect(await runtime.leases.list('flow-1')).toEqual(new Map())

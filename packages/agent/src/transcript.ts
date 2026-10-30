@@ -28,7 +28,7 @@ import { REQUEST_CONFIRMATION_ALONE_REASON, REQUEST_CONFIRMATION_TOOL_NAME } fro
  * - 之前几轮：库里的 `llmMessages`（入口 agent；被调用的 agent 没有）；这一轮的用户消息：服务端拼的提示词；
  * - assistant：服务端自己调模型的结果（{@link recordReply}，`model-stream.ts` 定稿：调用 id 已补齐、`partialJson` / `partialArgs` 已去掉）；
  * - 工具结果：在这个 agent 的下一次请求时按调用顺序补齐（{@link closeBatch}）—— 网关执行 / 拒绝的（含工具调用上限、`load_skill` 没单独调用，
- *   第 7 版起由网关在调用到达时判）取网关回给 runner 的那一份，`delegate_task` 取服务端拼的任务结果，
+ *   第 7 版起由网关在调用到达时判）取网关回给 runner 的那一份，`run_agent` 取服务端拼的任务结果，
  *   runner 执行的工具（`execution: 'runner'`、`request_confirmation`）是**唯一**取 runner 上报的，
  *   pi 在 runner 里就地拦下、到不了网关的那几种由服务端按 pi 的同一套规则代算（{@link recordReply} 里的预判），都不是 →「这次调用没有执行」；
  * - `load_skill` 之后的 `toolsAdded` system 消息：服务端在那一批工具结果之后自己插（{@link declareTools}，同 pi 的 `declareToolChanges` 的位置）；
@@ -62,7 +62,7 @@ export interface TranscriptCall {
   readonly refused: string | null
   /** 校验过的参数（pi-ai 的 `validateToolArguments`，和 runner 那边同一个函数、同一份 schema）；被预判拒绝的为 null */
   readonly args: unknown
-  /** runner 执行的工具（结果取 runner 上报的，`delegate_task` 除外：它取服务端拼的任务结果） */
+  /** runner 执行的工具（结果取 runner 上报的，`run_agent` 除外：它取服务端拼的任务结果） */
   readonly local: boolean
   /** 网关已经开始执行它（同一次调用只执行一次） */
   claimed: boolean

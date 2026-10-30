@@ -68,12 +68,18 @@ export interface SkillContext {
    */
   attachments?: readonly AgentAttachment[]
   /**
-   * 发起任务 并等它做完（docs/20 §3.10.11，`delegate_task` 的执行）：**只有 runner 里入口 agent 的上下文有**
-   * （runner 实现：网关登记 → 同一进程里再建一个 pi `Agent` → 交回结果）。服务端和被调用的 agent 的上下文都没有，一调就报错。
+   * 可调用的 agent（docs/26 §3.5，`run_agent` 的 `agent` 取值与工具描述里的目录）：服务端取 agent 注册表，runner 取 `RunnerInput.agents`，
+   * 两侧造出同一份工具定义。只拿定义（注册表自检）时不给
    */
-  delegate?: (
+  agents?: readonly { name: string; description: string }[]
+  /**
+   * 发起任务并等它做完（docs/20 §3.10.11，`run_agent` 的执行）：**只有 runner 里、能调用别的 agent 的那个 agent 的上下文有**
+   * （它的技能里有 `agents`，即调用深度没到上限；runner 实现：网关登记 → 同一进程里再建一个 pi `Agent` → 交回结果）。
+   * 服务端的上下文没有，一调就报错
+   */
+  runAgent?: (
     toolCallId: string,
-    args: { brief: string; nodeIds?: string[] },
+    args: { agent: string; task: string; nodeIds?: string[] },
     signal?: AbortSignal,
   ) => Promise<AgentToolResult<CanvasToolDetails>>
 }
@@ -160,11 +166,11 @@ export function definitionContext(side: SkillContext['side'], sandbox: Sandbox =
 /** 加载技能的平台工具：不属于任何技能，每一轮都给 */
 export const LOAD_SKILL_TOOL_NAME = 'load_skill'
 
-/** 被调用的 agent 的平台工具「需要确认」（`skills/delegate/`）：不属于任何技能，技能里的工具不能叫这个名字 */
+/** 被调用的 agent 的平台工具「需要确认」（`skills/agents/`）：不属于任何技能，技能里的工具不能叫这个名字 */
 export const REQUEST_CONFIRMATION_TOOL_NAME = 'request_confirmation'
 
 /**
- * 工具调用次数到顶时给模型的话：网关拒绝它执行的调用（含 `delegate_task`）、runner 在执行前拦下它自己执行的命令时用同一句
+ * 工具调用次数到顶时给模型的话：网关拒绝它执行的调用（含 `run_agent`）、runner 在执行前拦下它自己执行的命令时用同一句
  * （docs/22 §4.3 第 4 步；原来是 pi 的 `beforeToolCall` 给的，模型看到的一字不变）
  */
 export const toolCallLimitReason = (max: number) => `本轮工具调用已达上限 ${max} 次，请停止并向用户说明进度`
@@ -210,7 +216,7 @@ export interface SkillPlanInput {
   previous: readonly AgentSkillId[]
   /** 用户这条消息 `@` 提及的节点的类型（不存在的节点不算） */
   mentionedNodeTypes: readonly string[]
-  /** 这次不提供的技能（被调用的 agent 不给 `delegate`：只有一层，docs/20 §3.10.11） */
+  /** 这次不提供的技能（调用深度到了上限的 agent 不给 `agents`，docs/26 §3.5） */
   exclude?: readonly AgentSkillId[]
   /**
    * agent 定义的工具白名单（docs/26 §3.3，`agents.ts` 的 `agentToolWhitelist`）；不给 / `null` = 不收窄。
@@ -249,7 +255,7 @@ export interface SkillRegistry {
  * `offeredWith` ⊆ `requires`；要起子进程的工具（`spawnsProcess`）必须在 runner 里执行、所在技能必须要求 `sandbox:exec`。
  * 违反任何一条都在建表时抛出（开发期就炸，不留到某一轮）。
  *
- * 「在 runner 里执行」本身不要求 `sandbox:exec`：`delegate_task` 在 runner 里跑，但不起进程，被调用的 agent 的每一步
+ * 「在 runner 里执行」本身不要求 `sandbox:exec`：`run_agent` 在 runner 里跑，但不起进程，被调用的 agent 的每一步
  * （模型请求、画布工具）仍是经网关判权的普通请求；要求 `sandbox:exec` 的只有真在工作目录里起子进程的那种（ffmpeg）。
  */
 export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistry {
