@@ -10,7 +10,7 @@ import { RUNNER_PROTOCOL_VERSION } from '../src/protocol.ts'
  * - **去掉注释和空白再算**：纯注释 / 排版改动不该逼人改版本号（否则大家会习惯性地乱加，版本号就失去意义）；
  *   类型、常量、解析器的校验规则都在哈希里，改了就会触发。
  * - **只覆盖 `protocol.ts` 这一个文件**：线协议的形状（路由、请求体、RunnerEvent、令牌声明、校验）都定义在这里。
- *   它 import 进来的类型（`CanvasToolDetails`、pi 的 `AgentMessage`）改了形状不会触发 ——
+ *   它 import 进来的类型（`CanvasToolDetails`、pi 的 `AgentEvent`）改了形状不会触发 ——
  *   那类改动要自己想到加版本号；这个测试兜的是最常见的那一类（直接改协议文件）。
  * - 去注释用正则而不是 TS 编译器的 printer：不随 TypeScript 版本升级而抖动。字符串字面量原样保留（里面的 `//` 不被当注释）。
  */
@@ -23,6 +23,7 @@ const RECORDED_HASHES: Record<number, string> = {
   4: '3ba28efff9089c79',
   5: '071f1a2e62c43f0c',
   6: 'bda69b3a658dc0d8',
+  7: 'd5108c293ff344ee',
 }
 
 function normalized(source: string): string {

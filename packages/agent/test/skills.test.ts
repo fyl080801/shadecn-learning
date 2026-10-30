@@ -25,6 +25,7 @@ import {
   LOAD_SKILL_ALONE_REASON,
   mediaExecSkill,
   mediaViewSkill,
+  toolCallLimitReason,
   type AgentSkill,
   type SkillAvailability,
 } from '../src/skills/index.ts'
@@ -537,10 +538,36 @@ describe('验收 3：按需加载', () => {
       ['run_scene_script', true],
     ])
   })
+
+  it('runner 执行的命令计进全轮的工具调用次数（docs/22 §4.3 第 4 步：它到不了网关，服务端在它上报开始时计）：超了 runner 在执行前拦下，之后网关执行的同样被拒，模型看到的是同一句', async () => {
+    const { requests, step } = probe()
+    const runtime = runtimeWith(
+      [
+        // 第 1 次：load_skill（网关计）
+        step(() => loadSkillStep('director-script')),
+        // 第 2 次照常执行，第 3 次超了：runner 拦下（服务端在它报开始时计到 3，结果就是那句）
+        step(() => fauxAssistantMessage([fauxToolCall('run_scene_script', {}), fauxToolCall('run_scene_script', {})], { stopReason: 'toolUse' })),
+        // 第 4 次：网关执行的工具，网关按同一个数拒
+        step(() => fauxAssistantMessage([fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' })),
+        step(() => fauxAssistantMessage('好')),
+      ],
+      { overrides: { mediaTool: true, limits: { maxToolCalls: 2 } } },
+    )
+    const { events, threadId } = await run(runtime, new Y.Doc())
+    expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
+    const limit = toolCallLimitReason(2)
+    expect(storedResults(runtime, threadId)).toEqual([
+      { name: 'load_skill', isError: false, text: expect.any(String) },
+      { name: 'run_scene_script', isError: false, text: 'run_scene_script ok' },
+      { name: 'run_scene_script', isError: true, text: limit },
+      { name: 'read_canvas', isError: true, text: limit },
+    ])
+    expect(toolResults(requests[3]!.context).slice(-3).map((result) => result.text)).toEqual(['run_scene_script ok', limit, limit])
+  })
 })
 
 describe('验收 4：load_skill 必须单独成批', () => {
-  it('同一批里还有别的工具：load_skill 被拦下并返回原因，别的工具照常执行，技能没加载', async () => {
+  it('同一批里还有别的工具：load_skill 被网关拒并返回原因（第 7 版起 runner 不拦），别的工具照常执行，技能没加载', async () => {
     const { requests, step } = probe()
     const runtime = runtimeWith([
       step(() =>
@@ -555,8 +582,11 @@ describe('验收 4：load_skill 必须单独成批', () => {
     ])
     expect(requests[1]!.tools).not.toContain('notes_tool')
     expect(skillLoadedEvents(events)).toEqual([])
-    // 被拦下的 load_skill 没到网关：审计里只有 read_canvas 是网关执行的
-    expect(runtime.runLog.toolCalls.filter((call) => call.ok).map((call) => call.name)).toEqual(['read_canvas'])
+    // 被拒的 load_skill 什么都没做：审计里它记成失败（网关自己的执行记录），执行成功的只有 read_canvas
+    expect(runtime.runLog.toolCalls.map((call) => [call.name, call.ok, call.error])).toEqual([
+      ['load_skill', false, LOAD_SKILL_ALONE_REASON],
+      ['read_canvas', true, null],
+    ])
   })
 })
 

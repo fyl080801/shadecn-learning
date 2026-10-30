@@ -134,9 +134,12 @@ function setup(handler: Handler, overrides: Partial<AgentRuntimeOptions> & Setup
     'fetch',
     gatewayFetch(async (original) => {
       const url = new URL(original.url)
-      // 模型请求（SSE）不记、不改写，直接交给网关
-      if (url.pathname.includes('/model/')) return runtime.gateway.handle(original)
       const route = url.pathname.replace(/^.*agent-gateway/, '')
+      // 模型请求（SSE）只记路由，不改写，直接交给网关
+      if (url.pathname.includes('/model/')) {
+        sent.push({ route, token: original.headers.get('authorization'), body: null, reply: null })
+        return runtime.gateway.handle(original)
+      }
       let request = original
       if (rewrite) {
         const changed = rewrite(route, await original.clone().json().catch(() => null))
@@ -369,7 +372,7 @@ describe('只有一层：子 agent 不能再派（验收 21）', () => {
 })
 
 describe('子 agent 按需加载技能（docs/23 §3.3）', () => {
-  it('子 agent load_skill 之后，它的下一次请求就带上新工具；只有父 agent 去取别人的改动', async () => {
+  it('子 agent load_skill 之后，它的下一次请求就带上新工具', async () => {
     const doc = new Y.Doc()
     seedText(doc, 'n1')
     const runtime = setup(async (turn) => {
@@ -385,8 +388,6 @@ describe('子 agent 按需加载技能（docs/23 §3.3）', () => {
     expect(sub).toHaveLength(3)
     expect(sub[0]!.tools).not.toContain('get_director_scene')
     expect(sub[1]!.tools).toContain('get_director_scene')
-    // 子 agent 两批调过工具也不取；父 agent 只在它那一批 delegate_task 之后取一次
-    expect(runtime.sent.filter((entry) => entry.route === GATEWAY_ROUTES.changes)).toHaveLength(1)
   })
 })
 
@@ -592,12 +593,12 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
     expect(finished(run.events).outcome).toEqual({ type: 'success' })
     expect(parentSaw).toContain('子任务失败')
     expect(parentSaw).toContain('步数上限 3')
-    // runner 用 pi 的 finishTurn 结束它的循环：第 3 步之后不再请求模型（没有一次被掐断的第 4 次请求），上报的 turn_end 正好 3 个
+    // runner 用 pi 的 finishTurn 结束它的循环：第 3 步之后不再请求模型（没有一次被网关拒掉的第 4 次请求），第 3 步的工具照常执行完
     expect(runtime.turns.filter((turn) => turn.brief !== null)).toHaveLength(3)
-    const reported = runtime.sent
-      .filter((entry) => entry.route === GATEWAY_ROUTES.events)
-      .flatMap((entry) => (entry.body as { events: { type: string; agentId?: string }[] }).events)
-    expect(reported.filter((event) => event.type === 'turn_end' && event.agentId !== undefined)).toHaveLength(3)
+    const subModelRequests = runtime.sent.filter((entry) => entry.route.startsWith('/model/') && !entry.route.startsWith('/model/main/'))
+    expect(subModelRequests).toHaveLength(3)
+    const subTools = runtime.sent.filter((entry) => entry.route === GATEWAY_ROUTES.tool && (entry.body as { agentId?: string }).agentId !== undefined)
+    expect(subTools).toHaveLength(3)
     // 子任务的文字是第 3 步的回复（不是一条被中止的空消息）
     expect(parentSaw).toContain('读第 3 遍')
     const last = foldSubtasks(run.events).at(-1)
@@ -831,7 +832,7 @@ describe('交回的结果文字（最后一条有文字的回复）', () => {
         if (turn.step === 1) return fauxAssistantMessage([fauxText('结论：画布是空的'), fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' })
         return fauxAssistantMessage('', { stopReason: 'error', errorMessage: '上游炸了' })
       },
-      // 老镜像 / 不守规矩的 runner 报来的文字：服务端不用它
+      // 不守规矩的 runner 多带的文字（第 7 版起 /agent/finish 只认 agentId）：服务端不看
       { rewrite: (route, body) => (route === GATEWAY_ROUTES.agentFinish ? { ...(body as object), text: 'runner 编的' } : undefined) },
     )
     const run = await start(runtime, doc)

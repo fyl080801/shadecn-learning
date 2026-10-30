@@ -9,11 +9,11 @@ import { createDocCanvasHandle } from '../src/canvas.ts'
 import { GATEWAY_ROUTES } from '../src/protocol.ts'
 import { createAgentRuntime, type OpenedCanvas } from '../src/session.ts'
 import { createMemoryConversationStore, createMemoryRunLog } from '../src/store.ts'
-import { gatewayFetch, registerScriptedModel, type ScriptedStep } from '../src/testing.ts'
+import { gatewayFetch, registerScriptedModel, TEST_GATEWAY_URL, type ScriptedStep } from '../src/testing.ts'
 
 /**
- * 界面事件由服务端产生（docs/22 §4.3 第 3 步）—— 对抗性用例：runner 上报的事件（文字增量、回复、工具的开始 / 结束、子 agent 的回复、
- * `/agent/finish` 报的状态 / 问题 / 文字、模型报错）可以全是伪造的，前端收到的事件流、落库的对话都只能是服务端那份：
+ * 界面事件由服务端产生（docs/22 §4.3 第 3 步）—— 对抗性用例：runner 上报的事件（工具的开始 / 结束）、`/agent/finish` 多带的状态 / 问题 / 文字
+ * 可以全是伪造的；文字增量、回复、模型报错第 7 版起线上根本没有（夹带了整批拒），前端收到的事件流、落库的对话都只能是服务端那份：
  * 文字来自服务端自己调模型的流，工具条目来自服务端那条回复 + 网关的执行记录，子任务条目来自服务端的 transcript。
  * 另有两条正面的：runner 一个事件都不报，事件流和老老实实报的时候一样；文字仍是流式的（上游还没说完，前端已经看到前半句）。
  */
@@ -55,6 +55,11 @@ type Rewrite = (route: string, body: unknown) => unknown
 
 interface SetupOptions {
   rewrite?: Rewrite
+  /**
+   * 被攻破的 runner 在发这个请求之前，用同一张令牌先夹带一批事件（`/events`）；返回 undefined = 这次不夹带。
+   * 网关的回复状态记进 `injected` —— 夹带的形状不对时网关整批拒，序号不前进，真的那批照常收
+   */
+  inject?: (route: string, body: unknown) => { seq: number; events: unknown[] } | undefined
   /** 包一层打上游的 fetch（测流式时卡住上游） */
   wrapUpstream?: (upstream: typeof fetch) => typeof fetch
 }
@@ -79,16 +84,27 @@ function setup(handler: (turn: Turn) => AssistantMessage | Promise<AssistantMess
     authorities: createMemoryAuthorityProvider(),
     limits: { changeWindowMs: 5, runsThrottleMs: 5 },
   })
+  const injected: number[] = []
   vi.stubGlobal(
     'fetch',
     gatewayFetch(async (original) => {
       const path = new URL(original.url).pathname.replace(/^.*agent-gateway/, '')
-      if (!options.rewrite || path.startsWith('/model/')) return runtime.gateway.handle(original)
-      const changed = options.rewrite(path, await original.clone().json().catch(() => null))
+      if (path.startsWith('/model/') || (!options.rewrite && !options.inject)) return runtime.gateway.handle(original)
+      const body = await original.clone().json().catch(() => null)
+      const extra = options.inject?.(path, body)
+      if (extra !== undefined) {
+        const forged = new Request(`${TEST_GATEWAY_URL}${GATEWAY_ROUTES.events}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: original.headers.get('authorization') ?? '' },
+          body: JSON.stringify(extra),
+        })
+        injected.push((await runtime.gateway.handle(forged)).status)
+      }
+      const changed = options.rewrite?.(path, body)
       return runtime.gateway.handle(changed === undefined ? original : new Request(original, { body: JSON.stringify(changed) }))
     }),
   )
-  return { runtime, store, turns }
+  return { runtime, store, turns, injected }
 }
 
 function seedText(doc: Y.Doc, id: string, text = '原文') {
@@ -143,30 +159,28 @@ const shapeOf = (events: AgentStreamEvent[]) =>
   })
 
 describe('runner 伪造的上报不进事件流、不落库', () => {
-  it('伪造的文字增量 / 回复定稿 / 模型报错：前端看到、落库的都是服务端调模型拿到的那份', async () => {
+  it('伪造的文字增量 / 回复定稿 / 模型报错（第 7 版起线上没有这几种，夹带的整批拒）：前端看到、落库的都是服务端调模型拿到的那份', async () => {
     const context = setup(toolsThenText, {
-      rewrite: (route, body) => {
+      inject: (route, body) => {
         if (route !== GATEWAY_ROUTES.events) return undefined
         const batch = body as { seq: number; events: Record<string, unknown>[] }
-        const events = batch.events.flatMap((event) => {
-          if (event.type === 'message_update') {
-            return [{ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'FORGED_DELTA' } }]
-          }
-          if (event.type === 'message_end' && (event.message as { role: string }).role === 'assistant') {
-            return [
-              {
-                ...event,
-                message: { ...(event.message as object), content: [{ type: 'text', text: 'FORGED_ASSISTANT' }], stopReason: 'error', errorMessage: 'FORGED_MODEL_ERROR' },
-              },
-            ]
-          }
-          return [event]
-        })
-        return { ...batch, events }
+        return {
+          ...batch,
+          events: [
+            ...batch.events,
+            { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'FORGED_DELTA' } },
+            {
+              type: 'message_end',
+              message: { role: 'assistant', content: [{ type: 'text', text: 'FORGED_ASSISTANT' }], stopReason: 'error', errorMessage: 'FORGED_MODEL_ERROR' },
+            },
+          ],
+        }
       },
     })
     const doc = new Y.Doc()
     const { events, last, chat, assistant } = await run(context, doc)
+    expect(context.injected.length).toBeGreaterThan(0)
+    expect(context.injected.every((status) => status === 400)).toBe(true)
 
     expect(streamedText(events)).toBe('这是模型真正说的话，比十六个字长一些，好分成几段流下来。')
     // 模型没报错：服务端的结果是正常结束，runner 报的「出错」不算
@@ -177,22 +191,16 @@ describe('runner 伪造的上报不进事件流、不落库', () => {
     expect(everything(chat)).not.toContain('FORGED')
   })
 
-  it('真的模型报错、runner 报成正常结束：照样以服务端的模型报错收尾', async () => {
+  it('真的模型报错、runner 想报成正常结束：照样以服务端的模型报错收尾', async () => {
     const context = setup(() => fauxAssistantMessage([], { stopReason: 'error', errorMessage: '额度用完' }), {
-      rewrite: (route, body) => {
-        if (route !== GATEWAY_ROUTES.events) return undefined
-        const batch = body as { seq: number; events: Record<string, unknown>[] }
-        return {
-          ...batch,
-          events: batch.events.map((event) =>
-            event.type === 'message_end' && (event.message as { role: string }).role === 'assistant'
-              ? { ...event, message: { ...(event.message as object), content: [{ type: 'text', text: 'FORGED_OK' }], stopReason: 'stop', errorMessage: undefined } }
-              : event,
-          ),
-        }
-      },
+      // 这一轮父 agent 不调工具，runner 一个事件都不报：在收尾那次 /run/finish 前夹带一批
+      inject: (route) =>
+        route === GATEWAY_ROUTES.finish
+          ? { seq: 0, events: [{ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'FORGED_OK' }], stopReason: 'stop' } }] }
+          : undefined,
     })
     const { events, last, chat } = await run(context, new Y.Doc())
+    expect(context.injected).toEqual([400])
     expect(last).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'model_error', message: '400: {"message":"额度用完","type":"invalid_request_error"}' })
     expect(everything(events)).not.toContain('FORGED')
     expect(everything(chat)).not.toContain('FORGED')
@@ -247,7 +255,7 @@ describe('runner 伪造的上报不进事件流、不落库', () => {
     expect(everything(chat)).not.toContain('FORGED')
   })
 
-  it('伪造的子任务内容：子 agent 的回复、工具调用、/agent/finish 报的状态 / 问题 / 文字都不用；条目和交回父 agent 的都是服务端那份', async () => {
+  it('伪造的子任务内容：子 agent 的回复（夹带的整批拒）、工具调用、/agent/finish 多带的状态 / 问题 / 文字都不用；条目和交回父 agent 的都是服务端那份', async () => {
     const context = setup(
       (turn) => {
         if (turn.sub) return turn.step === 1 ? calls(['get_node', { id: 'n1' }]) : say('子任务的真回复：n1 看过了')
@@ -262,9 +270,6 @@ describe('runner 伪造的上报不进事件流、不落库', () => {
           const batch = body as { seq: number; events: Record<string, unknown>[] }
           const events = batch.events.flatMap((event) => {
             if (event.agentId === undefined) return [event]
-            if (event.type === 'message_end' && (event.message as { role: string }).role === 'assistant') {
-              return [{ ...event, message: { ...(event.message as object), content: [{ type: 'text', text: 'FORGED_SUB_REPLY' }] } }]
-            }
             if (event.type === 'tool_execution_end') {
               return [
                 { ...event, isError: true, result: { content: [{ type: 'text', text: 'FORGED_SUB_RESULT' }] } },
@@ -275,12 +280,25 @@ describe('runner 伪造的上报不进事件流、不落库', () => {
           })
           return { ...batch, events }
         },
+        // 子 agent 的回复（老 runner 报的 message_end）：夹带的整批拒
+        inject: (route, body) => {
+          if (route !== GATEWAY_ROUTES.events) return undefined
+          const batch = body as { seq: number; events: Record<string, unknown>[] }
+          const sub = batch.events.find((event) => event.agentId !== undefined)?.agentId
+          if (sub === undefined) return undefined
+          return {
+            ...batch,
+            events: [...batch.events, { type: 'message_end', agentId: sub, message: { role: 'assistant', content: [{ type: 'text', text: 'FORGED_SUB_REPLY' }] } }],
+          }
+        },
       },
     )
     const doc = new Y.Doc()
     seedText(doc, 'n1')
     const { events, last, chat, assistant } = await run(context, doc)
     expect(last).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
+    expect(context.injected.length).toBeGreaterThan(0)
+    expect(context.injected.every((status) => status === 400)).toBe(true)
 
     expect(assistant?.subtasks).toHaveLength(1)
     const subtask = assistant!.subtasks![0]!

@@ -10,14 +10,13 @@ import {
   PROTOCOL_MISMATCH_ERROR,
   PROTOCOL_MISMATCH_STATUS,
   RUNNER_PROTOCOL_VERSION,
+  isModelStreamRequest,
   parseDelegateRequest,
   parseEventsRequest,
   parseFinishRequest,
-  parseModelStreamRequest,
   parseSubagentFinishRequest,
   parseStsTokenRequest,
   parseToolCallRequest,
-  type CanvasChangesResponse,
   type DelegateRequest,
   type DelegateResponse,
   type FinishRequest,
@@ -51,7 +50,7 @@ import {
  *
  * - 管：STS（bootstrap token → run 短令牌、续期）、令牌校验（验签 + 这一轮还在 + Grant id 对得上）、
  *   请求体的大小与形状、`/events` 的批次顺序、服务端调用模型（真实 key 只在这里，见下）；
- * - 不管：判权与执行。画布工具、改动通知、事件、收尾交给这一轮登记的 {@link GatewayRunHandlers}
+ * - 不管：判权与执行。画布工具、子 agent 的派发与交回、事件、收尾交给这一轮登记的 {@link GatewayRunHandlers}
  *   （编排层 `session.ts` 实现，判权走这一轮的 `authorize`，执行走服务端的 `tools.ts`）。
  *   **令牌里的 scope 从来不读**：每一次调用都按 Grant 实时判（docs/22 §2 第 4 条）。
  *
@@ -64,7 +63,7 @@ import {
  * ## 服务端调用模型（docs/22 §4.3）
  *
  * runner 的 `streamFn` 是 pi 的 `streamProxy`：`POST /model/<agentId>/api/stream`，`Authorization: Bearer <run 短令牌>`，
- * 请求体 `{ model, context, options }`：**一个字段都不用**（只校验大小与形状；第 4 步起 runner 只送空的上下文）。
+ * 请求体 `{ model, context, options }`：**一个字段都不用**（只校验大小、是个 JSON 对象；runner 只送空的上下文，上限随之是 {@link MODEL_BODY_LIMIT}）。
  * 上下文是编排层给的、服务端维护的 transcript（{@link ModelRequestDecision} 的 `context`，docs/22 §4.3 第 2 步）；
  * 模型是服务端解析的那个，`maxTokens`（有上限）、重试、`sessionId`、`identity`、请求头都由服务端定，runner 送的 `model` / `options` 一概不看。
  * 服务端带真实 key 用 pi-ai 的 `streamSimple` 调上游（`model-stream.ts`），把事件流换成 `ProxyAssistantMessageEvent` 以 SSE 下发。
@@ -82,8 +81,11 @@ const STOPPED_MESSAGE = '这一轮已经停止，模型请求已取消'
 
 /** 请求体上限：事件一批、工具参数都远到不了 */
 const BODY_LIMIT = 4 * 1024 * 1024
-/** 模型请求：runner 仍送整段上下文（不用，只校验；120 条消息 × 工具结果，含图片），给足余量；第 4 步只送空的之后降下来 */
-const MODEL_BODY_LIMIT = 32 * 1024 * 1024
+/**
+ * 模型请求的请求体上限：runner 只送空的上下文（docs/22 §4.3 第 4 步），剩下的是模型描述和 pi 的几个选项，几 KB；
+ * 送整段上下文（老习惯，或想塞东西进来）的超过就 413 —— 内容本来就一个字都不用
+ */
+export const MODEL_BODY_LIMIT = 64 * 1024
 
 /** 上游请求重试（pi-ai 的 `retryProviderRequest` 只重试建立请求那一段，退避可被中止打断）：默认同 SDK */
 const DEFAULT_MAX_RETRIES = 2
@@ -113,7 +115,6 @@ export type ModelRequestDecision =
 export interface GatewayRunHandlers {
   input(): Promise<RunnerInput>
   tool(request: ToolCallRequest): Promise<ToolCallResponse>
-  changes(): Promise<CanvasChangesResponse>
   /** 派一个子 agent（docs/20 §3.10.11）：发起者、上限、转交占用都由编排层判；拒绝是 `{ ok: false }`，不是 HTTP 错误 */
   delegate(request: DelegateRequest): Promise<DelegateResponse>
   /** 一个子 agent 做完了：编排层释放它的占用、拼好给父 agent 的结果 */
@@ -419,14 +420,15 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
       return modelError(status, message)
     }
     try {
-      let body: ReturnType<typeof parseModelStreamRequest>
+      let body: unknown
       try {
-        body = parseModelStreamRequest(await readJson(request, MODEL_BODY_LIMIT))
+        body = await readJson(request, MODEL_BODY_LIMIT)
       } catch (err) {
         if (err instanceof GatewayHttpError) return refused(err.status, err.message)
         throw err
       }
-      if (!body) return refused(400, '模型请求的形状不对')
+      // 只认得是个 JSON 对象：内容（模型、上下文、选项）一个字段都不用
+      if (!isModelStreamRequest(body)) return refused(400, '模型请求的形状不对')
       try {
         await entry.registration.handlers.authorizeLlm()
       } catch (err) {
@@ -449,7 +451,7 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
         return refused(401, UNAUTHORIZED_MESSAGE)
       }
       handedOff = true
-      // body.messages 只校验过形状：上下文用编排层给的服务端 transcript（docs/22 §4.3 第 2 步）
+      // 上下文用编排层给的服务端 transcript（docs/22 §4.3 第 2 步），请求体里的不看
       return serveModel(request, entry, upstream, agentId, decision, end)
     } finally {
       if (!handedOff) end()
@@ -624,8 +626,6 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
         if (!body) throw new GatewayHttpError(400, '工具调用的请求不对')
         return json(await handlers.tool(body))
       }
-      case GATEWAY_ROUTES.changes:
-        return json(await handlers.changes())
       case GATEWAY_ROUTES.delegate: {
         const body = parseDelegateRequest(await readJson(request))
         if (!body) throw new GatewayHttpError(400, '派子任务的请求不对')

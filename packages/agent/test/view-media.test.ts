@@ -358,26 +358,21 @@ describe('view_node_media：视频与出错', () => {
 describe('协议两端都把图片换成占位', () => {
   const image = { type: 'image', data: PNG_BASE64, mimeType: 'image/png' }
 
-  it('runner 上报（runnerEventOf）：message_end / tool_execution_end 里没有图片，原消息不被改', () => {
+  it('runner 上报（runnerEventOf）：tool_execution_end 里没有图片，原结果不被改；消息（message_end）不上报', () => {
     const message = { role: 'toolResult', toolCallId: 't1', toolName: 'view_node_media', content: [{ type: 'text', text: '说明' }, image], isError: false, timestamp: 0 }
-    const slim = runnerEventOf({ type: 'message_end', message } as never, () => undefined)
-    expect(JSON.stringify(slim)).not.toContain(PNG_BASE64)
-    expect(message.content[1]).toBe(image)
+    // 第 7 版起消息一律不上报（模型上下文是服务端的 transcript，那里记着带图的那份）
+    expect(runnerEventOf({ type: 'message_end', message } as never)).toBeNull()
 
-    const end = runnerEventOf(
-      { type: 'tool_execution_end', toolCallId: 't1', toolName: 'view_node_media', result: { content: [image], details: {} }, isError: false } as never,
-      () => undefined,
-    )
+    const result = { content: [image], details: {} }
+    const end = runnerEventOf({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'view_node_media', result, isError: false } as never)
     expect(JSON.stringify(end)).not.toContain(PNG_BASE64)
+    expect(result.content[0]).toBe(image)
   })
 
   it('服务端解析（parseEventsRequest）：不可信的 runner 塞进来的图片也换成占位', () => {
     const parsed = parseEventsRequest({
       seq: 0,
-      events: [
-        { type: 'message_end', message: { role: 'toolResult', toolCallId: 't1', toolName: 'x', content: [image], isError: false, timestamp: 0 } },
-        { type: 'tool_execution_end', toolCallId: 't1', toolName: 'x', result: { content: [image] }, isError: false },
-      ],
+      events: [{ type: 'tool_execution_end', toolCallId: 't1', toolName: 'x', result: { content: [image] }, isError: false }],
     })
     expect(parsed).not.toBeNull()
     expect(JSON.stringify(parsed)).not.toContain(PNG_BASE64)

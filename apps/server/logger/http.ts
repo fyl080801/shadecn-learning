@@ -63,8 +63,8 @@ export function httpLogger(): MiddlewareHandler {
 
       const ms = Date.now() - startedAt
       const status = c.res.status
-      // 模型代理等的是上游模型的首字延迟（秒级是常态），不是我们慢：不按慢请求告警
-      const slow = ms >= logSlowRequestMs && !path.startsWith('/api/agent-gateway/llm/')
+      // 服务端调用模型（docs/22 §4.3）等的是上游模型（重试、首字延迟，秒级是常态），不是我们慢：不按慢请求告警
+      const slow = ms >= logSlowRequestMs && !path.startsWith('/api/agent-gateway/model/')
 
       if (!shouldLog(path, status, slow)) return
 
@@ -93,10 +93,10 @@ function shouldLog(path: string, status: number, slow: boolean): boolean {
   if (logHttp === 'off') return false
   if (logHttp === 'all') return true
   if (status >= 400 || slow) return true
-  // agent runner 的事件上报一轮几十上百批（每段文字、每次工具调用都有），和协同的逐帧事件同一类噪音
+  // agent runner 的事件上报一轮几十上百批（每次工具调用都有），和协同的逐帧事件同一类噪音
   if (QUIET_API_PATHS.includes(path)) return false
   return isApiPath(path)
 }
 
 /** `api` 模式下成功时不逐条记的接口（失败、慢请求照记） */
-const QUIET_API_PATHS = ['/api/agent-gateway/events', '/api/agent-gateway/canvas/changes']
+const QUIET_API_PATHS = ['/api/agent-gateway/events']

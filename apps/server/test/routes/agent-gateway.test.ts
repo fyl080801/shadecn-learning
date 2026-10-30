@@ -93,8 +93,12 @@ describe('网关的挂载', () => {
     const events = parseSse(await res.text())
     expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'runner_failed' })
 
-    // runner 拿到的输入：有提示词、模型描述、技能（runner 按注册表展开成工具）；没有真实 key、没有上游地址
-    expect(input!.prompt).toBe('你好')
+    // runner 拿到的输入：模型描述、技能（runner 按注册表展开成工具）；没有真实 key、没有上游地址；
+    // 第 7 版起也没有提示词、系统提示、之前几轮的上下文（模型请求只用服务端的 transcript）
+    expect(input!).not.toHaveProperty('prompt')
+    expect(input!).not.toHaveProperty('systemPrompt')
+    expect(input!).not.toHaveProperty('llmMessages')
+    expect(JSON.stringify(input)).not.toContain('你好')
     expect(input!.skills.loaded).toEqual(['canvas', 'delegate'])
     expect(input!.model).not.toHaveProperty('baseUrl')
     expect(JSON.stringify(input)).not.toContain(SCRIPTED_API_KEY)

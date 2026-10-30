@@ -15,14 +15,8 @@ import {
   type ToolResultMessage,
   type TranscriptContext,
 } from '@earendil-works/pi-ai'
-import { slimMessage } from './protocol.ts'
-import {
-  LOAD_SKILL_ALONE_REASON,
-  LOAD_SKILL_TOOL_NAME,
-  REQUEST_CONFIRMATION_ALONE_REASON,
-  REQUEST_CONFIRMATION_TOOL_NAME,
-  toolCallLimitReason,
-} from './skills/index.ts'
+import { withoutImages } from './media.ts'
+import { REQUEST_CONFIRMATION_ALONE_REASON, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/index.ts'
 
 /**
  * 服务端维护的**权威 transcript**（docs/22 §4.3 第 2 步，问题 C）：每个 agent 一份，模型请求只用它，落库的模型上下文也取它。
@@ -33,9 +27,10 @@ import {
  * - 开头的 system 消息：服务端的系统提示 + 这个 agent 一开始的工具（{@link createTranscript}，pi-ai 的 `createInitialSystemMessage`）；
  * - 之前几轮：库里的 `llmMessages`（父 agent；子 agent 没有）；这一轮的用户消息：服务端拼的提示词；
  * - assistant：服务端自己调模型的结果（{@link recordReply}，`model-stream.ts` 定稿：调用 id 已补齐、`partialJson` / `partialArgs` 已去掉）；
- * - 工具结果：在这个 agent 的下一次请求时按调用顺序补齐（{@link closeBatch}）—— 网关执行 / 拒绝的取网关回给 runner 的那一份，
- *   `delegate_task` 取服务端拼的子任务结果，runner 执行的工具（`execution: 'runner'`、`request_confirmation`）是**唯一**取 runner 上报的，
- *   其余由服务端按 runner 会用的同一套规则代算（{@link recordReply} 里的预判），都不是 →「这次调用没有执行」；
+ * - 工具结果：在这个 agent 的下一次请求时按调用顺序补齐（{@link closeBatch}）—— 网关执行 / 拒绝的（含工具调用上限、`load_skill` 没单独调用，
+ *   第 7 版起由网关在调用到达时判）取网关回给 runner 的那一份，`delegate_task` 取服务端拼的子任务结果，
+ *   runner 执行的工具（`execution: 'runner'`、`request_confirmation`）是**唯一**取 runner 上报的，
+ *   pi 在 runner 里就地拦下、到不了网关的那几种由服务端按 pi 的同一套规则代算（{@link recordReply} 里的预判），都不是 →「这次调用没有执行」；
  * - `load_skill` 之后的 `toolsAdded` system 消息：服务端在那一批工具结果之后自己插（{@link declareTools}，同 pi 的 `declareToolChanges` 的位置）；
  * - 别人改动的通知：父 agent 的下一次请求时由服务端追加（{@link appendUserText}）。
  *
@@ -60,8 +55,9 @@ export interface TranscriptCall {
   /** 服务端那条回复里的调用（名字、参数以它为准，runner 送来的只用来核对） */
   readonly call: ToolCall
   /**
-   * 服务端预判这次调用不会执行（runner 按 pi 的规则拦下的那些）时给模型的那句话；null = 看执行记录。
-   * 顺序同 pi + runner：输出被截断（`length`）→ 参数过长被掐断 → 工具不存在 → 参数过不了 schema → 超过工具调用上限 → 没单独调用
+   * 服务端预判这次调用不会执行（pi 在 runner 里就地拦下、到不了网关的那些）时给模型的那句话；null = 看执行记录。
+   * 顺序同 pi + runner：输出被截断（`length`）→ 参数过长被掐断 → 工具不存在 → 参数过不了 schema → `request_confirmation` 没单独调用。
+   * 工具调用上限、`load_skill` 没单独调用不在这里：网关在调用到达时判（session.ts 的 `executeBound`），结果就是执行记录
    */
   readonly refused: string | null
   /** 校验过的参数（pi-ai 的 `validateToolArguments`，和 runner 那边同一个函数、同一份 schema）；被预判拒绝的为 null */
@@ -108,9 +104,11 @@ const truncatedCallText = (name: string) =>
 /** pi 找不到工具时的结果（`prepareToolCall`，原文） */
 const toolNotFoundText = (name: string) => `Tool ${name} not found`
 
-/** runner 的 `beforeToolCall` 拦下的「必须单独调用」的平台工具 */
+/**
+ * 「必须单独调用」的 runner 工具：`request_confirmation` 在 runner 里执行、到不了网关，只能由 runner 的 `beforeToolCall` 拦下；
+ * 规则只看这条回复本身（确定的），所以服务端在这里按同一条规则算，两边不会不一致。`load_skill` 是网关工具，由网关判
+ */
 const ALONE: Record<string, string> = {
-  [LOAD_SKILL_TOOL_NAME]: LOAD_SKILL_ALONE_REASON,
   [REQUEST_CONFIRMATION_TOOL_NAME]: REQUEST_CONFIRMATION_ALONE_REASON,
 }
 
@@ -144,19 +142,13 @@ export function requestContext(transcript: AgentTranscript): TranscriptContext {
   return normalizeContext({ messages: [...transcript.messages] })
 }
 
-/** 预判调用时要的全轮信息：runner 的工具调用计数（父子共用，按 runner 的口径：找得到工具、参数过了 schema 的才计）与上限 */
-export interface ReplyContext {
-  /** 计一次，返回这是第几次 */
-  countCall(): number
-  maxToolCalls: number
-}
-
 /**
- * 服务端调模型拿到一条回复：记进 transcript，并预判每个调用 runner 会不会执行（pi 的检查顺序：
- * `length` 截断 → 工具不存在 → `validateToolArguments` → runner 的 `beforeToolCall`：先计数判上限，再判「单独调用」）。
+ * 服务端调模型拿到一条回复：记进 transcript，并预判每个调用会不会被 pi 在 runner 里就地拦下（pi 的检查顺序：
+ * `length` 截断 → 工具不存在 → `validateToolArguments` → runner 的 `beforeToolCall` 里唯一剩下的确定规则：`request_confirmation` 单独调用）。
  * `cut` 是参数过长被服务端掐断的调用（id → 给模型的话）。出错 / 中止 / 没有调用 → 这个 agent 不能再请求（pi 的循环到此为止）。
+ * 工具调用上限不在这里预判（第 7 版起）：网关执行的在调用到达时由网关计数，runner 执行的在它上报开始时计（session.ts）。
  */
-export function recordReply(transcript: AgentTranscript, message: AssistantMessage, cut: ReadonlyMap<string, string>, context: ReplyContext) {
+export function recordReply(transcript: AgentTranscript, message: AssistantMessage, cut: ReadonlyMap<string, string>) {
   transcript.messages.push(message)
   transcript.pending = null
   const calls = message.content.filter((part): part is ToolCall => part.type === 'toolCall')
@@ -179,11 +171,8 @@ export function recordReply(transcript: AgentTranscript, message: AssistantMessa
       } catch (err) {
         refused = err instanceof Error ? err.message : String(err)
       }
-      if (refused === null) {
-        const alone = ALONE[call.name]
-        if (context.countCall() > context.maxToolCalls) refused = toolCallLimitReason(context.maxToolCalls)
-        else if (alone && calls.some((other) => other.name !== call.name)) refused = alone
-      }
+      const alone = ALONE[call.name]
+      if (refused === null && alone && calls.some((other) => other.name !== call.name)) refused = alone
       if (refused !== null) args = null
     }
     // 上游重复的调用 id 已经在 model-stream.ts 换掉了；万一还撞，后一个按「没有执行」处理（不覆盖前一个）
@@ -293,6 +282,17 @@ export function gatewayResultRecord(response: { isError: true; message: string }
 }
 
 export { errorRecord as toolErrorRecord }
+
+/**
+ * 消息里的图片块换成文字占位（返回新对象，不改原消息 —— 这一轮内存里的 transcript 还要用带图的那份）。
+ * 落库前换（下一轮看不到之前的图，和以前一致）
+ */
+export function slimMessage<T extends AgentMessage>(message: T): T {
+  const content = (message as { content?: unknown }).content
+  if (!Array.isArray(content)) return message
+  const slim = withoutImages(content)
+  return slim === content ? message : ({ ...message, content: slim } as T)
+}
 
 /** 落库前的调用块：去掉 pi-ai 失败的流里留在调用块上的原始参数文本 */
 function cleanAssistant(message: AssistantMessage): AssistantMessage {

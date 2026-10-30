@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@earendil-works/pi-agent-core'
+import type { AgentEvent, AgentMessage } from '@earendil-works/pi-agent-core'
 import {
   AGENT_CANVAS_CHANGE_EVENT,
   AGENT_SKILL_LOADED_EVENT,
@@ -17,7 +17,7 @@ import {
   type AgentToolCallView,
 } from '@shadecn/shared/agent'
 import { createId } from '@shadecn/shared/id'
-import type { RunnerEvent } from './protocol.ts'
+import type { RunnerEventBody } from './protocol.ts'
 import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/registry.ts'
 
 /**
@@ -27,9 +27,9 @@ import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/r
  * 不认识任何一种事件。将来换协议（或者 AG-UI 加字段）只改这里。
  *
  * 二期起 pi 跑在沙箱里的 runner 中（docs/22 §4），**映射仍在服务端这里做**；docs/22 §4.3 第 3 步起**喂进来的事件也是服务端产生的**：
- * 编排层（`session.ts` 的 `display`）按 pi 事件的同名同形（`protocol.ts` 的 `RunnerEventBody`）合成 —— 文字增量来自服务端自己调模型的流，
+ * 编排层（`session.ts` 的 `display`）按 pi 事件的同名同形（{@link ServerAgentEvent}）合成 —— 文字增量来自服务端自己调模型的流，
  * 回复定稿来自服务端的结果，工具的开始 / 结束来自服务端那条回复 + 网关的执行记录 / 服务端拼的子任务结果 / 服务端代算的拒绝。
- * runner 上报的事件不再拿来产生这里的任何内容（被攻破的 runner 不能让人看到、并且落库一段模型没说过的话）。这里的规则不变，只换了输入来源。
+ * runner 上报的事件不再拿来产生这里的任何内容（被攻破的 runner 不能让人看到、并且落库一段模型没说过的话）；第 7 版起线上也只剩工具的开始 / 结束。
  * 映射放在服务端，是因为 runner 随时可能被杀（中止 / 失权 / 超时）：收尾帧、落库的 assistant 消息
  * 都得由服务端补齐，映射状态必须在服务端。
  *
@@ -46,21 +46,31 @@ import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/r
  * - 思考内容（thinking）不外发：那是模型的草稿，不是给人看的回复。
  * - 画布改动通知（docs/20 §3.10.2）：CUSTOM `agent.canvas-change`，`value` 就是对话里存的那条
  *   `canvas-change` 消息。什么时候发由编排层定（跨轮差异紧跟用户消息回显；运行中的那种在它真正进入
- *   模型上下文时 —— pi 把 runner 交给它的那条消息放进上下文的那一刻），这里只管形状。
+ *   模型上下文时 —— 服务端把它插进父 agent 的 transcript、随下一次模型请求发出的那一刻），这里只管形状。
  * - 技能加载（docs/23 §3.6）：`load_skill` **不作为工具调用条目出现**（不发 TOOL_CALL_*，也不进 assistant 消息的
  *   `toolCalls`）；网关加载成功时发 CUSTOM `agent.skill-loaded`，`value` 就是对话里存的那条 `skill-loaded` 消息。
  * - 工具调用的 id：线上的 `toolCallId` / `toolCalls[].id` 在一条 assistant 消息（一个子任务条目）里唯一。上游复用调用 id
  *   （有的端点每次回复都从 `call_0` 起）时，后来的那条加后缀 `#2`、`#3`…；同一个原始 id 的 end 归到最近一次 start 的那一条。
  *   模型上下文、工具调用日志仍用原始 id（它们本来就按批对应）。
- * - 子任务（docs/20 §3.10.11）：父 agent 的 `delegate_task` 照常是一条工具调用；子 agent 的事件（runner 带着它的 agent id 上报）
+ * - 子任务（docs/20 §3.10.11）：父 agent 的 `delegate_task` 照常是一条工具调用；子 agent 的事件（编排层按它的 agent id 归过来的）
  *   **不进**这条 assistant 消息的文字和 `toolCalls`，而是改它 `subtasks` 里对应的那一项：派发时一帧 CUSTOM `agent.subtask`
  *   （完整条目），之后每次变化一帧 CUSTOM `agent.subtask-update`（**只带变了的**：新的 / 变了的那条工具调用、新的回复、结束时的状态）——
  *   完整条目带着最长 8000 字的任务说明和全部工具调用，逐帧重复会让补发量随调用数成倍增长。落库的 `subtasks` 是完整条目。
  *   子 agent 的文字增量不逐帧发：只在它的一条**有文字的**回复结束（message_end）时更新 `text` —— 所以 `text` 总是它最后一条有文字的回复
  *   （最后一步只调了工具、出错或被中止时也不会变成空），交回父 agent 的结果文字也取它（{@link RunEventMapper.subtaskReply}；
- *   喂进来的 message_end 是服务端调模型的定稿，不是 runner 报的）。
+ *   喂进来的 message_end 是服务端调模型的定稿，runner 不报）。
  *   它的 `load_skill` / `request_confirmation` 不列进它的工具调用（状态和问题已经在条目上了）。
  */
+
+/**
+ * 喂给映射器的事件：pi `AgentEvent` 里映射要读的那几种，同名同形、只留要读的字段 —— 编排层用服务端自己的东西合成
+ * （文字增量 / 回复定稿来自服务端调模型的流和定稿，工具的开始 / 结束来自服务端那条回复和执行记录）。
+ * 工具的开始 / 结束和 runner 上报的同一个形状（`protocol.ts` 的 `RunnerEventBody`）
+ */
+export type ServerAgentEvent =
+  | { type: 'message_update'; assistantMessageEvent: { type: 'text_delta'; delta: string } | { type: 'text_end' } }
+  | { type: 'message_end'; message: AgentMessage }
+  | RunnerEventBody
 
 /** 一轮怎么收的尾 */
 export type RunOutcome =
@@ -151,7 +161,7 @@ export interface RunEventMapper {
   /** RUN_STARTED + 回显用户消息 */
   start(userMessage: UserChatMessage): AgentStreamEvent[]
   /** 吃一个 pi 事件（编排层按同名同形合成的那份，docs/22 §4.3 第 3 步），吐出零到多个线上事件 */
-  handle(event: AgentEvent | RunnerEvent): AgentStreamEvent[]
+  handle(event: AgentEvent | ServerAgentEvent): AgentStreamEvent[]
   /** 一条画布改动通知（先关掉没关的文字段：通知插在两段文字之间） */
   canvasChange(message: AgentCanvasChangeMessage): AgentStreamEvent[]
   /** 一次技能加载（同上，先关文字段） */
@@ -162,7 +172,7 @@ export interface RunEventMapper {
    */
   subtaskStart(start: SubtaskStart): AgentStreamEvent[]
   /** 一个子 agent 的事件（同样是编排层合成的）→ 它那一项的变化帧（只带变了的；没变化就是空数组）；认不出的 id 忽略 */
-  subtaskEvent(agentId: string, event: AgentEvent | RunnerEvent): AgentStreamEvent[]
+  subtaskEvent(agentId: string, event: AgentEvent | ServerAgentEvent): AgentStreamEvent[]
   /** 一个子任务结束了 */
   subtaskFinish(agentId: string, end: SubtaskEnd): AgentStreamEvent[]
   /** 这一轮的某个子任务条目（只读用）；没有为 undefined */

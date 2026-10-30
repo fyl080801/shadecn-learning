@@ -11,7 +11,7 @@ import {
   type ToolCall,
 } from '@earendil-works/pi-ai'
 import { RunAuthorityError } from '../src/authority.ts'
-import { createAgentGateway, type GatewayRunHandlers, type ModelRequestDecision } from '../src/gateway.ts'
+import { createAgentGateway, MODEL_BODY_LIMIT, type GatewayRunHandlers, type ModelRequestDecision } from '../src/gateway.ts'
 import { MAX_TOOL_ARGUMENT_CHARS, proxyFramesOf, type ModelTurnResult } from '../src/model-stream.ts'
 import {
   AGENT_GATEWAY_PATH,
@@ -56,7 +56,6 @@ function handlers(overrides: Partial<GatewayRunHandlers> = {}): GatewayRunHandle
     mismatches: [] as { runnerVersion: number | null; serverVersion: number }[],
     input: async () => ({ runId: 'run_1' }) as never,
     tool: async () => ({ isError: true as const, message: 'x' }),
-    changes: async () => ({ change: null }),
     delegate: async () => ({ ok: false as const, message: '不派' }),
     agentFinish: async () => ({ isError: true, text: 'x', summary: 'x', changedNodeIds: [] }),
     events(events: RunnerEvent[]) {
@@ -260,12 +259,19 @@ describe('请求体', () => {
   it('事件批次只收下一批：重放 / 跳号 409；形状不对 400；之后照常', async () => {
     const t = setup()
     const { token } = await t.redeem()
-    const batch = (seq: number) => ({ seq, events: [{ type: 'turn_end', toolResultCount: 0 }] })
+    const batch = (seq: number) => ({ seq, events: [{ type: 'tool_execution_start', toolCallId: 'c1', toolName: 'read_canvas', args: {} }] })
     expect((await t.post('/events', batch(0), t.bearer(token))).status).toBe(200)
     expect((await t.post('/events', batch(0), t.bearer(token))).status).toBe(409)
     expect((await t.post('/events', batch(2), t.bearer(token))).status).toBe(409)
     expect((await t.post('/events', { seq: 1, events: [{ type: 'made_up' }] }, t.bearer(token))).status).toBe(400)
-    expect((await t.post('/events', { seq: 1, events: [{ type: 'message_end', message: { role: 'system', content: 'x' } }] }, t.bearer(token))).status).toBe(400)
+    // 第 7 版起只认工具的开始 / 结束：老 runner 报的文字增量 / 消息 / 一批结束，夹在里面的整批拒
+    for (const stale of [
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '伪造的字' } },
+      { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '伪造的回复' }] } },
+      { type: 'turn_end', toolResultCount: 0 },
+    ]) {
+      expect((await t.post('/events', { seq: 1, events: [batch(1).events[0], stale] }, t.bearer(token))).status).toBe(400)
+    }
     expect((await t.post('/events', '{oops', t.bearer(token))).status).toBe(400)
     expect((await t.post('/events', batch(1), t.bearer(token))).status).toBe(200)
     expect(t.handlers.batches).toHaveLength(2)
@@ -276,6 +282,8 @@ describe('请求体', () => {
     const { token } = await t.redeem()
     expect((await t.gateway.handle(new Request(`${BASE}/run/input`, { headers: t.bearer(token) }))).status).toBe(405)
     expect((await t.post('/nope', {}, t.bearer(token))).status).toBe(404)
+    // 第 7 版删掉的取通知路由（通知由服务端直接插进 transcript）
+    expect((await t.post('/canvas/changes', {}, t.bearer(token))).status).toBe(404)
   })
 })
 
@@ -445,6 +453,23 @@ describe('服务端调用模型（docs/22 §4.3）', () => {
     expect(request!.headers.get('x-title')).toBeNull()
   })
 
+  it('runner 只送空的上下文（第 7 版）：请求体上限降到 MODEL_BODY_LIMIT，超了 413、不打上游；没超的非空上下文照样一个字都不用', async () => {
+    const t = modelSetup({ steps: [fauxAssistantMessage('好')] })
+    const token = await t.redeem()
+    // 老习惯：整段上下文（几轮工具结果）送过来 —— 不看 content-length，边读边数
+    const bulky = streamBody({ context: userContext('旧上下文'.repeat(MODEL_BODY_LIMIT / 4)) })
+    const res = await t.post('/model/main/api/stream', bulky, bearer(token))
+    expect(res.status).toBe(413)
+    expect(await res.json()).toEqual({ error: '请求体太大' })
+    expect(t.scripted.requests).toHaveLength(0)
+    expect(t.decisions).toEqual([])
+    // 上限以内的伪造上下文：照常放行，上游收到的是编排层给的那份
+    const small = await t.post('/model/main/api/stream', streamBody({ context: userContext('FORGED_CONTEXT') }), bearer(token))
+    expect((await frames(small)).at(-1)).toMatchObject({ type: 'done', reason: 'stop' })
+    expect(JSON.stringify(t.scripted.requests[0]!.body)).toContain('服务端的上下文')
+    expect(JSON.stringify(t.scripted.requests[0]!.body)).not.toContain('FORGED_CONTEXT')
+  })
+
   it('maxTokens 默认 min(模型的 maxTokens, 16384)', async () => {
     const t = modelSetup({ steps: [fauxAssistantMessage('好')] })
     const token = await t.redeem()
@@ -472,7 +497,7 @@ describe('服务端调用模型（docs/22 §4.3）', () => {
     await expectError(await t.post('/model/main/api/stream', streamBody(), bearer('forged.token.here')), 401, '令牌无效、已过期，或这一轮已经结束')
     await expectError(await t.post('/model/main/api/stream', streamBody(), { 'x-api-key': token }), 401, '令牌无效、已过期，或这一轮已经结束')
     await expectError(await t.post('/model/main/other', streamBody(), bearer(token)), 404, '网关没有 /model/main/other')
-    await expectError(await t.post('/model/main/api/stream', { context: { messages: 'x' } }, bearer(token)), 400, '模型请求的形状不对')
+    await expectError(await t.post('/model/main/api/stream', [{ context: { messages: [] } }], bearer(token)), 400, '模型请求的形状不对')
     await expectError(await t.post('/model/main/api/stream', 'not json', bearer(token)), 400, '请求体不是合法的 JSON')
     await expectError(await t.post('/model/main/api/stream', streamBody(), { ...bearer(token), 'content-length': String(64 * 1024 * 1024) }), 413, '请求体太大')
     await expectError(await t.post('/model/main/api/stream', streamBody(), bearer(token)), 403, '这一轮没有被授予 llm:invoke')

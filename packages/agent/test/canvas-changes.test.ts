@@ -38,7 +38,7 @@ import { gatewayFetch, registerScriptedModel, type ScriptedModel, type ScriptedS
  * 别人对画布的改动按 origin 归属、按内容过滤、合并成摘要，在一批工具调用之后 steer 进模型上下文；
  * 模型写最终回复期间到的改动不多开一轮，留给下一轮的跨轮差异；对话里留一条 canvas-change。
  * 二期起推理在 runner 里；docs/22 §4.3 第 2 步起通知由服务端在父 agent 的下一次模型请求时插进它的 transcript
- * （`/canvas/changes` 恒回 null，runner 照常来取），这里跑的是完整的 runner + 网关路径。
+ * （第 7 版协议起 runner 根本不经手通知，没有取通知的路由），这里跑的是完整的 runner + 网关路径。
  */
 
 let faux: ScriptedModel | null = null
@@ -324,7 +324,7 @@ describe('运行中：别人的改动 steer 进模型上下文', () => {
     expect(JSON.stringify(row.llmMessages)).toContain('画布改动通知')
   })
 
-  it('通知由服务端在父 agent 的下一次请求时插（docs/22 §4.3 第 2 步）：runner 不取 /canvas/changes（被攻破、想扣下通知）也照样进模型上下文', async () => {
+  it('通知由服务端在父 agent 的下一次请求时插（docs/22 §4.3）：runner 不经手通知（不取、也没有取通知的路由），通知照样进模型上下文', async () => {
     const doc = new Y.Doc()
     addNode(doc, 'n1', '大纲', 'seed')
     const seen: string[][] = []
@@ -338,50 +338,48 @@ describe('运行中：别人的改动 steer 进模型上下文', () => {
         return fauxAssistantMessage('看到了')
       },
     ])
-    let pulled = 0
+    const routes: string[] = []
     vi.stubGlobal(
       'fetch',
       gatewayFetch(async (request) => {
-        // 这个 runner 从不把取通知的请求发到网关
-        if (new URL(request.url).pathname.endsWith('/canvas/changes')) {
-          pulled += 1
-          return new Response(JSON.stringify({ change: null }), { headers: { 'content-type': 'application/json' } })
-        }
+        routes.push(new URL(request.url).pathname.replace(/^.*agent-gateway/, ''))
         return runtime.gateway.handle(request)
       }),
     )
     const { events } = await run(runtime, doc, '整理一下')
-    expect(pulled).toBe(1)
+    expect(routes.some((route) => route.includes('changes'))).toBe(false)
     expect(seen[0]!.at(-1)!.startsWith(CANVAS_CHANGE_HEADER)).toBe(true)
     expect(seen[0]!.at(-1)).toContain('爱丽丝写的新正文')
     expect(changeEvents(events)).toHaveLength(1)
   })
 
-  it('取改动的时机：每批调过工具之后、下一次请求模型之前取一次（那一批的 turn_end 已经报上去），最终回复之后不取（取失败的收尾见 session.test）', async () => {
+  it('上报的时机：每次模型请求之前，上一批工具的开始 / 结束都已经报上去（服务端在这次请求时补齐上一批的结果）；最终回复之后不再报', async () => {
     const doc = new Y.Doc()
     addNode(doc, 'n1', '大纲', 'seed')
     const runtime = runtimeWith([
       fauxAssistantMessage([fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' }),
-      fauxAssistantMessage([fauxToolCall('get_node', { nodeId: 'n1' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([fauxToolCall('get_node', { id: 'n1' })], { stopReason: 'toolUse' }),
       fauxAssistantMessage('好了'),
     ])
-    /** runner 打网关的顺序：取改动记 changes，上报事件记里面的 turn_end 个数 */
+    /** runner 打网关的顺序：模型请求记 model，画布工具记 tool，上报记 events:<事件类型…> */
     const trail: string[] = []
     vi.stubGlobal(
       'fetch',
       gatewayFetch(async (request) => {
         const path = new URL(request.url).pathname
-        if (path.endsWith('/canvas/changes')) trail.push('changes')
+        if (path.includes('/model/')) trail.push('model')
+        if (path.endsWith('/canvas/tool')) trail.push('tool')
         if (path.endsWith('/events')) {
           const body = (await request.clone().json()) as { events: { type: string }[] }
-          for (const event of body.events) if (event.type === 'turn_end') trail.push('turn_end')
+          trail.push(`events:${body.events.map((event) => event.type).join(',')}`)
         }
         return runtime.gateway.handle(request)
       }),
     )
     const { events } = await run(runtime, doc, '看看')
     expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
-    expect(trail).toEqual(['turn_end', 'changes', 'turn_end', 'changes', 'turn_end'])
+    const batch = ['events:tool_execution_start', 'tool', 'events:tool_execution_end']
+    expect(trail).toEqual(['model', ...batch, 'model', ...batch, 'model'])
     expect(faux!.state.callCount).toBe(3)
   })
 

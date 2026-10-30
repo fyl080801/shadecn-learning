@@ -163,10 +163,13 @@ export const LOAD_SKILL_TOOL_NAME = 'load_skill'
 /** 子 agent 的平台工具「需要确认」（`skills/delegate/`）：不属于任何技能，技能里的工具不能叫这个名字 */
 export const REQUEST_CONFIRMATION_TOOL_NAME = 'request_confirmation'
 
-/** 同一批里还有别的工具调用时，runner 拦下 load_skill 回给模型的原因 */
-/** 工具调用次数到顶时给模型的话（runner 的 `beforeToolCall` 拦下时用，服务端代算 runner 侧的拒绝时用同一句，docs/22 §4.3） */
+/**
+ * 工具调用次数到顶时给模型的话：网关拒绝它执行的调用（含 `delegate_task`）、runner 在执行前拦下它自己执行的命令时用同一句
+ * （docs/22 §4.3 第 4 步；原来是 pi 的 `beforeToolCall` 给的，模型看到的一字不变）
+ */
 export const toolCallLimitReason = (max: number) => `本轮工具调用已达上限 ${max} 次，请停止并向用户说明进度`
 
+/** 同一批里还有别的工具调用时，网关拒绝 load_skill 回给模型的原因（原来是 runner 拦下时给的，一字不变） */
 export const LOAD_SKILL_ALONE_REASON = 'load_skill 必须单独调用：这一批里还有别的工具调用，已拦下这次加载。请先让别的工具做完，再单独调用 load_skill'
 
 const loadSkillParams = Type.Object(
@@ -176,8 +179,8 @@ const loadSkillParams = Type.Object(
 
 /**
  * `load_skill` 的定义。服务端传 `load`（判提供集合 / 是否已加载 / 每轮上限，见 `session.ts`）；
- * runner 不传，只拿定义包成网关代理。成功加载时结果带 `details.loadedSkill`（和给老镜像的 `terminate: true`）：
- * runner 的代理剥掉 `terminate`，在 pi 的 `prepareNextTurnWithContext` 里把新技能的工具并进下一次请求（docs/23 §3.3）。
+ * runner 不传，只拿定义包成网关代理。成功加载时结果带 `details.loadedSkill`：
+ * runner 在 pi 的 `prepareNextTurnWithContext` 里把新技能的工具并进下一次请求（docs/23 §3.3）。必须单独调用由网关判（`session.ts` 的 `executeBound`）。
  */
 export function createLoadSkillTool(
   load?: (id: string) => Promise<AgentToolResult<CanvasToolDetails>>,

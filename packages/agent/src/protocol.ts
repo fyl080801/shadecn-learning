@@ -1,5 +1,5 @@
-import type { AgentEvent, AgentMessage, AgentToolResult } from '@earendil-works/pi-agent-core'
-import type { Api, Message, Model } from '@earendil-works/pi-ai'
+import type { AgentEvent, AgentToolResult } from '@earendil-works/pi-agent-core'
+import type { Api, Model } from '@earendil-works/pi-ai'
 import { withoutImages } from './media.ts'
 import type { AgentSkillId } from './skills/registry.ts'
 import type { CanvasToolDetails } from './tools.ts'
@@ -13,21 +13,21 @@ import type { CanvasToolDetails } from './tools.ts'
  *   没有任何长期密钥。跑 pi 的 Agent 循环；画布工具只是 RPC 代理（schema / 描述 / 能力来自同一份 `tools.ts`），
  *   模型请求经 pi 的 `streamProxy` 交给网关（服务端带真实 key 去调上游，拿回事件流）；ffmpeg / ffprobe 在自己的工作目录里跑。
  * - **网关**（`gateway.ts`，宿主挂在 {@link AGENT_GATEWAY_PATH}）：换发令牌、服务端调用模型（真实 key 只在这里）、
- *   画布工具执行（服务端的 `tools.ts` + 宿主的 direct connection）、事件上报、改动通知。
+ *   画布工具执行（服务端的 `tools.ts` + 宿主的 direct connection）、事件上报。别人改动的通知不经协议：服务端在父 agent 的下一次
+ *   模型请求时直接插进它的 transcript（docs/22 §4.3）。
  *   **每次调用都按这一轮的 `authorize(capability)` 实时判权，不信令牌里的 scope**（docs/22 §2 第 4 条）。
  *
  * ## 一轮的调用顺序（全部 `POST`，JSON，除了换令牌都带 `Authorization: Bearer <run 短令牌>`）
  *
  * 1. `/sts/token` `{ grantType: 'bootstrap', bootstrapToken }` → run 短令牌（bootstrap token 兑换一次即废）；
- * 2. `/run/input` → {@link RunnerInput}：系统提示、这一轮的提示词（跨轮差异 + 展开提及之后的用户消息）、
- *    模型上下文、这一轮提供 / 一开始就加载的技能（runner 按同一份注册表展开成工具）、模型描述（不含地址和 key）；
- * 3. 跑 pi：模型请求走 `/model/<agentId>/api/stream`（pi 的 `streamProxy`：服务端用自己解析的模型、参数和 key 调上游，
- *    以 SSE 下发 `ProxyAssistantMessageEvent`，docs/22 §4.3）；画布工具走 `/canvas/tool`；
- *    pi 的事件裁成 {@link RunnerEvent} 分批 `/events` 上报（docs/22 §4.3 第 3 步起服务端不再拿它产生界面内容：前端看到的 AG-UI 事件
- *    由服务端从自己的模型流、执行记录、transcript 合成后经 `events.ts` 映射 —— 映射只在服务端；上报只剩时机、runner 执行的工具的结果和日志）；
- *    **一批工具调用结束时**（`turn_end` 先把事件冲完；循环要接着请求模型时，pi 的 `prepareNextTurnWithContext` 里）
- *    `/canvas/changes` 取别人的改动通知（docs/22 §4.3 第 2 步起恒回 null：通知由服务端在父 agent 的下一次模型请求时插进它的 transcript；
- *    runner 照常来取，第 4 步删掉这条路由）；
+ * 2. `/run/input` → {@link RunnerInput}：这一轮提供 / 一开始就加载的技能（runner 按同一份注册表展开成工具）、
+ *    模型描述（不含地址和 key）、runner 执行的工具的调用上限、要写进工作目录的文件。**没有**系统提示、提示词和之前几轮的上下文：
+ *    模型请求的上下文只用服务端的 transcript（docs/22 §4.3），runner 用不着它们；
+ * 3. 跑 pi：模型请求走 `/model/<agentId>/api/stream`（pi 的 `streamProxy`：**只送空的上下文**，服务端用自己的 transcript、
+ *    自己解析的模型、参数和 key 调上游，以 SSE 下发 `ProxyAssistantMessageEvent`，docs/22 §4.3）；画布工具走 `/canvas/tool`；
+ *    工具的开始 / 结束裁成 {@link RunnerEvent} 分批 `/events` 上报 —— 只剩服务端看不见的那部分：runner 执行的 / pi 就地拦下的调用
+ *    什么时候走到、runner 执行的工具的结果（前端看到的 AG-UI 事件由服务端从自己的模型流、执行记录、transcript 合成，映射只在 `events.ts`）。
+ *    每次画布工具调用、每次模型请求之前先把攒着的事件冲完（服务端在下一次请求时补齐上一批的结果，要先看到它们）；
  * 4. 事件冲完后 `/run/finish`，然后进程退出。
  *
  * ## 子 agent（docs/20 §3.10.11）
@@ -57,7 +57,7 @@ import type { CanvasToolDetails } from './tools.ts'
  * 回 {@link PROTOCOL_MISMATCH_STATUS} + {@link ProtocolMismatchBody}（和 401 能区分），编排层以 `runner_protocol_mismatch` 收尾。
  * `process` 驱动直接跑源码，永远一致。
  */
-export const RUNNER_PROTOCOL_VERSION = 6
+export const RUNNER_PROTOCOL_VERSION = 7
 
 /** 版本不一致时网关的 HTTP 状态码与 `error` 字段（不要和 401 混：令牌失效是另一回事） */
 export const PROTOCOL_MISMATCH_STATUS = 409
@@ -74,7 +74,6 @@ export const GATEWAY_ROUTES = {
   token: '/sts/token',
   input: '/run/input',
   tool: '/canvas/tool',
-  changes: '/canvas/changes',
   events: '/events',
   finish: '/run/finish',
   /** 父 agent 派一个子 agent（docs/20 §3.10.11）：登记、判上限、转交占用，回子 agent 的输入 */
@@ -169,13 +168,12 @@ export interface StsTokenResponse {
  */
 export type RunnerModel = Omit<Model<Api>, 'baseUrl' | 'headers'>
 
+/**
+ * runner 这一轮要的东西。系统提示、提示词、之前几轮的上下文**不给**（第 7 版起）：模型请求的上下文是服务端的 transcript，
+ * runner 只送空的上下文（docs/22 §4.3），它们在 runner 里没有用处，也就不必进沙箱
+ */
 export interface RunnerInput {
   runId: string
-  systemPrompt: string
-  /** 这一轮交给模型的那条用户消息（跨轮差异在前、展开提及之后的用户原文在后） */
-  prompt: string
-  /** 之前几轮的模型上下文（pi 的 messages） */
-  llmMessages: AgentMessage[]
   /**
    * 这一轮的技能（docs/23 §3.2）：`offered` = 提供的（Grant 与部署条件都满足），`loaded` = 一开始就加载的（⊆ offered）。
    * runner 按注册表把 `loaded` 展开成工具（外加平台工具 `load_skill`）；之后模型 `load_skill` 成功时，
@@ -184,7 +182,10 @@ export interface RunnerInput {
   skills: { loaded: AgentSkillId[]; offered: AgentSkillId[] }
   model: RunnerModel
   limits: {
-    /** 一轮里最多几次工具调用；网关另外按同一个数硬拦画布工具 */
+    /**
+     * 一轮里最多几次工具调用。网关执行的工具（含 `delegate_task`）由网关按全轮计数判（runner 不拦）；
+     * runner 执行的工具（`run_media_command`）不经网关，只能由 runner 在执行前拦下 —— 这个数就是给它的（服务端另把它们计进同一个数）
+     */
     maxToolCalls: number
   }
   /** 写进工作目录的文件（相对路径 → 内容）：提供的技能的初始化钩子给的（如 `media-exec` 的 `canvas.json`） */
@@ -212,38 +213,21 @@ export type ToolCallResponse =
   | {
       isError: false
       content: AgentToolResult<CanvasToolDetails>['content']
+      /** `load_skill` 成功加载时 `loadedSkill` 是新技能：runner 在 pi 的 `prepareNextTurnWithContext` 里把它的工具并进下一次请求（docs/23 §3.3） */
       details: CanvasToolDetails
-      /**
-       * 提前结束这一批（pi 的 `terminate`）：只有 `load_skill` 成功加载时为 true（`details.loadedSkill` 是新技能）。
-       * 服务端照旧带上（老镜像靠它结束这一批、并入新工具后 `continue()`）；现在的 runner 对 `load_skill` 剥掉它，
-       * 在 pi 的 `prepareNextTurnWithContext` 里把新工具并进下一次请求（docs/23 §3.3）
-       */
-      terminate?: boolean
     }
-  /** 工具报错 / 参数不对 / 判权没过 / 超过上限：`message` 原样回给模型 */
+  /** 工具报错 / 参数不对 / 判权没过 / 超过上限 / `load_skill` 没单独调用：`message` 原样回给模型 */
   | { isError: true; message: string }
-
-// —— 别人的改动（下行） ——
-
-/**
- * `/canvas/changes` 的回复。docs/22 §4.3 第 2 步起**恒为 `{ change: null }`**（通知改由服务端插进 transcript）；下面是这条路由原来的约定，
- * 留给第 4 步删除之前的 runner：服务端先把合并窗口里攒着的冲掉，排着的通知并成一条（docs/20 §3.10.2）。
- * runner 拿 `text` 作为一条用户消息交给 pi（`prepareNextTurnWithContext` 返回的 `messages`）；pi 把它放进上下文时，上报的 `message_end` 带上 `steerId = id`，
- * 服务端那时才发 `agent.canvas-change`、记进对话。没交出去的那些留给跨轮差异。
- */
-export interface CanvasChangesResponse {
-  change: { id: string; text: string } | null
-}
 
 // —— 事件（上行） ——
 
 /**
- * pi 事件裁剪后的上报形状 —— **只有 `events.ts` 与编排层要读的字段**（同名同形）。docs/22 §4.3 第 3 步起喂给 `events.ts` 的是
- * 编排层按这个形状**自己合成**的（{@link RunnerEventBody}）；runner 上报的只用作时机（runner 执行的 / 它就地拦下的调用走到了）、
- * runner 执行的工具的结果、工具调用日志，不再产生界面内容。
- * 最占地方的 `message_update.message`（每个 token 一份完整的半成品消息）不上报；思考内容、工具调用的增量也不报。
- * **图片块不上报**：`message_end` 的消息和 `tool_execution_end` 的结果里的图片换成文字占位（{@link slimMessage}）——
- * 补发缓冲与前端的工具结果里因此没有图片字节（落库的模型上下文取服务端 transcript，落库前同样换成占位）。
+ * pi 事件裁剪后的上报形状 —— 第 7 版起**只剩工具的开始 / 结束**：服务端看不见的那部分（docs/22 §4.3 第 4 步）。
+ * 用途只有三样：runner 执行的 / pi 就地拦下的调用什么时候走到（界面上的时机，内容仍取服务端那条回复）、
+ * runner 执行的工具的结果（transcript 里唯一取 runner 上报的）、工具调用日志。
+ * 文字增量、回复定稿、一批结束（`message_update` / `message_end` / `turn_end`）不上报：界面与模型上下文都由服务端从自己的模型流、
+ * 执行记录产生，上报了也不用 —— 解析器拒收含它们的整批。
+ * **图片块不上报**：`tool_execution_end` 的结果里的图片换成文字占位（`media.ts` 的 `withoutImages`），runner 换一次、服务端解析时再换一次。
  * 这只是裁剪，不是映射：pi → AG-UI 的映射**只在服务端的 `events.ts`**。
  */
 export type RunnerEvent = RunnerEventBody & {
@@ -252,12 +236,6 @@ export type RunnerEvent = RunnerEventBody & {
 }
 
 export type RunnerEventBody =
-  | { type: 'message_update'; assistantMessageEvent: { type: 'text_delta'; delta: string } | { type: 'text_end' } }
-  /**
-   * pi 往上下文里追加的每一条消息（用户提示、assistant 回复、工具结果）。docs/22 §4.3 第 3 步起服务端不再拿它产生界面内容
-   * （回复定稿取服务端调模型的结果），也不进模型上下文（服务端的 transcript）；只剩父 agent 循环自己出错时的原因进服务端日志。第 4 步起父 agent 不再上报
-   */
-  | { type: 'message_end'; message: AgentMessage; steerId?: string }
   | { type: 'tool_execution_start'; toolCallId: string; toolName: string; args: unknown }
   | {
       type: 'tool_execution_end'
@@ -266,8 +244,6 @@ export type RunnerEventBody =
       result: { content: unknown[]; details?: unknown }
       isError: boolean
     }
-  /** 一批（一次模型回复 + 它的工具调用）结束；服务端不再用它（步数由网关按模型请求数、界面由服务端产生，docs/22 §4.3） */
-  | { type: 'turn_end'; toolResultCount: number }
 
 // —— 子 agent（docs/20 §3.10.11） ——
 
@@ -280,34 +256,28 @@ export interface DelegateRequest {
   nodeIds: string[]
 }
 
-/** 子 agent 的输入（服务端定好）：runner 拿它在同一个进程里再建一个 pi `Agent` */
+/**
+ * 子 agent 的输入（服务端定好）：runner 拿它在同一个进程里再建一个 pi `Agent`。它的系统提示、任务说明在服务端它自己的 transcript 里，
+ * 不给 runner（同 {@link RunnerInput}）
+ */
 export interface SubagentInput {
   agentId: string
-  systemPrompt: string
-  /** 它的第一条用户消息（任务说明 + 展开了提及的节点） */
-  prompt: string
   /** 一开始就加载的技能（runner 按注册表展开成工具，外加 `load_skill`）；不含 `delegate`（只有一层） */
   skills: { loaded: AgentSkillId[] }
   limits: {
-    /** 它自己的步数上限（每个 agent 各算，同单轮上限）；到了 runner 就停下它 */
+    /** 它自己的步数上限（每个 agent 各算，同单轮上限）；到了 runner 就停下它（服务端另按模型请求数硬拦，不靠这个） */
     maxTurns: number
   }
 }
 
 export type DelegateResponse = { ok: true; agent: SubagentInput } | { ok: false; message: string }
 
-/** 子 agent 怎么结束的（runner 报的；服务端可能改判，比如步数用完的一律算失败） */
-export type SubagentStatus = 'done' | 'failed' | 'needs_confirmation'
-
+/**
+ * `/agent/finish` 的请求：只说「这个子 agent 的循环结束了」。它怎么结束的（完成 / 失败 / 需要确认）、问题、回复文字
+ * 全由服务端按它的 transcript 判（docs/22 §4.3 第 3 步），runner 不报
+ */
 export interface SubagentFinishRequest {
   agentId: string
-  status: SubagentStatus
-  /** 它最后的回复 */
-  text: string
-  /** 需要确认时它要问的问题 */
-  question: string | null
-  /** 失败时的原因 */
-  error: string | null
 }
 
 /** `/agent/finish` 的回复：交给父 agent 的 `delegate_task` 结果（服务端拼的，限长） */
@@ -348,7 +318,7 @@ export interface GatewayErrorBody {
 // —— 服务端调用模型（docs/22 §4.3） ——
 
 /**
- * 模型请求开流之前的拒绝：`{ error: <原因> }` + 状态码（401 / 403 / 404 / 409 / 413 / 503）。
+ * 模型请求开流之前的拒绝：`{ error: <原因> }` + 状态码（400 / 401 / 403 / 404 / 409 / 413 / 503）。
  * `streamProxy` 只认 `error` 是**字符串**（拼成 `Proxy error: …`）；开流之后的失败一律是 SSE 里的 `error` 帧
  */
 export interface ModelStreamErrorBody {
@@ -356,41 +326,10 @@ export interface ModelStreamErrorBody {
 }
 
 /**
- * `streamProxy` 的请求体 `{ model, context, options }` 里服务端**唯一**还看的部分：`context.messages`
- * （第 2 步起这一部分也只校验形状与大小、内容不用 —— 上下文是服务端维护的 transcript；`model` / `options` 一个字段都不用 —— 模型、参数、请求头由服务端定）
+ * pi 事件 → 上报形状；`null` = 不上报（只报工具的开始 / 结束，见 {@link RunnerEvent}）。
  */
-export interface ModelStreamRequest {
-  messages: Message[]
-}
-
-/**
- * 消息里的图片块换成文字占位（返回新对象，**不改原消息** —— runner 里 pi 的上下文还要用带图的那份）。
- * runner 上报前换一次（不然一张图就能撑爆事件的请求体上限），服务端解析时再换一次（runner 不可信，不让它往库里塞 base64）。
- */
-export function slimMessage<T extends AgentMessage>(message: T): T {
-  const content = (message as { content?: unknown }).content
-  if (!Array.isArray(content)) return message
-  const slim = withoutImages(content)
-  return slim === content ? message : ({ ...message, content: slim } as T)
-}
-
-/**
- * pi 事件 → 上报形状；`null` = 不上报。`steerIdOf` 认出「这条用户消息是我 steer 进去的那条」（按对象身份，所以先认再裁）。
- */
-export function runnerEventOf(event: AgentEvent, steerIdOf: (message: AgentMessage) => string | undefined): RunnerEvent | null {
+export function runnerEventOf(event: AgentEvent): RunnerEvent | null {
   switch (event.type) {
-    case 'message_update': {
-      const inner = event.assistantMessageEvent
-      if (inner.type === 'text_delta') return { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: inner.delta } }
-      if (inner.type === 'text_end') return { type: 'message_update', assistantMessageEvent: { type: 'text_end' } }
-      return null
-    }
-    case 'message_end': {
-      // pi 1.x 的 system 消息（开头的系统提示、load_skill 之后的 `toolsAdded`）是给模型的，不上报；服务端也不收 system 角色
-      if (event.message.role === 'system') return null
-      const steerId = event.message.role === 'user' ? steerIdOf(event.message) : undefined
-      return { type: 'message_end', message: slimMessage(event.message), ...(steerId ? { steerId } : {}) }
-    }
     case 'tool_execution_start':
       return { type: 'tool_execution_start', toolCallId: event.toolCallId, toolName: event.toolName, args: event.args }
     case 'tool_execution_end': {
@@ -403,8 +342,6 @@ export function runnerEventOf(event: AgentEvent, steerIdOf: (message: AgentMessa
         isError: event.isError,
       }
     }
-    case 'turn_end':
-      return { type: 'turn_end', toolResultCount: event.toolResults.length }
     default:
       return null
   }
@@ -416,12 +353,9 @@ export function runnerEventOf(event: AgentEvent, steerIdOf: (message: AgentMessa
 export const EVENTS_PER_BATCH = 500
 const ID_MAX = 256
 const NAME_MAX = 64
-const DELTA_MAX = 100_000
-/** 子任务说明 / 子 agent 回复 / 问题的上限（服务端回给父 agent 时另外再截到更短） */
+/** 子任务说明的上限（服务端回给父 agent 时另外再截到更短） */
 export const DELEGATE_BRIEF_MAX = 8000
 export const DELEGATE_NODE_IDS_MAX = 20
-const SUBAGENT_TEXT_MAX = 100_000
-const SUBAGENT_NOTE_MAX = 4000
 /** 节点 id 的格式（同提及 `@{node:<id>}` 认的字符集） */
 const NODE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
@@ -429,13 +363,6 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 const shortString = (value: unknown, max: number): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= max
-
-function isMessage(value: unknown): value is AgentMessage {
-  if (!isObject(value)) return false
-  const { role } = value
-  if (role !== 'user' && role !== 'assistant' && role !== 'toolResult') return false
-  return typeof value.content === 'string' || Array.isArray(value.content)
-}
 
 function parseEvent(raw: unknown): RunnerEvent | null {
   if (!isObject(raw)) return null
@@ -445,26 +372,9 @@ function parseEvent(raw: unknown): RunnerEvent | null {
   return raw.agentId === undefined ? body : { ...body, agentId: raw.agentId as string }
 }
 
+/** 只认工具的开始 / 结束；别的类型（含第 6 版的 `message_update` / `message_end` / `turn_end`）一律不认 → 整批拒 */
 function parseEventBody(raw: Record<string, unknown>): RunnerEventBody | null {
   switch (raw.type) {
-    case 'message_update': {
-      const inner = raw.assistantMessageEvent
-      if (!isObject(inner)) return null
-      if (inner.type === 'text_delta' && typeof inner.delta === 'string' && inner.delta.length <= DELTA_MAX) {
-        return { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: inner.delta } }
-      }
-      if (inner.type === 'text_end') return { type: 'message_update', assistantMessageEvent: { type: 'text_end' } }
-      return null
-    }
-    case 'message_end': {
-      if (!isMessage(raw.message)) return null
-      if (raw.steerId !== undefined && !shortString(raw.steerId, ID_MAX)) return null
-      return {
-        type: 'message_end',
-        message: slimMessage(raw.message),
-        ...(raw.steerId ? { steerId: raw.steerId as string } : {}),
-      }
-    }
     case 'tool_execution_start':
       if (!shortString(raw.toolCallId, ID_MAX) || !shortString(raw.toolName, NAME_MAX)) return null
       return { type: 'tool_execution_start', toolCallId: raw.toolCallId, toolName: raw.toolName, args: raw.args }
@@ -479,9 +389,6 @@ function parseEventBody(raw: Record<string, unknown>): RunnerEventBody | null {
         isError: raw.isError,
       }
     }
-    case 'turn_end':
-      if (!Number.isInteger(raw.toolResultCount) || (raw.toolResultCount as number) < 0) return null
-      return { type: 'turn_end', toolResultCount: raw.toolResultCount as number }
     default:
       return null
   }
@@ -522,18 +429,10 @@ export function parseDelegateRequest(body: unknown): DelegateRequest | null {
   return { agentId: body.agentId, toolCallId: body.toolCallId, brief: body.brief.trim(), nodeIds: [...new Set(raw as string[])] }
 }
 
-const nullableNote = (value: unknown): string | null | undefined =>
-  value === null || value === undefined ? null : typeof value === 'string' ? value.slice(0, SUBAGENT_NOTE_MAX) : undefined
-
-/** `/agent/finish` 的请求体 */
+/** `/agent/finish` 的请求体：只取 `agentId`（别的字段一概不看） */
 export function parseSubagentFinishRequest(body: unknown): SubagentFinishRequest | null {
   if (!isObject(body) || !shortString(body.agentId, ID_MAX)) return null
-  if (body.status !== 'done' && body.status !== 'failed' && body.status !== 'needs_confirmation') return null
-  if (typeof body.text !== 'string') return null
-  const question = nullableNote(body.question)
-  const error = nullableNote(body.error)
-  if (question === undefined || error === undefined) return null
-  return { agentId: body.agentId, status: body.status, text: body.text.slice(0, SUBAGENT_TEXT_MAX), question, error }
+  return { agentId: body.agentId }
 }
 
 /** `/run/finish` 的请求体 */
@@ -559,18 +458,10 @@ export function parseStsTokenRequest(body: unknown): StsTokenRequest | null {
   return null
 }
 
-/** 模型请求的上下文里认的角色：pi 的 transcript 带 `system`（开头的系统提示 + 工具表、`toolsAdded`） */
-function isTranscriptMessage(value: unknown): value is Message {
-  if (!isObject(value)) return false
-  const { role } = value
-  if (role !== 'system' && role !== 'user' && role !== 'assistant' && role !== 'toolResult') return false
-  return typeof value.content === 'string' || Array.isArray(value.content)
-}
-
-/** 模型请求（`streamProxy` 的请求体）：只取 `context.messages`，形状不对返回 null */
-export function parseModelStreamRequest(body: unknown): ModelStreamRequest | null {
-  if (!isObject(body) || !isObject(body.context) || !Array.isArray(body.context.messages)) return null
-  const messages = body.context.messages as unknown[]
-  if (!messages.every(isTranscriptMessage)) return null
-  return { messages: messages as Message[] }
+/**
+ * 模型请求（`streamProxy` 的请求体 `{ model, context, options }`）：**只校验是个 JSON 对象**（大小另由网关限），内容一个字段都不用 ——
+ * 上下文是服务端的 transcript，模型、参数、请求头由服务端定（docs/22 §4.3）。runner 只送空的上下文；送了非空的也照样不看
+ */
+export function isModelStreamRequest(body: unknown): boolean {
+  return isObject(body)
 }

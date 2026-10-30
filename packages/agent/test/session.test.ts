@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai'
+import { fauxAssistantMessage, fauxText, fauxToolCall, Type } from '@earendil-works/pi-ai'
 import { AgentEventType, formatNodeMention, type AgentRunEntry, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { nodesMap, toYNode } from '@shadecn/shared/flow-doc'
 import { buildNodeRecord } from '@shadecn/shared/flow-node-types'
@@ -17,8 +17,19 @@ import {
   type AgentRuntimeOptions,
   type OpenedCanvas,
 } from '../src/session.ts'
+import { canvasSkill, createSkillRegistry, defineSkill } from '../src/skills/index.ts'
 import { createMemoryConversationStore, createMemoryRunLog, type AgentRunLog } from '../src/store.ts'
-import { gatewayFetch, registerScriptedModel, TEST_GATEWAY_URL, type ScriptedModel, type ScriptedStep } from '../src/testing.ts'
+import {
+  createInlineDriver,
+  gatewayFetch,
+  loadSkillStep,
+  registerScriptedModel,
+  TEST_GATEWAY_URL,
+  type ScriptedModel,
+  type ScriptedStep,
+} from '../src/testing.ts'
+import { RUNNER_PROTOCOL_VERSION } from '../src/protocol.ts'
+import type { CanvasTool } from '../src/tools.ts'
 
 /**
  * 编排层走完整的二期路径：进程内驱动跑 runner（pi 在那里）→ 网关（令牌、工具 RPC、事件上报）→ 服务端调模型（runner 的 streamProxy）→
@@ -734,53 +745,78 @@ describe('失败的收尾', () => {
   })
 
   /**
-   * pi 1.x 的 `handleRunFailure`（循环本身抛错，不是模型流报错）照常发 message_start / message_end + turn_end：
-   * 失败消息只上报一次（收尾的兜底补报不重复）、pi 自己的 system 消息不上报不落库。它没有请求模型，所以不算一步（步数按模型请求数）。
-   * 这里让 runner 在一批调过工具之后取别人改动时网关回 500 —— 那是在 pi 的 `prepareNextTurnWithContext` 里抛的
-   * （和以前在 turn_end 监听器里抛一样走 `handleRunFailure`；不再请求模型）。
-   * docs/22 §4.3 第 3 步起：那条出错的 assistant 消息是 runner 说的，不再拿它当「模型报错」显示 —— 服务端只看得到
-   * 「调了工具之后没再请求模型就收尾了」，以 `run_failed` + 服务端自己的话收尾（runner 报的原因只进服务端日志）。
+   * pi 1.x 的 `handleRunFailure`（循环本身抛错，不是模型流报错）：pi 补一条出错的 assistant 消息就结束循环，不再请求模型，
+   * 所以不算一步（步数按模型请求数）。这里用一个按需技能：服务端照常加载它，runner 在 pi 的 `prepareNextTurnWithContext` 里
+   * 并它的工具时抛错（{@link boomOnRunner}）—— 那正是 pi 兜住、走 `handleRunFailure` 的地方。
+   * 那条出错的 assistant 消息是 runner 里的，服务端看不到（第 7 版起也不上报）：它只看得到「调了工具之后没再请求模型就收尾了」，
+   * 以 `run_failed` + 服务端自己的话收尾，原因只写 runner 自己的日志。
    */
-  function failChangesFetch(runtime: ReturnType<typeof runtimeWith>, uploaded: { type: string; message?: { role: string; stopReason?: string } }[]) {
-    vi.stubGlobal(
-      'fetch',
-      gatewayFetch(async (request) => {
-        const path = new URL(request.url).pathname
-        if (path.endsWith('/canvas/changes')) {
-          return new Response(JSON.stringify({ error: 'boom', message: '取改动失败' }), { status: 500, headers: { 'content-type': 'application/json' } })
-        }
-        if (path.endsWith('/events')) {
-          const body = (await request.clone().json()) as { events: typeof uploaded }
-          uploaded.push(...body.events)
-        }
-        return runtime.gateway.handle(request)
+  const boomOnRunner = () => {
+    const emptyParams = Type.Object({}, { additionalProperties: false })
+    const tool: CanvasTool<typeof emptyParams> = {
+      name: 'boom_tool',
+      capability: 'flow:read',
+      label: 'boom',
+      description: '测试工具',
+      parameters: emptyParams,
+      describe: () => 'boom',
+      async execute() {
+        return { content: [{ type: 'text', text: 'ok' }], details: { summary: 'boom', elementIds: [] } }
+      },
+    }
+    // 注册表建的时候也会按 runner 一侧造一遍工具（核对名字、能力）：那一遍不炸
+    let armed = false
+    const registry = createSkillRegistry([
+      canvasSkill,
+      defineSkill({
+        id: 'boom',
+        title: '一并进就炸（测试）',
+        summary: '测试技能',
+        prompt: '测试技能的说明',
+        // 服务端（side: server）照常造；runner 并它的工具时抛
+        tools: (ctx) => {
+          if (armed && ctx.side === 'runner') throw new Error('RUNNER_LOOP_BOOM')
+          return [tool as unknown as CanvasTool]
+        },
+        requires: ['flow:read'],
+        activation: 'on-demand',
       }),
-    )
+    ])
+    armed = true
+    return { skills: registry, driver: createInlineDriver({ skills: registry }) }
   }
 
-  it('循环本身出错（handleRunFailure）→ 失败消息只报一次，RUN_ERROR 是服务端的话（runner 报的原因不进对话）；system 消息不上报、不落库', async () => {
-    const runtime = runtimeWith([
-      fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: 'x' } })], { stopReason: 'toolUse' }),
-      fauxAssistantMessage('不该走到这'),
-    ])
-    const uploaded: { type: string; message?: { role: string; stopReason?: string } }[] = []
-    failChangesFetch(runtime, uploaded)
+  it('循环本身出错（handleRunFailure）→ RUN_ERROR 是服务端的话（runner 的原因不进对话）；只请求过一次模型；system 消息不落库', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const runtime = runtimeWith([loadSkillStep('boom'), fauxAssistantMessage('不该走到这')], boomOnRunner())
     const out = await runOnce(runtime, '一')
-
-    const ended = uploaded.filter((event) => event.type === 'message_end').map((event) => event.message!)
-    expect(ended.map((message) => message.role)).toEqual(['user', 'assistant', 'toolResult', 'assistant'])
-    expect(ended.at(-1)).toMatchObject({ role: 'assistant', stopReason: 'error' })
-    // runner 报两个 turn_end（调工具的那一步 + 失败的那一下），只请求过一次模型
-    expect(uploaded.filter((event) => event.type === 'turn_end')).toHaveLength(2)
     expect(faux!.state.callCount).toBe(1)
 
     const last = out.events.at(-1)
     expect(last).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'run_failed' })
     expect(last?.type === AgentEventType.RUN_ERROR && last.message).toContain('调用工具之后没有再请求模型')
-    expect(JSON.stringify(out.events)).not.toContain('取改动失败')
+    expect(JSON.stringify(out.events)).not.toContain('RUNNER_LOOP_BOOM')
+    // 原因在 runner 自己的日志里（驱动收进服务端日志），服务端那行只说「没走完」
+    const lines = warn.mock.calls.map((call) => String(call[0]))
+    expect(lines.some((line) => line.startsWith('[agent-runner]') && line.includes('RUNNER_LOOP_BOOM'))).toBe(true)
+    expect(lines.some((line) => line.startsWith('[agent]') && line.includes('没有走完这一轮'))).toBe(true)
 
     const row = runtime.store.rows.get(threadOf(out.events))!
     expect(row.llmMessages.map((message) => message.role)).not.toContain('system')
+    expect(JSON.stringify(row.llmMessages)).not.toContain('RUNNER_LOOP_BOOM')
+    warn.mockRestore()
+  })
+
+  it('第 6 版协议的老镜像（还在送整段上下文、报 message_end、取 /canvas/changes 的那种）→ 兑换时就被拒，以 runner_protocol_mismatch 收尾，不调模型、不落这一轮的上下文', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const runtime = runtimeWith([fauxAssistantMessage('不该走到这')], { driver: createInlineDriver({ protocolVersion: RUNNER_PROTOCOL_VERSION - 1 }) })
+    const out = await runOnce(runtime, '一')
+    const last = out.events.at(-1)
+    expect(last).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'runner_protocol_mismatch' })
+    expect(last?.type === AgentEventType.RUN_ERROR && last.message).toContain(`协议版本 ${RUNNER_PROTOCOL_VERSION - 1} 和服务端的 ${RUNNER_PROTOCOL_VERSION} 不一致`)
+    expect(faux!.state.callCount).toBe(0)
+    expect(runtime.store.rows.get(threadOf(out.events))!.llmMessages).toEqual([])
+    warn.mockRestore()
   })
 
   it('模型报「上下文超长」→ RUN_ERROR context_overflow：先说人话，模型原文接在后面', async () => {
@@ -794,16 +830,13 @@ describe('失败的收尾', () => {
     expect(message).toContain(`模型原文：400: {"message":${JSON.stringify(raw)}`)
   })
 
-  it('失败的那一下没有请求模型、不算一步：步数上限 2 也照常以「没走完」收尾（不按超限停）', async () => {
-    const runtime = runtimeWith(
-      [fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: 'x' } })], { stopReason: 'toolUse' })],
-      { limits: { maxTurns: 2 } },
-    )
-    const uploaded: { type: string; message?: { role: string; stopReason?: string } }[] = []
-    failChangesFetch(runtime, uploaded)
+  it('失败的那一下没有请求模型、不算一步：步数上限 1 也照常以「没走完」收尾（不按超限停）', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const runtime = runtimeWith([loadSkillStep('boom')], { limits: { maxTurns: 1 }, ...boomOnRunner() })
     const out = await runOnce(runtime, '一')
     expect(out.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'run_failed' })
     expect(faux!.state.callCount).toBe(1)
+    warn.mockRestore()
   })
 
   it('未启用：start 拒绝，view 说 enabled=false', async () => {

@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { BUILD_ID, buildsDiffer, SOURCE_BUILD_ID } from '../src/build-id.ts'
-import { PROTOCOL_MISMATCH_ERROR, parseStsTokenRequest, RUNNER_PROTOCOL_VERSION } from '../src/protocol.ts'
+import {
+  GATEWAY_ROUTES,
+  isModelStreamRequest,
+  parseEventsRequest,
+  parseStsTokenRequest,
+  parseSubagentFinishRequest,
+  PROTOCOL_MISMATCH_ERROR,
+  RUNNER_PROTOCOL_VERSION,
+  runnerEventOf,
+} from '../src/protocol.ts'
 import { createGatewayClient, GatewayUnauthorizedError, RunnerProtocolMismatchError } from '../src/runner/client.ts'
 
 /**
@@ -74,6 +83,33 @@ describe('请求体解析与构建 id 比较', () => {
       protocolVersion: null,
       buildId: null,
     })
+  })
+
+  it('第 7 版的线格式：事件只认工具的开始 / 结束（老的 message_update / message_end / turn_end 夹在里面整批拒）', () => {
+    const start = { type: 'tool_execution_start', toolCallId: 'c1', toolName: 'read_canvas', args: {} }
+    const end = { type: 'tool_execution_end', toolCallId: 'c1', toolName: 'read_canvas', result: { content: [] }, isError: false, agentId: 'sub_1' }
+    expect(parseEventsRequest({ seq: 0, events: [start, end] })).toEqual({ seq: 0, events: [start, { ...end, result: { content: [], details: undefined } }] })
+    for (const stale of [
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'x' } },
+      { type: 'message_end', message: { role: 'assistant', content: [] } },
+      { type: 'message_end', message: { role: 'user', content: '通知' }, steerId: 'chg_1' },
+      { type: 'turn_end', toolResultCount: 0 },
+    ]) {
+      expect(parseEventsRequest({ seq: 0, events: [start, stale] })).toBeNull()
+    }
+    // runner 这边同样不报它们
+    expect(runnerEventOf({ type: 'turn_end', message: {}, toolResults: [] } as never)).toBeNull()
+    expect(runnerEventOf({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', delta: 'x' } } as never)).toBeNull()
+  })
+
+  it('第 7 版的线格式：/agent/finish 只取 agentId；模型请求体只要是个 JSON 对象（内容不看）；没有取通知的路由', () => {
+    expect(parseSubagentFinishRequest({ agentId: 'sub_1', status: 'needs_confirmation', text: '编的', question: '编的', error: null })).toEqual({ agentId: 'sub_1' })
+    expect(parseSubagentFinishRequest({ status: 'done' })).toBeNull()
+    expect(isModelStreamRequest({ model: {}, context: { messages: [] }, options: {} })).toBe(true)
+    expect(isModelStreamRequest({ context: { messages: 'not checked' } })).toBe(true)
+    expect(isModelStreamRequest([])).toBe(false)
+    expect(isModelStreamRequest('x')).toBe(false)
+    expect(Object.values(GATEWAY_ROUTES)).not.toContain('/canvas/changes')
   })
 
   it('buildsDiffer：只有双方都是构建产物且不同才算', () => {
