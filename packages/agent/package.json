@@ -10,6 +10,7 @@
     "./events": "./src/events.ts",
     "./model": "./src/model.ts",
     "./media": "./src/media.ts",
+    "./occupancy": "./src/occupancy.ts",
     "./session": "./src/session.ts",
     "./store": "./src/store.ts",
     "./protocol": "./src/protocol.ts",

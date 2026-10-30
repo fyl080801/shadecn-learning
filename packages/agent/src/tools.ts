@@ -126,6 +126,11 @@ export interface CanvasToolDetails {
   elementIds: string[]
   /** 只有 `load_skill` 成功加载时有：新加载的技能 id（runner 据此把它的工具并进来，docs/23 §3.3） */
   loadedSkill?: string
+  /**
+   * 读类工具：这次把哪些节点的内容**完整**交给了模型（docs/20 §3.10.8：读过就移出「改过」集合，结果里标出占用）。
+   * 只在服务端用 —— 编排层（`session.ts`）取走之后从结果里删掉，不发给 runner、不进模型上下文。
+   */
+  readNodeIds?: string[]
 }
 
 /**
@@ -745,6 +750,8 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
       return result(JSON.stringify(snapshot), {
         summary: `读取画布（${snapshot.nodeCount} 个节点、${snapshot.edgeCount} 条连线）`,
         elementIds: [],
+        // 只算列出来的（超出上限被截掉的那些模型没看到）
+        readNodeIds: snapshot.nodes.map((node) => node.id),
       })
     },
   }
@@ -996,7 +1003,7 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
             ? { ports: { inputs: inputs.map(portView), outputs: outputs.map(portView) } }
             : {}),
         }),
-        { summary: `读取节点${quote(node.metadata.label || node.id)}`, elementIds: [] },
+        { summary: `读取节点${quote(node.metadata.label || node.id)}`, elementIds: [], readNodeIds: [node.id] },
       )
     },
   }
@@ -1312,6 +1319,7 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
         details: {
           summary: images > 0 ? `查看 ${images} 张图片` : `查看素材（${nodes.length} 个节点，没有可看的图）`,
           elementIds: [],
+          readNodeIds: (nodes as FlowNode[]).map((node) => node.id),
         },
       }
     },

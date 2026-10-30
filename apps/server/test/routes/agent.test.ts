@@ -161,6 +161,7 @@ describe('未启用', () => {
       enabled: false,
       running: false,
       activeRuns: [],
+      now: expect.any(Number),
       latest: null,
     })
     expect((await send(alice, flowId, { text: '你好' })).status).toBe(503)
@@ -590,6 +591,8 @@ describe('一轮不随连接中止，可以接回', () => {
         owner: { id: alice.userId, name: 'alice', avatarUrl: null },
         mine: true,
         startedAt: expect.any(Number),
+        occupies: [],
+        expiresAt: expect.any(Number),
       },
       {
         runId: expect.any(String),
@@ -598,6 +601,8 @@ describe('一轮不随连接中止，可以接回', () => {
         owner: { id: bob.userId, name: 'bob', avatarUrl: null },
         mine: false,
         startedAt: expect.any(Number),
+        occupies: [],
+        expiresAt: expect.any(Number),
       },
     ])
     const [aliceRun, bobRun] = mine.activeRuns

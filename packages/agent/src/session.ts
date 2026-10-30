@@ -42,6 +42,8 @@ import {
   type NoticeLimits,
 } from './canvas-changes.ts'
 import { createRunEventMapper, type RunOutcome } from './events.ts'
+import { nodesMap } from '@shadecn/shared/flow-doc'
+import { createdNodeIds, dataWriteTargets, type NodeLease, type NodeLeaseRegistry } from './occupancy.ts'
 import { createAgentGateway, isProxiedModelApi, PROXIED_MODEL_APIS, type GatewayRun } from './gateway.ts'
 import type { MediaReader } from './media.ts'
 import type { ResolvedAgentModel } from './model.ts'
@@ -101,6 +103,21 @@ import { readNodeById, type CanvasTool, type ToolRunState } from './tools.ts'
  * 一轮在 RUN_STARTED 发出（会话已建好、标题与发起人已知）之后才进列表（{@link AgentRuntime.activeRuns}），
  * 彻底结束（从 `runs` 删掉）时离开；两个时刻各调一次 `onRunsChange`，宿主拿去广播给房间。
  * 准备会话就失败的那种（只发一帧 RUN_ERROR）从没进过列表，也就不会「出现又消失」。
+ * 列表里每一项带 `occupies`（这一轮占用的节点）和 `expiresAt`（最近一次续期 + TTL）：占用变化、每次续期（1/3 TTL）
+ * 也重推全量列表，**每张画布每 `runsThrottleMs` 至多一次**（{@link scheduleRunsChange}）；进 / 离列表不节流。
+ *
+ * ## 节点占用与写入检查（docs/20 §3.10.8）
+ *
+ * 登记表是注入的 {@link NodeLeaseRegistry}（宿主：共享层），**只在这里写**：网关执行工具时，在能力判权**之后**、
+ * 工具执行之前，另有一道独立的检查（`guardDataWrites`，不和判权合并、不进工具实现）——
+ * 算出这次会写哪些节点的 `data`（`occupancy.ts` 的 `dataWriteTargets`），先查「改过」（本轮打开画布以来别人改过 data、
+ * 还没重读的，靠常驻观察的 `onDataTouched` 同步登记），再逐个 `claim`（已是自己的直接过，有一个被别人占着就退掉这次刚占的、
+ * 拒绝这次调用）。拒绝都是给模型看的工具错误，不停整轮。新建节点执行后占用；调用没执行成就退掉这次刚占的。
+ * 持有者每 1/3 TTL 续期（比较后写，已易主的拿掉）；这一轮结束（任何结局，含 `abortAll`）释放全部（比较后删）。
+ * 读类工具（`details.readNodeIds`）读过的移出「改过」，结果末尾标出别的 run 占着的节点；`readNodeIds` 不交给 runner。
+ *
+ * **空闲上限**（`idleTimeoutMs`）：runner 来过网关之后，网关上既没有在途请求（模型请求算到响应流读完）、
+ * 又连续这么久没有新请求 → 叫停（cancelled，原因写明空闲）。
  *
  * ## 一轮的生命周期与失败语义
  *
@@ -225,6 +242,13 @@ export interface RunLimits {
   changeChars: number
   /** 一轮里模型最多 `load_skill` 成功几次（docs/23 §3.3，防反复加载） */
   maxSkillLoads: number
+  /**
+   * 空闲上限（docs/20 §3.10.8「沙箱中断」，`AGENT_RUN_IDLE_TIMEOUT_MS`）：网关上这一轮既没有在途请求、
+   * 也连续这么久没有新请求 → 按超时停下。模型请求算到响应流结束，长时间流式输出不算空闲
+   */
+  idleTimeoutMs: number
+  /** 任务列表因占用变化 / 续期而重发的节流（毫秒，docs/20 §3.4「每秒至多一次」）；进 / 离列表不节流 */
+  runsThrottleMs: number
 }
 
 export const DEFAULT_RUN_LIMITS: RunLimits = {
@@ -246,6 +270,8 @@ export const DEFAULT_RUN_LIMITS: RunLimits = {
   changeItems: 20,
   changeChars: 2000,
   maxSkillLoads: 3,
+  idleTimeoutMs: 120_000,
+  runsThrottleMs: 1000,
 }
 
 /** 会话 id 的长度上限 —— 只是挡住乱给的参数，真正的校验是查库 */
@@ -308,6 +334,11 @@ export interface AgentRuntimeOptions {
    * 没有「全放行」的默认值，忘了接就编译不过，而不是悄悄变成谁都能写。
    */
   authorities: RunAuthorityProvider
+  /**
+   * 节点占用的登记表（docs/20 §3.10.8，`occupancy.ts`）。**必填**，理由同 `store`：没有「不登记」的默认值。
+   * 宿主用共享层（单副本内存、多副本 redis）实现；测试用 `createMemoryLeaseRegistry`。
+   */
+  leases: NodeLeaseRegistry
   limits?: Partial<RunLimits>
 }
 
@@ -488,6 +519,17 @@ interface RunState {
   /** 最后一帧（RUN_FINISHED / RUN_ERROR）已经发出 */
   finished: boolean
   subscribers: Set<Subscriber>
+  /**
+   * 这一轮持有的占用（docs/20 §3.10.8）：节点 id → **写进登记表的那份值**（续期 / 释放要原样交回，按 JSON 比较）。
+   * 按占用的先后；一轮之内只增不减（这次调用刚占、调用没执行成的退掉；续期发现已易主的拿掉）。
+   */
+  held: Map<string, NodeLease>
+  /** 占用这一步串行（同一轮并发的两次调用不能一个退掉另一个刚当成「自己的」的占用） */
+  claiming: Promise<unknown>
+  /** 最近一次续期（心跳）的时刻；任务列表那一项的 `expiresAt` = 它 + TTL */
+  heartbeatAt: number
+  /** 续期定时器（进列表时起、收尾时停） */
+  heartbeat: ReturnType<typeof setInterval> | null
 }
 
 /** 被叫停的一轮以什么状态收尾：Grant 到期是 expired，其余（停止按钮、超时、失权、进程退出）是 cancelled */
@@ -582,16 +624,16 @@ interface ExecutedCall {
   at: number
 }
 
-/** 工具执行之前先判它声明的能力（判失败时 authority 已经把这一轮叫停了，这里把错误回给模型） */
-function authorizedTool(tool: CanvasTool, authority: RunAuthority): CanvasTool {
-  return {
-    ...tool,
-    async execute(toolCallId, args, signal, onUpdate) {
-      await authority.authorize(tool.capability)
-      return tool.execute(toolCallId, args, signal, onUpdate)
-    },
-  }
+/** 「改过」集合里一个节点：最近一次被别人改 data 的序号、改的人、改了什么（摘要，最多留几条） */
+interface StaleNode {
+  seq: number
+  actors: Set<string>
+  summaries: string[]
 }
+const STALE_SUMMARIES = 3
+
+/** 写入被拒时给模型的话里怎么称呼一个占用者（模型那头不分团队 / 个人画布） */
+const holderName = (lease: NodeLease) => `${lease.owner.name || '匿名用户'}的助手`
 
 const isTerminal = (event: AgentStreamEvent) =>
   event.type === AgentEventType.RUN_FINISHED || event.type === AgentEventType.RUN_ERROR
@@ -726,7 +768,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       : null
   const resolved = unproxied ? null : options.model
   const disabledReason = unproxied ?? options.disabledReason ?? '没有配置模型'
-  const { store, runLog } = options
+  const { store, runLog, leases } = options
   /** 技能注册表：runner 那边用的必须是同一份（生产都是内置的，测试显式传同一个） */
   const registry = options.skills ?? BUILTIN_SKILLS
   const gateway = createAgentGateway({
@@ -769,8 +811,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       conversationTitle: run.conversationTitle,
       owner: run.owner ?? unknownUser(run.userId),
       startedAt: run.startedAt,
-      // 只有带入口节点的会话才带（导演台暂时据它显示「正在编辑」，之后由占用替换）
+      // 只有带入口节点的会话才带（只是回显入口，不表示在改它）
       ...(run.nodeId ? { nodeId: run.nodeId } : {}),
+      occupies: [...run.held.keys()],
+      expiresAt: run.heartbeatAt + leases.ttlMs,
     }
   }
 
@@ -796,14 +840,167 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     return '其他协作者'
   }
 
-  /** 列表变了：把这张画布的全量列表交给宿主（广播）。宿主的错不该打断这一轮 */
+  /** 每张画布上次推任务列表的时刻和等着补推的定时器（{@link scheduleRunsChange} 的节流） */
+  const runsPush = new Map<string, { at: number; timer: ReturnType<typeof setTimeout> | null }>()
+
+  /** 列表变了：把这张画布的全量列表交给宿主（广播）。宿主的错不该打断这一轮。进 / 离列表走它，不节流 */
   function notifyRunsChange(flowId: string) {
+    const state = runsPush.get(flowId)
+    if (state?.timer) clearTimeout(state.timer)
+    // 没有在跑的了：节流状态也不用留
+    if (![...runs.values()].some((run) => run.flowId === flowId)) runsPush.delete(flowId)
+    else runsPush.set(flowId, { at: Date.now(), timer: null })
     if (!options.onRunsChange) return
     try {
       options.onRunsChange(flowId, activeRuns(flowId))
     } catch (err) {
       console.error(`[agent] flow=${flowId} 任务列表变更通知失败`, err)
     }
+  }
+
+  /**
+   * 占用变了 / 续期了：重推全量列表，**每张画布每 `runsThrottleMs` 至多一次**，只推最后的样子（docs/20 §3.4）。
+   * 窗口里第一次直接推，之后的攒到窗口末尾补推一次。
+   */
+  function scheduleRunsChange(flowId: string) {
+    const state = runsPush.get(flowId)
+    const wait = state ? state.at + limits.runsThrottleMs - Date.now() : 0
+    if (wait <= 0) {
+      notifyRunsChange(flowId)
+      return
+    }
+    if (state!.timer) return
+    const timer = setTimeout(() => {
+      const current = runsPush.get(flowId)
+      if (current) current.timer = null
+      // 这期间这张画布上的轮次都结束了（离开列表时已经推过）：不再补推
+      if ([...runs.values()].some((run) => run.flowId === flowId)) notifyRunsChange(flowId)
+    }, wait)
+    timer.unref?.()
+    state!.timer = timer
+  }
+
+  // —— 节点占用（docs/20 §3.10.8）——
+
+  /** 这一轮写进登记表的值：每个节点一份（`since` 是占上的时刻），之后续期 / 释放原样交回 */
+  function leaseOf(run: RunState): NodeLease {
+    return {
+      runId: run.runId,
+      conversationId: run.conversationId ?? '',
+      owner: run.owner ?? unknownUser(run.userId),
+      instanceId: leases.instanceId,
+      since: Date.now(),
+    }
+  }
+
+  /** 同一轮的占用一步一步来（见 {@link RunState.claiming}） */
+  function serialized<T>(run: RunState, task: () => Promise<T>): Promise<T> {
+    const next = run.claiming.then(task, task)
+    run.claiming = next.catch(() => undefined)
+    return next
+  }
+
+  /**
+   * 占用这些节点：已经是自己的直接过；逐个 `claim`，有一个被别人占着（或登记表出错）就把**这次刚占到的**退掉、整次拒绝。
+   * 返回这次新占的（调用没执行成时要退掉它们）。
+   */
+  function occupy(
+    run: RunState,
+    nodeIds: readonly string[],
+  ): Promise<{ ok: true; claimed: string[] } | { ok: false; message: string }> {
+    return serialized(run, async () => {
+      const claimed: string[] = []
+      const rollback = async () => {
+        await releaseNodes(run, claimed)
+      }
+      for (const nodeId of [...new Set(nodeIds)]) {
+        if (run.held.has(nodeId) || run.stopped !== null) {
+          if (run.stopped !== null) {
+            await rollback()
+            return { ok: false as const, message: '这一轮已经停止，这次写入没有执行' }
+          }
+          continue
+        }
+        const lease = leaseOf(run)
+        let taken: { won: true } | { won: false; holder: NodeLease | null }
+        try {
+          taken = (await leases.claim(run.flowId, nodeId, lease))
+            ? { won: true }
+            : { won: false, holder: await leases.get(run.flowId, nodeId) }
+        } catch (err) {
+          console.error(`[agent] run=${run.runId} 占用登记失败（node=${nodeId}）`, err)
+          await rollback()
+          return { ok: false as const, message: `节点 ${nodeId} 的占用登记暂时不可用，这次写入没有执行；稍后再试，或向用户说明` }
+        }
+        if (taken.won) {
+          run.held.set(nodeId, lease)
+          claimed.push(nodeId)
+          continue
+        }
+        const holder = taken.holder
+        // 占不上但又查不到占用者：刚好在这两步之间过期了 —— 再试一次就是了，这里按「被占」保守处理，让模型重来
+        await rollback()
+        return {
+          ok: false as const,
+          message: holder
+            ? `节点 ${nodeId} 正在被 ${holderName(holder)} 修改（另一个会话的 agent 占用着它），这次写入没有执行。` +
+              '不要重试，也不要换个写法去改它：结束这一轮，告诉用户它正被谁占用、问要不要等对方结束。'
+            : `节点 ${nodeId} 刚刚还被别的 agent 占用着，这次写入没有执行；先 get_node 重读再决定`,
+        }
+      }
+      return { ok: true as const, claimed }
+    })
+  }
+
+  /** 释放这一轮的某几个占用：只删自己的（比较后删）；失败只记一笔（TTL 兜底） */
+  async function releaseNodes(run: RunState, nodeIds: readonly string[]) {
+    await Promise.all(
+      nodeIds.map(async (nodeId) => {
+        const lease = run.held.get(nodeId)
+        if (!lease) return
+        run.held.delete(nodeId)
+        try {
+          await leases.release(run.flowId, nodeId, lease)
+        } catch (err) {
+          console.warn(`[agent] run=${run.runId} 释放占用失败（node=${nodeId}，等它过期）`, err)
+        }
+      }),
+    )
+  }
+
+  /** 一轮结束（任何结局）：停续期、删掉自己的全部占用。幂等；返回有没有释放什么（没有就不必重推列表） */
+  async function releaseAll(run: RunState): Promise<boolean> {
+    if (run.heartbeat) clearInterval(run.heartbeat)
+    run.heartbeat = null
+    if (run.held.size === 0) return false
+    await serialized(run, () => releaseNodes(run, [...run.held.keys()]))
+    return true
+  }
+
+  /** 续期：每 1/3 TTL 给自己的每个占用续一次（比较后写），已易主 / 已过期的拿掉；然后重推一次列表（新的 `expiresAt`） */
+  function startHeartbeat(run: RunState) {
+    run.heartbeatAt = Date.now()
+    const tick = async () => {
+      if (run.heartbeat === null) return
+      await serialized(run, async () => {
+        for (const [nodeId, lease] of [...run.held]) {
+          try {
+            if (!(await leases.renew(run.flowId, nodeId, lease))) {
+              console.warn(`[agent] run=${run.runId} 占用已过期或易主（node=${nodeId}），不再持有`)
+              run.held.delete(nodeId)
+            }
+          } catch (err) {
+            // 登记表暂时不可用：这次续不上，下次再试；真过期了别人就能占（崩溃时也是这样）
+            console.warn(`[agent] run=${run.runId} 占用续期失败（node=${nodeId}）`, err)
+          }
+        }
+      })
+      if (run.heartbeat === null) return
+      run.heartbeatAt = Date.now()
+      scheduleRunsChange(run.flowId)
+    }
+    run.heartbeat = setInterval(() => void tick(), Math.max(1, Math.floor(leases.ttlMs / 3)))
+    run.heartbeat.unref?.()
   }
 
   /** 占住会话的槽位（同步）；已被占 → false */
@@ -1008,8 +1205,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       describeTool: (name, args) => tools.get(name)?.describe(args as never) ?? name,
     })
     send(mapper.start(userMessage))
-    // RUN_STARTED 发出去了：进运行中任务列表，告诉房间
+    // RUN_STARTED 发出去了：进运行中任务列表，告诉房间；从此每 1/3 TTL 续期（占用 + 列表那一项的 expiresAt）
     run.listed = true
+    startHeartbeat(run)
     notifyRunsChange(flowId)
     console.info(
       `[agent] run=${run.runId} flow=${flowId} user=${userId} conversation=${conversationId} 开始（${text.length} 字）`,
@@ -1063,6 +1261,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     const startedCalls = new Map<string, { args: unknown; at: number }>()
     let turns = 0
     let gatewayToolCalls = 0
+    /**
+     * 「改过」集合（docs/20 §3.10.8）：这一轮打开画布以来，别人改过 data、本轮还没重读的节点。
+     * `dataSeq` 是改动的序号：读工具执行前记下当时的序号，读完只移出**不晚于它**的 ——
+     * 读的过程中又被改了的留着（宁可让模型多读一次，不漏掉一次冲突）。
+     */
+    const stale = new Map<string, StaleNode>()
+    let dataSeq = 0
+    let idleWatch: ReturnType<typeof setInterval> | undefined
 
     const record = (entry: Omit<Parameters<AgentRunLog['recordToolCall']>[0], 'runId' | 'grantId'>) => {
       const grantId = authority?.grantId ?? null
@@ -1145,10 +1351,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       const files: Record<string, string> = {}
       for (const skill of plan.offered) {
         offeredSkills.set(skill.id, skill)
-        // 每个工具在网关上执行之前判它声明的能力（失权时整轮停）；runner 工具只留定义（不经网关、不判权，docs/22 §3）
-        for (const tool of skill.tools(skillContext)) {
-          tools.set(tool.name, tool.execution === 'runner' ? tool : authorizedTool(tool, gate))
-        }
+        // 网关工具执行之前判它声明的能力（executeTool，失权时整轮停）；runner 工具只留定义（不经网关、不判权，docs/22 §3）
+        for (const tool of skill.tools(skillContext)) tools.set(tool.name, tool)
         // 初始化钩子：写进 runner 工作目录的文件（media-exec 的 canvas.json）
         if (skill.workdirFiles) Object.assign(files, await skill.workdirFiles({ canvas: opened }))
       }
@@ -1159,6 +1363,22 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         windowMs: limits.changeWindowMs,
         nameOf: (actor) => actorName(actor, run.runId),
         onNotice: (notice) => queuedNotices.push(notice),
+        // 「改过」（docs/20 §3.10.8）：别人改了节点的 data → 记进这一轮的过期集合（同步，只记 id 和人）
+        onDataTouched: (nodeIds, actor) => {
+          for (const nodeId of nodeIds) {
+            dataSeq += 1
+            const entry = stale.get(nodeId) ?? { seq: 0, actors: new Set<string>(), summaries: [] }
+            entry.seq = dataSeq
+            entry.actors.add(actor)
+            stale.set(nodeId, entry)
+          }
+        },
+        onDataChange: (nodeId, summary) => {
+          const entry = stale.get(nodeId)
+          if (!entry) return
+          entry.summaries.push(summary)
+          if (entry.summaries.length > STALE_SUMMARIES) entry.summaries.splice(0, entry.summaries.length - STALE_SUMMARIES)
+        },
       })
       watch = activeWatch
       const sinceNotice = await opened.read((doc) => {
@@ -1213,7 +1433,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           terminate: true,
         }
       }
-      tools.set(LOAD_SKILL_TOOL_NAME, authorizedTool(createLoadSkillTool(loadSkill), gate))
+      tools.set(LOAD_SKILL_TOOL_NAME, createLoadSkillTool(loadSkill))
 
       const runnerInput: RunnerInput = {
         runId: run.runId,
@@ -1261,24 +1481,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           return { isError: true, message: errorText(err) }
         }
         const at = Date.now()
-        try {
-          const result = await tool.execute(request.toolCallId, args as never, runAbort.signal)
-          const details = result.details
-          const elementIds = Array.isArray(details?.elementIds)
-            ? details.elementIds.filter((id): id is string => typeof id === 'string')
-            : []
-          executed.set(request.toolCallId, {
-            name: tool.name,
-            args: digestArgs(args),
-            ok: true,
-            elementIds,
-            error: null,
-            durationMs: Date.now() - at,
-            at: Date.now(),
-          })
-          return { isError: false, content: result.content, details, ...(result.terminate ? { terminate: true } : {}) }
-        } catch (err) {
-          const message = errorText(err)
+        const fail = (message: string): ToolCallResponse => {
           executed.set(request.toolCallId, {
             name: tool.name,
             args: digestArgs(args),
@@ -1290,6 +1493,130 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           })
           return { isError: true, message }
         }
+        /** 这次调用刚占上的节点：调用没执行成就退掉（什么都没写，不该挂着占用） */
+        let claimed: string[] = []
+        try {
+          // 第一道：能力判权（判失败时 authority 已经把这一轮叫停了，这里把错误回给模型）
+          await gate.authorize(tool.capability)
+          // 第二道（独立于判权）：写节点 data 的调用过「改过」和「正在改」两道检查，并占用（docs/20 §3.10.8）
+          const guard = await guardDataWrites(tool, args)
+          if (!guard.ok) return fail(guard.message)
+          claimed = guard.claimed
+          const readMark = dataSeq
+          const result = await tool.execute(request.toolCallId, args as never, runAbort.signal)
+          const details = result.details
+          const elementIds = Array.isArray(details?.elementIds)
+            ? details.elementIds.filter((id): id is string => typeof id === 'string')
+            : []
+          // 新建的节点执行之后才知道 id：执行后占用（新 id 撞不上别人；登记表出错只记一笔，节点已经建好了）
+          const created = createdNodeIds(tool.name, elementIds)
+          if (created.length > 0) {
+            const taken = await occupy(run, created)
+            if (taken.ok) claimed = [...claimed, ...taken.claimed]
+            else console.warn(`[agent] run=${run.runId} 新建节点没能占用：${taken.message}`)
+          }
+          if (claimed.length > 0) scheduleRunsChange(flowId)
+          // 读类工具：读过的移出「改过」集合，结果里标出别的 agent 正占用着的节点；readNodeIds 只在服务端用，不交给 runner
+          let content = result.content
+          let shown = details
+          const readIds = Array.isArray(details?.readNodeIds) ? details.readNodeIds : null
+          if (readIds && details) {
+            for (const nodeId of readIds) {
+              const entry = stale.get(nodeId)
+              if (entry && entry.seq <= readMark) stale.delete(nodeId)
+            }
+            const note = await occupancyNote(readIds)
+            if (note) content = [...content, { type: 'text', text: note }]
+            shown = { ...details }
+            delete shown.readNodeIds
+          }
+          executed.set(request.toolCallId, {
+            name: tool.name,
+            args: digestArgs(args),
+            ok: true,
+            elementIds,
+            error: null,
+            durationMs: Date.now() - at,
+            at: Date.now(),
+          })
+          return { isError: false, content, details: shown, ...(result.terminate ? { terminate: true } : {}) }
+        } catch (err) {
+          // 工具先校验后动手，抛了就是什么都没写：这次刚占的退掉
+          if (claimed.length > 0) await serialized(run, () => releaseNodes(run, claimed))
+          return fail(errorText(err))
+        }
+      }
+
+      /**
+       * 写节点 data 的两道检查（docs/20 §3.10.8），和能力判权同一层、不进工具实现：
+       * 1. **改过**：本轮读过之后被别人改了 data、还没重读 → 拒绝，附上被谁改了什么；
+       * 2. **正在改**：逐个占用，有一个被别的 run 占着 → 退掉这次刚占的、拒绝。
+       * 不写 data 的调用（连线、布局、只改 metadata、读）两道都不过。
+       */
+      const guardDataWrites = async (
+        tool: CanvasTool,
+        args: unknown,
+      ): Promise<{ ok: true; claimed: string[] } | { ok: false; message: string }> => {
+        const ids = Array.isArray((args as { ids?: unknown } | null)?.ids) ? ((args as { ids: unknown[] }).ids) : []
+        // 删除点名的 id 里哪些是节点（连线不占用）：要看文档
+        const nodes =
+          tool.name === 'delete_elements'
+            ? await opened.read((doc) => {
+                const map = nodesMap(doc)
+                return new Set(ids.filter((id): id is string => typeof id === 'string' && map.has(id)))
+              })
+            : null
+        const targets = dataWriteTargets(
+          { name: tool.name, skillId: registry.skillOfTool(tool.name)?.id ?? null, writes: tool.capability !== 'flow:read', args },
+          (id) => nodes?.has(id) ?? true,
+        )
+        if (targets.length === 0) return { ok: true, claimed: [] }
+
+        const outdated = targets.filter((id) => stale.has(id))
+        if (outdated.length > 0) {
+          // 窗口里还攒着的先算出来，摘要才说得出改了什么（经 canvas.read，照样重查权限）
+          await activeWatch.flush()
+          const lines = outdated.map((id) => {
+            const entry = stale.get(id)
+            const what = entry && entry.summaries.length > 0 ? entry.summaries.join('；') : `${[...(entry?.actors ?? [])].join('、') || '其他协作者'} 改了它的数据`
+            return `节点 ${id} 在你读过之后被改过（${what}）`
+          })
+          return {
+            ok: false,
+            message:
+              `${lines.join('\n')}\n这次写入没有执行。先重读（get_node；导演台用 get_director_scene）看别人改了什么：` +
+              '和你要做的不冲突就接着做；冲突了、或要用的东西被删了，停下来向用户确认。',
+          }
+        }
+        return occupy(run, targets)
+      }
+
+      /** 读到的节点里有被别的 run 占着的：在结果末尾标一句（docs/20 §3.10.8「读类工具标出占用」）；登记表读不到就不标 */
+      const occupancyNote = async (readIds: readonly string[]): Promise<string | null> => {
+        if (readIds.length === 0) return null
+        let all: Map<string, NodeLease>
+        try {
+          // 读几个节点就逐个查；读整张画布（几十上百个）按画布前缀扫一次（多副本下是 SCAN，别为一两个节点扫）
+          all =
+            readIds.length <= 8
+              ? new Map(
+                  (await Promise.all(readIds.map(async (id) => [id, await leases.get(flowId, id)] as const))).filter(
+                    (pair): pair is readonly [string, NodeLease] => pair[1] !== null,
+                  ),
+                )
+              : await leases.list(flowId)
+        } catch (err) {
+          console.warn(`[agent] run=${run.runId} 读取占用登记失败，结果里不标占用`, err)
+          return null
+        }
+        const wanted = new Set(readIds)
+        const others = [...all].filter(([nodeId, lease]) => wanted.has(nodeId) && lease.runId !== run.runId)
+        if (others.length === 0) return null
+        return (
+          `【节点占用】下面这些节点正在被别的助手修改，写它们会被拒绝（读不受影响）：` +
+          others.map(([nodeId, lease]) => `${nodeId}（${holderName(lease)}）`).join('、') +
+          '。需要改它们时先告诉用户，问要不要等对方结束。'
+        )
       }
 
       /**
@@ -1400,6 +1727,18 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         },
       })
       gatewayRun = registration
+      // 空闲上限：runner 来过之后（兑换过 bootstrap），既没有在途请求、又连续 idleTimeoutMs 没有新请求 → 停下
+      idleWatch = setInterval(
+        () => {
+          const { inflight, lastActivityAt } = registration.activity()
+          if (lastActivityAt === null || inflight > 0) return
+          if (Date.now() - lastActivityAt >= limits.idleTimeoutMs) {
+            stopRun(run, `agent 运行环境已经 ${Math.round(limits.idleTimeoutMs / 1000)} 秒没有任何请求（可能卡住或断网），按空闲超时停止`)
+          }
+        },
+        Math.max(20, Math.min(5000, Math.floor(limits.idleTimeoutMs / 4))),
+      )
+      idleWatch.unref?.()
 
       // 叫停 = 先作废令牌（之后的请求一律 401、在途的上游模型请求掐断），再立即杀沙箱
       run.interrupt = () => {
@@ -1458,10 +1797,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     } finally {
       clearTimeout(timer)
       clearTimeout(exitGrace)
+      clearInterval(idleWatch)
       // 无论怎么结束：令牌作废、在途请求掐断
       gatewayRun?.close()
       runAbort.abort()
     }
+    // 不会再有写入了（令牌已作废）：释放全部占用（成功 / 中止 / 出错 / 超时 / 服务退出都走这里），节点上的标签随之消失
+    if ((await releaseAll(run)) && run.listed) scheduleRunsChange(flowId)
     // 网关执行了、但 runner 没来得及报结束的工具调用（被杀在半路）：照样记进审计
     for (const [toolCallId, call] of executed) recordExecuted(toolCallId, call)
     executed.clear()
@@ -1573,6 +1915,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         enabled: resolved !== null,
         running: entries.length > 0,
         activeRuns: entries,
+        // 前端拿它把 expiresAt 换算成本机时间
+        now: Date.now(),
         latest: latest ? await viewOf(latest, userId) : null,
       }
     },
@@ -1630,12 +1974,20 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         replayChars: 0,
         finished: false,
         subscribers: new Set([initiator.subscriber]),
+        held: new Map(),
+        claiming: Promise.resolve(),
+        heartbeatAt: Date.now(),
+        heartbeat: null,
       }
       runs.set(run.runId, run)
       if (input.conversationId !== null) claimConversation(run, input.conversationId)
 
       run.done = execute(input, run)
         .catch((err: unknown) => console.error(`[agent] run=${run.runId} 异常`, err))
+        // 异常退出（没走到 execute 里那次释放）也不留占用
+        .then(async () => {
+          await releaseAll(run)
+        })
         .finally(() => {
           // 没走到最后一帧就异常退出了：补一帧收尾，订阅者才知道这一轮完了
           if (!run.finished) {

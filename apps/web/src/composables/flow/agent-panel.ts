@@ -66,6 +66,12 @@ export interface FlowAgentPanel {
   /** 快捷输入新开了一轮 —— 对话框借此切回对话视图、贴底 */
   onStarted: ReturnType<typeof createEventHook<void>>["on"]
   /**
+   * 展开对话框并打开某个会话（节点上的占用标签点进来的，docs/20 §3.4）。对话框接住它（{@link onShowConversation}）
+   * 走自己的「打开会话」那条路（切回对话视图、失败 toast）
+   */
+  showConversation: (conversationId: string) => void
+  onShowConversation: ReturnType<typeof createEventHook<string>>["on"]
+  /**
    * 新会话输入框开头该放的提及：「选中的节点」每个一枚，按选中的先后，末尾留一个空格好接着打字；没选中为空串。
    * 调用方只在**输入框为空**时用它（已有草稿不动、续聊不加，docs/20 §3.10.9）。
    */
@@ -132,6 +138,7 @@ export function provideFlowAgentPanel(
   const agent = useHostFlowAgent(host, extra)
   const open = ref(false)
   const started = createEventHook<void>()
+  const show = createEventHook<string>()
 
   async function startConversation(text: string): Promise<boolean> {
     if (!text.trim()) return false
@@ -148,6 +155,11 @@ export function provideFlowAgentPanel(
     open,
     startConversation,
     onStarted: started.on,
+    showConversation: (conversationId) => {
+      open.value = true
+      void show.trigger(conversationId)
+    },
+    onShowConversation: show.on,
     selectionMentions: () => mentionsPrefix(selection?.() ?? [])
   }
   provide(FLOW_AGENT_PANEL_KEY, panel)
@@ -178,6 +190,13 @@ function useProjectAdmin(projectId: Ref<string | null>): Ref<boolean> {
     { immediate: true }
   )
   return isAdmin
+}
+
+/**
+ * 可能不在面板子树里的地方用（节点上的占用标签：节点组件的单测不 provide 面板）—— 没有就是 null，标签不显示
+ */
+export function useOptionalFlowAgentPanel(): FlowAgentPanel | null {
+  return inject(FLOW_AGENT_PANEL_KEY, null)
 }
 
 export function useFlowAgentPanel(): FlowAgentPanel {

@@ -45,8 +45,14 @@ export function parseNodeMentions(text: string): string[] {
 
 /** `POST {agentApiPath}/messages` 的请求体 */
 export interface AgentPromptRequest {
-  /** 用户输入，可含 `@{node:<id>}`；去掉首尾空白后不能为空 */
+  /** 用户输入，可含 `@{node:<id>}`；去掉首尾空白后不能为空 —— **带了附件时可以为空** */
   text: string
+  /**
+   * 随这条消息发的附件（docs/20 §3.10.12）：这一轮 agent 执行时预先设定的资源。
+   * 每一项必须是**这张画布**上传过的资源（服务端按上传时记下的归属核对，别的画布的 → 400）；
+   * 类型、地址以服务端记录为准，客户端只给键和显示名。最多 {@link AGENT_ATTACHMENT_MAX_COUNT} 个，不给 = 没有。
+   */
+  attachments?: AgentAttachmentRef[]
   /**
    * 发到哪个会话。`null` / 不给 = **新会话**：服务端在这一轮开始时建好它，
    * id 由 RUN_STARTED 的 `threadId` 带回来；新会话总是可以发起（不受别的会话在跑影响）。
@@ -68,6 +74,86 @@ export interface AgentPromptRequest {
 /** 单条 prompt 的长度上限（字符数），服务端超限 400 */
 export const AGENT_PROMPT_MAX_LENGTH = 4000
 
+// —— 附件 ——
+//
+// 会话 / 快捷会话里上传的资源，随用户消息发给 agent（docs/20 §3.10.12）。上传走画布资源的同一套接口
+// （`POST /api/flows/:flowId/assets`，大文件分片），回来的对象键 + 文件名就是请求里的一项；
+// 服务端核对归属后补上类型和地址，存进这条用户消息（{@link AgentAttachment}），并在这一轮的模型上下文里列出来。
+
+/** 一条消息最多带几个附件 */
+export const AGENT_ATTACHMENT_MAX_COUNT = 8
+/** 附件显示名的长度上限（字符数） */
+export const AGENT_ATTACHMENT_NAME_MAX_LENGTH = 120
+/** 对象键的长度上限（形状另由服务端核对：必须是这张画布上传时记下的键） */
+const AGENT_ATTACHMENT_KEY_MAX_LENGTH = 512
+
+/** 请求里的一项：上传接口回来的对象键（`UploadedAsset.key`）+ 给人看的文件名 */
+export interface AgentAttachmentRef {
+  key: string
+  name: string
+}
+
+/**
+ * 存在用户消息上的附件（服务端核对过归属之后的样子）。`key` 同时是它在对话里的标识 ——
+ * 模型看附件（`view_attachment`）时点的就是它。
+ */
+export interface AgentAttachment {
+  key: string
+  /** 对象存储的原始地址，同节点 `data.src`；前端直接拿来显示 */
+  url: string
+  /** 上传时服务端记下的类型（不是客户端这次声明的） */
+  contentType: string
+  name: string
+}
+
+/** 附件按什么显示：图片 / 视频有预览，其余显示文件图标 + 名字 */
+export function agentAttachmentKind(contentType: string): 'image' | 'video' | 'file' {
+  if (contentType.startsWith('image/')) return 'image'
+  if (contentType.startsWith('video/')) return 'video'
+  return 'file'
+}
+
+/** 含控制字符（换行、制表、NUL…）：键和显示名里都不该有 */
+function hasControlChars(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    if (code < 0x20 || code === 0x7f) return true
+  }
+  return false
+}
+
+/**
+ * 校验请求里的 `attachments`（服务端用；不给 / null = 没有附件）：数量、每项的字段类型与长度、键不重复。
+ * 只管形状 —— 是不是这张画布的资源由服务端查上传记录。显示名去掉首尾空白后不能为空。
+ */
+export function parseAgentAttachmentRefs(
+  value: unknown,
+): { ok: true; attachments: AgentAttachmentRef[] } | { ok: false; error: string } {
+  if (value === undefined || value === null) return { ok: true, attachments: [] }
+  if (!Array.isArray(value)) return { ok: false, error: 'attachments 必须是数组' }
+  if (value.length > AGENT_ATTACHMENT_MAX_COUNT) {
+    return { ok: false, error: `附件最多 ${AGENT_ATTACHMENT_MAX_COUNT} 个` }
+  }
+  const attachments: AgentAttachmentRef[] = []
+  const keys = new Set<string>()
+  for (const item of value) {
+    if (!isObject(item)) return { ok: false, error: 'attachments 的每一项必须是 { key, name }' }
+    const { key, name } = item
+    if (typeof key !== 'string' || !key || key.length > AGENT_ATTACHMENT_KEY_MAX_LENGTH || hasControlChars(key)) {
+      return { ok: false, error: '附件的 key 不合法' }
+    }
+    if (typeof name !== 'string') return { ok: false, error: '附件的 name 必须是字符串' }
+    const trimmed = name.trim()
+    if (!trimmed || trimmed.length > AGENT_ATTACHMENT_NAME_MAX_LENGTH || hasControlChars(trimmed)) {
+      return { ok: false, error: `附件的 name 不能为空、不能超过 ${AGENT_ATTACHMENT_NAME_MAX_LENGTH} 字` }
+    }
+    if (keys.has(key)) return { ok: false, error: '同一个附件不能重复添加' }
+    keys.add(key)
+    attachments.push({ key, name: trimmed })
+  }
+  return { ok: true, attachments }
+}
+
 // —— 对话记录 ——
 
 export interface AgentToolCallView {
@@ -82,7 +168,14 @@ export interface AgentToolCallView {
 }
 
 export type AgentChatMessage =
-  | { id: string; role: 'user'; text: string; createdAt: number }
+  | {
+      id: string
+      role: 'user'
+      text: string
+      createdAt: number
+      /** 随这条消息发的附件（docs/20 §3.10.12）；没有就不带这个字段 */
+      attachments?: AgentAttachment[]
+    }
   | {
       id: string
       role: 'assistant'
@@ -197,6 +290,8 @@ export interface AgentSessionView {
    * 之后的变化经协同连接上的 stateless 消息推送（{@link AgentRunsMessage}），不用轮询。
    */
   activeRuns: AgentActiveRunView[]
+  /** 服务端此刻的时钟（UTC epoch 毫秒）：前端拿它把 `expiresAt` 换算成本机时间（两边时钟不一定对得上） */
+  now?: number
   /**
    * 面板默认打开的会话（含消息）：**我自己有任务在跑时是最近发起的那一轮所在的会话**，
    * 否则是我在这张画布上最近更新的那个（只挑我自己的）；一个都没有时为 null（新会话空状态）。
@@ -221,10 +316,20 @@ export interface AgentRunEntry {
   /** UTC epoch 毫秒 */
   startedAt: number
   /**
-   * 这一轮所在会话的入口节点（会话的 `nodeId`，docs/20 §3.10.9）：导演台暂时据它显示「某某的助手正在编辑这个场景」，
-   * 之后由占用（docs/20 §3.10.8 的 `occupies`）替换。没有入口的会话没有这个字段（不是 null —— 老的载荷里本来就没有，读的一侧一律按「没有」处理）。
+   * 这一轮所在会话的入口节点（会话的 `nodeId`，docs/20 §3.10.9），只是回显入口：**不表示它在改这个节点**
+   * （「正在编辑」看 {@link occupies}）。没有入口的会话没有这个字段（不是 null —— 老的载荷里本来就没有，读的一侧一律按「没有」处理）。
    */
   nodeId?: string
+  /**
+   * 这一轮**占用**的节点（docs/20 §3.4、§3.10.8）：占用登记成功、本轮写过 `data` 的节点（含删除的、新建的），
+   * 按占用的先后。一轮之内只增不减；节点上的占用标签、导演台的「正在编辑这个场景」都看它。只由服务端写。
+   */
+  occupies: string[]
+  /**
+   * 这一项的过期时间（服务端时钟的 UTC epoch 毫秒）：持有者每次续期重发，客户端到点还没收到新的就自行去掉
+   * （副本崩溃时没人发「离开」）。和本机时钟的偏差用载荷里的 `now` 换算；没有这个字段 = 不按时过期（老的载荷）。
+   */
+  expiresAt?: number
 }
 
 /**
@@ -293,12 +398,27 @@ export interface AgentRunsMessage {
   flowId: string
   /** 全量，按 `startedAt` 升序；没有在跑的为空数组 */
   runs: AgentRunEntry[]
+  /** 发出时服务端的时钟（UTC epoch 毫秒），同 {@link AgentSessionView.now}；老的载荷没有 */
+  now?: number
 }
 
 /** 服务端用：序列化成 stateless 载荷 */
-export function formatAgentRunsMessage(flowId: string, runs: readonly AgentRunEntry[]): string {
-  const message: AgentRunsMessage = { type: AGENT_RUNS_MESSAGE, flowId, runs: [...runs] }
+export function formatAgentRunsMessage(flowId: string, runs: readonly AgentRunEntry[], now: number = Date.now()): string {
+  const message: AgentRunsMessage = { type: AGENT_RUNS_MESSAGE, flowId, runs: [...runs], now }
   return JSON.stringify(message)
+}
+
+/** 占用列表里一个节点 id 最长多少（同节点 id 的格式上限）；一项最多带几个（防一条畸形载荷撑爆界面） */
+const OCCUPIED_ID_MAX = 64
+const OCCUPIES_MAX = 500
+
+/**
+ * 「某某的助手」：节点上的占用标签、导演台顶部那行、写入被拒时给模型看的那句都用这个说法。
+ * 个人画布（`showOwner` 为 false）只说「助手」；自己的说「我的助手」。
+ */
+export function agentHolderLabel(owner: { name: string }, options: { mine?: boolean; showOwner?: boolean } = {}): string {
+  if (options.showOwner === false) return '助手'
+  return options.mine ? '我的助手' : `${owner.name || '匿名用户'}的助手`
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -323,8 +443,27 @@ function parseRunEntry(value: unknown): AgentRunEntry | null {
   if (!owner) return null
   // nodeId 可选：不是非空字符串就当没有（不因为它丢掉整项）
   const nodeId = typeof value.nodeId === 'string' && value.nodeId ? value.nodeId : undefined
+  // occupies：不是数组当空；里面不是合法 id 的那几个丢掉、重复的去掉（不因为它丢掉整项）
+  const occupies: string[] = []
+  if (Array.isArray(value.occupies)) {
+    for (const id of value.occupies) {
+      if (occupies.length >= OCCUPIES_MAX) break
+      if (typeof id === 'string' && id && id.length <= OCCUPIED_ID_MAX && !occupies.includes(id)) occupies.push(id)
+    }
+  }
+  // expiresAt：不是有限数字就当没有（不按时过期）
+  const expiresAt = typeof value.expiresAt === 'number' && Number.isFinite(value.expiresAt) ? value.expiresAt : undefined
   // 只取认得的字段：载荷里多出来的东西不往下传
-  return { runId, conversationId, conversationTitle, owner, startedAt, ...(nodeId ? { nodeId } : {}) }
+  return {
+    runId,
+    conversationId,
+    conversationTitle,
+    owner,
+    startedAt,
+    ...(nodeId ? { nodeId } : {}),
+    occupies,
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+  }
 }
 
 /**
@@ -334,7 +473,7 @@ function parseRunEntry(value: unknown): AgentRunEntry | null {
  * 那会打断整条连接的消息处理。列表里个别项形状不对时**只丢那一项**，其余照收：
  * 少显示一个任务，好过把整份列表当没收到、一直显示过期的那份。
  */
-export function parseAgentRunsMessage(payload: string): { flowId: string; runs: AgentRunEntry[] } | null {
+export function parseAgentRunsMessage(payload: string): { flowId: string; runs: AgentRunEntry[]; now?: number } | null {
   let parsed: unknown
   try {
     parsed = JSON.parse(payload)
@@ -348,7 +487,8 @@ export function parseAgentRunsMessage(payload: string): { flowId: string; runs: 
     const run = parseRunEntry(item)
     if (run) runs.push(run)
   }
-  return { flowId: parsed.flowId, runs }
+  const now = typeof parsed.now === 'number' && Number.isFinite(parsed.now) ? parsed.now : undefined
+  return { flowId: parsed.flowId, runs, ...(now !== undefined ? { now } : {}) }
 }
 
 /**

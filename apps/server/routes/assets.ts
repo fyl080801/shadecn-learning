@@ -8,9 +8,10 @@ import {
   type UploadedAsset,
 } from '@shadecn/shared/canvas'
 import type { AuthVariables } from '../auth/middleware.ts'
-import type { ProjectVariables } from '../auth/project.ts'
+import { currentUserId, type ProjectVariables } from '../auth/project.ts'
 import { s3Config } from '../config.ts'
 import { assetStorage } from '../storage/index.ts'
+import { flowAssets } from '../store/assets.ts'
 import { assetCategory, buildAssetKey, isAssetKey } from '../storage/keys.ts'
 import type { S3Client } from '../storage/s3.ts'
 import { INVALID_JSON, readJson } from './params.ts'
@@ -33,6 +34,19 @@ const UNSUPPORTED = { error: 'Unsupported Media Type', message: '只支持图片
 const UNAVAILABLE = { error: 'Service Unavailable', message: '未配置对象存储，不能上传' } as const
 const BAD_GATEWAY = { error: 'Bad Gateway', message: '上传到对象存储失败' } as const
 const FOREIGN_KEY = badRequest('key 不是本服务拼出的素材键')
+
+/**
+ * 记下「这个键是在这张画布上传的」（`FlowAsset`）：对象已经在 S3 了、回包之前写。
+ * 写不进去就整个上传算失败（500）—— 回了地址却没有归属记录，之后拿它当 agent 附件会被当成别的画布的资源拒掉。
+ */
+async function recordAsset(c: Context<Env>, key: string, contentType: string): Promise<void> {
+  await flowAssets.record({
+    flowId: c.req.param('flowId')!,
+    key,
+    contentType,
+    createdById: (await currentUserId(c)) ?? '',
+  })
+}
 
 /** 拿存储；没配就直接给出 503 响应，调用方 `instanceof Response` 判一下原样返回 */
 function withStorage(c: Context<Env>): S3Client | Response {
@@ -69,7 +83,8 @@ function parseParts(value: unknown): AssetUploadPart[] | null {
 /**
  * 画布资源上传，挂在 `flows` 的 `/:flowId/*` 之下（鉴权口径同画布：非成员 404）。
  * 文件经后端转存到 S3（浏览器不碰 AK/SK），对象键的目录分层见 `storage/keys.ts`。
- * 只负责「存下来、给地址」；把地址写进哪个节点是前端经 `store.mutate` 的事。
+ * 只负责「存下来、记下归属、给地址」；把地址写进哪个节点是前端经 `store.mutate` 的事。
+ * 每次成功的上传都在回包之前记一行 `FlowAsset`（键 → 这张画布 + 服务端看到的类型），见 {@link recordAsset}。
  *
  * **不超过一片（`ASSET_PART_SIZE`）的文件一次传完**（`POST /`）；**更大的分片上传**：
  *
@@ -106,6 +121,7 @@ export const assets = new Hono<Env>()
       const body = new Uint8Array(await file.arrayBuffer())
       const url = await viaS3(c, `上传 ${key} `, () => storage.putObject(key, body, file.type))
       if (url instanceof Response) return url
+      await recordAsset(c, key, file.type)
 
       console.info(`[assets] 已上传 ${key}（${file.type}，${file.size}B）`)
       return c.json({ url, key, contentType: file.type, size: file.size } satisfies UploadedAsset, 201)
@@ -192,6 +208,7 @@ export const assets = new Hono<Env>()
 
     const size = done.head?.size ?? 0
     const contentType = done.head?.contentType ?? ''
+    await recordAsset(c, key, contentType)
     console.info(`[assets] 已分片上传 ${key}（${contentType}，${size}B，${parts.length} 片）`)
     return c.json({ url: done.url, key, contentType, size } satisfies UploadedAsset, 201)
   })

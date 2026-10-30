@@ -340,7 +340,7 @@ describe("对话面板选会话", () => {
     expect(document.querySelector('[data-testid="director-overlay"] [data-testid="agent-title"]')?.textContent).toContain("c-new")
   })
 
-  it("有入口是这个节点的任务在跑：顶部显示「某某的助手正在编辑这个场景」，舞台据此高亮远端改动", async () => {
+  it("有 agent 占用这个节点（occupies）：顶部显示「某某的助手正在编辑这个场景」，舞台据此高亮远端改动；只是入口是它不算", async () => {
     await mountOverlay()
     await openDirector()
     expect(document.querySelector('[data-testid="director-agent-editing"]')).toBeNull()
@@ -350,12 +350,20 @@ describe("对话面板选会话", () => {
       }
     }
     const base = { conversationTitle: "t", startedAt: 1 }
+    // 从这个导演台发起（入口 nodeId 是它）、但没写它：不算在编辑
+    push([{ ...base, runId: "r-a", conversationId: "c-a", owner: { id: "u2", name: "张三", avatarUrl: null }, nodeId: "dc", occupies: ["x"] }])
+    await flushPromises()
+    expect(document.querySelector('[data-testid="director-agent-editing"]')).toBeNull()
+    expect(document.querySelector('[data-testid="stage-stub"]')?.getAttribute("data-agent-editing")).toBe("false")
+
+    // 从画布上发起的另一轮写了它的场景（occupies 含它）：显示是谁
     push([
-      { ...base, runId: "r-a", conversationId: "c-a", owner: { id: "u2", name: "张三", avatarUrl: null }, nodeId: "dc" },
-      { ...base, runId: "r-b", conversationId: "c-b", owner: { id: "u3", name: "李四", avatarUrl: null } }
+      { ...base, runId: "r-a", conversationId: "c-a", owner: { id: "u2", name: "张三", avatarUrl: null }, nodeId: "dc", occupies: ["x"] },
+      { ...base, runId: "r-b", conversationId: "c-b", owner: { id: "u3", name: "李四", avatarUrl: null }, occupies: ["dc"] }
     ])
     await flushPromises()
-    expect(document.querySelector('[data-testid="director-agent-editing"]')?.textContent).toContain("张三的助手正在编辑这个场景")
+    expect(document.querySelector('[data-testid="director-agent-editing"]')?.textContent).toContain("李四的助手正在编辑这个场景")
+    expect(document.querySelector('[data-testid="director-agent-editing"]')?.textContent).not.toContain("张三")
     expect(document.querySelector('[data-testid="stage-stub"]')?.getAttribute("data-agent-editing")).toBe("true")
   })
 })

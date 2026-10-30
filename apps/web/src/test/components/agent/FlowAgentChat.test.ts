@@ -166,6 +166,7 @@ function activeRun(overrides: Partial<AgentActiveRunView> = {}): AgentActiveRunV
     owner: { id: "me", name: "我", avatarUrl: null },
     mine: true,
     startedAt: 1,
+    occupies: [],
     ...overrides
   }
 }
@@ -1280,6 +1281,7 @@ describe("任务列表与多人会话", () => {
       conversationTitle: "会话 c1",
       owner: { id: "me", name: "我", avatarUrl: null },
       startedAt: Date.now(),
+      occupies: [],
       ...overrides
     }
   }
@@ -1310,6 +1312,26 @@ describe("任务列表与多人会话", () => {
     await pushRuns([entry({ runId: "r2", conversationId: "c2", owner: other })])
     expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("1")
     expect(session).toHaveBeenCalledTimes(1)
+  })
+
+  it("到 expiresAt 没收到新的推送就去掉那一项（按载荷的服务端时钟换算，两边时钟对不上也不提前消失）；续期重发会顺延", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    const wrapper = await mountClosed()
+    // 服务端的钟比本机快 10 分钟：按本机时钟看 expiresAt 早就过了，但还剩 30 秒
+    const serverNow = Date.now() + 600_000
+    pushPayload(formatAgentRunsMessage("f1", [entry({ expiresAt: serverNow + 30_000 })], serverNow))
+    await flushPromises()
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("1")
+
+    await vi.advanceTimersByTimeAsync(20_000)
+    // 续期重发：又是 30 秒
+    pushPayload(formatAgentRunsMessage("f1", [entry({ expiresAt: serverNow + 50_000 })], serverNow + 20_000))
+    await vi.advanceTimersByTimeAsync(29_000)
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("1")
+
+    // 副本崩溃、没人再发：到点去掉
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(wrapper.find('[data-testid="agent-run-count"]').exists()).toBe(false)
   })
 
   it("推送里没有 mine：按当前用户的 id 算 —— 任务列表里只有自己的那行标「我的」", async () => {

@@ -632,6 +632,8 @@ export function createDirectorTools(ctx: SkillContext): CanvasTool[] {
       return result(out.view, {
         summary: `读取导演台${quote(out.label)}（${counts.objects} 个对象、${counts.tracks} 条轨道、${counts.keyframes} 个关键帧）`,
         elementIds: [],
+        // 读过这个导演台（带 objectIds 只读几个对象也算：模型挑的就是它要改的那些）
+        readNodeIds: [args.nodeId],
       })
     },
   }

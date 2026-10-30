@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue"
 import { ArrowLeft, Bot } from "@lucide/vue"
+import { agentHolderLabel } from "@shadecn/shared/agent"
 
 import { DirectorStage } from "@/components/director"
 import type { DirectorShortcut } from "@/components/director/directorShortcuts"
@@ -19,7 +20,7 @@ import { agentApi } from "@/lib/api"
  * - 右上对话按钮（罗盘在它下面），底部工具栏右边快捷会话圆钮 —— 就是画布上那两个组件（`FlowAgentChat` /
  *   `FlowAgentQuickPrompt`），这里 provide 了**另一份** agent 面板：入口是这个节点（`adoptLatest: false`），
  *   文案换成导演台的。它有自己的「当前会话」，和画布对话框互不影响（docs/07 §7.5）；
- * - 有入口是本节点的任务在跑时，顶部正中一行「某某的助手正在编辑这个场景」（暂时按任务的 `nodeId`，之后换成占用）。
+ * - 有 agent 占用本节点时（任务列表上的 `occupies`），顶部正中一行「某某的助手正在编辑这个场景」（个人画布「助手正在…」）。
  *
  * 会话是普通的全局 agent（docs/20 §3.10.9）：`nodeId` 只记入口，不限制 agent 改哪个节点。
  * **打开导演台算选中这个导演台节点**（只它一个，`selection`）：新会话 / 快捷会话的空输入框开头自动带上它的提及，
@@ -56,13 +57,18 @@ const label = computed(() => {
   return typeof name === "string" && name.trim() ? name : "导演台"
 })
 
-/** 在跑的、入口是这个节点的会话的任务（任务列表上的 `nodeId`；占用功能上线后换成 `occupies`） */
-const editingRuns = computed(() => agent.activeRuns.value.filter((run) => run.nodeId === props.nodeId))
+/**
+ * 占用着这个导演台节点的任务（任务列表上的 `occupies`，docs/07 §7.5、docs/20 §3.10.8）—— 哪一轮写了它的场景就显示谁，
+ * 和从哪个会话发起的无关（入口 `nodeId` 只用来挑默认会话）。多轮占不了同一个节点，一般只有一个。
+ * 舞台据它近似「agent 改的」来高亮远端改动（分不清 agent 和同伴，只看「有 agent 占用本节点时的远端改动」）
+ */
+const editingRuns = computed(() => agent.activeRuns.value.filter((run) => run.occupies.includes(props.nodeId)))
 const editingText = computed(() => {
   const runs = editingRuns.value
   if (runs.length === 0) return null
-  const names = [...new Set(runs.map((run) => (run.mine ? "我" : run.owner.name)))]
-  return `${names.join("、")}的助手正在编辑这个场景`
+  const showOwner = agent.showOwners.value
+  const names = [...new Set(runs.map((run) => agentHolderLabel(run.owner, { mine: run.mine, showOwner })))]
+  return `${names.join("、")}正在编辑这个场景`
 })
 
 const stage = ref<InstanceType<typeof DirectorStage> | null>(null)

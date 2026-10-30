@@ -6,7 +6,8 @@ import { roomOf } from '../collab/persistence.ts'
 /**
  * 把一张画布的运行中 agent 任务列表推给它的协同房间（docs/20 §3.10.4，契约 `AgentRunsMessage`）。
  *
- * 编排层（`@shadecn/agent/session` 的 `onRunsChange`）在一轮进列表 / 离开列表时调它，给的是全量列表。
+ * 编排层（`@shadecn/agent/session` 的 `onRunsChange`）在一轮进列表 / 离开列表时调它，占用变化、持有者续期时也调（节流到每秒至多一次），
+ * 给的都是全量列表；每项带 `occupies` 和 `expiresAt`（docs/20 §3.4）。
  * 走 Hocuspocus 的 stateless 通道，和落库状态通知（`collab/hocuspocus.ts` 的 `storeStatePayload`）同一条路：
  * 一次性的旁路消息，不进 Y.Doc、不进撤销栈、不落库。两种画布都适用 —— 个人画布的 awareness 被服务端整帧丢弃，
  * 但 stateless 不受影响。
@@ -28,6 +29,7 @@ export function broadcastAgentRuns(
 ): boolean {
   const document = hocuspocus?.documents.get(roomOf(flowId))
   if (!document) return false
-  document.broadcastStateless(formatAgentRunsMessage(flowId, runs))
+  // 带上服务端此刻的时钟：前端拿它把每项的 expiresAt 换算成本机时间
+  document.broadcastStateless(formatAgentRunsMessage(flowId, runs, Date.now()))
   return true
 }

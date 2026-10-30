@@ -111,6 +111,29 @@ function guardedBody(body: ReadableStream<Uint8Array> | null, signal: AbortSigna
   })
 }
 
+/** 包一层响应流：读完、出错、被取消时调一次 `onEnd`（模型请求的「在途」算到这里） */
+function endsWith(body: ReadableStream<Uint8Array>, onEnd: () => void): ReadableStream<Uint8Array> {
+  const reader = body.getReader()
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          onEnd()
+          controller.close()
+        } else controller.enqueue(value)
+      } catch (err) {
+        onEnd()
+        controller.error(err)
+      }
+    },
+    cancel(reason) {
+      onEnd()
+      return reader.cancel(reason)
+    },
+  })
+}
+
 /** 请求体上限：事件一批、工具参数都远到不了；模型请求是整段上下文（120 条消息 × 工具结果）给足余量 */
 const BODY_LIMIT = 4 * 1024 * 1024
 const LLM_BODY_LIMIT = 32 * 1024 * 1024
@@ -172,6 +195,11 @@ export interface GatewayRun {
   readonly bootstrapToken: string
   /** 作废这一轮：之后它的任何令牌、没兑换的 bootstrap token 一律 401。幂等 */
   close(): void
+  /**
+   * 这一轮在网关上的活动（docs/20 §3.10.8「空闲上限」）：`inflight` = 还没处理完的请求数（模型请求算到响应流结束为止，
+   * 长时间流式输出不算空闲）；`lastActivityAt` = 最近一次请求开始或结束的时刻，还没来过任何请求（没兑换 bootstrap）为 null。
+   */
+  activity(): { inflight: number; lastActivityAt: number | null }
 }
 
 /** 真实的上游模型（地址 + key 只在这里） */
@@ -209,6 +237,10 @@ interface Entry {
   closed: boolean
   /** 下一批事件的序号 */
   nextSeq: number
+  /** 在途请求数（{@link GatewayRun.activity}） */
+  inflight: number
+  /** 最近一次请求开始 / 结束的时刻；还没来过请求为 null */
+  lastActivityAt: number | null
 }
 
 class GatewayHttpError extends Error {
@@ -307,6 +339,19 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
     return entry
   }
 
+  /** 一个请求开始了：在途 +1；返回「结束了」（幂等），在途 -1 —— 空闲上限据此判断 */
+  function begin(entry: Entry): () => void {
+    entry.inflight += 1
+    entry.lastActivityAt = now()
+    let ended = false
+    return () => {
+      if (ended) return
+      ended = true
+      entry.inflight -= 1
+      entry.lastActivityAt = now()
+    }
+  }
+
   /** 判权失败 → 状态码：失效（这一轮已被叫停）401，不在授予范围 / 暂时判不了 403 */
   function authorityStatus(err: unknown): number | null {
     if (!isRunAuthorityError(err)) return null
@@ -348,15 +393,19 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
         )
       }
       entry.redeemed = true
+      begin(entry)()
       return json(issue(entry))
     }
     const entry = authenticate(bearerOf(request.headers))
+    const end = begin(entry)
     try {
       await entry.registration.handlers.authorizeRenewal()
     } catch (err) {
       const status = authorityStatus(err)
       if (status === null) throw err
       throw new GatewayHttpError(401, UNAUTHORIZED_MESSAGE)
+    } finally {
+      end()
     }
     if (entry.closed) throw new GatewayHttpError(401, UNAUTHORIZED_MESSAGE)
     return json(issue(entry))
@@ -377,6 +426,31 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
       throw err
     }
 
+    // 在途到响应流结束为止（长时间流式输出不算空闲）；提前返回的错误在 finally 里结束
+    const end = begin(entry)
+    let streaming = false
+    try {
+      const response = await proxyLlm(request, entry, upstream, proxy, rest)
+      // 只有上游的成功响应（流式输出）算到读完为止；错误响应（网关自己的、上游的）就地结束
+      if (!response.ok || !response.body) return response
+      streaming = true
+      return new Response(endsWith(response.body, end), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      })
+    } finally {
+      if (!streaming) end()
+    }
+  }
+
+  async function proxyLlm(
+    request: Request,
+    entry: Entry,
+    upstream: LlmUpstream,
+    proxy: { paths: readonly string[]; auth: 'bearer' | 'x-api-key' },
+    rest: string,
+  ): Promise<Response> {
     let text: string
     try {
       text = await readText(request, LLM_BODY_LIMIT)
@@ -439,6 +513,15 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
     if (path === GATEWAY_ROUTES.token) return token(request)
 
     const entry = authenticate(bearerOf(request.headers))
+    const end = begin(entry)
+    try {
+      return await dispatch(request, path, entry)
+    } finally {
+      end()
+    }
+  }
+
+  async function dispatch(request: Request, path: string, entry: Entry): Promise<Response> {
     const { handlers } = entry.registration
     switch (path) {
       case GATEWAY_ROUTES.input:
@@ -496,6 +579,8 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
         redeemed: false,
         closed: false,
         nextSeq: 0,
+        inflight: 0,
+        lastActivityAt: null,
       }
       runs.set(registration.runId, entry)
       bootstraps.set(hash, registration.runId)
@@ -507,6 +592,7 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
           bootstraps.delete(hash)
           runs.delete(registration.runId)
         },
+        activity: () => ({ inflight: entry.inflight, lastActivityAt: entry.lastActivityAt }),
       }
     },
   }

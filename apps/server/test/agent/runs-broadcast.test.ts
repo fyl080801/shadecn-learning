@@ -1,11 +1,12 @@
 import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { fauxAssistantMessage } from '@mariozechner/pi-ai'
+import { fauxAssistantMessage, fauxToolCall } from '@mariozechner/pi-ai'
 import type { ScriptedStep } from '@shadecn/agent/testing'
 import type { Document } from '@hocuspocus/server'
 import { agentApiPath, parseAgentRunsMessage, type AgentRunEntry } from '@shadecn/shared/agent'
 import { AGENT_RUNS_MESSAGE } from '@shadecn/shared/collab'
 import { agentRuntime, replaceAgentRuntime } from '../../agent/index.ts'
+import { agentNodeLeases } from '../../agent/leases.ts'
 import { broadcastAgentRuns } from '../../agent/runs-broadcast.ts'
 import { attachCollabServer, collabInstance } from '../../collab/hocuspocus.ts'
 import { flushCollabWrites, roomOf } from '../../collab/persistence.ts'
@@ -60,7 +61,7 @@ function useFaux(responses: ScriptedStep[]) {
 async function listenToRoom(flowId: string) {
   const holder = await collabInstance()!.openDirectConnection(roomOf(flowId), {})
   const document = collabInstance()!.documents.get(roomOf(flowId)) as Document
-  const received: { flowId: string; runs: AgentRunEntry[] }[] = []
+  const received: { flowId: string; runs: AgentRunEntry[]; now?: number }[] = []
   const fake = {
     messageAddress: roomOf(flowId),
     send(bytes: Uint8Array) {
@@ -107,8 +108,13 @@ describe('运行中任务列表的房间广播', () => {
           conversationTitle: '甲的任务',
           owner: { id: alice.userId, name: 'alice', avatarUrl: null },
           startedAt: expect.any(Number),
+          occupies: [],
+          expiresAt: expect.any(Number),
         },
       ])
+      // 载荷带着服务端时钟，前端据此换算 expiresAt（默认 TTL 30 秒）
+      expect(room.received[0]!.now).toEqual(expect.any(Number))
+      expect(room.received[0]!.runs[0]!.expiresAt! - room.received[0]!.now!).toBeGreaterThan(20_000)
       expect(room.received[1]!.runs.map((run) => [run.conversationTitle, run.owner.id])).toEqual([
         ['甲的任务', alice.userId],
         ['乙的任务', bob.userId],
@@ -126,6 +132,33 @@ describe('运行中任务列表的房间广播', () => {
       await bobRes.text()
       for (let i = 0; i < 100 && runtime.isRunning(flowId); i += 1) await tick()
       expect(room.received.map((message) => message.runs.length)).toEqual([1, 2, 1, 0])
+    } finally {
+      await room.close()
+    }
+  })
+
+  it('占用（docs/20 §3.10.8）：agent 新建了节点 → 推一份带 occupies 的全量列表；一轮结束释放（共享层的登记表里也没了）', async () => {
+    const hold = gated()
+    const runtime = useFaux([
+      fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: '新的' }, data: { text: '正文' } })], {
+        stopReason: 'toolUse',
+      }),
+      hold.step,
+    ])
+    const alice = await actor('alice')
+    const flowId = await createFlow(alice, await createProject(alice))
+    const room = await listenToRoom(flowId)
+    try {
+      const res = await alice.json(`${agentApiPath(flowId)}/messages`, 'POST', { text: '加一个' })
+      for (let i = 0; i < 150 && !room.received.some((message) => message.runs[0]?.occupies.length); i += 1) await tick()
+      const occupied = room.received.find((message) => message.runs[0]?.occupies.length)!.runs[0]!.occupies
+      expect(occupied).toHaveLength(1)
+      expect((await agentNodeLeases.get(flowId, occupied[0]!))?.owner).toMatchObject({ id: alice.userId, name: 'alice' })
+      hold.release()
+      await res.text()
+      for (let i = 0; i < 100 && runtime.isRunning(flowId); i += 1) await tick()
+      expect(room.received.at(-1)!.runs).toEqual([])
+      expect(await agentNodeLeases.list(flowId)).toEqual(new Map())
     } finally {
       await room.close()
     }

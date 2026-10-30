@@ -193,11 +193,49 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
 
   // —— 任务列表 ——
 
-  function setRuns(entries: readonly AgentRunEntry[]) {
-    runList.value = entries.filter((run) => run.conversationId && !finishedRuns.has(run.runId))
+  /**
+   * 每一项按本机时钟的过期时刻（docs/20 §3.4、§3.10.8）：服务端的 `expiresAt` 减去它发出时的时钟（`now`）就是还剩多久，
+   * 加到本机收到的时刻上 —— 两边时钟对不上也不会让标签提前消失。到点还没收到新的就去掉那一项（副本崩溃时没人发「离开」）。
+   * 没有 `expiresAt` 的（老载荷、本地乐观插入的）不按时过期。
+   */
+  const deadlines = new Map<string, number>()
+  let expiryTimer: ReturnType<typeof setTimeout> | null = null
+
+  function scheduleExpiry() {
+    if (expiryTimer) clearTimeout(expiryTimer)
+    expiryTimer = null
+    let next = Infinity
+    for (const run of runList.value) next = Math.min(next, deadlines.get(run.runId) ?? Infinity)
+    if (next === Infinity) return
+    expiryTimer = setTimeout(dropExpired, Math.max(0, next - Date.now()))
+  }
+
+  function dropExpired() {
+    expiryTimer = null
+    const now = Date.now()
+    const alive = runList.value.filter((run) => (deadlines.get(run.runId) ?? Infinity) > now)
+    if (alive.length !== runList.value.length) {
+      for (const run of runList.value) if (!alive.includes(run)) deadlines.delete(run.runId)
+      runList.value = alive
+      afterRunsChanged()
+    }
+    scheduleExpiry()
+  }
+
+  /** @param serverNow 这份列表发出时服务端的时钟（载荷的 `now`）；没有就当两边时钟一致 */
+  function setRuns(entries: readonly AgentRunEntry[], serverNow?: number) {
+    const received = Date.now()
+    deadlines.clear()
+    for (const run of entries) {
+      if (run.expiresAt !== undefined) deadlines.set(run.runId, received + (run.expiresAt - (serverNow ?? received)))
+    }
+    runList.value = entries.filter(
+      (run) => run.conversationId && !finishedRuns.has(run.runId) && (deadlines.get(run.runId) ?? Infinity) > received
+    )
     for (const run of runList.value) {
       if (localRunIds.has(run.runId)) learnSelf(run.owner.id)
     }
+    scheduleExpiry()
   }
 
   /** 本地确知这一轮结束了：先从列表里拿掉，不等推送 */
@@ -240,7 +278,7 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
     // 换画布时的残留、或者读不懂的：丢掉（解析器本身不抛）
     if (!parsed || parsed.flowId !== flowId.value) return
     pushSeq++
-    setRuns(parsed.runs)
+    setRuns(parsed.runs, parsed.now)
     afterRunsChanged()
   }
 
@@ -254,7 +292,7 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
     session.value = { enabled: view.enabled }
     for (const run of view.activeRuns) if (run.mine) learnSelf(run.owner.id)
     // 期间收到过推送：推送比这份快照新
-    if (pushesBefore === pushSeq) setRuns(view.activeRuns)
+    if (pushesBefore === pushSeq) setRuns(view.activeRuns, view.now)
     if (adopt && options.adoptLatest !== false && !readingTurn()) display(view.latest)
     afterRunsChanged(view.latest && view.latest.id === conversationId.value ? view.latest : null)
   }
@@ -423,6 +461,9 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
     finishedRuns.clear()
     localRunIds.clear()
     runList.value = []
+    deadlines.clear()
+    if (expiryTimer) clearTimeout(expiryTimer)
+    expiryTimer = null
     session.value = null
     loadError.value = null
     display(null)
@@ -443,7 +484,9 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
         conversationTitle: title.value ?? prompt.slice(0, AGENT_TITLE_MAX_LENGTH),
         owner: { id: selfId.value ?? "", name: me?.name ?? "我", avatarUrl: me?.avatarUrl ?? null },
         startedAt: Date.now(),
-        ...(entryNodeId ? { nodeId: entryNodeId } : {})
+        ...(entryNodeId ? { nodeId: entryNodeId } : {}),
+        // 本地乐观插入的这一项还不知道占用了什么，也不按时过期（推送来了就被替换）
+        occupies: []
       }
     ]
   }
@@ -589,6 +632,7 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
     generation++
     detach()
     stopListening?.()
+    if (expiryTimer) clearTimeout(expiryTimer)
   })
 
   return {

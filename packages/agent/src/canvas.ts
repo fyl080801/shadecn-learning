@@ -51,6 +51,12 @@ export interface CanvasTransaction {
   actor: CanvasActor
   nodeIds: ReadonlySet<string>
   edgeIds: ReadonlySet<string>
+  /**
+   * 其中动了 **`data` 组**的节点（docs/20 §3.10.8「改过」检查只看它）：`data` 里的键（含导演台的 `dc.*`、嵌套类型）变了、
+   * `data` 这一组整个被换掉、节点被新建或删除。只动了位置尺寸（顶层字段）、`metadata`、`runtime` 的不在里面。
+   * 和 {@link nodeIds} 一样只看结构、不读内容。
+   */
+  dataNodeIds: ReadonlySet<string>
 }
 
 /** 宿主的 origin 分类：返回 null = 这类事务不算谁的改动（清理悬空连线、迁移老数据这种内务） */
@@ -61,33 +67,51 @@ export type OriginClassifier = (origin: unknown) => CanvasActor | null
  * 找到 `nodes` / `edges` 那一层就是元素 id（节点自己的 Y.Map、它的 metadata / data / runtime 组都算这个节点）。
  * 不读任何内容，只看结构。
  */
-export function touchedElements(transaction: Y.Transaction, doc: Y.Doc): { nodeIds: Set<string>; edgeIds: Set<string> } {
+export function touchedElements(
+  transaction: Y.Transaction,
+  doc: Y.Doc,
+): { nodeIds: Set<string>; edgeIds: Set<string>; dataNodeIds: Set<string> } {
   // 只拿来比引用：放宽成 AbstractType，和 transaction.changed 的键同一个类型
   type AnyType = Y.AbstractType<any> // eslint-disable-line @typescript-eslint/no-explicit-any
   const nodes: AnyType = nodesMap(doc)
   const edges: AnyType = edgesMap(doc)
   const nodeIds = new Set<string>()
   const edgeIds = new Set<string>()
+  const dataNodeIds = new Set<string>()
   for (const [type, keys] of transaction.changed) {
     if (type === nodes || type === edges) {
       const target = type === nodes ? nodeIds : edgeIds
-      for (const key of keys) if (key) target.add(key)
+      for (const key of keys) {
+        if (!key) continue
+        target.add(key)
+        // 节点本身被新建 / 删除 / 整个换掉：它的 data 跟着变了
+        if (type === nodes) dataNodeIds.add(key)
+      }
       continue
     }
     let child: AnyType = type
+    /** 走到节点那一层之前的上一层在节点里的键（`data` / `metadata` / `runtime`）；改的就是节点自己的 Y.Map 时为 null */
+    let groupKey: string | null = null
     // 嵌套最多三层（nodes → 节点 → 组），多走几步只是防御
     for (let depth = 0; depth < 8; depth += 1) {
       const item = child._item
       const parent = item?.parent
       if (!item || !(parent instanceof Y.AbstractType)) break
       if (parent === nodes || parent === edges) {
-        if (item.parentSub) (parent === nodes ? nodeIds : edgeIds).add(item.parentSub)
+        if (item.parentSub) {
+          const id = item.parentSub
+          ;(parent === nodes ? nodeIds : edgeIds).add(id)
+          // 改的是节点自己的 Y.Map（顶层字段）：只有 `data` 这个键本身变了（整组换掉）才算；
+          // 改的是节点下面的某一组（或组里的嵌套类型）：那一组是 data 才算
+          if (parent === nodes && (groupKey === null ? keys.has('data') : groupKey === 'data')) dataNodeIds.add(id)
+        }
         break
       }
+      groupKey = item.parentSub ?? null
       child = parent as AnyType
     }
   }
-  return { nodeIds, edgeIds }
+  return { nodeIds, edgeIds, dataNodeIds }
 }
 
 /**
@@ -106,9 +130,9 @@ export function observeDocTransactions(
     try {
       const actor = classify(transaction.origin)
       if (!actor) return
-      const { nodeIds, edgeIds } = touchedElements(transaction, doc)
+      const { nodeIds, edgeIds, dataNodeIds } = touchedElements(transaction, doc)
       if (nodeIds.size === 0 && edgeIds.size === 0) return
-      listener({ actor, nodeIds, edgeIds })
+      listener({ actor, nodeIds, edgeIds, dataNodeIds })
     } catch (err) {
       console.error('[agent] 画布观察回调出错（已忽略）', err)
     }

@@ -552,6 +552,26 @@ function renderItems(notice: CanvasChangeNotice): { text: string; actors: string
   return items
 }
 
+/**
+ * 一个节点上别人改动里 **`data` 的部分**，写成一行（「改过」检查拒绝写入时附给模型）：新建 / 删除、改了哪些 `data.*` 字段、
+ * 导演台的场景汇总；`metadata.*`、位置、分组不在里面。没有 data 部分返回 null。
+ */
+function dataChangeSummary(changes: ElementChange[], actors: string[], labels: Map<string, string>): string | null {
+  const entries: NoticeEntry[] = []
+  for (const change of changes) {
+    if (change.kind === 'node-added' || change.kind === 'node-removed' || change.kind === 'director-changed') {
+      entries.push({ change, actors })
+    } else if (change.kind === 'node-changed') {
+      const keys = change.keys.filter(({ key }) => key.startsWith('data.') || key === 'type')
+      if (keys.length > 0) entries.push({ change: { ...change, keys }, actors })
+    }
+  }
+  if (entries.length === 0) return null
+  const items = renderItems({ scope: 'live', entries, before: new Map(), labels })
+  const who = actors.join('、') || '其他协作者'
+  return `${who}：${items.map((item) => item.text).join('；')}`
+}
+
 /** 通知 → 给人看的一行 + 条目、给模型的一段文字。条目为空返回 null（只是挪了尺寸之类） */
 export function renderNotice(notice: CanvasChangeNotice, limits: NoticeLimits): RenderedNotice | null {
   const all = renderItems(notice)
@@ -603,6 +623,16 @@ export interface CanvasWatchOptions {
   windowMs: number
   /** 合并好、非空的一条通知 */
   onNotice: (notice: CanvasChangeNotice) => void
+  /**
+   * 别人（`nameOf` 不为 null 的改动者）的事务动了这些节点的 `data` 组（docs/20 §3.10.8「改过」）。
+   * **同步、跑在别人的事务里**，和观察回调同一个时刻：只拿到 id 和改动者，不读内容。
+   */
+  onDataTouched?: (nodeIds: ReadonlySet<string>, actor: string) => void
+  /**
+   * 合并窗口到点（或 `flush`）时，某个节点上别人的改动里有 `data` 的部分：给模型看的一行摘要（「被谁改了什么」）。
+   * 经 `canvas.read` 算出（照样重查权限）；同一窗口里本轮自己和别人都改过的，照常多报。
+   */
+  onDataChange?: (nodeId: string, summary: string) => void
 }
 
 export interface CanvasWatch {
@@ -645,6 +675,13 @@ export function createCanvasWatch(options: CanvasWatchOptions): CanvasWatch {
       for (const key of keys) ownTouched.add(key)
       return
     }
+    if (change.dataNodeIds.size > 0) {
+      try {
+        options.onDataTouched?.(change.dataNodeIds, name)
+      } catch (err) {
+        console.error('[agent] 「改过」登记出错（已忽略）', err)
+      }
+    }
     for (const key of keys) {
       const actors = pending.get(key) ?? new Set<string>()
       actors.add(name)
@@ -679,6 +716,8 @@ export function createCanvasWatch(options: CanvasWatchOptions): CanvasWatch {
     ownTouched = new Set()
 
     let notice: CanvasChangeNotice | null
+    /** 这一批里各节点 data 部分的改动摘要（读完再交出去：回调不该跑在 read 里） */
+    const dataSummaries: [string, string][] = []
     try {
       notice = await canvas.read((doc) => {
         for (const key of own) {
@@ -704,6 +743,10 @@ export function createCanvasWatch(options: CanvasWatchOptions): CanvasWatch {
           if (changes.length === 0) continue
           before.set(key, previous)
           for (const change of changes) entries.push({ change, actors: [...actors] })
+          if (options.onDataChange && key.startsWith('n:')) {
+            const summary = dataChangeSummary(changes, [...actors], labels)
+            if (summary) dataSummaries.push([id, summary])
+          }
         }
         return entries.length > 0 ? { scope: 'live' as const, entries, before, labels } : null
       })
@@ -713,7 +756,9 @@ export function createCanvasWatch(options: CanvasWatchOptions): CanvasWatch {
       stop()
       return
     }
-    if (notice && !stopped) options.onNotice(notice)
+    if (stopped) return
+    for (const [id, summary] of dataSummaries) options.onDataChange?.(id, summary)
+    if (notice) options.onNotice(notice)
   }
 
   function flush(): Promise<void> {

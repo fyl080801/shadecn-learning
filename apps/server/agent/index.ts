@@ -22,6 +22,7 @@ import { agentConfig, agentWorkspaceDir, host, isDev, s3Enabled } from '../confi
 import { agentConversations, agentRunLog } from '../store/agent.ts'
 import { users } from '../store/users.ts'
 import { agentAuthority } from './authority.ts'
+import { agentNodeLeases } from './leases.ts'
 import { agentMediaReader } from './media.ts'
 import { runnerCommand } from './runner-command.ts'
 import { broadcastAgentRuns } from './runs-broadcast.ts'
@@ -49,7 +50,7 @@ let runtime: AgentRuntime | null = null
 
 /**
  * 宿主这一侧接给编排层的东西：落库、用户信息、任务列表变更时的房间广播（docs/20 §3.10.4）、
- * 每一轮的执行身份（Grant 签发 / 判权 / 对账，docs/22，`authority.ts`）。
+ * 每一轮的执行身份（Grant 签发 / 判权 / 对账，docs/22，`authority.ts`）、节点占用的登记表（`leases.ts`）。
  * 启用与否都一样；测试换成假模型时也展开它，测的就是生产的那套接线。
  */
 export const agentHostOptions = {
@@ -60,7 +61,9 @@ export const agentHostOptions = {
     broadcastAgentRuns(flowId, runs)
   },
   authorities: agentAuthority,
-} satisfies Pick<AgentRuntimeOptions, 'store' | 'runLog' | 'userProfiles' | 'onRunsChange' | 'authorities'>
+  // 节点占用（docs/20 §3.10.8）：共享层的登记表，单副本内存、多副本 redis
+  leases: agentNodeLeases,
+} satisfies Pick<AgentRuntimeOptions, 'store' | 'runLog' | 'userProfiles' | 'onRunsChange' | 'authorities' | 'leases'>
 
 /** 沙箱里看到的网关地址 */
 export const agentGatewayUrl = `${agentConfig.gatewayUrl}${AGENT_GATEWAY_PATH}`
@@ -219,6 +222,8 @@ function buildRuntime(): AgentRuntime {
     // 看图只读本服务的对象存储：没配 S3 就不接（工具也就不给模型）；还要模型吃图片，由编排层判
     ...(s3Enabled ? { mediaReader: agentMediaReader } : {}),
     sandbox: { image: agentConfig.sandboxImage, resources: agentConfig.sandboxResources },
+    // 空闲上限（docs/20 §3.10.8）：网关上既没有在途请求、也这么久没有新请求就停下这一轮
+    limits: { idleTimeoutMs: agentConfig.runIdleTimeoutMs },
     ...agentHostOptions,
   })
   if (!created.enabled) return disabled(created.disabledReason ?? '模型不可用')

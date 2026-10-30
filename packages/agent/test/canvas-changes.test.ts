@@ -238,7 +238,7 @@ function addNode(doc: Y.Doc, id: string, label: string, origin: unknown = alice,
   }, origin)
 }
 
-function setField(doc: Y.Doc, id: string, group: 'metadata' | 'data', key: string, value: unknown, origin: unknown = alice) {
+function setField(doc: Y.Doc, id: string, group: 'metadata' | 'data' | 'runtime', key: string, value: unknown, origin: unknown = alice) {
   doc.transact(() => {
     nodeGroupMap(nodesMap(doc).get(id), group, { create: true })!.set(key, value)
   }, origin)
@@ -579,6 +579,23 @@ describe('摘要与差异（纯函数）', () => {
     expect(nodeGroupMap(nodesMap(doc).get('n1'), 'data')?.get('text')).toBe('改')
     stopA()
     stopB()
+  })
+
+  it('touchedElements 的 dataNodeIds：只有动了 data 组（或新建 / 删除节点、整组换掉）才算；位置、metadata、runtime 不算', () => {
+    const doc = new Y.Doc()
+    addNode(doc, 'n1', '一', 'seed')
+    addNode(doc, 'n2', '二', 'seed')
+    const seen: string[][] = []
+    const stop = observeDocTransactions(doc, classify, (change) => seen.push([...change.dataNodeIds]))
+    setLayout(doc, 'n1', { position: { x: 9, y: 9 }, width: 300 })
+    setField(doc, 'n1', 'metadata', 'label', '改名')
+    setField(doc, 'n1', 'runtime', 'status', 'running')
+    setField(doc, 'n1', 'data', 'text', '改正文')
+    doc.transact(() => nodesMap(doc).get('n2')!.set('data', new Y.Map()), alice)
+    addNode(doc, 'n3', '三')
+    doc.transact(() => nodesMap(doc).delete('n2'), alice)
+    expect(seen).toEqual([[], [], [], ['n1'], ['n2'], ['n3'], ['n2']])
+    stop()
   })
 
   it('renderNotice：只有 1 个改动者时不加前缀，多个时每条带上是谁', () => {

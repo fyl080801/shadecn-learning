@@ -71,7 +71,7 @@ import FlowAgentTitle from "./FlowAgentTitle.vue"
  * 导演台默认打开的是新会话时同样放（`prefillMentions`，由导演台在挑会话时调）。
  */
 const { flowId } = useFlowEditor()
-const { agent, copy, open, onStarted, selectionMentions } = useFlowAgentPanel()
+const { agent, copy, open, onStarted, onShowConversation, selectionMentions } = useFlowAgentPanel()
 
 const draft = ref("")
 /** 面板里三选一：对话 / 历史会话列表 / 进行中的任务（同一个面板里切视图，不弹新窗口） */
@@ -228,6 +228,11 @@ const { run: openConversation } = useAsyncAction(
   },
   { errorMessage: "加载会话失败" }
 )
+
+// 节点上的占用标签点进来：展开（showConversation 已经展开了）并打开那个会话
+onShowConversation((id) => {
+  void openConversation(id)
+})
 
 /** 历史列表里删掉了当前会话 → 回到新会话空状态 */
 function onDeleted(id: string) {

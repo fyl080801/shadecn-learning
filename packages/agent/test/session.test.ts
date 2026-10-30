@@ -264,8 +264,8 @@ describe('按会话并发与中止', () => {
     if (!runA.ok || !runB.ok) throw new Error('两轮都应该启动成功')
 
     expect(runtime.activeRuns('flow-1')).toEqual([
-      { runId: runA.runId, conversationId: threadOf(outA.events), conversationTitle: '甲的事', owner: { id: 'u1', name: '名字-u1', avatarUrl: null }, startedAt: expect.any(Number) },
-      { runId: runB.runId, conversationId: threadOf(outB.events), conversationTitle: '乙的事', owner: { id: 'u2', name: '名字-u2', avatarUrl: null }, startedAt: expect.any(Number) },
+      { runId: runA.runId, conversationId: threadOf(outA.events), conversationTitle: '甲的事', owner: { id: 'u1', name: '名字-u1', avatarUrl: null }, startedAt: expect.any(Number), occupies: [], expiresAt: expect.any(Number) },
+      { runId: runB.runId, conversationId: threadOf(outB.events), conversationTitle: '乙的事', owner: { id: 'u2', name: '名字-u2', avatarUrl: null }, startedAt: expect.any(Number), occupies: [], expiresAt: expect.any(Number) },
     ])
     expect(runtime.activeRuns('flow-2')).toEqual([])
 
@@ -609,6 +609,8 @@ describe('接回一轮', () => {
         owner: { id: 'u1', name: '名字-u1', avatarUrl: null },
         mine: true,
         startedAt: expect.any(Number),
+        occupies: [],
+        expiresAt: expect.any(Number),
       },
       {
         runId: theirs.runId,
@@ -617,6 +619,8 @@ describe('接回一轮', () => {
         owner: { id: 'u2', name: '名字-u2', avatarUrl: null },
         mine: false,
         startedAt: expect.any(Number),
+        occupies: [],
+        expiresAt: expect.any(Number),
       },
     ])
     expect(mine.latest).toMatchObject({ id: running, running: true, mine: true, owner: { id: 'u1' } })
@@ -737,6 +741,7 @@ describe('失败的收尾', () => {
       enabled: false,
       running: false,
       activeRuns: [],
+      now: expect.any(Number),
       latest: null,
     })
     expect(runtime.start({ flowId: 'f', userId: 'u', conversationId: null, text: 'x', openCanvas: async () => { throw new Error() }, emit: () => {} }))
