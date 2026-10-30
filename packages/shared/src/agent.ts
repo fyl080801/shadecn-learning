@@ -206,13 +206,17 @@ export type AgentSubtaskStatus = 'running' | 'done' | 'failed' | 'needs_confirma
  * 父会话里的一个子任务条目：父 agent 的一次 `delegate_task`。子 agent 在父 run 的沙箱里跑，**没有自己的会话**；
  * 它的工具调用和最终回复只在这里给人看（只读），不进父 agent 的模型上下文。
  *
- * 实时流里经 CUSTOM {@link AGENT_SUBTASK_EVENT} 到达，`value` 是这个条目**当前的完整样子**（不是增量）：
- * 前端按 `id` 整条替换。随 assistant 消息落库（{@link AgentChatMessage} 的 `subtasks`），刷新 / 接回补发 / 只读旁观看到的一样。
+ * 实时流里：派发时一帧 CUSTOM {@link AGENT_SUBTASK_EVENT}，`value` 是完整条目（前端按 `id` 整条替换）；
+ * 之后每次变化一帧 CUSTOM {@link AGENT_SUBTASK_UPDATE_EVENT}，只带变了的（{@link AgentSubtaskUpdate}，前端用 {@link applyAgentSubtaskUpdate} 合并）。
+ * 随 assistant 消息落库（{@link AgentChatMessage} 的 `subtasks`，**完整条目**），刷新 / 接回补发 / 只读旁观看到的一样。
  */
 export interface AgentSubtaskView {
   /** 子 agent 的 id（服务端分配，一轮之内唯一） */
   id: string
-  /** 父 agent 那次 `delegate_task` 调用的 id */
+  /**
+   * 父 agent 那次 `delegate_task` 在 assistant 消息 `toolCalls` 里那一条的 `id`（一条消息里唯一：上游复用调用 id 时
+   * 服务端给后来的那条加后缀，见 `@shadecn/agent` 的 `events.ts`）
+   */
   toolCallId: string
   /** 任务说明（父 agent 写的） */
   brief: string
@@ -291,6 +295,74 @@ export function parseAgentSubtask(value: unknown): AgentSubtaskView | null {
     ...(typeof question === 'string' && question ? { question } : {}),
     ...(typeof error === 'string' && error ? { error } : {}),
     changedNodeIds: stringIds(value.changedNodeIds, SUBTASK_NODE_IDS_MAX),
+  }
+}
+
+/**
+ * 子任务条目的一次变化（CUSTOM {@link AGENT_SUBTASK_UPDATE_EVENT} 的 `value`）：只带变了的字段。
+ * 不重复任务说明（最长 8000 字）、节点和已经发过的工具调用 —— 每次变化都发完整条目时，补发量随「调用数 × 条目大小」增长，
+ * 几个长子任务就能撑爆补发缓冲（中途接回 410）。没带的字段不变。
+ */
+export interface AgentSubtaskUpdate {
+  id: string
+  status?: AgentSubtaskStatus
+  finishedAt?: number
+  /** 子 agent 的回复：整段替换 */
+  text?: string
+  question?: string
+  error?: string
+  /** 整个替换 */
+  changedNodeIds?: string[]
+  /** 新增或变了的工具调用：按 `id` 替换，没有的追加 */
+  toolCalls?: AgentToolCallView[]
+}
+
+/** 解析一帧子任务变化；没有 `id` 返回 null。**防御着写**：认不出 / 形状不对的字段丢掉（等于这个字段没变） */
+export function parseAgentSubtaskUpdate(value: unknown): AgentSubtaskUpdate | null {
+  if (!isObject(value)) return null
+  const { id, status, finishedAt, text, question, error } = value
+  if (typeof id !== 'string' || !id) return null
+  const toolCalls: AgentToolCallView[] = []
+  if (Array.isArray(value.toolCalls)) {
+    for (const item of value.toolCalls) {
+      if (toolCalls.length >= SUBTASK_TOOL_CALLS_MAX) break
+      const call = parseToolCallView(item)
+      if (call) toolCalls.push(call)
+    }
+  }
+  return {
+    id,
+    ...(SUBTASK_STATUSES.includes(status as AgentSubtaskStatus) ? { status: status as AgentSubtaskStatus } : {}),
+    ...(typeof finishedAt === 'number' && Number.isFinite(finishedAt) ? { finishedAt } : {}),
+    ...(typeof text === 'string' ? { text } : {}),
+    ...(typeof question === 'string' && question ? { question } : {}),
+    ...(typeof error === 'string' && error ? { error } : {}),
+    ...(Array.isArray(value.changedNodeIds) ? { changedNodeIds: stringIds(value.changedNodeIds, SUBTASK_NODE_IDS_MAX) } : {}),
+    ...(toolCalls.length > 0 ? { toolCalls } : {}),
+  }
+}
+
+/**
+ * 把一次变化合并进条目，返回新对象（不改传进来的）；`id` 对不上原样返回。
+ * 服务端落库的完整条目 = 首帧完整条目依次合并之后的每一帧（补发、只读旁观、刷新看到的一样）
+ */
+export function applyAgentSubtaskUpdate(view: AgentSubtaskView, update: AgentSubtaskUpdate): AgentSubtaskView {
+  if (update.id !== view.id) return view
+  const toolCalls = view.toolCalls.slice()
+  for (const call of update.toolCalls ?? []) {
+    const index = toolCalls.findIndex((item) => item.id === call.id)
+    if (index >= 0) toolCalls[index] = { ...call }
+    else if (toolCalls.length < SUBTASK_TOOL_CALLS_MAX) toolCalls.push({ ...call })
+  }
+  return {
+    ...view,
+    ...(update.status !== undefined ? { status: update.status } : {}),
+    ...(update.finishedAt !== undefined ? { finishedAt: update.finishedAt } : {}),
+    ...(update.text !== undefined ? { text: update.text } : {}),
+    ...(update.question !== undefined ? { question: update.question } : {}),
+    ...(update.error !== undefined ? { error: update.error } : {}),
+    ...(update.changedNodeIds !== undefined ? { changedNodeIds: [...update.changedNodeIds] } : {}),
+    toolCalls,
   }
 }
 
@@ -662,7 +734,8 @@ export function agentConversationPath(flowId: string, conversationId?: string): 
 //   RUN_STARTED → CUSTOM(agent.user-message) → CUSTOM(agent.canvas-change, since-last-run)?
 //   → ( TEXT_MESSAGE_START → TEXT_MESSAGE_CONTENT* → TEXT_MESSAGE_END
 //     | TOOL_CALL_START → TOOL_CALL_ARGS* → TOOL_CALL_END → TOOL_CALL_RESULT
-//     | CUSTOM(agent.canvas-change, live) | CUSTOM(agent.skill-loaded) | CUSTOM(agent.subtask) )*
+//     | CUSTOM(agent.canvas-change, live) | CUSTOM(agent.skill-loaded)
+//     | CUSTOM(agent.subtask) | CUSTOM(agent.subtask-update) )*
 //   → RUN_FINISHED | RUN_ERROR
 // 最后一帧之后服务端关流。同一轮里 assistant 的文字可能分几段（每次调工具前后各一段），
 // 它们共用一个 `messageId` —— 对应对话记录里的同一条 assistant 消息。
@@ -709,10 +782,16 @@ export const AGENT_CANVAS_CHANGE_EVENT = 'agent.canvas-change'
 export const AGENT_SKILL_LOADED_EVENT = 'agent.skill-loaded'
 
 /**
- * CUSTOM 事件的名字：子任务条目变了（{@link AgentSubtaskView}，派发 / 子 agent 调工具 / 回复 / 结束）。
+ * CUSTOM 事件的名字：派出了一个子任务（{@link AgentSubtaskView}）。
  * `value` 是条目的完整样子，前端先 {@link parseAgentSubtask} 再按 `id` 整条替换进这一轮的 assistant 消息
  */
 export const AGENT_SUBTASK_EVENT = 'agent.subtask'
+
+/**
+ * CUSTOM 事件的名字：子任务条目变了（子 agent 调工具 / 回复 / 结束）。`value` 只带变了的（{@link AgentSubtaskUpdate}），
+ * 前端先 {@link parseAgentSubtaskUpdate} 再用 {@link applyAgentSubtaskUpdate} 合并进同 `id` 的那一项；还没有那一项就丢掉
+ */
+export const AGENT_SUBTASK_UPDATE_EVENT = 'agent.subtask-update'
 
 export type AgentStreamEvent =
   | (AgentBaseEvent & {
@@ -743,6 +822,11 @@ export type AgentStreamEvent =
       type: typeof AgentEventType.CUSTOM
       name: typeof AGENT_SUBTASK_EVENT
       value: AgentSubtaskView
+    })
+  | (AgentBaseEvent & {
+      type: typeof AgentEventType.CUSTOM
+      name: typeof AGENT_SUBTASK_UPDATE_EVENT
+      value: AgentSubtaskUpdate
     })
   | (AgentBaseEvent & {
       type: typeof AgentEventType.TEXT_MESSAGE_START

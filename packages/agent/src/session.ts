@@ -69,7 +69,7 @@ import {
   loadedSkillText,
   lookupMention,
   subagentBrief,
-  SUBAGENT_PROMPT,
+  subagentPrompt,
   systemPromptFor,
 } from './prompt.ts'
 import { MAIN_AGENT_ID } from './protocol.ts'
@@ -351,9 +351,6 @@ export const AGENT_CONVERSATION_ID_MAX_LENGTH = 128
 
 /** 工具调用日志里 error 的长度上限 */
 const TOOL_ERROR_LOG_LIMIT = 500
-
-/** 子任务条目里（给人看、随对话落库）留子 agent 最终回复的多少字；交回父 agent 的另按 `subagentReplyChars` */
-const SUBTASK_TEXT_LIMIT = 8000
 
 /** 打开的画布：宿主实现，**一轮开一次**、收尾时关（释放 direct connection，触发落库） */
 export interface OpenedCanvas extends CanvasHandle {
@@ -1449,7 +1446,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
   /**
    * 父 agent 把占着的节点派给子 agent（docs/20 §3.10.8「转交给子 agent」）：逐个比较后写，从父 agent 改成子 agent。
-   * 已易主 / 已过期的不再算这一轮的；登记表出错的留在父 agent 手上（子 agent 写它时会被拒，按「正在改」处理）。返回转交成功的
+   * 已易主 / 已过期的不再算这一轮的。**登记表出错就抛**（出错的那个仍记在 `from` 手上）：调用方（`delegateTask`）把这次派发整个退回，
+   * 已经转交给 `to` 的由它释放 —— 不然子 agent 带着一个转交不了的节点开工，写它时被「父 agent 正在改」拒掉，只能莫名其妙地交回。返回转交成功的
    */
   async function transferNodes(run: RunState, from: string, to: string, nodeIds: readonly string[]): Promise<string[]> {
     return serialized(run, async () => {
@@ -1458,16 +1456,18 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         const lease = run.held.get(nodeId)
         if (!lease || leaseAgentOf(lease) !== from) continue
         const next: NodeLease = { ...lease, agentId: to, since: Date.now() }
+        let ok: boolean
         try {
-          if (await leases.transfer(run.flowId, nodeId, lease, next)) {
-            run.held.set(nodeId, next)
-            moved.push(nodeId)
-          } else {
-            console.warn(`[agent] run=${run.runId} 转交占用时发现已易主或已过期（node=${nodeId}），不再持有`)
-            run.held.delete(nodeId)
-          }
+          ok = await leases.transfer(run.flowId, nodeId, lease, next)
         } catch (err) {
-          console.warn(`[agent] run=${run.runId} 转交占用失败（node=${nodeId}），仍由 ${from} 持有`, err)
+          throw new Error(`节点占用登记表不可用，转交 ${nodeId} 失败（${errorText(err)}）`, { cause: err })
+        }
+        if (ok) {
+          run.held.set(nodeId, next)
+          moved.push(nodeId)
+        } else {
+          console.warn(`[agent] run=${run.runId} 转交占用时发现已易主或已过期（node=${nodeId}），不再持有`)
+          run.held.delete(nodeId)
         }
       }
       return moved
@@ -1757,7 +1757,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     const loadedSkills = mainAgent.loadedSkills
     /** 这一轮提供的技能 */
     const offeredSkills = new Map<string, AgentSkill>()
-    /** 已经派发过的 `delegate_task` 调用（一次调用只派一个）、一轮累计派发数 */
+    /**
+     * 父 agent **在途的** `delegate_task` 调用里已经派出过子任务的（原始调用 id）：同一时刻一次调用只派一个。
+     * 那次调用结束（父 agent 的 tool_execution_end）、或父 agent 进了下一步（turn_end）时移出 —— 上游可能复用调用 id
+     * （每次回复都从 `call_0` 起），按「一轮内永久唯一」记会把下一步同 id 的派发误拒。一轮累计派发数另记
+     */
     const delegatedCalls = new Set<string>()
     let delegatedTotal = 0
     const mapper = createRunEventMapper({
@@ -2308,60 +2312,80 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         if (delegatedTotal >= limits.maxSubagentsPerRun) {
           return refuse(`这一轮已经派了 ${delegatedTotal} 个子任务，达到上限 ${limits.maxSubagentsPerRun}，不能再派；剩下的自己做，或向用户说明`)
         }
-        // 同步占住名额（同一批并行的几个派发之间没有空子可钻），之后出错再退回
+        /*
+         * 同步占住名额（同一批并行的几个派发之间没有空子可钻）。**派发没成功就全部退回**（这次调用的登记、累计数、在跑数 + 计时、
+         * 已经登记的子 agent 和转交给它的占用）；工具调用次数照计 —— 模型确实调了一次 delegate_task（runner 那边也计了）
+         */
         delegatedCalls.add(request.toolCallId)
         delegatedTotal += 1
         run.activeSubagents += 1
         if (run.activeSubagents === 1) pauseClock()
         const id = createId('sub')
-        const text = subagentBrief(request.brief, request.nodeIds)
-        let types: string[]
-        let prompt: string
+        let registered: RunAgent | null = null
         try {
+          const text = subagentBrief(request.brief, request.nodeIds)
           // 展开提及（= 它读过这些节点）、拿节点类型定自动加载的技能：经 canvas.read，照样重查权限
-          ;({ types, prompt } = await opened.read((doc) => ({
+          const { types, prompt } = await opened.read((doc) => ({
             types: parseNodeMentions(text).flatMap((nodeId) => {
               const node = readNodeById(doc, nodeId)
               return node ? [node.type] : []
             }),
             prompt: expandMentions(text, (nodeId) => lookupMention(doc, nodeId)),
-          })))
+          }))
+          if (run.stopped !== null) throw new Error('这一轮已经停止')
+          const plan = registry.plan({ env, previous: [], mentionedNodeTypes: types, exclude: [DELEGATE_SKILL_ID] })
+          // 子 agent 能用的 ⊆ 这一轮提供的（服务端的工具实例只按这一轮提供的造过）
+          const subOffered = new Map(plan.offered.filter((skill) => offeredSkills.has(skill.id)).map((skill) => [skill.id, skill]))
+          const loaded = plan.loaded.filter((skill) => subOffered.has(skill.id))
+          const systemPrompt = `${systemPromptFor({
+            loaded,
+            catalog: plan.catalog.filter((skill) => subOffered.has(skill.id)),
+            unavailable: [],
+            maxSkillLoads: limits.maxSkillLoads,
+          })}\n\n${subagentPrompt({ maxTurns: limits.maxTurns, replyChars: limits.subagentReplyChars })}`
+          const agent = newRunAgent(id, {
+            toolCallId: request.toolCallId,
+            brief: request.brief,
+            nodeIds: request.nodeIds,
+            offered: subOffered,
+          })
+          for (const skill of loaded) agent.loadedSkills.add(skill.id)
+          agents.set(id, agent)
+          registered = agent
+          // 父 agent 正占着的节点，原子地转交给它（比较后写）；它结束时释放，不还给父 agent。登记表出错 = 这次没派成
+          await transferNodes(run, MAIN_AGENT_ID, id, request.nodeIds)
+          // 到这里才开条目（之后不会再失败）：派发失败的那次没有条目
+          send(
+            mapper.subtaskStart({ id, toolCallId: request.toolCallId, brief: request.brief, nodeIds: request.nodeIds, startedAt: Date.now() }),
+          )
+          scheduleRunsChange(flowId)
+          console.info(`[agent] run=${run.runId} 派出子任务 ${id}（同时 ${run.activeSubagents} 个，累计 ${delegatedTotal} 个）`)
+          return {
+            ok: true,
+            agent: {
+              agentId: id,
+              systemPrompt,
+              prompt,
+              skills: { loaded: loaded.map((skill) => skill.id) },
+              limits: { maxTurns: limits.maxTurns },
+            },
+          }
         } catch (err) {
-          run.activeSubagents -= 1
+          console.warn(`[agent] run=${run.runId} 派发子任务失败，名额与占用已退回`, err)
+          if (registered) {
+            // 不认它的任何请求 / 事件；转交给它的占用释放（不还给父 agent，同它正常结束）
+            registered.finished = true
+            agents.delete(id)
+            await releaseAgentNodes(run, id).catch((releaseErr) =>
+              console.warn(`[agent] run=${run.runId} 退回子任务 ${id} 的占用失败（等它过期）`, releaseErr),
+            )
+            scheduleRunsChange(flowId)
+          }
+          delegatedCalls.delete(request.toolCallId)
+          delegatedTotal -= 1
+          run.activeSubagents = Math.max(0, run.activeSubagents - 1)
           if (run.activeSubagents === 0) resumeClock()
           return refuse(`没有派出子任务：${errorText(err)}`)
-        }
-        const plan = registry.plan({ env, previous: [], mentionedNodeTypes: types, exclude: [DELEGATE_SKILL_ID] })
-        // 子 agent 能用的 ⊆ 这一轮提供的（服务端的工具实例只按这一轮提供的造过）
-        const subOffered = new Map(plan.offered.filter((skill) => offeredSkills.has(skill.id)).map((skill) => [skill.id, skill]))
-        const loaded = plan.loaded.filter((skill) => subOffered.has(skill.id))
-        const agent = newRunAgent(id, {
-          toolCallId: request.toolCallId,
-          brief: request.brief,
-          nodeIds: request.nodeIds,
-          offered: subOffered,
-        })
-        for (const skill of loaded) agent.loadedSkills.add(skill.id)
-        agents.set(id, agent)
-        // 父 agent 正占着的节点，原子地转交给它（比较后写）；它结束时释放，不还给父 agent
-        await transferNodes(run, MAIN_AGENT_ID, id, request.nodeIds)
-        send(mapper.subtaskStart({ id, toolCallId: request.toolCallId, brief: request.brief, nodeIds: request.nodeIds, startedAt: Date.now() }))
-        scheduleRunsChange(flowId)
-        console.info(`[agent] run=${run.runId} 派出子任务 ${id}（同时 ${run.activeSubagents} 个，累计 ${delegatedTotal} 个）`)
-        return {
-          ok: true,
-          agent: {
-            agentId: id,
-            systemPrompt: `${systemPromptFor({
-              loaded,
-              catalog: plan.catalog.filter((skill) => subOffered.has(skill.id)),
-              unavailable: [],
-              maxSkillLoads: limits.maxSkillLoads,
-            })}\n\n${SUBAGENT_PROMPT}`,
-            prompt,
-            skills: { loaded: loaded.map((skill) => skill.id) },
-            limits: { maxTurns: limits.maxTurns },
-          },
         }
       }
 
@@ -2382,10 +2406,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         await closeSubagent(agent)
         const changed = [...agent.changed]
         const question = status === 'needs_confirmation' ? (request.question ?? '') : null
+        /*
+         * 回复文字取服务端自己按上报的 message_end 记的「最后一条有文字的回复」，不用 runner 报的 `text`：
+         * 老镜像取的是最后一条 assistant（只调了工具 / 出错 / 被中止时为空），而且条目上显示的和交回父 agent 的必须是同一段
+         */
+        const reply = mapper.subtaskReply(agent.id)
         send(
           mapper.subtaskFinish(agent.id, {
             status,
-            text: clipText(request.text.trim(), SUBTASK_TEXT_LIMIT),
             question,
             error: status === 'failed' ? (error ?? '子任务失败') : null,
             changedNodeIds: changed,
@@ -2396,7 +2424,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           text: subagentResultText({
             brief: agent.sub.brief,
             status,
-            text: request.text,
+            text: reply,
             question,
             error,
             changed,
@@ -2416,7 +2444,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           out.push(
             ...mapper.subtaskFinish(agent.id, {
               status: 'failed',
-              text: mapper.subtask(agent.id)?.text ?? '',
               error: '子任务没有交回结果',
               changedNodeIds: [...agent.changed],
             }),
@@ -2471,8 +2498,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             ? details.elementIds.filter((id): id is string => typeof id === 'string')
             : []
         // 错误原因取 mapper 刚算出来的那份（就是回给模型的文本），截短；它是工具自己的报错，不是用户正文
-        const calls = agent.sub ? (mapper.subtask(agent.id)?.toolCalls ?? []) : mapper.message.toolCalls
-        const view = calls.find((call) => call.id === event.toolCallId)
+        // 按原始 id 找最近一次的那条（上游复用调用 id 时，按显示 id 找会找到早先那条）
+        const view = mapper.toolCall(event.toolCallId, agent.sub ? agent.id : undefined)
         const now = Date.now()
         record({
           toolCallId: event.toolCallId,
@@ -2519,10 +2546,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             if (agent.turns >= limits.maxTurns) stopRun(run, `超过本轮步数上限 ${limits.maxTurns}，已停止`)
             // 父 agent 进了下一步：它不再在 delegate_task 里等，还没交回的子任务不会再有人等了
             if (run.activeSubagents > 0) abandonSubagents(batch)
+            // 这一步的调用都结束了：下一步复用同一个调用 id 的 delegate_task 是新的一次
+            delegatedCalls.clear()
           }
           if (event.type === 'message_end') appended.push(event.message)
           const mapped = mapper.handle(event)
-          if (event.type === 'tool_execution_end') logToolCall(event, agent)
+          if (event.type === 'tool_execution_end') {
+            logToolCall(event, agent)
+            // 这次调用结束了：之后同 id 的调用（上游复用 id）可以再派
+            delegatedCalls.delete(event.toolCallId)
+          }
           batch.push(...mapped)
           if (event.type === 'message_end' && event.steerId) deliverSteered(event.steerId, batch)
         }

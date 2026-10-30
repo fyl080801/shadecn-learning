@@ -311,6 +311,39 @@ describe("子任务条目（docs/20 §3.10.11）", () => {
     ])
   })
 
+  const subtaskUpdate = (value: Record<string, unknown>): AgentStreamEvent =>
+    ({ type: "CUSTOM", name: "agent.subtask-update", value: { id: "sub_1", ...value } }) as AgentStreamEvent
+
+  it("之后的变化帧只带变了的：合并进同 id 的那一项（工具调用按 id 更新），任务说明保留；没有那一项的、畸形的丢掉", () => {
+    const conversation = turn([
+      started,
+      echoed,
+      delegateStart,
+      subtask(),
+      subtaskUpdate({ toolCalls: [{ id: "t1", name: "add_node", summary: "新建", status: "running" }] }),
+      subtaskUpdate({ toolCalls: [{ id: "t1", name: "add_node", summary: "新建「A」", status: "done" }] }),
+      subtaskUpdate({ text: "好了" }),
+      { type: "CUSTOM", name: "agent.subtask-update", value: { id: "sub_x", text: "别的" } } as unknown as AgentStreamEvent,
+      { type: "CUSTOM", name: "agent.subtask-update", value: { text: "没 id" } } as unknown as AgentStreamEvent,
+      subtaskUpdate({ status: "done", finishedAt: 20, changedNodeIds: ["n1"] })
+    ])
+    const assistant = conversation.messages.find((message) => message.role === "assistant") as Extract<AgentChatMessage, { role: "assistant" }>
+    expect(assistant.subtasks).toEqual([
+      {
+        id: "sub_1",
+        toolCallId: "call_d",
+        brief: "搭场景",
+        nodeIds: ["d1"],
+        status: "done",
+        startedAt: 10,
+        finishedAt: 20,
+        toolCalls: [{ id: "t1", name: "add_node", summary: "新建「A」", status: "done" }],
+        text: "好了",
+        changedNodeIds: ["n1"]
+      }
+    ])
+  })
+
   it("畸形的帧丢掉、不抛；RUN_ERROR / 中断时还在跑的子任务标成失败", () => {
     const conversation = turn([
       started,

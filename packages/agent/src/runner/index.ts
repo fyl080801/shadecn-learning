@@ -166,6 +166,19 @@ const ALONE: Record<string, string> = {
 const textOf = (message: AgentMessage | undefined): string =>
   message && message.role === 'assistant' ? contentText(message.content, '').trim() : ''
 
+/**
+ * 子 agent 交回的文字：**最后一条有文字的** assistant 回复（同 pi 示例扩展 `subagent` 的 `getFinalOutput`）。
+ * 最后一条只调了工具（步数到了被 finishTurn 结束）、出错或被中止时文字为空，取它会把真回复丢掉。
+ * 服务端不靠这个：它按上报的 message_end 自己记同样的一段（`events.ts` 的 `subtaskReply`），这里报的只供参考
+ */
+export function finalReplyOf(messages: readonly AgentMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const text = textOf(messages[index])
+    if (text) return text
+  }
+  return ''
+}
+
 export async function runAgentRunner(options: RunnerOptions): Promise<void> {
   const client = createGatewayClient({
     baseUrl: options.gatewayUrl,
@@ -347,8 +360,9 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
           maxTurns: sub.limits.maxTurns,
           signal,
         })
+        // 状态看最后一条 assistant（出错 / 中止），文字取最后一条有文字的
         const last = [...result.agent.state.messages].reverse().find((message) => message.role === 'assistant')
-        const text = textOf(last)
+        const text = finalReplyOf(result.agent.state.messages)
         const asked = question as string | null
         if (asked !== null) return { status: 'needs_confirmation', text, question: asked, error: null }
         if (result.exhausted) return { status: 'failed', text, question: null, error: `超过子任务的步数上限 ${sub.limits.maxTurns}` }

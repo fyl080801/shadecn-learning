@@ -3,7 +3,11 @@ import * as Y from 'yjs'
 import { fauxAssistantMessage, fauxText, fauxToolCall, type AssistantMessage, type Context, type JsonObject } from '@earendil-works/pi-ai'
 import {
   AGENT_SUBTASK_EVENT,
+  AGENT_SUBTASK_UPDATE_EVENT,
   AgentEventType,
+  applyAgentSubtaskUpdate,
+  parseAgentSubtask,
+  parseAgentSubtaskUpdate,
   type AgentChatMessage,
   type AgentRunEntry,
   type AgentStreamEvent,
@@ -14,7 +18,7 @@ import { buildNodeRecord } from '@shadecn/shared/flow-node-types'
 import { createMemoryAuthorityProvider } from '../src/authority.ts'
 import { createDocCanvasHandle } from '../src/canvas.ts'
 import { createMemoryLeaseRegistry, type NodeLease } from '../src/occupancy.ts'
-import { GATEWAY_ROUTES } from '../src/protocol.ts'
+import { DELEGATE_BRIEF_MAX, GATEWAY_ROUTES } from '../src/protocol.ts'
 import type { SandboxDriver, SandboxSpec } from '../src/sandbox/driver.ts'
 import { createAgentRuntime, type AgentRuntimeOptions, type OpenedCanvas } from '../src/session.ts'
 import { createMemoryConversationStore, createMemoryRunLog } from '../src/store.ts'
@@ -72,6 +76,9 @@ function turnOf(context: Context): Turn {
 }
 
 const call = (name: string, args: JsonObject) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' })
+/** 指定调用 id（模拟复用 id / 不给 id 的上游） */
+const callWithId = (id: string, ...items: [string, JsonObject][]) =>
+  fauxAssistantMessage(items.map(([name, args]) => fauxToolCall(name, args, { id })), { stopReason: 'toolUse' })
 const calls = (...items: [string, JsonObject][]) =>
   fauxAssistantMessage(items.map(([name, args]) => fauxToolCall(name, args)), { stopReason: 'toolUse' })
 const say = (text: string) => fauxAssistantMessage(text)
@@ -87,7 +94,13 @@ function seedText(doc: Y.Doc, id: string, text = '原文') {
 
 const dataText = (doc: Y.Doc, id: string) => nodeGroupMap(nodesMap(doc).get(id)!, 'data')?.get('text')
 
-function setup(handler: Handler, overrides: Partial<AgentRuntimeOptions> & { wrapDriver?: (driver: SandboxDriver) => SandboxDriver } = {}) {
+interface SetupExtras {
+  wrapDriver?: (driver: SandboxDriver) => SandboxDriver
+  /** 改写 runner 发往网关的请求体（模拟不守规矩 / 老镜像的 runner）；返回 undefined = 不改 */
+  rewrite?: (route: string, body: unknown) => unknown
+}
+
+function setup(handler: Handler, overrides: Partial<AgentRuntimeOptions> & SetupExtras = {}) {
   const faux = registerScriptedModel()
   const turns: Turn[] = []
   const route: ScriptedStep = async (context, options) => {
@@ -101,7 +114,7 @@ function setup(handler: Handler, overrides: Partial<AgentRuntimeOptions> & { wra
   const authorities = createMemoryAuthorityProvider()
   const changes: AgentRunEntry[][] = []
   const base = faux.runtimeOptions()
-  const { wrapDriver, ...rest } = overrides
+  const { wrapDriver, rewrite, ...rest } = overrides
   const runtime = createAgentRuntime({
     ...base,
     driver: wrapDriver ? wrapDriver(base.driver) : base.driver,
@@ -118,35 +131,67 @@ function setup(handler: Handler, overrides: Partial<AgentRuntimeOptions> & { wra
   const sent: { route: string; token: string | null; body: unknown; reply: unknown }[] = []
   vi.stubGlobal(
     'fetch',
-    gatewayFetch(async (request) => {
-      const url = new URL(request.url)
-      if (url.pathname.includes('/llm/')) return runtime.gateway.handle(request)
+    gatewayFetch(async (original) => {
+      const url = new URL(original.url)
+      if (url.pathname.includes('/llm/')) return runtime.gateway.handle(original)
+      const route = url.pathname.replace(/^.*agent-gateway/, '')
+      let request = original
+      if (rewrite) {
+        const changed = rewrite(route, await original.clone().json().catch(() => null))
+        if (changed !== undefined) request = new Request(original, { body: JSON.stringify(changed) })
+      }
       const body = await request.clone().json().catch(() => null)
       const response = await runtime.gateway.handle(request)
       const reply = await response.clone().json().catch(() => null)
-      sent.push({ route: url.pathname.replace(/^.*agent-gateway/, ''), token: request.headers.get('authorization'), body, reply })
+      sent.push({ route, token: request.headers.get('authorization'), body, reply })
       return response
     }),
   )
   return Object.assign(runtime, { leases, store, authorities, changes, turns, sent })
 }
 
-async function start(runtime: ReturnType<typeof setup>, doc: Y.Doc, text = '开始') {
+async function start(runtime: ReturnType<typeof setup>, doc: Y.Doc, text = '开始', wrapCanvas?: (canvas: OpenedCanvas) => OpenedCanvas) {
   const events: AgentStreamEvent[] = []
   const started = await runtime.start({
     flowId: 'flow-1',
     userId: 'u1',
     conversationId: null,
     text,
-    openCanvas: async (runId: string): Promise<OpenedCanvas> => ({ ...createDocCanvasHandle(doc, { flowId: 'flow-1', runId }), async close() {} }),
+    openCanvas: async (runId: string): Promise<OpenedCanvas> => {
+      const canvas: OpenedCanvas = { ...createDocCanvasHandle(doc, { flowId: 'flow-1', runId }), async close() {} }
+      return wrapCanvas ? wrapCanvas(canvas) : canvas
+    },
     emit: (event) => events.push(event),
   })
   if (!started.ok) throw new Error(`应该启动成功：${started.message}`)
   return Object.assign(started, { events })
 }
 
+/** 派发时那一帧（完整条目） */
 const subtaskFrames = (events: AgentStreamEvent[]) =>
   events.flatMap((event) => (event.type === AgentEventType.CUSTOM && event.name === AGENT_SUBTASK_EVENT ? [event.value] : []))
+
+/** 两种子任务帧（完整条目 + 之后的变化） */
+const allSubtaskFrames = (events: AgentStreamEvent[]) =>
+  events.filter(
+    (event) => event.type === AgentEventType.CUSTOM && (event.name === AGENT_SUBTASK_EVENT || event.name === AGENT_SUBTASK_UPDATE_EVENT),
+  )
+
+/** 实时流里的子任务帧依次折起来（首帧完整、之后合并变化，和前端一样）：补发 / 只读旁观看到的条目 */
+function foldSubtasks(events: AgentStreamEvent[]): AgentSubtaskView[] {
+  const views: AgentSubtaskView[] = []
+  for (const event of allSubtaskFrames(events)) {
+    if (event.type !== AgentEventType.CUSTOM) continue
+    if (event.name === AGENT_SUBTASK_EVENT) {
+      views.push(parseAgentSubtask(event.value)!)
+      continue
+    }
+    const update = parseAgentSubtaskUpdate(event.value)!
+    const index = views.findIndex((view) => view.id === update.id)
+    views[index] = applyAgentSubtaskUpdate(views[index]!, update)
+  }
+  return views
+}
 
 function finished(events: AgentStreamEvent[]) {
   const last = events.at(-1)
@@ -552,7 +597,7 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
     expect(reported.filter((event) => event.type === 'turn_end' && event.agentId !== undefined)).toHaveLength(3)
     // 子任务的文字是第 3 步的回复（不是一条被中止的空消息）
     expect(parentSaw).toContain('读第 3 遍')
-    const last = subtaskFrames(run.events).at(-1) as AgentSubtaskView
+    const last = foldSubtasks(run.events).at(-1)
     expect(last).toMatchObject({ status: 'failed', text: '读第 3 遍', error: '超过子任务的步数上限 3' })
   })
 
@@ -644,7 +689,7 @@ describe('时长（验收 22）', () => {
 })
 
 describe('子任务条目的契约', () => {
-  it('每一帧 agent.subtask 的 value 都是完整条目；最后一帧和落定消息里的那一项一致', async () => {
+  it('派发一帧完整条目，之后每帧只带变化；依次合并 = 落定消息里的那一项', async () => {
     const doc = new Y.Doc()
     const runtime = setup(async (turn) => {
       if (turn.brief === null) return turn.step === 1 ? calls(delegate('建一个节点')) : say('好')
@@ -653,15 +698,244 @@ describe('子任务条目的契约', () => {
     })
     const run = await start(runtime, doc)
     await run.done
-    const frames = subtaskFrames(run.events)
-    // 开始、工具开始、工具结束、回复、结束
-    expect(frames.map((frame) => frame.status)).toEqual(['running', 'running', 'running', 'running', 'done'])
-    const final: AgentSubtaskView = frames.at(-1)!
-    expect(finished(run.events).result.subtasks).toEqual([final])
+    const frames = allSubtaskFrames(run.events)
+    // 开始（完整）、工具开始、工具结束、回复、结束（变化）
+    expect(frames.map((frame) => (frame as { name: string }).name)).toEqual([
+      AGENT_SUBTASK_EVENT,
+      AGENT_SUBTASK_UPDATE_EVENT,
+      AGENT_SUBTASK_UPDATE_EVENT,
+      AGENT_SUBTASK_UPDATE_EVENT,
+      AGENT_SUBTASK_UPDATE_EVENT,
+    ])
+    // 变化帧里没有任务说明
+    for (const frame of frames.slice(1)) expect((frame as { value: object }).value).not.toHaveProperty('brief')
+    const final = foldSubtasks(run.events)
+    expect(final).toMatchObject([{ status: 'done', text: '建好了' }])
+    expect(finished(run.events).result.subtasks).toEqual(final)
     // 新建的节点算它改过的
     const created = [...nodesMap(doc).keys()]
-    expect(final.changedNodeIds).toEqual(created)
+    expect(final[0]!.changedNodeIds).toEqual(created)
     // 子 agent 新建的节点它占着，结束时释放
+    expect(await runtime.leases.list('flow-1')).toEqual(new Map())
+  })
+
+  it('长任务说明 × 多次工具调用：补发量不再按「调用数 × 条目大小」放大 —— 说明只出现在派发那一帧，补发缓冲小也能中途接回', async () => {
+    const doc = new Y.Doc()
+    const brief = `长说明${'很'.repeat(DELEGATE_BRIEF_MAX - 20)}`
+    const steps = 12
+    let gate!: () => void
+    const held = new Promise<void>((resolve) => (gate = resolve))
+    let waiting = false
+    const runtime = setup(
+      async (turn) => {
+        if (turn.brief === null) return turn.step === 1 ? calls(delegate(brief)) : say('好')
+        if (turn.step <= steps) return call('read_canvas', {})
+        waiting = true
+        await held
+        return say('读完了')
+      },
+      // 旧做法每帧带完整条目：(1 + 2 × 12) 帧 × 8000 字 ≈ 20 万字，远超这里的 6 万字
+      { limits: { replayChars: 60_000 } },
+    )
+    const run = await start(runtime, doc)
+    await until(() => waiting)
+    const replayed: AgentStreamEvent[] = []
+    const subscribed = await runtime.subscribe('flow-1', run.runId, (event) => replayed.push(event))
+    expect(subscribed).toMatchObject({ ok: true })
+    gate()
+    await run.done
+    expect(replayed).toEqual(run.events)
+
+    const frames = allSubtaskFrames(run.events)
+    expect(frames.length).toBeGreaterThanOrEqual(1 + 2 * steps)
+    expect(frames.filter((frame) => JSON.stringify(frame).includes(brief))).toHaveLength(1)
+    const subtaskChars = frames.reduce((sum, frame) => sum + JSON.stringify(frame).length, 0)
+    // 说明一份 + 每次调用一条小变化
+    expect(subtaskChars).toBeLessThan(brief.length + 400 * frames.length)
+    // 接回的、发起人看到的、落库的是同一个完整条目
+    const stored = finished(run.events).result.subtasks!
+    expect(foldSubtasks(replayed)).toEqual(stored)
+    expect(stored[0]!.toolCalls).toHaveLength(steps)
+    expect(stored[0]!.brief).toBe(brief)
+  })
+})
+
+describe('交回的结果文字（最后一条有文字的回复）', () => {
+  it('子 agent 先说了结论再调工具、下一步模型出错：交回父 agent 和条目上的都是那句结论，不是空的；不信 runner 报的文字', async () => {
+    const doc = new Y.Doc()
+    let parentSaw = ''
+    const runtime = setup(
+      async (turn) => {
+        if (turn.brief === null) {
+          if (turn.step === 1) return calls(delegate('查一下'))
+          parentSaw = turn.lastResult
+          return say('好')
+        }
+        if (turn.step === 1) return fauxAssistantMessage([fauxText('结论：画布是空的'), fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' })
+        return fauxAssistantMessage('', { stopReason: 'error', errorMessage: '上游炸了' })
+      },
+      // 老镜像 / 不守规矩的 runner 报来的文字：服务端不用它
+      { rewrite: (route, body) => (route === GATEWAY_ROUTES.agentFinish ? { ...(body as object), text: 'runner 编的' } : undefined) },
+    )
+    const run = await start(runtime, doc)
+    await run.done
+    expect(parentSaw).toContain('子任务失败')
+    expect(parentSaw).toContain('结论：画布是空的')
+    expect(parentSaw).not.toContain('runner 编的')
+    expect(foldSubtasks(run.events)).toMatchObject([{ status: 'failed', text: '结论：画布是空的' }])
+    expect(finished(run.events).result.subtasks).toMatchObject([{ text: '结论：画布是空的' }])
+  })
+})
+
+describe('调用 id：上游复用 / 不给', () => {
+  it('父 agent 两步都用 call_0 调 delegate_task、子 agent 也每步用 call_0：两次都派出，条目各挂各的那次调用', async () => {
+    const doc = new Y.Doc()
+    const results: string[] = []
+    const runtime = setup(async (turn) => {
+      if (turn.brief === null) {
+        if (turn.step > 1) results.push(turn.lastResult)
+        if (turn.step === 1) return callWithId('call_0', delegate('第一件'))
+        if (turn.step === 2) return callWithId('call_0', delegate('第二件'))
+        return say('都好了')
+      }
+      if (turn.step <= 2) return callWithId('call_0', ['read_canvas', {}])
+      return say(`${turn.brief} 好了`)
+    })
+    const run = await start(runtime, doc)
+    await run.done
+    expect(results).toHaveLength(2)
+    for (const text of results) expect(text).toContain('子任务完成')
+    const last = finished(run.events)
+    expect(last.outcome).toEqual({ type: 'success' })
+    expect(last.result.toolCalls.map((item) => [item.id, item.name, item.status])).toEqual([
+      ['call_0', 'delegate_task', 'done'],
+      ['call_0#2', 'delegate_task', 'done'],
+    ])
+    const subtasks = last.result.subtasks!
+    expect(subtasks.map((task) => [task.brief, task.toolCallId, task.status])).toEqual([
+      ['第一件', 'call_0', 'done'],
+      ['第二件', 'call_0#2', 'done'],
+    ])
+    for (const task of subtasks) {
+      expect(task.toolCalls.map((item) => [item.id, item.status])).toEqual([
+        ['call_0', 'done'],
+        ['call_0#2', 'done'],
+      ])
+    }
+    expect(foldSubtasks(run.events)).toEqual(subtasks)
+  })
+
+  it('上游不给调用 id（pi-ai 填空串）：runner 补一个，事件不被整批拒，这一轮照常做完', async () => {
+    const doc = new Y.Doc()
+    const runtime = setup(async (turn) => {
+      if (turn.brief === null) return turn.step === 1 ? callWithId('', delegate('甲'), delegate('乙')) : say('好')
+      return turn.step === 1 ? callWithId('', ['read_canvas', {}]) : say(`${turn.brief} 好了`)
+    })
+    const run = await start(runtime, doc)
+    await run.done
+    const last = finished(run.events)
+    expect(last.outcome).toEqual({ type: 'success' })
+    const ids = last.result.toolCalls.map((item) => item.id)
+    expect(ids).toHaveLength(2)
+    expect(new Set(ids).size).toBe(2)
+    for (const id of ids) expect(id).toMatch(/^call_/)
+    expect(last.result.subtasks!.map((task) => task.status)).toEqual(['done', 'done'])
+    expect(last.result.subtasks!.map((task) => task.toolCallId).sort()).toEqual([...ids].sort())
+    // 没有一批事件被网关拒掉
+    expect(runtime.sent.filter((entry) => entry.route === GATEWAY_ROUTES.events && entry.reply === null)).toEqual([])
+  })
+})
+
+describe('派发没成功：名额、计时、登记、占用全部退回', () => {
+  it('展开提及时读画布失败：拒绝是给父 agent 的工具错误；累计名额退回（上限 1 也能再派一次），计时恢复（之后单轮上限照常生效）', async () => {
+    const doc = new Y.Doc()
+    seedText(doc, 'n1')
+    // 只让派发那一次的读失败（开始时的读照常）
+    let failRead = false
+    const results: string[] = []
+    const runtime = setup(
+      async (turn, signal) => {
+        if (turn.brief === null) {
+          if (turn.step > 1) results.push(turn.lastResult)
+          if (turn.step === 1) {
+            failRead = true
+            return callWithId('call_0', delegate('读 n1', ['n1']))
+          }
+          if (turn.step === 2) {
+            failRead = false
+            return callWithId('call_0', delegate('再读 n1', ['n1']))
+          }
+          // 子任务都结束了：单轮计时恢复，挂住到超时
+          return hang(signal)
+        }
+        return say('读到了')
+      },
+      { limits: { maxSubagentsPerRun: 1, maxSubagents: 1, timeoutMs: 400, totalTimeoutMs: 10_000, idleTimeoutMs: 5000 } },
+    )
+    const run = await start(runtime, doc, '开始', (canvas) => ({
+      ...canvas,
+      read: (fn) => {
+        if (failRead) return Promise.reject(new Error('画布读不到'))
+        return canvas.read(fn)
+      },
+    }))
+    await run.done
+    expect(results[0]).toContain('没有派出子任务')
+    expect(results[0]).toContain('画布读不到')
+    expect(results[1]).toContain('子任务完成')
+    const last = finished(run.events)
+    expect(last.result.error).toContain('超过 0.4 秒')
+    expect(last.result.subtasks).toMatchObject([{ brief: '再读 n1', status: 'done' }])
+    // 派发失败的那次没有条目、没有开始帧
+    expect(subtaskFrames(run.events)).toHaveLength(1)
+  })
+
+  it('转交占用时登记表出错：这次派发被拒，已转交的占用释放，子 agent 不留登记；工具调用次数照计', async () => {
+    const doc = new Y.Doc()
+    seedText(doc, 'n1')
+    seedText(doc, 'n2')
+    const seen: { delegate?: string; n1?: NodeLease | null; n2?: NodeLease | null; after?: string } = {}
+    let transfers = 0
+    const runtime: ReturnType<typeof setup> = setup(
+      async (turn) => {
+        if (turn.brief === null) {
+          if (turn.step === 1) return calls(['get_node', { id: 'n1' }], ['get_node', { id: 'n2' }])
+          if (turn.step === 2) return calls(['update_node', { id: 'n1', data: { text: '父1' } }], ['update_node', { id: 'n2', data: { text: '父2' } }])
+          if (turn.step === 3) return calls(delegate('改两个', ['n1', 'n2']))
+          if (turn.step === 4) {
+            seen.delegate = turn.lastResult
+            seen.n1 = await runtime.leases.get('flow-1', 'n1')
+            seen.n2 = await runtime.leases.get('flow-1', 'n2')
+            return call('read_canvas', {})
+          }
+          seen.after = turn.lastResult
+          return say('好')
+        }
+        return say('不该跑到这里')
+      },
+      { limits: { maxToolCalls: 6 } },
+    )
+    // 第一个转交成功，第二个时登记表炸了
+    const transfer = runtime.leases.transfer.bind(runtime.leases)
+    runtime.leases.transfer = async (...args) => {
+      transfers += 1
+      if (transfers === 2) throw new Error('redis 不可用')
+      return transfer(...args)
+    }
+    const run = await start(runtime, doc)
+    await run.done
+    expect(seen.delegate).toContain('没有派出子任务')
+    expect(seen.delegate).toContain('redis 不可用')
+    // 已转交给子 agent 的 n1 释放了（不还给父 agent）；转交失败的 n2 仍是父 agent 的
+    expect(seen.n1).toBeNull()
+    expect(seen.n2).toMatchObject({ runId: run.runId })
+    expect(seen.n2?.agentId ?? 'main').toBe('main')
+    // 没有子 agent 跑过、没有条目
+    expect(runtime.turns.filter((turn) => turn.brief !== null)).toEqual([])
+    expect(finished(run.events).result.subtasks).toBeUndefined()
+    // get_node ×2 + update_node ×2 + delegate_task（被拒也算）+ read_canvas = 6：正好到顶，read_canvas 还能执行
+    expect(seen.after).not.toContain('已达上限')
+    expect(finished(run.events).outcome).toEqual({ type: 'success' })
     expect(await runtime.leases.list('flow-1')).toEqual(new Map())
   })
 })

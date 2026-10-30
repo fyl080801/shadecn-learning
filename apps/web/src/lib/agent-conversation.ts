@@ -2,9 +2,12 @@ import {
   AGENT_CANVAS_CHANGE_EVENT,
   AGENT_SKILL_LOADED_EVENT,
   AGENT_SUBTASK_EVENT,
+  AGENT_SUBTASK_UPDATE_EVENT,
   AGENT_USER_MESSAGE_EVENT,
   AgentEventType,
+  applyAgentSubtaskUpdate,
   parseAgentSubtask,
+  parseAgentSubtaskUpdate,
   type AgentChatMessage,
   type AgentStreamEvent,
   type AgentToolCallMetadata,
@@ -147,7 +150,7 @@ function settleRunningTools(message: AssistantMessage | null) {
 }
 
 /**
- * 子任务条目（docs/20 §3.10.11）：服务端每次发的是这一项的完整样子 —— 解析过（畸形的丢掉）再按 id 整条替换进它所属的 assistant 消息。
+ * 子任务条目（docs/20 §3.10.11）：派发时那一帧是这一项的完整样子 —— 解析过（畸形的丢掉）再按 id 整条替换进它所属的 assistant 消息。
  * 属于哪条消息：本轮那条；还没有（理论上不会：派发之前一定有那次 delegate_task 的 TOOL_CALL_START）就按 toolCallId 找。
  */
 function applySubtask(conversation: AgentConversation, value: unknown) {
@@ -165,6 +168,24 @@ function applySubtask(conversation: AgentConversation, value: unknown) {
   const index = list.findIndex((item) => item.id === task.id)
   if (index >= 0) list.splice(index, 1, task)
   else list.push(task)
+}
+
+/**
+ * 子任务条目的一次变化（之后的每一帧只带变了的）：解析过再合并进同 id 的那一项（先找本轮那条 assistant，再全表找）。
+ * 还没有那一项（没收到派发那一帧）就丢掉 —— 补发总是从 RUN_STARTED 起，正常不会发生
+ */
+function applySubtaskUpdate(conversation: AgentConversation, value: unknown) {
+  const update = parseAgentSubtaskUpdate(value)
+  if (!update) return
+  const current = findAssistant(conversation, conversation.assistantId)
+  const owners = current ? [current, ...conversation.messages] : conversation.messages
+  for (const message of owners) {
+    if (message.role !== "assistant" || !message.subtasks) continue
+    const index = message.subtasks.findIndex((item) => item.id === update.id)
+    if (index < 0) continue
+    message.subtasks.splice(index, 1, applyAgentSubtaskUpdate(message.subtasks[index]!, update))
+    return
+  }
 }
 
 /** 用服务端落定的那条替换本地拼出来的；本地没有就追加 */
@@ -197,6 +218,10 @@ export function applyAgentEvent(conversation: AgentConversation, event: AgentStr
       }
       if (event.name === AGENT_SUBTASK_EVENT) {
         applySubtask(conversation, event.value)
+        return
+      }
+      if (event.name === AGENT_SUBTASK_UPDATE_EVENT) {
+        applySubtaskUpdate(conversation, event.value)
         return
       }
       if (event.name !== AGENT_USER_MESSAGE_EVENT) return

@@ -3,6 +3,7 @@ import {
   AGENT_CANVAS_CHANGE_EVENT,
   AGENT_SKILL_LOADED_EVENT,
   AGENT_SUBTASK_EVENT,
+  AGENT_SUBTASK_UPDATE_EVENT,
   AGENT_USER_MESSAGE_EVENT,
   AgentEventType,
   type AgentCanvasChangeMessage,
@@ -10,6 +11,7 @@ import {
   type AgentChatMessage,
   type AgentStreamEvent,
   type AgentSubtaskStatus,
+  type AgentSubtaskUpdate,
   type AgentSubtaskView,
   type AgentToolCallMetadata,
   type AgentToolCallView,
@@ -45,9 +47,15 @@ import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/r
  *   模型上下文时 —— pi 把 runner 交给它的那条消息放进上下文的那一刻），这里只管形状。
  * - 技能加载（docs/23 §3.6）：`load_skill` **不作为工具调用条目出现**（不发 TOOL_CALL_*，也不进 assistant 消息的
  *   `toolCalls`）；网关加载成功时发 CUSTOM `agent.skill-loaded`，`value` 就是对话里存的那条 `skill-loaded` 消息。
+ * - 工具调用的 id：线上的 `toolCallId` / `toolCalls[].id` 在一条 assistant 消息（一个子任务条目）里唯一。上游复用调用 id
+ *   （有的端点每次回复都从 `call_0` 起）时，后来的那条加后缀 `#2`、`#3`…；同一个原始 id 的 end 归到最近一次 start 的那一条。
+ *   模型上下文、工具调用日志仍用原始 id（它们本来就按批对应）。
  * - 子任务（docs/20 §3.10.11）：父 agent 的 `delegate_task` 照常是一条工具调用；子 agent 的事件（runner 带着它的 agent id 上报）
- *   **不进**这条 assistant 消息的文字和 `toolCalls`，而是改它 `subtasks` 里对应的那一项，每次变化发一帧 CUSTOM `agent.subtask`
- *   （`value` = 这一项的完整样子）。子 agent 的文字增量不逐帧发：只在它的一条回复结束（message_end）时更新 `text`。
+ *   **不进**这条 assistant 消息的文字和 `toolCalls`，而是改它 `subtasks` 里对应的那一项：派发时一帧 CUSTOM `agent.subtask`
+ *   （完整条目），之后每次变化一帧 CUSTOM `agent.subtask-update`（**只带变了的**：新的 / 变了的那条工具调用、新的回复、结束时的状态）——
+ *   完整条目带着最长 8000 字的任务说明和全部工具调用，逐帧重复会让补发量随调用数成倍增长。落库的 `subtasks` 是完整条目。
+ *   子 agent 的文字增量不逐帧发：只在它的一条**有文字的**回复结束（message_end）时更新 `text` —— 所以 `text` 总是它最后一条有文字的回复
+ *   （最后一步只调了工具、出错或被中止时也不会变成空），交回父 agent 的结果文字也取它（{@link RunEventMapper.subtaskReply}，不信 runner 报的）。
  *   它的 `load_skill` / `request_confirmation` 不列进它的工具调用（状态和问题已经在条目上了）。
  */
 
@@ -69,8 +77,11 @@ export interface RunEventMapperOptions {
   now?: () => number
 }
 
-/** 一个子任务条目里最多记多少条工具调用（落库、每次快照都带着它们；预算本来就全轮共用，到不了） */
+/** 一个子任务条目里最多记多少条工具调用（落库带着它们；预算本来就全轮共用，到不了） */
 const SUBTASK_TOOL_CALLS_LIMIT = 100
+
+/** 子任务条目里（给人看、随对话落库）留子 agent 回复的多少字；交回父 agent 的另按 `subagentReplyChars` 截 */
+export const SUBTASK_TEXT_LIMIT = 8000
 
 /** 子任务条目开始时要的东西（服务端在 `/agent/delegate` 登记时给） */
 export interface SubtaskStart {
@@ -81,10 +92,9 @@ export interface SubtaskStart {
   startedAt: number
 }
 
-/** 子任务条目结束时（`/agent/finish`，服务端已改判过状态） */
+/** 子任务条目结束时（`/agent/finish`，服务端已改判过状态）。回复文字不在这里：条目上已经是它最后一条有文字的回复 */
 export interface SubtaskEnd {
   status: Exclude<AgentSubtaskStatus, 'running'>
-  text: string
   question?: string | null
   error?: string | null
   changedNodeIds: readonly string[]
@@ -114,6 +124,26 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…（已截断，共 ${text.length} 字）` : text
 }
 
+/** 一条消息 / 一个子任务条目里工具调用的显示 id：没用过就是原始 id，用过了（上游复用 id）加 `#2`、`#3`… */
+function uniqueCallId(raw: string, used: Set<string>): string {
+  let id = raw
+  for (let n = 2; used.has(id); n += 1) id = `${raw}#${n}`
+  used.add(id)
+  return id
+}
+
+/** assistant 消息里的文字部分拼起来（子 agent 的一条回复） */
+function assistantText(message: unknown): string {
+  const content = (message as { content?: unknown }).content
+  if (typeof content === 'string') return content.trim()
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((part): part is { type: 'text'; text: string } => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('')
+    .trim()
+}
+
 export interface RunEventMapper {
   /** RUN_STARTED + 回显用户消息 */
   start(userMessage: UserChatMessage): AgentStreamEvent[]
@@ -123,14 +153,21 @@ export interface RunEventMapper {
   canvasChange(message: AgentCanvasChangeMessage): AgentStreamEvent[]
   /** 一次技能加载（同上，先关文字段） */
   skillLoaded(message: AgentSkillLoadedMessage): AgentStreamEvent[]
-  /** 一个子任务开始了（父 agent 的 `delegate_task` 登记成功）：条目进 `subtasks`，发一帧 */
+  /**
+   * 一个子任务开始了（父 agent 的 `delegate_task` 登记成功）：条目进 `subtasks`，发一帧完整条目。
+   * `start.toolCallId` 是父 agent 那次调用的**原始** id，这里换成它在 `toolCalls` 里那一条的显示 id
+   */
   subtaskStart(start: SubtaskStart): AgentStreamEvent[]
-  /** 一个子 agent 上报的事件 → 它那一项的变化（没变化就是空数组）；认不出的 id 忽略 */
+  /** 一个子 agent 上报的事件 → 它那一项的变化帧（只带变了的；没变化就是空数组）；认不出的 id 忽略 */
   subtaskEvent(agentId: string, event: AgentEvent | RunnerEvent): AgentStreamEvent[]
   /** 一个子任务结束了 */
   subtaskFinish(agentId: string, end: SubtaskEnd): AgentStreamEvent[]
   /** 这一轮的某个子任务条目（只读用）；没有为 undefined */
   subtask(agentId: string): AgentSubtaskView | undefined
+  /** 子 agent 最后一条有文字的回复（服务端按上报的 message_end 记的，没截短）；没有为空串 */
+  subtaskReply(agentId: string): string
+  /** 原始调用 id 最近一次对应的那条工具调用（父 agent 的；给了 `subagentId` 就是那个子 agent 的）；没有为 undefined */
+  toolCall(toolCallId: string, subagentId?: string): AgentToolCallView | undefined
   /** 收尾：关掉没关的文字段，还在跑的子任务标成失败，再发 RUN_FINISHED / RUN_ERROR */
   finish(outcome: RunOutcome): AgentStreamEvent[]
   /** 这一轮的 assistant 消息（随事件推进；`finish` 之后是最终态） */
@@ -150,9 +187,18 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
     toolCalls: [],
     createdAt: now(),
   }
+  /** 原始调用 id → 它最近一次 start 的那条工具调用（end 归到它） */
   const calls = new Map<string, AgentToolCallView>()
-  /** 子 agent id → 它的条目（就是 `message.subtasks` 里的那个对象）和它的工具调用 */
-  const subtasks = new Map<string, { view: AgentSubtaskView; calls: Map<string, AgentToolCallView> }>()
+  /** `message.toolCalls` 里用过的显示 id */
+  const callIds = new Set<string>()
+  /**
+   * 子 agent id → 它的条目（就是 `message.subtasks` 里的那个对象）、它的工具调用（原始 id → 那一条）、
+   * 条目里用过的显示 id、它最后一条有文字的回复（没截短）
+   */
+  const subtasks = new Map<
+    string,
+    { view: AgentSubtaskView; calls: Map<string, AgentToolCallView>; ids: Set<string>; reply: string }
+  >()
   let textOpen = false
   let modelError: string | undefined
 
@@ -188,19 +234,34 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
     return { type: AgentEventType.CUSTOM, name: AGENT_SUBTASK_EVENT, value: structuredClone(view), timestamp: now() }
   }
 
-  /** 结束一个条目：还在转的工具调用一律算出错 */
-  function settle(view: AgentSubtaskView, end: SubtaskEnd) {
+  /** 一次变化：只带变了的（同样拷一份） */
+  function updateFrame(update: AgentSubtaskUpdate): AgentStreamEvent {
+    return { type: AgentEventType.CUSTOM, name: AGENT_SUBTASK_UPDATE_EVENT, value: structuredClone(update), timestamp: now() }
+  }
+
+  /** 结束一个条目：还在转的工具调用一律算出错。返回这次变化（含被改成出错的那几条工具调用） */
+  function settle(view: AgentSubtaskView, end: SubtaskEnd): AgentSubtaskUpdate {
     view.status = end.status
-    view.text = end.text
     view.finishedAt = now()
     view.changedNodeIds = [...end.changedNodeIds]
     if (end.question) view.question = end.question
     if (end.error) view.error = end.error
+    const settled: AgentToolCallView[] = []
     for (const call of view.toolCalls) {
       if (call.status === 'running') {
         call.status = 'error'
         call.error = '未完成'
+        settled.push(call)
       }
+    }
+    return {
+      id: view.id,
+      status: view.status,
+      finishedAt: view.finishedAt,
+      changedNodeIds: view.changedNodeIds,
+      ...(view.question ? { question: view.question } : {}),
+      ...(view.error ? { error: view.error } : {}),
+      ...(settled.length > 0 ? { toolCalls: settled } : {}),
     }
   }
 
@@ -252,7 +313,7 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
     subtaskStart(start) {
       const view: AgentSubtaskView = {
         id: start.id,
-        toolCallId: start.toolCallId,
+        toolCallId: calls.get(start.toolCallId)?.id ?? start.toolCallId,
         brief: start.brief,
         nodeIds: [...start.nodeIds],
         status: 'running',
@@ -263,7 +324,7 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
       }
       message.subtasks ??= []
       message.subtasks.push(view)
-      subtasks.set(view.id, { view, calls: new Map() })
+      subtasks.set(view.id, { view, calls: new Map(), ids: new Set(), reply: '' })
       return [subtaskFrame(view)]
     },
 
@@ -274,28 +335,32 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
       switch (event.type) {
         case 'message_end': {
           if (event.message.role !== 'assistant') return []
-          const text = event.message.content
-            .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
-            .map((part) => part.text)
-            .join('')
-            .trim()
-          if (!text || text === view.text) return []
-          view.text = text
-          return [subtaskFrame(view)]
+          // 只调了工具 / 出错 / 被中止的那条没有文字：不改，条目上留着上一条有文字的回复
+          const text = assistantText(event.message)
+          if (!text) return []
+          entry.reply = text
+          const shown = clip(text, SUBTASK_TEXT_LIMIT)
+          if (shown === view.text) return []
+          view.text = shown
+          return [updateFrame({ id: view.id, text: shown })]
         }
         case 'tool_execution_start': {
           if (event.toolName === LOAD_SKILL_TOOL_NAME || event.toolName === REQUEST_CONFIRMATION_TOOL_NAME) return []
-          if (entry.calls.has(event.toolCallId) || view.toolCalls.length >= SUBTASK_TOOL_CALLS_LIMIT) return []
+          if (view.toolCalls.length >= SUBTASK_TOOL_CALLS_LIMIT) {
+            // 不列这一条：它的 end 也别归到同一个原始 id 以前的那条上
+            entry.calls.delete(event.toolCallId)
+            return []
+          }
           let summary: string
           try {
             summary = describeTool(event.toolName, event.args)
           } catch {
             summary = event.toolName
           }
-          const call: AgentToolCallView = { id: event.toolCallId, name: event.toolName, summary, status: 'running' }
-          entry.calls.set(call.id, call)
+          const call: AgentToolCallView = { id: uniqueCallId(event.toolCallId, entry.ids), name: event.toolName, summary, status: 'running' }
+          entry.calls.set(event.toolCallId, call)
           view.toolCalls.push(call)
-          return [subtaskFrame(view)]
+          return [updateFrame({ id: view.id, toolCalls: [call] })]
         }
         case 'tool_execution_end': {
           const call = entry.calls.get(event.toolCallId)
@@ -307,7 +372,7 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
             call.status = 'done'
             call.summary = resultSummary(event.result) ?? call.summary
           }
-          return [subtaskFrame(view)]
+          return [updateFrame({ id: view.id, toolCalls: [call] })]
         }
         default:
           return []
@@ -317,11 +382,15 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
     subtaskFinish(agentId, end) {
       const entry = subtasks.get(agentId)
       if (!entry || entry.view.status !== 'running') return []
-      settle(entry.view, end)
-      return [subtaskFrame(entry.view)]
+      return [updateFrame(settle(entry.view, end))]
     },
 
     subtask: (agentId) => subtasks.get(agentId)?.view,
+
+    subtaskReply: (agentId) => subtasks.get(agentId)?.reply ?? '',
+
+    toolCall: (toolCallId, subagentId) =>
+      subagentId === undefined ? calls.get(toolCallId) : subtasks.get(subagentId)?.calls.get(toolCallId),
 
     handle(event) {
       const out: AgentStreamEvent[] = []
@@ -353,12 +422,12 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
             summary = event.toolName
           }
           const call: AgentToolCallView = {
-            id: event.toolCallId,
+            id: uniqueCallId(event.toolCallId, callIds),
             name: event.toolName,
             summary,
             status: 'running',
           }
-          calls.set(call.id, call)
+          calls.set(event.toolCallId, call)
           message.toolCalls.push(call)
           out.push(
             {
@@ -383,8 +452,8 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
           let call = calls.get(event.toolCallId)
           if (!call) {
             // 理论上不会：没有 start 的 end。补一条，别让结果凭空丢掉
-            call = { id: event.toolCallId, name: event.toolName, summary: event.toolName, status: 'running' }
-            calls.set(call.id, call)
+            call = { id: uniqueCallId(event.toolCallId, callIds), name: event.toolName, summary: event.toolName, status: 'running' }
+            calls.set(event.toolCallId, call)
             message.toolCalls.push(call)
           }
           const body = resultText(event.result)
@@ -418,13 +487,12 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
       // 还在跑的子任务（这一轮被停 / 出错打断的）：标成失败，各发一帧（RUN_ERROR 不带落定的消息，前端靠这一帧收住它）
       for (const { view } of subtasks.values()) {
         if (view.status !== 'running') continue
-        settle(view, {
+        const update = settle(view, {
           status: 'failed',
-          text: view.text,
           error: outcome.type === 'cancelled' || outcome.type === 'expired' ? (outcome.reason ?? '已中止') : '这一轮结束时它还没做完',
           changedNodeIds: view.changedNodeIds,
         })
-        out.push(subtaskFrame(view))
+        out.push(updateFrame(update))
       }
       // 一轮收尾时还挂着的工具调用（中止 / 出错打断的）：别让界面一直转圈
       for (const call of message.toolCalls) {

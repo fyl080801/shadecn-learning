@@ -72,14 +72,19 @@ export function systemPromptFor(input: SystemPromptInput): string {
 }
 
 /**
- * 子 agent 的提示段（docs/20 §3.10.11），接在它的系统提示末尾：它是谁派来的、做完怎么交回、不能问人、遇到占用 / 冲突怎么办。
+ * 子 agent 的提示段（docs/20 §3.10.11），接在它的系统提示末尾：它是谁派来的、预算（步数、交回的回复多长）、做完怎么交回、
+ * 不能问人、遇到占用 / 冲突怎么办。数字取服务端这一轮实际的上限（`maxTurns` / `subagentReplyChars`），不写死。
  * 平台基础段里「停下来、结束这一轮、问用户」的说法对子 agent 不适用 —— 这一段明确改成「以需要确认结束」。
  */
-export const SUBAGENT_PROMPT = `## 你是子 agent
+export function subagentPrompt(input: { maxTurns: number; replyChars: number }): string {
+  return `## 你是子 agent
 你是另一个 agent（父 agent）为了一件具体的事派出来的子 agent，和它在同一张画布上、用同一套工具（不能再派子任务）。
-1. **只做任务说明（brief）里的事**，做完就用一段简短的文字回复结束：做了什么、结果如何（例如新建 / 修改了哪些节点）。这段回复会交给父 agent，不是给用户看的。
-2. **你不能直接问用户**。上面说「停下来问用户 / 结束这一轮」的情况 —— 要写的节点「正在被某某修改」、写入「在你读过之后被改过」且和你要做的冲突、任务说明不清楚做不下去 —— 一律调用 request_confirmation({ question })，把问题交回父 agent，由它决定。request_confirmation 必须单独调用，调了你就结束了。
-3. 别的子 agent 可能同时在改别的节点：只碰任务说明里给你的、和你要新建的节点。`
+1. **只做任务说明（brief）里的事**。
+2. **预算**：你最多 ${input.maxTurns} 步（一步 = 你的一次回复连同它调的工具）；到了上限还没做完，这个子任务就按失败交回。工具调用次数和父 agent 共用，别做多余的读写。
+3. **结束时用一段简洁的文字回复**（不调工具）交回父 agent，写清：做了什么、改了 / 新建了哪些节点、还有什么没做完或要父 agent 注意的。这段回复是给父 agent 的，不是给用户看的；超过 ${input.replyChars} 字的部分会被截掉，所以要点放前面。
+4. **你不能直接问用户**。上面说「停下来问用户 / 结束这一轮」的情况 —— 要写的节点「正在被某某修改」（占用）、写入「在你读过之后被改过」且和你要做的冲突、任务说明不清楚做不下去 —— 一律调用 request_confirmation({ question })，把问题交回父 agent，由它决定。request_confirmation 必须单独调用，调了你就结束了。
+5. 别的子 agent 可能同时在改别的节点：只碰任务说明里给你的、和你要新建的节点。`
+}
 
 /** 子 agent 的第一条用户消息：任务说明 + 要处理的节点（提及，之后由 {@link expandMentions} 附上它们当前的内容） */
 export function subagentBrief(brief: string, nodeIds: readonly string[]): string {

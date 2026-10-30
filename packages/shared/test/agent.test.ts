@@ -11,6 +11,8 @@ import {
   formatAgentRunsMessage,
   parseAgentRunsMessage,
   parseAgentSubtask,
+  parseAgentSubtaskUpdate,
+  applyAgentSubtaskUpdate,
   withMine,
   type AgentRunEntry,
 } from '../src/agent.ts'
@@ -228,6 +230,45 @@ describe('子任务（docs/20 §3.10.11）', () => {
     for (const bad of [null, 'x', [], { ...valid, id: '' }, { ...valid, status: 'paused' }, { ...valid, startedAt: 'now' }, { ...valid, toolCallId: 1 }]) {
       expect(parseAgentSubtask(bad)).toBeNull()
     }
+  })
+
+  it('变化帧防御式解析：没有 id → null；形状不对的字段丢掉（= 没变）', () => {
+    for (const bad of [null, 'x', [], {}, { id: '' }, { id: 3 }]) expect(parseAgentSubtaskUpdate(bad)).toBeNull()
+    expect(
+      parseAgentSubtaskUpdate({
+        id: 'sub_1',
+        status: 'paused',
+        finishedAt: 'later',
+        text: 5,
+        toolCalls: [{ id: 't1', name: 'get_node', summary: '读', status: 'done' }, 'junk'],
+        brief: '不该在这里',
+      }),
+    ).toEqual({ id: 'sub_1', toolCalls: [{ id: 't1', name: 'get_node', summary: '读', status: 'done' }] })
+  })
+
+  it('合并变化：工具调用按 id 替换、新的追加；没带的字段不变；id 对不上原样返回；不改传进来的条目', () => {
+    const view = parseAgentSubtask(valid)!
+    const merged = applyAgentSubtaskUpdate(view, {
+      id: 'sub_1',
+      text: '新回复',
+      toolCalls: [
+        { id: 't1', name: 'add_node', summary: '新建「A」', status: 'done' },
+        { id: 't3', name: 'get_node', summary: '读', status: 'running' },
+      ],
+    })
+    expect(merged).toEqual({
+      ...view,
+      text: '新回复',
+      toolCalls: [
+        { id: 't1', name: 'add_node', summary: '新建「A」', status: 'done' },
+        { id: 't3', name: 'get_node', summary: '读', status: 'running' },
+      ],
+    })
+    expect(view.text).toBe('好')
+    expect(view.toolCalls).toHaveLength(1)
+    const settled = applyAgentSubtaskUpdate(merged, { id: 'sub_1', status: 'failed', error: '炸了', finishedAt: 30, changedNodeIds: ['n9'] })
+    expect(settled).toMatchObject({ status: 'failed', error: '炸了', finishedAt: 30, changedNodeIds: ['n9'], brief: '搭场景', text: '新回复' })
+    expect(applyAgentSubtaskUpdate(view, { id: 'sub_2', text: 'x' })).toBe(view)
   })
 
   it('任务列表那一项的 subtasks：正整数才留下', () => {
