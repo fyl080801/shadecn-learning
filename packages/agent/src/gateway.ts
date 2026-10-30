@@ -1,15 +1,19 @@
-import type { Api, Model } from '@earendil-works/pi-ai'
+import type { ProxyAssistantMessageEvent } from '@earendil-works/pi-agent-core'
+import { normalizeContext, type Api, type AssistantMessage, type Model } from '@earendil-works/pi-ai'
 import { isRunAuthorityError } from './authority.ts'
 import { BUILD_ID, buildsDiffer } from './build-id.ts'
+import { AGENT_CLIENT_IDENTITY, outputTokenLimit, proxyFramesOf, streamUpstream } from './model-stream.ts'
 import {
   AGENT_GATEWAY_PATH,
   GATEWAY_ROUTES,
+  modelStreamAgentOf,
   PROTOCOL_MISMATCH_ERROR,
   PROTOCOL_MISMATCH_STATUS,
   RUNNER_PROTOCOL_VERSION,
   parseDelegateRequest,
   parseEventsRequest,
   parseFinishRequest,
+  parseModelStreamRequest,
   parseSubagentFinishRequest,
   parseStsTokenRequest,
   parseToolCallRequest,
@@ -17,6 +21,7 @@ import {
   type DelegateRequest,
   type DelegateResponse,
   type FinishRequest,
+  type ModelStreamErrorBody,
   type ProtocolMismatchBody,
   type RunnerEvent,
   type RunnerInput,
@@ -45,7 +50,7 @@ import {
  * ## 这里管什么、不管什么
  *
  * - 管：STS（bootstrap token → run 短令牌、续期）、令牌校验（验签 + 这一轮还在 + Grant id 对得上）、
- *   请求体的大小与形状、`/events` 的批次顺序、模型代理（注入真实 key、只放行这个模型的那一个接口）；
+ *   请求体的大小与形状、`/events` 的批次顺序、服务端调用模型（真实 key 只在这里，见下）；
  * - 不管：判权与执行。画布工具、改动通知、事件、收尾交给这一轮登记的 {@link GatewayRunHandlers}
  *   （编排层 `session.ts` 实现，判权走这一轮的 `authorize`，执行走服务端的 `tools.ts`）。
  *   **令牌里的 scope 从来不读**：每一次调用都按 Grant 实时判（docs/22 §2 第 4 条）。
@@ -56,115 +61,43 @@ import {
  * 这一轮已被 {@link GatewayRun.close}（叫停 / 收尾）—— 一律 401，原因只记服务端日志。
  * 所以「中止 / 超时 / 失权」时编排层先 `close()` 再杀沙箱：杀之前那几毫秒里漏网的请求也进不来。
  *
- * ## 模型代理
+ * ## 服务端调用模型（docs/22 §4.3）
  *
- * runner 的模型配置是 `baseUrl = <网关>/llm`、`apiKey = run 短令牌`，用的是 pi 自带的 provider（OpenAI / Anthropic SDK）。
- * 这里把请求原样转给真实上游：换掉鉴权头（注入真实 key）、去掉逐跳头、校验请求体里的 `model` 就是配置的那个，
- * 响应流式透传；这一轮被叫停时在途的上游请求随之掐断。每次请求之前判 `llm:invoke`。
- * 支持的线协议见 {@link PROXIED_MODEL_APIS}（按协议决定放行哪个路径、怎么注入 key）；
- * 其余协议（Bedrock 的 SigV4、Vertex 的 ADC、Google 的 key 头…）这一期不支持，宿主据此把 agent 标成未启用。
+ * runner 的 `streamFn` 是 pi 的 `streamProxy`：`POST /model/<agentId>/api/stream`，`Authorization: Bearer <run 短令牌>`，
+ * 请求体 `{ model, context, options }`。这里**只取 `context.messages`**（第 1 步上下文仍是 runner 送的，只校验形状与大小）；
+ * 模型是服务端解析的那个，`maxTokens`（有上限）、重试、`sessionId`、`identity`、请求头都由服务端定，runner 送的 `model` / `options` 一概不看。
+ * 服务端带真实 key 用 pi-ai 的 `streamSimple` 调上游（`model-stream.ts`），把事件流换成 `ProxyAssistantMessageEvent` 以 SSE 下发。
+ *
+ * - 开流之前的拒绝回 `{ error: <字符串> }` + 状态码（`streamProxy` 只认字符串 `error`）；开流之后的失败都是 `error` 帧；
+ * - **一次请求 = 一步**、同一个 agent 同时只能有一个在途请求：由这一轮的 {@link GatewayRunHandlers.modelRequest} 判（编排层按 agent 计数）；
+ * - 上游的信号 = 这一轮的 `signal` ∪ 这次 HTTP 请求的 `signal` ∪ 掐断（参数过长、runner 断开）；被叫停时补一帧 `error { reason: 'aborted' }` 再正常结束
+ *   （中断是预期内的结局，不让它变成 HTTP 层的流错误）；
+ * - 在途从请求进来算到服务端的流结束（或断开）为止，空闲上限据此判断；结束时打一行用量日志（第 1 步只打日志）。
+ * 支持的线协议见 `model-stream.ts` 的 `SERVED_MODEL_APIS`；其余的宿主据此把 agent 标成未启用。
  */
 
-/** 每个线协议放行的上游路径（相对模型的 `baseUrl`）和 key 的注入方式 */
-const LLM_PROXY: Record<string, { paths: readonly string[]; auth: 'bearer' | 'x-api-key' }> = {
-  'openai-completions': { paths: ['/chat/completions'], auth: 'bearer' },
-  'openai-responses': { paths: ['/responses'], auth: 'bearer' },
-  'anthropic-messages': { paths: ['/v1/messages'], auth: 'x-api-key' },
-}
-
-/** 模型代理支持的线协议 */
-export const PROXIED_MODEL_APIS = Object.keys(LLM_PROXY)
-
-export function isProxiedModelApi(api: string): boolean {
-  return Object.hasOwn(LLM_PROXY, api)
-}
-
-/** 叫停时在途的模型流怎么收尾：按协议发一帧错误再正常结束（SDK 认得出是失败，而不是一段被截断的「成功」） */
+/** 叫停时在途的模型请求怎么收尾：`error { reason: 'aborted' }` 带上这句 */
 const STOPPED_MESSAGE = '这一轮已经停止，模型请求已取消'
-function stoppedFrame(api: string): string {
-  const message = JSON.stringify(STOPPED_MESSAGE)
-  return api === 'anthropic-messages'
-    ? `event: error\ndata: {"type":"error","error":{"type":"api_error","message":${message}}}\n\n`
-    : `data: {"error":{"message":${message},"type":"agent_gateway_error"}}\n\n`
-}
+
+/** 请求体上限：事件一批、工具参数都远到不了 */
+const BODY_LIMIT = 4 * 1024 * 1024
+/** 模型请求：第 1 步 runner 仍送整段上下文（120 条消息 × 工具结果，含图片），给足余量；第 4 步只送空的之后降下来 */
+const MODEL_BODY_LIMIT = 32 * 1024 * 1024
+
+/** 上游请求重试（pi-ai 的 `retryProviderRequest` 只重试建立请求那一段，退避可被中止打断）：默认同 SDK */
+const DEFAULT_MAX_RETRIES = 2
+const DEFAULT_MAX_RETRY_DELAY_MS = 60_000
 
 /**
- * 上游的响应体原样转出去；这一轮被叫停（或 runner 断开）导致上游流中断时，补一帧协议内的错误再正常结束 ——
- * 不让中断变成 HTTP 层的流错误（那会被当成服务端故障记一条 error 日志，而这是预期内的结局）。
- * 上游自己出错（不是我们叫停的）照样按流错误抛出去。
+ * 编排层对一次模型请求的判定（{@link GatewayRunHandlers.modelRequest}）：
+ * - `stream`：放行，调上游；结束（或断开）时网关调一次 `release`（释放这个 agent 的在途名额）；
+ * - `refuse`：开流之前拒绝（`{ error }` + 状态码），不调上游；
+ * - `fail`：开流、只发一帧 `error`（如子 agent 步数用完），不调上游。
  */
-function guardedBody(body: ReadableStream<Uint8Array> | null, signal: AbortSignal, api: string): ReadableStream<Uint8Array> | null {
-  if (!body) return null
-  const reader = body.getReader()
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const { done, value } = await reader.read()
-        if (done) controller.close()
-        else controller.enqueue(value)
-      } catch (err) {
-        if (!signal.aborted) {
-          controller.error(err)
-          return
-        }
-        controller.enqueue(new TextEncoder().encode(stoppedFrame(api)))
-        controller.close()
-      }
-    },
-    cancel(reason) {
-      return reader.cancel(reason)
-    },
-  })
-}
-
-/** 包一层响应流：读完、出错、被取消时调一次 `onEnd`（模型请求的「在途」算到这里） */
-function endsWith(body: ReadableStream<Uint8Array>, onEnd: () => void): ReadableStream<Uint8Array> {
-  const reader = body.getReader()
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const { done, value } = await reader.read()
-        if (done) {
-          onEnd()
-          controller.close()
-        } else controller.enqueue(value)
-      } catch (err) {
-        onEnd()
-        controller.error(err)
-      }
-    },
-    cancel(reason) {
-      onEnd()
-      return reader.cancel(reason)
-    },
-  })
-}
-
-/** 请求体上限：事件一批、工具参数都远到不了；模型请求是整段上下文（120 条消息 × 工具结果）给足余量 */
-const BODY_LIMIT = 4 * 1024 * 1024
-const LLM_BODY_LIMIT = 32 * 1024 * 1024
-
-/** 不转发给上游的请求头：逐跳头、凭据、浏览器那套、压缩（让 fetch 自己协商并解压） */
-const DROP_REQUEST_HEADERS = new Set([
-  'authorization',
-  'x-api-key',
-  'api-key',
-  'x-goog-api-key',
-  'cookie',
-  'host',
-  'connection',
-  'keep-alive',
-  'content-length',
-  'transfer-encoding',
-  'te',
-  'upgrade',
-  'accept-encoding',
-  'forwarded',
-  'origin',
-  'referer',
-])
-/** 不回给 runner 的响应头：fetch 已经解压过了，长度和编码都不再对 */
-const DROP_RESPONSE_HEADERS = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', 'set-cookie'])
+export type ModelRequestDecision =
+  | { kind: 'stream'; sessionId: string; step: number; release(): void }
+  | { kind: 'refuse'; status: number; message: string }
+  | { kind: 'fail'; message: string }
 
 export interface GatewayRunHandlers {
   input(): Promise<RunnerInput>
@@ -184,6 +117,11 @@ export interface GatewayRunHandlers {
   protocolMismatch(info: { runnerVersion: number | null; serverVersion: number }): void
   /** 每次模型请求之前：判 `llm:invoke`，不过就抛 RunAuthorityError（revoked / expired 时这一轮已被叫停） */
   authorizeLlm(): Promise<void>
+  /**
+   * 判过 `llm:invoke` 之后、调上游之前：这个 agent 能不能再请求一次（服务端分配过、还没结束；没有在途的；没超步数）。
+   * 一次请求 = 一步（docs/22 §4.3「步数与请求上限」），计数在这里
+   */
+  modelRequest(agentId: string): ModelRequestDecision | Promise<ModelRequestDecision>
   /** 续期之前：Grant 还活着才续（同样抛 RunAuthorityError） */
   authorizeRenewal(): Promise<void>
 }
@@ -195,7 +133,7 @@ export interface GatewayRegistration {
   grantId: string
   /** 给人看的 scope 串，写进令牌（网关不读它） */
   scope: string
-  /** 这一轮被叫停 / 结束时 abort：在途的上游模型请求随之掐断 */
+  /** 这一轮被叫停 / 结束时 abort：在途的上游模型请求随之掐断（`runAbort`） */
   signal: AbortSignal
   handlers: GatewayRunHandlers
 }
@@ -206,14 +144,14 @@ export interface GatewayRun {
   /** 作废这一轮：之后它的任何令牌、没兑换的 bootstrap token 一律 401。幂等 */
   close(): void
   /**
-   * 这一轮在网关上的活动（docs/20 §3.10.8「空闲上限」）：`inflight` = 还没处理完的请求数（模型请求算到响应流结束为止，
+   * 这一轮在网关上的活动（docs/20 §3.10.8「空闲上限」）：`inflight` = 还没处理完的请求数（模型请求算到服务端的流结束为止，
    * 长时间流式输出不算空闲）；`lastActivityAt` = 最近一次请求开始或结束的时刻，还没来过任何请求（没兑换 bootstrap）为 null。
    */
   activity(): { inflight: number; lastActivityAt: number | null }
 }
 
 /** 真实的上游模型（地址 + key 只在这里） */
-export interface LlmUpstream {
+export interface ModelUpstream {
   model: Model<Api>
   apiKey: string
 }
@@ -221,10 +159,17 @@ export interface LlmUpstream {
 export interface AgentGatewayOptions {
   /** 签 run 短令牌的密钥（只在服务端） */
   secret: string | Uint8Array
-  /** null = 没配模型（代理一律 503） */
-  upstream: LlmUpstream | null
-  /** 打上游用的 fetch；不给用**调用那一刻**的 `globalThis.fetch`（测试注入脚本化的上游） */
+  /** null = 没配模型（模型请求一律 503） */
+  upstream: ModelUpstream | null
+  /** 打上游用的 fetch（pi-ai 的 `ProviderRequestOptions.fetch`）；不给用 SDK 默认的全局 fetch（测试注入脚本化的上游） */
   fetch?: typeof fetch
+  /** 输出 token 的上限（`AGENT_MAX_OUTPUT_TOKENS`）；实际取 min(模型的 maxTokens, 它)，不给按 16384 */
+  maxOutputTokens?: number
+  /** 上游请求的重试次数 / 服务端要求的最长等待；不给 2 次 / 60 秒（同 SDK） */
+  maxRetries?: number
+  maxRetryDelayMs?: number
+  /** 一次工具调用的参数累计超过这么多字就掐断（#9265）；只测试注入，不给用 `MAX_TOOL_ARGUMENT_CHARS` */
+  maxToolArgumentChars?: number
   now?: () => number
   /** 服务端的构建 id（`build-id.ts`）；只测试注入，不给用编译期注入的那个 */
   buildId?: string
@@ -271,9 +216,23 @@ function errorResponse(status: number, message: string) {
   return json({ error, message }, status)
 }
 
-/** 模型代理的错误用 OpenAI 的形状：两家 SDK 都从 `error.message` 里取原因给 pi */
-function llmError(status: number, message: string) {
-  return json({ error: { message, type: 'agent_gateway_error' } }, status)
+/** 模型请求开流之前的拒绝：`streamProxy` 只认字符串的 `error`（拼成 `Proxy error: …`） */
+function modelError(status: number, message: string) {
+  const body: ModelStreamErrorBody = { error: message }
+  return json(body, status)
+}
+
+const sseFrame = (frame: ProxyAssistantMessageEvent) => `data: ${JSON.stringify(frame)}\n\n`
+
+const SSE_HEADERS = { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }
+
+const ZERO_USAGE: AssistantMessage['usage'] = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 }
 
 /** 读请求体，超过上限就拒（不信 content-length，边读边数） */
@@ -421,105 +380,166 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
     return json(issue(entry))
   }
 
-  async function llm(request: Request, route: string): Promise<Response> {
+  /** `/model/<agentId>/api/stream`：判权、判这个 agent 能不能请求，然后服务端调上游、SSE 下发 */
+  async function modelStream(request: Request, agentId: string): Promise<Response> {
     const upstream = options.upstream
-    if (!upstream) return llmError(503, '服务端没有配置模型')
-    const proxy = LLM_PROXY[upstream.model.api]
-    const rest = route.slice(GATEWAY_ROUTES.llm.length)
-    if (!proxy || !proxy.paths.includes(rest)) return llmError(404, `模型代理不提供 ${rest || '/'}`)
-
+    if (!upstream) return modelError(503, '服务端没有配置模型')
     let entry: Entry
     try {
-      entry = authenticate(bearerOf(request.headers) ?? request.headers.get('x-api-key'))
+      entry = authenticate(bearerOf(request.headers))
     } catch (err) {
-      if (err instanceof GatewayHttpError) return llmError(err.status, err.message)
+      if (err instanceof GatewayHttpError) return modelError(err.status, err.message)
       throw err
     }
-
-    // 在途到响应流结束为止（长时间流式输出不算空闲）；提前返回的错误在 finally 里结束
+    // 在途到服务端的流结束为止（长时间流式输出不算空闲）；开流之前的拒绝在 finally 里结束
     const end = begin(entry)
-    let streaming = false
+    let handedOff = false
     try {
-      const response = await proxyLlm(request, entry, upstream, proxy, rest)
-      // 只有上游的成功响应（流式输出）算到读完为止；错误响应（网关自己的、上游的）就地结束
-      if (!response.ok || !response.body) return response
-      streaming = true
-      return new Response(endsWith(response.body, end), {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-      })
+      let body: ReturnType<typeof parseModelStreamRequest>
+      try {
+        body = parseModelStreamRequest(await readJson(request, MODEL_BODY_LIMIT))
+      } catch (err) {
+        if (err instanceof GatewayHttpError) return modelError(err.status, err.message)
+        throw err
+      }
+      if (!body) return modelError(400, '模型请求的形状不对')
+      try {
+        await entry.registration.handlers.authorizeLlm()
+      } catch (err) {
+        const status = authorityStatus(err)
+        if (status === null) throw err
+        return modelError(status, (err as Error).message)
+      }
+      if (entry.closed) return modelError(401, UNAUTHORIZED_MESSAGE)
+      const decision = await entry.registration.handlers.modelRequest(agentId)
+      if (decision.kind === 'refuse') return modelError(decision.status, decision.message)
+      if (decision.kind === 'fail') {
+        // 不调上游，只发一帧 error（streamProxy 据此给 pi 一条出错的 assistant 消息）
+        return new Response(sseFrame({ type: 'error', reason: 'error', errorMessage: decision.message, usage: ZERO_USAGE }), {
+          status: 200,
+          headers: SSE_HEADERS,
+        })
+      }
+      if (entry.closed) {
+        decision.release()
+        return modelError(401, UNAUTHORIZED_MESSAGE)
+      }
+      handedOff = true
+      return serveModel(request, entry, upstream, agentId, body.messages, decision, end)
     } finally {
-      if (!streaming) end()
+      if (!handedOff) end()
     }
   }
 
-  async function proxyLlm(
+  function serveModel(
     request: Request,
     entry: Entry,
-    upstream: LlmUpstream,
-    proxy: { paths: readonly string[]; auth: 'bearer' | 'x-api-key' },
-    rest: string,
-  ): Promise<Response> {
-    let text: string
-    try {
-      text = await readText(request, LLM_BODY_LIMIT)
-    } catch (err) {
-      if (err instanceof GatewayHttpError) return llmError(err.status, err.message)
-      throw err
+    upstream: ModelUpstream,
+    agentId: string,
+    messages: Parameters<typeof normalizeContext>[0]['messages'],
+    decision: Extract<ModelRequestDecision, { kind: 'stream' }>,
+    end: () => void,
+  ): Response {
+    const { runId } = entry.registration
+    /** 服务端自己掐断（参数过长、runner 断开） */
+    const cutoff = new AbortController()
+    const signal = AbortSignal.any([entry.registration.signal, request.signal, cutoff.signal])
+    const stopped = () => entry.closed || entry.registration.signal.aborted
+    let ended = false
+    const finish = (terminal: ProxyAssistantMessageEvent | null) => {
+      if (ended) return
+      ended = true
+      decision.release()
+      end()
+      const usage = terminal && (terminal.type === 'done' || terminal.type === 'error') ? terminal.usage : ZERO_USAGE
+      const outcome = terminal?.type === 'done' ? terminal.reason : terminal?.type === 'error' ? terminal.reason : 'disconnected'
+      // 用量是服务端拿到的，可信（runner 报的不看）；第 1 步只打日志，之后落库（docs/22 §4.3「用量」）
+      console.info(
+        `[agent-gateway] run=${runId} agent=${agentId} step=${decision.step} 模型请求结束（${outcome}）：` +
+          `输入 ${usage.input} / 输出 ${usage.output} / 缓存读 ${usage.cacheRead} / 缓存写 ${usage.cacheWrite} token，费用 ${usage.cost.total}`,
+      )
     }
-    let requested: unknown
-    try {
-      requested = (JSON.parse(text) as { model?: unknown } | null)?.model
-    } catch {
-      return llmError(400, '请求体不是合法的 JSON')
-    }
-    // 只能用服务端配置的那个模型：拿着真实 key 换个更贵的模型、或别的接口，都不行
-    if (requested !== upstream.model.id) return llmError(403, '只能调用服务端配置的模型')
 
-    try {
-      await entry.registration.handlers.authorizeLlm()
-    } catch (err) {
-      const status = authorityStatus(err)
-      if (status === null) throw err
-      return llmError(status, (err as Error).message)
-    }
-    if (entry.closed) return llmError(401, UNAUTHORIZED_MESSAGE)
-
-    const headers = new Headers()
-    for (const [name, value] of request.headers) {
-      if (!DROP_REQUEST_HEADERS.has(name) && !name.startsWith('x-forwarded-') && !name.startsWith('proxy-')) {
-        headers.set(name, value)
-      }
-    }
-    for (const [name, value] of Object.entries(upstream.model.headers ?? {})) headers.set(name, value)
-    if (proxy.auth === 'x-api-key') headers.set('x-api-key', upstream.apiKey)
-    else headers.set('authorization', `Bearer ${upstream.apiKey}`)
-
-    const target = `${upstream.model.baseUrl.replace(/\/+$/, '')}${rest}${new URL(request.url).search}`
-    const signal = AbortSignal.any([entry.registration.signal, request.signal])
-    const fetchImpl = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
-    let response: Response
-    try {
-      response = await fetchImpl(target, { method: 'POST', headers, body: text, signal })
-    } catch (err) {
-      if (signal.aborted) return llmError(499, STOPPED_MESSAGE)
-      console.warn(`[agent-gateway] run=${entry.registration.runId} 上游模型请求失败`, err)
-      return llmError(502, `上游模型请求失败：${err instanceof Error ? err.message : String(err)}`)
-    }
-    const out = new Headers()
-    for (const [name, value] of response.headers) if (!DROP_RESPONSE_HEADERS.has(name)) out.set(name, value)
-    return new Response(guardedBody(response.body, signal, upstream.model.api), {
-      status: response.status,
-      statusText: response.statusText,
-      headers: out,
+    let cancelled = false
+    const encoder = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const write = (frame: ProxyAssistantMessageEvent) => {
+          if (cancelled) return
+          try {
+            controller.enqueue(encoder.encode(sseFrame(frame)))
+          } catch {
+            cancelled = true
+          }
+        }
+        void (async () => {
+          let terminal: ProxyAssistantMessageEvent | null = null
+          try {
+            const stream = streamUpstream(upstream.model, normalizeContext({ messages }), {
+              apiKey: upstream.apiKey,
+              signal,
+              maxTokens: outputTokenLimit(upstream.model, options.maxOutputTokens),
+              sessionId: decision.sessionId,
+              identity: AGENT_CLIENT_IDENTITY,
+              maxRetries: options.maxRetries ?? DEFAULT_MAX_RETRIES,
+              maxRetryDelayMs: options.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS,
+              ...(options.fetch ? { fetch: options.fetch } : {}),
+            })
+            const frames = proxyFramesOf(stream, {
+              ...(options.maxToolArgumentChars !== undefined ? { maxToolArgumentChars: options.maxToolArgumentChars } : {}),
+              onArgumentsTooLong(name, chars) {
+                console.warn(`[agent-gateway] run=${runId} agent=${agentId} 工具 ${name || '?'} 的参数已累计 ${chars} 字，掐断这次模型请求`)
+                cutoff.abort()
+              },
+            })
+            for await (const frame of frames) {
+              // 这一轮被叫停：pi-ai 以 aborted 收尾，原因换成我们的
+              const out: ProxyAssistantMessageEvent =
+                frame.type === 'error' && frame.reason === 'aborted' && stopped() ? { ...frame, errorMessage: STOPPED_MESSAGE } : frame
+              if (out.type === 'done' || out.type === 'error') terminal = out
+              write(out)
+            }
+          } catch (err) {
+            console.warn(`[agent-gateway] run=${runId} agent=${agentId} 模型请求失败`, err)
+            terminal = {
+              type: 'error',
+              reason: signal.aborted ? 'aborted' : 'error',
+              errorMessage: stopped() ? STOPPED_MESSAGE : `模型请求失败：${err instanceof Error ? err.message : String(err)}`,
+              usage: ZERO_USAGE,
+            }
+            write(terminal)
+          }
+          if (!terminal) {
+            // pi-ai 没给终止帧就结束了（不该发生）：补一帧，别让 runner 等一个不会来的结果
+            terminal = { type: 'error', reason: 'error', errorMessage: '模型的响应流没有正常结束', usage: ZERO_USAGE }
+            write(terminal)
+          }
+          finish(terminal)
+          if (!cancelled) {
+            try {
+              controller.close()
+            } catch {
+              // 已经被取消
+            }
+          }
+        })()
+      },
+      cancel() {
+        // runner 断开：掐断上游（pi-ai 以 aborted 收尾，流结束时 finish）
+        cancelled = true
+        cutoff.abort()
+      },
     })
+    return new Response(body, { status: 200, headers: SSE_HEADERS })
   }
 
   async function route(request: Request): Promise<Response> {
     const path = routeOf(new URL(request.url).pathname)
     if (request.method !== 'POST') return errorResponse(405, '只接受 POST')
-    if (path === GATEWAY_ROUTES.llm || path.startsWith(`${GATEWAY_ROUTES.llm}/`)) return llm(request, path)
+    if (path === GATEWAY_ROUTES.model || path.startsWith(`${GATEWAY_ROUTES.model}/`)) {
+      const agentId = modelStreamAgentOf(path)
+      return agentId === null ? modelError(404, `网关没有 ${path}`) : modelStream(request, agentId)
+    }
     if (path === GATEWAY_ROUTES.token) return token(request)
 
     const entry = authenticate(bearerOf(request.headers))

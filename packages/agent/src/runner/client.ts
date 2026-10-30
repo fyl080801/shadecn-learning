@@ -1,6 +1,7 @@
 import { BUILD_ID } from '../build-id.ts'
 import {
   GATEWAY_ROUTES,
+  modelProxyRoute,
   PROTOCOL_MISMATCH_ERROR,
   PROTOCOL_MISMATCH_STATUS,
   RUNNER_PROTOCOL_VERSION,
@@ -63,10 +64,10 @@ export interface GatewayClientOptions {
 }
 
 export interface GatewayClient {
-  /** 模型代理的地址：runner 的模型 `baseUrl` */
-  readonly llmBaseUrl: string
+  /** 一个 agent 的模型请求地址：交给 `streamProxy` 的 `proxyUrl`（它自己补 `/api/stream`） */
+  modelProxyUrl(agentId: string): string
   redeem(bootstrapToken: string): Promise<void>
-  /** 当前的 run 短令牌（快过期时先续期）—— 也是交给 pi 的 `apiKey` */
+  /** 当前的 run 短令牌（快过期时先续期）—— 也是交给 `streamProxy` 的 `authToken` */
   token(): Promise<string>
   input(): Promise<RunnerInput>
   tool(request: ToolCallRequest): Promise<ToolCallResponse>
@@ -133,7 +134,7 @@ export function createGatewayClient(options: GatewayClientOptions): GatewayClien
   const authed = async <T>(route: string, body: unknown) => post<T>(route, body, await token())
 
   return {
-    llmBaseUrl: `${base}${GATEWAY_ROUTES.llm}`,
+    modelProxyUrl: (agentId) => `${base}${modelProxyRoute(agentId)}`,
     async redeem(bootstrapToken) {
       const protocolVersion = options.protocolVersion === undefined ? RUNNER_PROTOCOL_VERSION : options.protocolVersion
       current = await post<StsTokenResponse>(

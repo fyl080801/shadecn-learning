@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { agentRuntime } from '../agent/index.ts'
 
 /**
- * 画布 Agent 的网关（docs/22 §4）：沙箱里的 runner 只经这里够得着服务端 —— 换令牌、模型代理、画布工具、
+ * 画布 Agent 的网关（docs/22 §4）：沙箱里的 runner 只经这里够得着服务端 —— 换令牌、模型请求（服务端调上游，§4.3）、画布工具、
  * 改动通知、事件上报。协议与实现都在 `@shadecn/agent`（`protocol.ts` / `gateway.ts`），这里只是挂载点。
  *
  * 挂在 `AGENT_GATEWAY_PATH`（`/api/agent-gateway`）下，**在 `app.ts` 的登录那道闸之外**（`PUBLIC_API`）：

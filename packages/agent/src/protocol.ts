@@ -1,5 +1,5 @@
 import type { AgentEvent, AgentMessage, AgentToolResult } from '@earendil-works/pi-agent-core'
-import type { Api, Model } from '@earendil-works/pi-ai'
+import type { Api, Message, Model } from '@earendil-works/pi-ai'
 import { withoutImages } from './media.ts'
 import type { AgentSkillId } from './skills/registry.ts'
 import type { CanvasToolDetails } from './tools.ts'
@@ -11,8 +11,8 @@ import type { CanvasToolDetails } from './tools.ts'
  *
  * - **runner**（`runner/`）：沙箱里的进程。只有网关地址、一次性 bootstrap token、工作目录和 `PATH`，
  *   没有任何长期密钥。跑 pi 的 Agent 循环；画布工具只是 RPC 代理（schema / 描述 / 能力来自同一份 `tools.ts`），
- *   模型的 `baseUrl` 指向网关的模型代理、`apiKey` 是 run 短令牌；ffmpeg / ffprobe 在自己的工作目录里跑。
- * - **网关**（`gateway.ts`，宿主挂在 {@link AGENT_GATEWAY_PATH}）：换发令牌、模型代理（注入真实 key）、
+ *   模型请求经 pi 的 `streamProxy` 交给网关（服务端带真实 key 去调上游，拿回事件流）；ffmpeg / ffprobe 在自己的工作目录里跑。
+ * - **网关**（`gateway.ts`，宿主挂在 {@link AGENT_GATEWAY_PATH}）：换发令牌、服务端调用模型（真实 key 只在这里）、
  *   画布工具执行（服务端的 `tools.ts` + 宿主的 direct connection）、事件上报、改动通知。
  *   **每次调用都按这一轮的 `authorize(capability)` 实时判权，不信令牌里的 scope**（docs/22 §2 第 4 条）。
  *
@@ -21,7 +21,8 @@ import type { CanvasToolDetails } from './tools.ts'
  * 1. `/sts/token` `{ grantType: 'bootstrap', bootstrapToken }` → run 短令牌（bootstrap token 兑换一次即废）；
  * 2. `/run/input` → {@link RunnerInput}：系统提示、这一轮的提示词（跨轮差异 + 展开提及之后的用户消息）、
  *    模型上下文、这一轮提供 / 一开始就加载的技能（runner 按同一份注册表展开成工具）、模型描述（不含地址和 key）；
- * 3. 跑 pi：模型请求走 `/llm/*`（OpenAI / Anthropic 兼容的透传代理）；画布工具走 `/canvas/tool`；
+ * 3. 跑 pi：模型请求走 `/model/<agentId>/api/stream`（pi 的 `streamProxy`：服务端用自己解析的模型、参数和 key 调上游，
+ *    以 SSE 下发 `ProxyAssistantMessageEvent`，docs/22 §4.3）；画布工具走 `/canvas/tool`；
  *    pi 的事件裁成 {@link RunnerEvent} 分批 `/events` 上报（服务端经 `events.ts` 映射成 AG-UI —— 映射只在服务端）；
  *    **一批工具调用结束时**（`turn_end` 先把事件冲完；循环要接着请求模型时，pi 的 `prepareNextTurnWithContext` 里）
  *    `/canvas/changes` 取别人的改动通知，有就作为下一次请求前追加的消息交给 pi（docs/20 §3.10.2 的插入时机，规则在 runner 里执行）；
@@ -54,7 +55,7 @@ import type { CanvasToolDetails } from './tools.ts'
  * 回 {@link PROTOCOL_MISMATCH_STATUS} + {@link ProtocolMismatchBody}（和 401 能区分），编排层以 `runner_protocol_mismatch` 收尾。
  * `process` 驱动直接跑源码，永远一致。
  */
-export const RUNNER_PROTOCOL_VERSION = 5
+export const RUNNER_PROTOCOL_VERSION = 6
 
 /** 版本不一致时网关的 HTTP 状态码与 `error` 字段（不要和 401 混：令牌失效是另一回事） */
 export const PROTOCOL_MISMATCH_STATUS = 409
@@ -78,9 +79,34 @@ export const GATEWAY_ROUTES = {
   delegate: '/agent/delegate',
   /** 一个子 agent 做完了：交回结果，服务端释放它的占用、拼好给父 agent 的结果 */
   agentFinish: '/agent/finish',
-  /** 模型代理的前缀：runner 的模型 `baseUrl` = 网关地址 + 它；之后的路径原样转给真实上游 */
-  llm: '/llm',
+  /**
+   * 服务端调用模型的前缀（docs/22 §4.3）：完整路径是 `/model/<agentId>` + {@link MODEL_STREAM_SUFFIX}。
+   * runner 交给 `streamProxy` 的 `proxyUrl` = 网关地址 + {@link modelProxyRoute}（`streamProxy` 自己补 `/api/stream`、
+   * 不让加请求头，所以 agent 写在路径里）
+   */
+  model: '/model',
 } as const
+
+/** `streamProxy` 固定往 `${proxyUrl}/api/stream` 发请求 */
+export const MODEL_STREAM_SUFFIX = '/api/stream'
+
+/** 一个 agent 的 `proxyUrl`（相对网关）：`/model/<agentId>` */
+export function modelProxyRoute(agentId: string): string {
+  return `${GATEWAY_ROUTES.model}/${encodeURIComponent(agentId)}`
+}
+
+/** 路由 → 它的 agent id；不是模型请求的路由（或 id 不合法）为 null */
+export function modelStreamAgentOf(route: string): string | null {
+  const match = /^\/model\/([^/]+)\/api\/stream$/.exec(route)
+  if (!match) return null
+  let agentId: string
+  try {
+    agentId = decodeURIComponent(match[1]!)
+  } catch {
+    return null
+  }
+  return shortString(agentId, ID_MAX) ? agentId : null
+}
 
 /**
  * runner 进程的环境变量 —— **沙箱里只有这三个加 `PATH`**（docs/22 §10 验收 1）。
@@ -135,8 +161,9 @@ export interface StsTokenResponse {
 // —— 本轮输入 ——
 
 /**
- * 交给 runner 的模型描述：pi 的 `Model` 去掉 `baseUrl`（真实上游地址只在网关）和 `headers`（可能带凭据，由网关注入）。
- * runner 把 `baseUrl` 换成网关的模型代理。
+ * 交给 runner 的模型描述：pi 的 `Model` 去掉 `baseUrl`（真实上游地址只在服务端）和 `headers`（可能带凭据）。
+ * runner 只拿它给 pi 的 `Agent` 当模型元数据（`streamProxy` 拼半成品消息用 `api` / `provider` / `id`）；
+ * 网关调上游用的是服务端自己解析的那个模型，runner 送来的 `model` 不看。
  */
 export type RunnerModel = Omit<Model<Api>, 'baseUrl' | 'headers'>
 
@@ -231,7 +258,7 @@ export type RunnerEventBody =
       result: { content: unknown[]; details?: unknown }
       isError: boolean
     }
-  /** 一批（一次模型回复 + 它的工具调用）结束；服务端按它数步数 */
+  /** 一批（一次模型回复 + 它的工具调用）结束；只用于界面（步数由网关按模型请求数，docs/22 §4.3） */
   | { type: 'turn_end'; toolResultCount: number }
 
 // —— 子 agent（docs/20 §3.10.11） ——
@@ -304,10 +331,28 @@ export interface ProtocolMismatchBody extends GatewayErrorBody {
   serverVersion: number
 }
 
-/** 网关的错误回复（模型代理用 OpenAI 的 `{ error: { message } }`，SDK 才认得出原因） */
+/** 网关的错误回复（模型请求开流之前的拒绝另是 {@link ModelStreamErrorBody}） */
 export interface GatewayErrorBody {
   error: string
   message: string
+}
+
+// —— 服务端调用模型（docs/22 §4.3） ——
+
+/**
+ * 模型请求开流之前的拒绝：`{ error: <原因> }` + 状态码（401 / 403 / 404 / 409 / 413 / 503）。
+ * `streamProxy` 只认 `error` 是**字符串**（拼成 `Proxy error: …`）；开流之后的失败一律是 SSE 里的 `error` 帧
+ */
+export interface ModelStreamErrorBody {
+  error: string
+}
+
+/**
+ * `streamProxy` 的请求体 `{ model, context, options }` 里服务端**唯一**还看的部分：`context.messages`
+ * （第 1 步上下文仍取 runner 送来的，只校验形状与大小；`model` / `options` 一个字段都不用 —— 模型、参数、请求头由服务端定）
+ */
+export interface ModelStreamRequest {
+  messages: Message[]
 }
 
 /**
@@ -504,4 +549,20 @@ export function parseStsTokenRequest(body: unknown): StsTokenRequest | null {
     }
   }
   return null
+}
+
+/** 模型请求的上下文里认的角色：pi 的 transcript 带 `system`（开头的系统提示 + 工具表、`toolsAdded`） */
+function isTranscriptMessage(value: unknown): value is Message {
+  if (!isObject(value)) return false
+  const { role } = value
+  if (role !== 'system' && role !== 'user' && role !== 'assistant' && role !== 'toolResult') return false
+  return typeof value.content === 'string' || Array.isArray(value.content)
+}
+
+/** 模型请求（`streamProxy` 的请求体）：只取 `context.messages`，形状不对返回 null */
+export function parseModelStreamRequest(body: unknown): ModelStreamRequest | null {
+  if (!isObject(body) || !isObject(body.context) || !Array.isArray(body.context.messages)) return null
+  const messages = body.context.messages as unknown[]
+  if (!messages.every(isTranscriptMessage)) return null
+  return { messages: messages as Message[] }
 }

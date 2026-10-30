@@ -10,15 +10,17 @@ import type { SandboxDriver } from './sandbox/driver.ts'
 export { createInlineDriver, type InlineDriverOptions } from './sandbox/drivers/inline.ts'
 
 /**
- * **测试专用**：让一轮 agent 走完整的生产路径（runner → 网关 → 模型代理 → 上游），又不碰网络。
+ * **测试专用**：让一轮 agent 走完整的生产路径（runner 的 `streamProxy` → 网关 → 服务端的 `streamSimple` → 上游），又不碰网络。
  *
- * - {@link registerScriptedModel}：一个脚本化的 OpenAI 兼容上游（`/chat/completions`，流式 SSE）。
+ * - {@link registerScriptedModel}：一个脚本化的 OpenAI 兼容上游（`/chat/completions`，流式 SSE），由**服务端**的 pi-ai
+ *   `streamSimple` 经 `ProviderRequestOptions.fetch`（`AgentGatewayConfig.upstreamFetch`）去调，所以照样走真实的 SDK 解析路径。
  *   写法照 pi-ai 的 faux provider：每一步给一条 `AssistantMessage`（`fauxAssistantMessage` / `fauxText` /
  *   `fauxToolCall` 照用），或一个 `(context, { signal }, state) => AssistantMessage` 的函数 ——
  *   `context` 是把这次 OpenAI 请求还原成的 pi `Context`（消息、工具），`signal` 在这一轮被叫停时掐断。
- *   它只认网关注入的那把 key（{@link SCRIPTED_API_KEY}），收到的每个请求记在 `requests` 里。
+ *   它只认服务端那把 key（{@link SCRIPTED_API_KEY}），收到的每个请求记在 `requests` 里 —— 就是服务端真正发出去的请求
+ *   （模型、参数、请求头都是服务端定的那份）。
  * - {@link gatewayFetch}：把发往 {@link TEST_GATEWAY_URL} 的请求直接交给 `runtime.gateway.handle`（不开端口）。
- *   runner 里的 OpenAI SDK 用的是全局 fetch，所以测试要 `vi.stubGlobal('fetch', gatewayFetch(...))`。
+ *   runner 里 pi 的 `streamProxy` 用的是全局 fetch，所以测试要 `vi.stubGlobal('fetch', gatewayFetch(...))`。
  * - {@link createInlineDriver}：进程内的驱动（runner 在当前进程里跑，照样只经网关协议说话）。
  *
  * 生产代码不 import 这个文件。
@@ -29,7 +31,7 @@ export const TEST_GATEWAY_ORIGIN = 'http://gateway.test'
 export const TEST_GATEWAY_URL = `${TEST_GATEWAY_ORIGIN}${AGENT_GATEWAY_PATH}`
 export const TEST_TOKEN_SECRET = 'test-agent-token-secret'
 
-/** 脚本化上游的地址与 key（只在网关里；runner 永远看不到它们） */
+/** 脚本化上游的地址与 key（只在服务端；runner 永远看不到它们） */
 export const SCRIPTED_UPSTREAM_URL = 'http://llm.upstream.test/v1'
 export const SCRIPTED_API_KEY = 'upstream-secret-key'
 
@@ -49,7 +51,7 @@ export interface ScriptedModel {
   readonly requests: UpstreamRequest[]
   setResponses(steps: ScriptedStep[]): void
   appendResponses(steps: ScriptedStep[]): void
-  /** 网关打上游用的 fetch（`AgentGatewayConfig.upstreamFetch`） */
+  /** 服务端调上游用的 fetch（`AgentGatewayConfig.upstreamFetch`） */
   readonly fetch: typeof fetch
   /**
    * 一行拿齐 `createAgentRuntime` 要的模型 / 驱动 / 网关 / 占用登记表；登记表每次调用一份新的内存实现，

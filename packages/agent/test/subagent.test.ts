@@ -133,7 +133,8 @@ function setup(handler: Handler, overrides: Partial<AgentRuntimeOptions> & Setup
     'fetch',
     gatewayFetch(async (original) => {
       const url = new URL(original.url)
-      if (url.pathname.includes('/llm/')) return runtime.gateway.handle(original)
+      // 模型请求（SSE）不记、不改写，直接交给网关
+      if (url.pathname.includes('/model/')) return runtime.gateway.handle(original)
       const route = url.pathname.replace(/^.*agent-gateway/, '')
       let request = original
       if (rewrite) {
@@ -599,6 +600,60 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
     expect(parentSaw).toContain('读第 3 遍')
     const last = foldSubtasks(run.events).at(-1)
     expect(last).toMatchObject({ status: 'failed', text: '读第 3 遍', error: '超过子任务的步数上限 3' })
+  })
+
+  it('子 agent 第 maxTurns + 1 次模型请求（不守规矩的 runner）：网关只回一帧 error、不调上游，它之后的工具调用被拒', async () => {
+    const doc = new Y.Doc()
+    const runtime = setup(
+      async (turn) => {
+        if (turn.brief === null) return turn.step === 1 ? calls(delegate('读个没完')) : say('收到')
+        return fauxAssistantMessage([fauxText(`读第 ${turn.step} 遍`), fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' })
+      },
+      { limits: { maxTurns: 3 } },
+    )
+    const inner = globalThis.fetch
+    let subToolCalls = 0
+    let forged: { status: number; text: string } | null = null
+    let refused: unknown = null
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init)
+      if (request.url.endsWith(GATEWAY_ROUTES.tool)) {
+        const body = (await request.clone().json()) as { agentId?: string }
+        if (body.agentId) {
+          subToolCalls += 1
+          // 子 agent 第 3 步的模型请求已经结束、工具还没执行：替它多请求一次（第 4 次）
+          if (subToolCalls === 3) {
+            const res = await runtime.gateway.handle(
+              new Request(`${TEST_GATEWAY_URL}/model/${encodeURIComponent(body.agentId)}/api/stream`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', authorization: request.headers.get('authorization')! },
+                body: JSON.stringify({ context: { messages: [] } }),
+              }),
+            )
+            forged = { status: res.status, text: await res.text() }
+            const reply = await inner(request)
+            refused = await reply.clone().json()
+            return reply
+          }
+        }
+      }
+      return inner(request)
+    })
+    const run = await start(runtime, doc)
+    await run.done
+    const got = forged as { status: number; text: string } | null
+    expect(got?.status).toBe(200)
+    expect(got?.text.trim().split('\n\n')).toHaveLength(1)
+    expect(JSON.parse(got!.text.trim().slice('data: '.length))).toMatchObject({
+      type: 'error',
+      reason: 'error',
+      errorMessage: '子任务的步数已达上限 3，这次请求没有发给模型',
+    })
+    // 上游只收到父 2 次 + 子 3 次
+    expect(runtime.turns).toHaveLength(5)
+    expect(refused).toMatchObject({ isError: true })
+    expect(String((refused as { message?: string }).message)).toContain('子任务的步数已达上限 3')
+    expect(finished(run.events).outcome).toEqual({ type: 'success' })
   })
 
   it('工具调用上限 3（父子共用）：delegate_task 算一次，子 agent 再用两次就到顶；之后子 agent、父 agent 的调用都被拦下', async () => {

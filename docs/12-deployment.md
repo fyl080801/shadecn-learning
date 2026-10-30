@@ -247,7 +247,7 @@ GitHub OAuth App 的 Authorization callback URL 填 `$APP_ORIGIN/api/auth/callba
   kubectl -n dev rollout restart deploy/shadecn-learning
   ```
 
-  走 ollama 的是服务端（网关的模型代理），不是沙箱 —— 沙箱的 NetworkPolicy 只放行到服务端，它直接连不到 ollama。
+  走 ollama 的是服务端（模型请求由服务端发，REQ-AGENT-SANDBOX §4.3），不是沙箱 —— 沙箱的 NetworkPolicy 只放行到服务端，它直接连不到 ollama。
   用别的提供方时 key 放进 Secret：`kubectl -n dev edit secret shadecn-learning-agent`（`data` 里是 base64），或从一份本地文件生成
   `kubectl -n dev create secret generic shadecn-learning-agent --from-env-file=<本地文件> --dry-run=client -o yaml | kubectl apply -f -`（会去掉 `app` 标签，记得补回）；值不进 git。
 - **S3**：

@@ -18,10 +18,10 @@ import {
   type OpenedCanvas,
 } from '../src/session.ts'
 import { createMemoryConversationStore, createMemoryRunLog, type AgentRunLog } from '../src/store.ts'
-import { gatewayFetch, registerScriptedModel, type ScriptedModel, type ScriptedStep } from '../src/testing.ts'
+import { gatewayFetch, registerScriptedModel, TEST_GATEWAY_URL, type ScriptedModel, type ScriptedStep } from '../src/testing.ts'
 
 /**
- * 编排层走完整的二期路径：进程内驱动跑 runner（pi 在那里）→ 网关（令牌、工具 RPC、事件上报）→ 模型代理 →
+ * 编排层走完整的二期路径：进程内驱动跑 runner（pi 在那里）→ 网关（令牌、工具 RPC、事件上报）→ 服务端调模型（runner 的 streamProxy）→
  * 脚本化的 OpenAI 兼容上游（`@shadecn/agent/testing`，写法照 pi-ai 的 faux）。不碰网络，模型的每一步回复由测试脚本给定。
  * 守的是：一轮跑通（模型调工具 → 文档里出现节点 → 事件流完整）、按会话并发（一个会话一轮、不同会话同时跑、
  * 每轮的预算各算各的）、运行中任务列表与变更通知、只有发起人 / 管理员能中止、别人的会话只读、
@@ -52,7 +52,7 @@ function runtimeWith(responses: ScriptedStep[], overrides: Partial<AgentRuntimeO
     authorities,
     ...overrides,
   })
-  // runner 里 OpenAI SDK 用全局 fetch：发往测试网关的交给这个 runtime 的网关
+  // runner 里 pi 的 streamProxy 用全局 fetch：发往测试网关的交给这个 runtime 的网关
   vi.stubGlobal('fetch', gatewayFetch((request) => runtime.gateway.handle(request)))
   return Object.assign(runtime, { store, runLog, changes, authorities })
 }
@@ -735,7 +735,7 @@ describe('失败的收尾', () => {
 
   /**
    * pi 1.x 的 `handleRunFailure`（循环本身抛错，不是模型流报错）照常发 message_start / message_end + turn_end：
-   * 失败消息只上报一次（收尾的兜底补报不重复）、pi 自己的 system 消息不上报不落库、这一下算一步（服务端按 turn_end 数）。
+   * 失败消息只上报一次（收尾的兜底补报不重复）、pi 自己的 system 消息不上报不落库。它没有请求模型，所以不算一步（步数按模型请求数）。
    * 这里让 runner 在一批调过工具之后取别人改动时网关回 500 —— 那是在 pi 的 `prepareNextTurnWithContext` 里抛的
    * （和以前在 turn_end 监听器里抛一样走 `handleRunFailure`；不再请求模型）。
    */
@@ -756,7 +756,7 @@ describe('失败的收尾', () => {
     )
   }
 
-  it('循环本身出错（handleRunFailure）→ 失败消息只报一次、算一步，RUN_ERROR 带原因；system 消息不上报、不落库', async () => {
+  it('循环本身出错（handleRunFailure）→ 失败消息只报一次，RUN_ERROR 带原因；system 消息不上报、不落库', async () => {
     const runtime = runtimeWith([
       fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: 'x' } })], { stopReason: 'toolUse' }),
       fauxAssistantMessage('不该走到这'),
@@ -768,7 +768,7 @@ describe('失败的收尾', () => {
     const ended = uploaded.filter((event) => event.type === 'message_end').map((event) => event.message!)
     expect(ended.map((message) => message.role)).toEqual(['user', 'assistant', 'toolResult', 'assistant'])
     expect(ended.at(-1)).toMatchObject({ role: 'assistant', stopReason: 'error' })
-    // 两步：调工具的那一步 + 失败的那一下
+    // runner 报两个 turn_end（调工具的那一步 + 失败的那一下），只请求过一次模型
     expect(uploaded.filter((event) => event.type === 'turn_end')).toHaveLength(2)
     expect(faux!.state.callCount).toBe(1)
 
@@ -791,7 +791,7 @@ describe('失败的收尾', () => {
     expect(message).toContain(`模型原文：400: {"message":${JSON.stringify(raw)}`)
   })
 
-  it('失败的那一下也算一步：撞上步数上限时按超限停下（和模型流报错同一套计数）', async () => {
+  it('失败的那一下没有请求模型、不算一步：步数上限 2 也照常以模型错误收尾（不按超限停）', async () => {
     const runtime = runtimeWith(
       [fauxAssistantMessage([fauxToolCall('add_node', { type: 'text', metadata: { label: 'x' } })], { stopReason: 'toolUse' })],
       { limits: { maxTurns: 2 } },
@@ -799,12 +799,8 @@ describe('失败的收尾', () => {
     const uploaded: { type: string; message?: { role: string; stopReason?: string } }[] = []
     failChangesFetch(runtime, uploaded)
     const out = await runOnce(runtime, '一')
-    expect(out.events.at(-1)).toMatchObject({
-      type: AgentEventType.RUN_FINISHED,
-      outcome: { type: 'cancelled' },
-      result: { error: '超过本轮步数上限 2，已停止' },
-    })
-    expect(uploaded.filter((event) => event.type === 'turn_end')).toHaveLength(2)
+    expect(out.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'model_error' })
+    expect(faux!.state.callCount).toBe(1)
   })
 
   it('未启用：start 拒绝，view 说 enabled=false', async () => {
@@ -1114,5 +1110,78 @@ describe('输入与历史', () => {
     expect(row.messages.map((m) => m.role === 'user' && m.text)).toEqual([false, '三', false])
     expect(row.messageCount).toBe(3)
     expect(row.llmMessages.map((m) => m.role)).toEqual(['user', 'assistant'])
+  })
+})
+
+describe('步数与请求上限（docs/22 §4.3：一次模型请求 = 一步，网关按 agent 硬计数）', () => {
+  const toolStep = () => fauxAssistantMessage([fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' })
+
+  it('父 agent 第 maxTurns + 1 次请求：不调上游，整轮以「超过本轮步数上限」停下', async () => {
+    const runtime = runtimeWith([toolStep(), toolStep(), toolStep()], { limits: { maxTurns: 2 } })
+    const out = await runOnce(runtime, '一直读')
+    expect(out.events.at(-1)).toMatchObject({
+      type: AgentEventType.RUN_FINISHED,
+      outcome: { type: 'cancelled' },
+      result: { error: '超过本轮步数上限 2，已停止' },
+    })
+    expect(faux!.state.callCount).toBe(2)
+  })
+
+  it('第 maxTurns 次正好是最终回复：正常结束（不再当成超限）', async () => {
+    const runtime = runtimeWith([toolStep(), fauxAssistantMessage('读完了')], { limits: { maxTurns: 2 } })
+    const out = await runOnce(runtime, '读一下')
+    expect(out.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
+    expect(faux!.state.callCount).toBe(2)
+  })
+
+  it('同一个 agent 同时只能有一个在途请求；没分配过的 agent 也被拒（都是开流前的 `{ error }`，不打上游）', async () => {
+    let token: string | null = null
+    const probes: { status: number; body: unknown }[] = []
+    const runtime = runtimeWith([
+      async () => {
+        // 父 agent 的这次请求还在途：拿 runner 的令牌再发两次
+        const probe = async (agentId: string) => {
+          const res = await runtime.gateway.handle(
+            new Request(`${TEST_GATEWAY_URL}/model/${agentId}/api/stream`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: token! },
+              body: JSON.stringify({ model: {}, context: { messages: [] }, options: {} }),
+            }),
+          )
+          probes.push({ status: res.status, body: await res.json() })
+        }
+        await probe('main')
+        await probe('sub_nobody')
+        return fauxAssistantMessage('好')
+      },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      gatewayFetch((request) => {
+        if (new URL(request.url).pathname.includes('/model/')) token = request.headers.get('authorization')
+        return runtime.gateway.handle(request)
+      }),
+    )
+    const out = await runOnce(runtime, '一')
+    expect(out.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
+    expect(probes).toEqual([
+      { status: 409, body: { error: '这个 agent 已经有一个在途的模型请求' } },
+      { status: 403, body: { error: '没有这个 agent，或它已经结束' } },
+    ])
+    expect(faux!.state.callCount).toBe(1)
+  })
+
+  it('父 agent 的 sessionId 是会话 id（前后几轮命中同一份缓存）；每次模型请求结束打一行用量日志', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const runtime = runtimeWith([fauxAssistantMessage('一'), fauxAssistantMessage('二')])
+    // 让上游的 SDK 把 sessionId 放进会话亲和头（同一个模型对象，网关拿的就是它），好断言服务端给的是什么
+    ;(faux!.model.model.compat as Record<string, unknown>).sendSessionAffinityHeaders = true
+    const first = await runOnce(runtime, '第一轮')
+    const conversationId = threadOf(first.events)
+    await runOnce(runtime, '第二轮', conversationId)
+    expect(faux!.requests.map((request) => request.headers.get('x-session-affinity'))).toEqual([conversationId, conversationId])
+    const usage = info.mock.calls.map((call) => String(call[0])).filter((line) => line.startsWith('[agent-gateway]') && line.includes('模型请求结束'))
+    expect(usage).toHaveLength(2)
+    expect(usage[0]).toMatch(/agent=main step=1 模型请求结束（stop）：输入 \d+ \/ 输出 \d+/)
   })
 })

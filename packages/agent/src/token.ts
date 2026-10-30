@@ -113,7 +113,7 @@ export function hashBootstrapToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
 }
 
-/** 从 `Authorization: Bearer <token>` 里取令牌；模型代理另外认 Anthropic SDK 的 `x-api-key` */
+/** 从 `Authorization: Bearer <token>` 里取令牌（网关只认这一处；`x-api-key` 之类一概不认） */
 export function bearerOf(headers: Headers): string | null {
   const auth = headers.get('authorization')
   if (auth) {

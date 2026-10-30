@@ -103,6 +103,8 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  *   正常情况下一轮先撞上自己的时长上限（cancelled）；Grant 到期（expired）是兜底。
  * - `AGENT_LEASE_TTL_MS`：任务登记、会话槽位、节点占用这些共享表条目的 TTL（默认 30 秒），持有者按它的一部分续期；
  * - `AGENT_RUN_IDLE_TIMEOUT_MS`：一个 run 的空闲上限（默认 120 秒）：网关上既没有在途请求、也这么久没有新请求就停下；
+ * - `AGENT_MAX_OUTPUT_TOKENS`：每次模型请求的输出 token 上限（docs/22 §4.3）。模型请求由服务端发、参数完全由服务端定，
+ *   实际取 min(模型的 maxTokens, 它)；不配按 16384。它也决定了工具参数最长能有多长（pi #9265 的缓解之一）；
  * - `AGENT_RUN_TOTAL_TIMEOUT_MS`：一轮含它全部子 agent 的总时长上限（墙钟，默认 30 分钟，docs/20 §3.10.11）：等子 agent 的时间不算进单轮上限，
  *   由它封顶；沙箱硬期限（`deadlineMs` / `activeDeadlineSeconds`）和 Grant 的绝对过期按它算。
  */
@@ -146,6 +148,8 @@ export const agentConfig = {
   leaseTtlMs: Math.floor(positive(Number(process.env.AGENT_LEASE_TTL_MS ?? 30_000), 30_000)),
   runIdleTimeoutMs: Math.floor(positive(Number(process.env.AGENT_RUN_IDLE_TIMEOUT_MS ?? 120_000), 120_000)),
   runTotalTimeoutMs: Math.floor(positive(Number(process.env.AGENT_RUN_TOTAL_TIMEOUT_MS ?? 1_800_000), 1_800_000)),
+  /** 没配 / 不是正数 = undefined（`@shadecn/agent` 按 min(模型的 maxTokens, 16384)） */
+  maxOutputTokens: positiveInteger(process.env.AGENT_MAX_OUTPUT_TOKENS),
 } as const
 
 /**
@@ -279,6 +283,12 @@ function resolveAgentTokenSecret(): string {
 }
 
 /** 不是非负有限数（没配好）就用默认值 */
+/** 正整数；没配 / 认不出 = undefined（按使用方的默认） */
+function positiveInteger(raw: string | undefined): number | undefined {
+  const value = Math.floor(Number(raw?.trim() || NaN))
+  return Number.isFinite(value) && value > 0 ? value : undefined
+}
+
 function nonNegative(value: number, fallback: number): number {
   return Number.isFinite(value) && value >= 0 ? value : fallback
 }

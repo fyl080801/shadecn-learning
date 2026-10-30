@@ -22,6 +22,7 @@ const RECORDED_HASHES: Record<number, string> = {
   3: 'fed5ea20f44fd633',
   4: '3ba28efff9089c79',
   5: '071f1a2e62c43f0c',
+  6: 'bda69b3a658dc0d8',
 }
 
 function normalized(source: string): string {

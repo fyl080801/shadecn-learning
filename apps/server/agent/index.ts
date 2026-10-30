@@ -35,7 +35,7 @@ import { broadcastAgentRuns } from './runs-broadcast.ts'
  *
  * **二期～四期（docs/22 §9 第 2～4 项）**：pi 的推理循环跑在每轮一个的沙箱里（`process` 驱动 = 本机 node 子进程；
  * `oci` 驱动 = 每轮一个 Docker / Podman 容器；`k8s` 驱动 = 每轮一个 Pod），经网关（`routes/agent-gateway.ts`，挂在 `AGENT_GATEWAY_PATH`）说话。
- * 真实的 LLM key 只在这里交给网关的模型代理；沙箱的环境变量只有网关地址、一次性 bootstrap token、工作目录和 `PATH`。
+ * 真实的 LLM key 只在这里交给网关（模型请求由服务端发，docs/22 §4.3）；沙箱的环境变量只有网关地址、一次性 bootstrap token、工作目录和 `PATH`。
  *
  * 驱动和 runtime 分开懒建：驱动在启动时就要用（{@link startAgentSandboxReaper}：`oci` / `k8s` 的启动自检 + 清孤儿），
  * runtime 等第一次有人访问 agent 接口。两边拿的是同一个驱动实例。
@@ -198,7 +198,12 @@ function buildK8sDriver(): BuiltDriver {
 }
 
 function buildRuntime(): AgentRuntime {
-  const gateway = { url: agentGatewayUrl, secret: agentConfig.tokenSecret }
+  const gateway = {
+    url: agentGatewayUrl,
+    secret: agentConfig.tokenSecret,
+    // 模型参数完全由服务端定（docs/22 §4.3）：输出 token 上限可配
+    ...(agentConfig.maxOutputTokens !== undefined ? { maxOutputTokens: agentConfig.maxOutputTokens } : {}),
+  }
   const disabled = (reason: string) => {
     console.warn(`[agent] 未启用：${reason}`)
     return createAgentRuntime({ model: null, disabledReason: reason, driver: NO_DRIVER, gateway, ...agentHostOptions })

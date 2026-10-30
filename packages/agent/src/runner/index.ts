@@ -1,4 +1,13 @@
-import { Agent, type AgentContext, type AgentLoopTurnUpdate, type AgentMessage, type AgentTool, type AgentTurnDecision } from '@earendil-works/pi-agent-core'
+import {
+  Agent,
+  streamProxy,
+  type AgentContext,
+  type AgentLoopTurnUpdate,
+  type AgentMessage,
+  type AgentTool,
+  type AgentTurnDecision,
+  type StreamFn,
+} from '@earendil-works/pi-agent-core'
 import { contentText } from '@earendil-works/pi-ai'
 import { AGENT_DELEGATE_TOOL_NAME } from '@shadecn/shared/agent'
 import { MAIN_AGENT_ID, runnerEventOf, slimMessage, type SubagentFinishRequest, type SubagentInput } from '../protocol.ts'
@@ -25,7 +34,6 @@ import {
   type GatewayClient,
   type Uplink,
 } from './client.ts'
-import { runnerStreamFn } from './stream.ts'
 
 export { GatewayUnauthorizedError, RunnerProtocolMismatchError } from './client.ts'
 
@@ -36,7 +44,8 @@ export { GatewayUnauthorizedError, RunnerProtocolMismatchError } from './client.
  *
  * 网关地址、一次性 bootstrap token、工作目录、`PATH`。**没有** LLM key、数据库、会话密钥、Redis，
  * 也不认识 Y.Doc：工具按技能从同一份注册表（`skills/`）构造 —— 网关执行的工具（`execution: 'gateway'`）是网关 RPC 的代理
- * （参数 schema / 描述来自同一份定义，执行在服务端），模型请求经网关的模型代理（`apiKey` 是 run 短令牌，真实 key 由网关注入）。
+ * （参数 schema / 描述来自同一份定义，执行在服务端），模型请求经 pi 的 `streamProxy` 交给网关（`authToken` 是 run 短令牌）：
+ * 服务端用自己解析的模型、参数和真实 key 调上游，把事件流发回来（docs/22 §4.3）—— runner 送去的模型、参数一概不用。
  * 只有 runner 执行的工具（`execution: 'runner'`，如 `run_media_command`）在本地跑 —— runner 自己就是沙箱，命令跑在自己的工作目录里，
  * 白名单 / 参数检查 / 超时 / 输出上限沿用 `sandbox/local.ts`。工作目录只在提供的技能里有人要 `sandbox:exec` 时才开。
  *
@@ -142,7 +151,7 @@ interface LoopSpec {
   main: boolean
   /** 平台给的额外工具（子 agent 的 `request_confirmation`） */
   extraTools: AgentTool[]
-  /** 子 agent 自己的步数上限；到了由 `finishTurn` 结束它的循环（服务端另外按上报的 turn_end 数） */
+  /** 子 agent 自己的步数上限；到了由 `finishTurn` 结束它的循环（服务端另外按模型请求数硬拦） */
   maxTurns?: number
   signal?: AbortSignal
 }
@@ -237,21 +246,32 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
 
       /** 交给 pi、还没被它放进上下文的那条通知消息 → 通知 id */
       const steered = new Map<AgentMessage, string>()
+      /*
+       * 模型请求 = pi 的 streamProxy → 网关的 `/model/<agentId>/api/stream`（agent 写在路径里：streamProxy 不让加请求头）。
+       * 只给中止信号和令牌（快过期时先续期）：模型、参数、请求头、身份都由服务端定，送了也不用。
+       * 用全局 fetch（streamProxy 写死的）；工具调用 id 的补齐也在服务端（随 toolcall_end 下发）
+       */
+      const proxyUrl = client.modelProxyUrl(spec.agentId)
+      const streamFn: StreamFn = async (model, context, streamOptions) =>
+        streamProxy(model, context, {
+          authToken: await client.token(),
+          proxyUrl,
+          ...(streamOptions?.signal ? { signal: streamOptions.signal } : {}),
+        })
       const maxTurns = spec.maxTurns
       let turns = 0
       let exhausted = false
       const agent: Agent = new Agent({
         initialState: {
           systemPrompt: spec.systemPrompt,
-          model: { ...input.model, baseUrl: client.llmBaseUrl },
+          // baseUrl 只是元数据（streamProxy 不看它），填成这个 agent 的模型请求地址
+          model: { ...input.model, baseUrl: proxyUrl },
           thinkingLevel: 'off',
           tools,
           messages: spec.messages,
         },
-        // 三种线协议直接分派（pi 1.x 起必填），见 stream.ts
-        streamFn: runnerStreamFn,
-        // 交给 SDK 的「key」是 run 短令牌（快过期时先续期）；网关的模型代理每次请求都判 llm:invoke
-        getApiKey: () => client.token(),
+        // pi 1.x 起必填；网关每次请求都判 llm:invoke、按 agent 数步数（docs/22 §4.3）
+        streamFn,
         // 并行只给 delegate_task：别的工具都标了 sequential，一批里只要有一个就整批顺序执行（pi 的规则，1.4 仍然如此）
         toolExecution: 'parallel',
         beforeToolCall: async ({ toolCall, assistantMessage }) => {
@@ -328,7 +348,7 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
         // 子 agent 的事件带上它的 id：服务端据此归到它的子任务条目，不进父 agent 的上下文
         if (slim) uplink.push(spec.main ? slim : { ...slim, agentId: spec.agentId })
         if (event.type === 'message_end' && event.message.role === 'user') steered.delete(event.message)
-        // 一批结束：先把事件冲完（服务端在这里数步数，超了当场叫停；接着 prepareNextTurnWithContext 才去取画布改动）
+        // 一批结束：先把事件冲完（接着 prepareNextTurnWithContext 才去取画布改动；步数由网关按模型请求数）
         if (event.type === 'turn_end') await uplink.flush()
       })
 
@@ -419,7 +439,7 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
     })
     /*
      * 兜底补报：进了 transcript、却没经过 message_end 的消息。pi 0.73 兜住的失败（`handleRunFailure`）就是这样；
-     * pi 1.x 改成照常发 message_start / message_end + turn_end（服务端照常把它算一步），所以正常情况下这里什么都不补。
+     * pi 1.x 改成照常发 message_start / message_end + turn_end，所以正常情况下这里什么都不补。
      * 对齐时去掉 pi 的 system 消息：它们不上报，也不在 `ended` 里。
      */
     const unreported = main.agent.state.messages

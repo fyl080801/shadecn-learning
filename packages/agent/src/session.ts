@@ -60,7 +60,8 @@ import { createRunEventMapper, type RunOutcome } from './events.ts'
 import { nodesMap } from '@shadecn/shared/flow-doc'
 import { createdNodeIds, dataWriteTargets, leaseAgentOf, type NodeLease, type NodeLeaseRegistry } from './occupancy.ts'
 import type { ConversationSlot, ReplayEntry, ReplayRecord, RunRecord, RunRegistry, StopCommand } from './run-registry.ts'
-import { createAgentGateway, isProxiedModelApi, PROXIED_MODEL_APIS, type GatewayRun } from './gateway.ts'
+import { createAgentGateway, type GatewayRun, type ModelRequestDecision } from './gateway.ts'
+import { isServedModelApi, SERVED_MODEL_APIS } from './model-stream.ts'
 import type { MediaReader } from './media.ts'
 import type { ResolvedAgentModel } from './model.ts'
 import {
@@ -121,7 +122,7 @@ import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunS
  * - **「谁在跑」分两层**（docs/20 §3.10.10，F14）：本进程的 `runs` / `busyConversations`（`RunState` 本体、同一 tick 的占位），
  *   和注入的 {@link RunRegistry}（宿主：共享层，多副本是 redis）里的**任务登记**、**会话槽位**、**补发日志**、**停止指令**。
  *   任务列表、「这个会话在不在跑」、接回、停止都以共享层为准，所以落在哪个副本上都一样；
- *   工具执行、画布连接、模型代理仍只在持有副本上（runner 只连回发起它的副本）。进程崩溃时这一轮没了，
+ *   工具执行、画布连接、模型调用仍只在持有副本上（runner 只连回发起它的副本）。进程崩溃时这一轮没了，
  *   它的登记 / 槽位 / 日志不再续期，一个 TTL 内过期。
  *
  * ## 并发单位是会话
@@ -160,7 +161,7 @@ import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunS
  * 只有父 agent 能派（只有一层）；同时 / 累计上限在这里判；子 agent 的事件只改父会话里的子任务条目，不进父 agent 的上下文。
  * 单轮时长在「有子 agent 在跑」（这里自己的登记）时暂停，总时长上限是墙钟、不暂停；沙箱硬期限与 Grant 按总时长上限算。
  *
- * **空闲上限**（`idleTimeoutMs`）：runner 来过网关之后，网关上既没有在途请求（模型请求算到响应流读完）、
+ * **空闲上限**（`idleTimeoutMs`）：runner 来过网关之后，网关上既没有在途请求（模型请求算到服务端的流结束）、
  * 又连续这么久没有新请求 → 叫停（cancelled，原因写明空闲）。
  *
  * ## 一轮的生命周期与失败语义
@@ -186,7 +187,7 @@ import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunS
  * pi 的推理循环跑在沙箱里的 runner 中（`runner/`），服务端这里**不再有 pi 的 Agent**。服务端留下的：
  * Y.Doc 与画布工具的执行（runner 的工具只是 `/canvas/tool` 的代理，这里用同一份 `tools.ts` 在直连的房间上执行）、
  * 常驻观察与跨轮差异（要读文档）、run 注册表 / 补发缓冲 / SSE / 广播、落库（会话、运行日志、工具调用日志）、
- * 判权与对账、真实的 LLM key（网关的模型代理注入）。runner 被杀在任何一步都合法：
+ * 判权与对账、真实的 LLM key（服务端自己调模型，docs/22 §4.3）。runner 被杀在任何一步都合法：
  *
  * - **事件**：runner 把 pi 事件裁成 `RunnerEvent` 上报，这里原样喂给 `events.ts` 的映射器 —— 映射只在服务端，
  *   所以 runner 被杀之后，收尾帧（关文字段、把还在转的工具标成「已中止」）和落库的 assistant 消息照样由这里补齐；
@@ -194,7 +195,8 @@ import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunS
  *   缺的结果补成「已中止」的错误结果，下一轮的上下文才合法；
  * - **工具调用日志**：画布工具以网关的执行记录为准（runner 在不可信区，它报的成败不算数）；
  *   只在 runner 里跑的媒体工具按它上报的记；
- * - **每一轮的上限**都在这里：步数（数上报的 `turn_end`）、工具调用次数（runner 先拦，网关按同一个数硬拦）、
+ * - **每一轮的上限**都在这里：步数（**一次模型请求 = 一步**，网关按 agent 硬计数，`modelRequest`；上报的 `turn_end` 只用于界面）、
+ *   工具调用次数（runner 先拦，网关按同一个数硬拦）、
  *   时长、删除预算（服务端的工具实例）、补发缓冲。
  *
  * **叫停 = 作废令牌 + 杀沙箱**：中止、超时、失权、步数超限、进程退出都走 {@link stopRun} → `interrupt`：
@@ -216,8 +218,8 @@ import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunS
  * ## 执行身份：Grant 与 authorize（docs/22 §3、§5，`authority.ts`）
  *
  * 开画布之前向宿主 `issue` 一份 Grant（{@link AgentRuntimeOptions.authorities}），之后每一项能力用之前都判一次：
- * 每个画布工具在网关上执行之前判它声明的 `capability`（这里统一包一层，工具自己不调）；每次模型请求经网关的
- * 模型代理时判 `llm:invoke`（判过了才注入真实 key）；画布每次读写由宿主的画布实现按 `flow:read` / `flow:write` 判
+ * 每个画布工具在网关上执行之前判它声明的 `capability`（这里统一包一层，工具自己不调）；每次模型请求到网关时
+ * 判 `llm:invoke`（判过了服务端才带真实 key 去调上游）；画布每次读写由宿主的画布实现按 `flow:read` / `flow:write` 判
  * （`openCanvas` 拿到的是同一份 authority）。`sandbox:exec` 只决定提不提供要它的技能（`media-exec`）：那些工具在 runner
  * 自己的工作目录里跑，不经网关（docs/22 §3「沙箱内部动作」）。网关**从不读令牌里的 scope**。
  *
@@ -425,8 +427,10 @@ export interface AgentGatewayConfig {
   url: string
   /** 签 run 短令牌的密钥（只在服务端） */
   secret: string | Uint8Array
-  /** 网关打上游模型用的 fetch；不给用调用那一刻的 `globalThis.fetch`（测试注入脚本化的上游） */
+  /** 服务端调上游模型用的 fetch（pi-ai 的 `ProviderRequestOptions.fetch`）；不给用 SDK 默认的全局 fetch（测试注入脚本化的上游） */
   upstreamFetch?: typeof fetch
+  /** 输出 token 的上限（`AGENT_MAX_OUTPUT_TOKENS`）：实际取 min(模型的 maxTokens, 它)，不给按 16384（docs/22 §4.3 已定第 4 条） */
+  maxOutputTokens?: number
 }
 
 export interface StartRunInput {
@@ -785,20 +789,33 @@ interface RunAgent {
   loadedSkills: Set<string>
   /** 这个 agent `load_skill` 成功的次数（每个 agent 各自不超过 `maxSkillLoads`） */
   skillLoads: number
-  /** 上报的 turn_end 数（每个 agent 各自不超过 `maxTurns`） */
+  /** 这个 agent 发过的模型请求数（一次请求 = 一步，被叫停 / 出错 / 断开的也算；每个 agent 各自不超过 `maxTurns`） */
   turns: number
+  /** 有一个在途的模型请求（pi 的循环是串行的：同一个 agent 同时只能有一个） */
+  requesting: boolean
   /** 这个 agent 的「改过」集合（谁读过谁的清掉；同一轮的别的 agent 写了 data 也记进来） */
   stale: Map<string, StaleNode>
   /** 子 agent 已交回 / 被收掉：之后它的任何请求、事件都不认 */
   finished: boolean
-  /** 子 agent 步数用完：之后它的工具调用一律拒 */
+  /** 子 agent 步数用完（第 `maxTurns + 1` 次请求被拒）：之后它的工具调用一律拒 */
   exhausted: boolean
   /** 子 agent 改过的节点（按执行记录汇总，交回父 agent） */
   changed: Set<string>
 }
 
 function newRunAgent(id: string, sub: RunAgent['sub']): RunAgent {
-  return { id, sub, loadedSkills: new Set(), skillLoads: 0, turns: 0, stale: new Map(), finished: false, exhausted: false, changed: new Set() }
+  return {
+    id,
+    sub,
+    loadedSkills: new Set(),
+    skillLoads: 0,
+    turns: 0,
+    requesting: false,
+    stale: new Map(),
+    finished: false,
+    exhausted: false,
+    changed: new Set(),
+  }
 }
 
 /** 执行记录 / 工具开始时刻的键：不同 agent 的 toolCallId 可能撞（各自的模型各自起名） */
@@ -1029,10 +1046,10 @@ const conversationKey = (flowId: string, conversationId: string) => `${flowId}\n
 
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   const limits: RunLimits = { ...DEFAULT_RUN_LIMITS, ...options.limits }
-  // 模型请求要经网关的模型代理：代理不了的线协议 = agent 没开（而不是每一轮都失败）
+  // 模型由服务端调（docs/22 §4.3）：调不了的线协议 = agent 没开（而不是每一轮都失败）
   const unproxied =
-    options.model && !isProxiedModelApi(options.model.model.api)
-      ? `模型的线协议 ${options.model.model.api} 暂不支持经网关代理（支持：${PROXIED_MODEL_APIS.join(' / ')}）`
+    options.model && !isServedModelApi(options.model.model.api)
+      ? `模型的线协议 ${options.model.model.api} 暂不支持由服务端调用（支持：${SERVED_MODEL_APIS.join(' / ')}）`
       : null
   const resolved = unproxied ? null : options.model
   const disabledReason = unproxied ?? options.disabledReason ?? '没有配置模型'
@@ -1043,6 +1060,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     secret: options.gateway.secret,
     upstream: resolved ? { model: resolved.model, apiKey: resolved.apiKey } : null,
     ...(options.gateway.upstreamFetch ? { fetch: options.gateway.upstreamFetch } : {}),
+    ...(options.gateway.maxOutputTokens !== undefined ? { maxOutputTokens: options.gateway.maxOutputTokens } : {}),
   })
   const sandboxResources: SandboxResources = {
     cpu: 1,
@@ -1759,7 +1777,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     const offeredSkills = new Map<string, AgentSkill>()
     /**
      * 父 agent **在途的** `delegate_task` 调用里已经派出过子任务的（原始调用 id）：同一时刻一次调用只派一个。
-     * 那次调用结束（父 agent 的 tool_execution_end）、或父 agent 进了下一步（turn_end）时移出 —— 上游可能复用调用 id
+     * 那次调用结束（父 agent 的 tool_execution_end）、或父 agent 发下一次模型请求时移出 —— 上游可能复用调用 id
      * （每次回复都从 `call_0` 起），按「一轮内永久唯一」记会把下一步同 id 的派发误拒。一轮累计派发数另记
      */
     const delegatedCalls = new Set<string>()
@@ -2520,7 +2538,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       const onEvents = (events: RunnerEvent[]) => {
         const batch: AgentStreamEvent[] = []
         for (const event of events) {
-          // 叫停之后（比如这一批里的 turn_end 刚撞上步数上限）的事件不再收
+          // 叫停之后（失权、超时、步数超限……）的事件不再收
           if (run.stopped !== null) break
           // 归到哪个 agent：服务端分配过、还没结束的才认（runner 不可信：认不出的子 agent 事件丢掉）
           const agent = agents.get(event.agentId ?? MAIN_AGENT_ID)
@@ -2529,26 +2547,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             startedCalls.set(callKey(agent.id, event.toolCallId), { name: event.toolName, args: event.args, at: Date.now() })
           }
           if (agent.sub) {
-            // 子 agent：步数各算；它的事件只改它的子任务条目，不进父 agent 的上下文和 assistant 消息
-            if (event.type === 'turn_end') {
-              agent.turns += 1
-              // 到了上限还要接着调工具（这一步调过工具）= 步数用完；最后一步正好是不调工具的回复不算
-              if (agent.turns >= limits.maxTurns && event.toolResultCount > 0) agent.exhausted = true
-              // runner 到了上限就结束它的循环（finishTurn，不再请求模型）；多一步算宽限（老镜像停它时还会报一次 turn_end），再多就是 runner 不守规矩：整轮停
-              if (agent.turns > limits.maxTurns + 1) stopRun(run, `子任务 ${agent.id} 超过步数上限 ${limits.maxTurns}，已停止`)
-            }
+            // 子 agent：它的事件只改它的子任务条目，不进父 agent 的上下文和 assistant 消息（步数在 modelRequest 里数）
             batch.push(...mapper.subtaskEvent(agent.id, event))
             if (event.type === 'tool_execution_end') logToolCall(event, agent)
             continue
           }
-          if (event.type === 'turn_end') {
-            agent.turns += 1
-            if (agent.turns >= limits.maxTurns) stopRun(run, `超过本轮步数上限 ${limits.maxTurns}，已停止`)
-            // 父 agent 进了下一步：它不再在 delegate_task 里等，还没交回的子任务不会再有人等了
-            if (run.activeSubagents > 0) abandonSubagents(batch)
-            // 这一步的调用都结束了：下一步复用同一个调用 id 的 delegate_task 是新的一次
-            delegatedCalls.clear()
-          }
+          // turn_end 从此只用于界面：步数、「父 agent 进了下一步」都看它的下一次模型请求（modelRequest）
           if (event.type === 'message_end') appended.push(event.message)
           const mapped = mapper.handle(event)
           if (event.type === 'tool_execution_end') {
@@ -2560,6 +2564,47 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           if (event.type === 'message_end' && event.steerId) deliverSteered(event.steerId, batch)
         }
         send(batch)
+      }
+
+      /**
+       * 一次模型请求（docs/22 §4.3「步数与请求上限」）：**一次请求 = 一步**，在这里按 agent 硬计数，不信上报的 turn_end。
+       * - 只认服务端分配过、还没结束的 agent；同一个 agent 同时只能有一个在途请求（pi 的循环是串行的）；
+       * - 父 agent 第 `maxTurns + 1` 次 → 不调上游，整轮以「超过本轮步数上限」停下；子 agent 超了 → 一帧 error、标成步数用完；
+       * - 父 agent 的下一次请求 = 它进了下一步：它不在 delegate_task 里等了，还没交回的子任务收掉、在途的派发清空
+       *   （上游复用调用 id，下一步同 id 的 delegate_task 是新的一次）。
+       * 被叫停、出错、runner 断开的请求同样算一步（请求已经发出去了）。
+       */
+      const modelRequest = (agentId: string): ModelRequestDecision => {
+        if (run.stopped !== null) return { kind: 'refuse', status: 401, message: '这一轮已经停止' }
+        const agent = agents.get(agentId)
+        if (!agent || agent.finished) return { kind: 'refuse', status: 403, message: '没有这个 agent，或它已经结束' }
+        if (agent.requesting) return { kind: 'refuse', status: 409, message: '这个 agent 已经有一个在途的模型请求' }
+        agent.turns += 1
+        if (!agent.sub) {
+          if (agent.turns > limits.maxTurns) {
+            stopRun(run, `超过本轮步数上限 ${limits.maxTurns}，已停止`)
+            return { kind: 'refuse', status: 409, message: `超过本轮步数上限 ${limits.maxTurns}` }
+          }
+          if (agent.turns > 1) {
+            const batch: AgentStreamEvent[] = []
+            if (run.activeSubagents > 0) abandonSubagents(batch)
+            delegatedCalls.clear()
+            if (batch.length > 0) send(batch)
+          }
+        } else if (agent.turns > limits.maxTurns) {
+          agent.exhausted = true
+          return { kind: 'fail', message: `子任务的步数已达上限 ${limits.maxTurns}，这次请求没有发给模型` }
+        }
+        agent.requesting = true
+        return {
+          kind: 'stream',
+          // 缓存键（docs/22 §4.3 已定第 5 条）：父 agent 用会话 id（前后几轮都能命中），子 agent 每个一份
+          sessionId: agent.sub ? `${run.runId}:${agent.id}` : conversationId,
+          step: agent.turns,
+          release: () => {
+            agent.requesting = false
+          },
+        }
       }
 
       const registration = gateway.open({
@@ -2588,6 +2633,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             )
           },
           authorizeLlm: () => gate.authorize('llm:invoke'),
+          modelRequest,
           async authorizeRenewal() {
             if (run.stopped !== null) throw new RunAuthorityError('revoked', run.stopped.reason)
             // 续期不是一项能力；拿这一轮的基础能力 flow:read 探一下 Grant 还活着（失效即整轮停）

@@ -61,9 +61,10 @@ describe('网关的挂载', () => {
     const withCookie = await gateway('/run/input', { headers: { cookie: alice.cookie } })
     expect(withCookie.status).toBe(401)
     expect(await withCookie.json()).toEqual(GATEWAY_401)
-    // 模型代理同理：会话 cookie 不是令牌
-    const llm = await gateway('/llm/chat/completions', { headers: { cookie: alice.cookie }, body: { model: 'scripted-model' } })
-    expect(llm.status).toBe(401)
+    // 模型请求同理：会话 cookie 不是令牌（开流之前的拒绝是 streamProxy 认的 `{ error: string }`）
+    const model = await gateway('/model/main/api/stream', { headers: { cookie: alice.cookie }, body: { context: { messages: [] } } })
+    expect(model.status).toBe(401)
+    expect(await model.json()).toEqual({ error: GATEWAY_401.message })
   })
 
   it('bootstrap token 只能兑换一次：被抢先兑换后 runner 换不到令牌，这一轮 RUN_ERROR；抢到的令牌拿不到真实 key，这一轮结束后 401', async () => {

@@ -7,7 +7,7 @@ import type { SandboxDriver, SandboxExit, SandboxHandle } from '../driver.ts'
 
 /**
  * **测试专用**的进程内驱动：runner 就在当前进程里跑（`runAgentRunner`），但照样只经网关协议说话 ——
- * 换令牌、取输入、工具 RPC、事件上报、模型代理一样不少（打网关用的 fetch 由测试路由到 `gateway.handle`，
+ * 换令牌、取输入、工具 RPC、事件上报、模型请求一样不少（打网关用的 fetch 由测试路由到 `gateway.handle`，
  * 不开端口），所以编排层看到的和 `process` 驱动逐帧相同，只是快得多。
  *
  * 它**不隔离任何东西**（同一个进程、同一份环境），所以只从 `@shadecn/agent/testing` 导出，
