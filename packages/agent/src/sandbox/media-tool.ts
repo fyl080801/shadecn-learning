@@ -48,6 +48,7 @@ export function createMediaTool(sandbox: Sandbox): CanvasTool {
     name: MEDIA_TOOL_NAME,
     capability: 'sandbox:exec',
     execution: 'runner',
+    spawnsProcess: true,
     label: '媒体处理',
     description:
       '在隔离的工作目录里运行 ffmpeg 或 ffprobe（不经 shell，没有网络访问权限的假设，不能读工作目录外的文件）。' +

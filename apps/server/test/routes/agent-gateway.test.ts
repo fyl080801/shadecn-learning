@@ -94,7 +94,7 @@ describe('网关的挂载', () => {
 
     // runner 拿到的输入：有提示词、模型描述、技能（runner 按注册表展开成工具）；没有真实 key、没有上游地址
     expect(input!.prompt).toBe('你好')
-    expect(input!.skills.loaded).toEqual(['canvas'])
+    expect(input!.skills.loaded).toEqual(['canvas', 'delegate'])
     expect(input!.model).not.toHaveProperty('baseUrl')
     expect(JSON.stringify(input)).not.toContain(SCRIPTED_API_KEY)
     expect(JSON.stringify(input)).not.toContain(SCRIPTED_UPSTREAM_URL)

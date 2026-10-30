@@ -27,6 +27,15 @@ import type { CanvasToolDetails } from './tools.ts'
  *    有就 `steer` 进去（docs/20 §3.10.2 的插入时机，规则在 runner 里执行）；
  * 4. 事件冲完后 `/run/finish`，然后进程退出。
  *
+ * ## 子 agent（docs/20 §3.10.11）
+ *
+ * 父 agent 的 `delegate_task` 在 runner 里执行：先 `/agent/delegate` 登记（服务端分配子 agent id、判上限、转交占用、
+ * 展开提及、定好它的系统提示与一开始加载的技能），runner 在**同一个进程**里再建一个 pi `Agent` 跑它，
+ * 做完 `/agent/finish` 交回（服务端释放它的占用、汇总它改过的节点、拼好回给父 agent 的那段结果）。
+ * 子 agent 的工具调用 / 事件带上它的 {@link ToolCallRequest.agentId} / `agentId`；**不带 = 父 agent**。
+ * agent id 只用来在这一轮内部区分是谁（占用、「改过」、步数、事件归到哪个子任务）—— 它们都还是这一轮的令牌，
+ * 服务端只认自己分配过、还没结束的 id；子 agent 不能再派（服务端拒绝 `agentId` 不是父 agent 的派发）。
+ *
  * 中止 / 超时 / 失权不经协议通知 runner：服务端当场作废令牌、由驱动杀掉沙箱（docs/22 §5 stop），
  * 收尾帧由服务端按它已经收到的事件补齐。所以 runner 被杀在任何一步都是合法的结局。
  *
@@ -45,7 +54,7 @@ import type { CanvasToolDetails } from './tools.ts'
  * 回 {@link PROTOCOL_MISMATCH_STATUS} + {@link ProtocolMismatchBody}（和 401 能区分），编排层以 `runner_protocol_mismatch` 收尾。
  * `process` 驱动直接跑源码，永远一致。
  */
-export const RUNNER_PROTOCOL_VERSION = 3
+export const RUNNER_PROTOCOL_VERSION = 4
 
 /** 版本不一致时网关的 HTTP 状态码与 `error` 字段（不要和 401 混：令牌失效是另一回事） */
 export const PROTOCOL_MISMATCH_STATUS = 409
@@ -65,6 +74,10 @@ export const GATEWAY_ROUTES = {
   changes: '/canvas/changes',
   events: '/events',
   finish: '/run/finish',
+  /** 父 agent 派一个子 agent（docs/20 §3.10.11）：登记、判上限、转交占用，回子 agent 的输入 */
+  delegate: '/agent/delegate',
+  /** 一个子 agent 做完了：交回结果，服务端释放它的占用、拼好给父 agent 的结果 */
+  agentFinish: '/agent/finish',
   /** 模型代理的前缀：runner 的模型 `baseUrl` = 网关地址 + 它；之后的路径原样转给真实上游 */
   llm: '/llm',
 } as const
@@ -151,10 +164,15 @@ export interface RunnerInput {
 
 // —— 画布工具 ——
 
+/** 父 agent 的 agent id：不带 `agentId` 的请求 / 事件都算它的 */
+export const MAIN_AGENT_ID = 'main'
+
 export interface ToolCallRequest {
   toolCallId: string
   name: string
   args: unknown
+  /** 哪个 agent 调的（子 agent 的 id，服务端在 `/agent/delegate` 里分配）；不带 = 父 agent */
+  agentId?: string
 }
 
 export type ToolCallResponse =
@@ -195,7 +213,12 @@ export interface CanvasChangesResponse {
  * 服务端据此重建、落库的模型上下文因此不带 base64，前端的工具结果里也没有图片字节。
  * 这只是裁剪，不是映射：pi → AG-UI 的映射**只在服务端的 `events.ts`**。
  */
-export type RunnerEvent =
+export type RunnerEvent = RunnerEventBody & {
+  /** 子 agent 的事件带上它的 id（只用于这一轮内部的区分，见文件头「子 agent」）；不带 = 父 agent */
+  agentId?: string
+}
+
+export type RunnerEventBody =
   | { type: 'message_update'; assistantMessageEvent: { type: 'text_delta'; delta: string } | { type: 'text_end' } }
   /** pi 往上下文里追加的每一条消息（用户提示、assistant 回复、工具结果、steer 进去的通知）；服务端据此重建模型上下文 */
   | { type: 'message_end'; message: AgentMessage; steerId?: string }
@@ -209,6 +232,58 @@ export type RunnerEvent =
     }
   /** 一批（一次模型回复 + 它的工具调用）结束；服务端按它数步数 */
   | { type: 'turn_end'; toolResultCount: number }
+
+// —— 子 agent（docs/20 §3.10.11） ——
+
+/** `/agent/delegate` 的请求：`agentId` 是**发起派发的** agent（只有父 agent 能派，服务端拒绝别的） */
+export interface DelegateRequest {
+  agentId: string
+  /** 父 agent 那次 `delegate_task` 调用的 id：子任务条目挂在它上面 */
+  toolCallId: string
+  brief: string
+  nodeIds: string[]
+}
+
+/** 子 agent 的输入（服务端定好）：runner 拿它在同一个进程里再建一个 pi `Agent` */
+export interface SubagentInput {
+  agentId: string
+  systemPrompt: string
+  /** 它的第一条用户消息（任务说明 + 展开了提及的节点） */
+  prompt: string
+  /** 一开始就加载的技能（runner 按注册表展开成工具，外加 `load_skill`）；不含 `delegate`（只有一层） */
+  skills: { loaded: AgentSkillId[] }
+  limits: {
+    /** 它自己的步数上限（每个 agent 各算，同单轮上限）；到了 runner 就停下它 */
+    maxTurns: number
+  }
+}
+
+export type DelegateResponse = { ok: true; agent: SubagentInput } | { ok: false; message: string }
+
+/** 子 agent 怎么结束的（runner 报的；服务端可能改判，比如步数用完的一律算失败） */
+export type SubagentStatus = 'done' | 'failed' | 'needs_confirmation'
+
+export interface SubagentFinishRequest {
+  agentId: string
+  status: SubagentStatus
+  /** 它最后的回复 */
+  text: string
+  /** 需要确认时它要问的问题 */
+  question: string | null
+  /** 失败时的原因 */
+  error: string | null
+}
+
+/** `/agent/finish` 的回复：交给父 agent 的 `delegate_task` 结果（服务端拼的，限长） */
+export interface SubagentFinishResponse {
+  /** 失败（或这一轮已经停了）：runner 把 `text` 作为工具错误回给父 agent */
+  isError: boolean
+  text: string
+  /** 给人看的一句话（父 agent 那条工具调用的 summary） */
+  summary: string
+  /** 它改过的节点 */
+  changedNodeIds: string[]
+}
 
 export interface EventsRequest {
   /** 从 0 起逐批加一：服务端只收下一批，重放 / 乱序一律拒 */
@@ -286,6 +361,13 @@ export const EVENTS_PER_BATCH = 500
 const ID_MAX = 256
 const NAME_MAX = 64
 const DELTA_MAX = 100_000
+/** 子任务说明 / 子 agent 回复 / 问题的上限（服务端回给父 agent 时另外再截到更短） */
+export const DELEGATE_BRIEF_MAX = 8000
+export const DELEGATE_NODE_IDS_MAX = 20
+const SUBAGENT_TEXT_MAX = 100_000
+const SUBAGENT_NOTE_MAX = 4000
+/** 节点 id 的格式（同提及 `@{node:<id>}` 认的字符集） */
+const NODE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -301,6 +383,13 @@ function isMessage(value: unknown): value is AgentMessage {
 
 function parseEvent(raw: unknown): RunnerEvent | null {
   if (!isObject(raw)) return null
+  if (raw.agentId !== undefined && !shortString(raw.agentId, ID_MAX)) return null
+  const body = parseEventBody(raw)
+  if (!body) return null
+  return raw.agentId === undefined ? body : { ...body, agentId: raw.agentId as string }
+}
+
+function parseEventBody(raw: Record<string, unknown>): RunnerEventBody | null {
   switch (raw.type) {
     case 'message_update': {
       const inner = raw.assistantMessageEvent
@@ -358,7 +447,37 @@ export function parseEventsRequest(body: unknown): EventsRequest | null {
 /** `/canvas/tool` 的请求体 */
 export function parseToolCallRequest(body: unknown): ToolCallRequest | null {
   if (!isObject(body) || !shortString(body.toolCallId, ID_MAX) || !shortString(body.name, NAME_MAX)) return null
-  return { toolCallId: body.toolCallId, name: body.name, args: body.args }
+  if (body.agentId !== undefined && !shortString(body.agentId, ID_MAX)) return null
+  return {
+    toolCallId: body.toolCallId,
+    name: body.name,
+    args: body.args,
+    ...(body.agentId !== undefined ? { agentId: body.agentId as string } : {}),
+  }
+}
+
+/** `/agent/delegate` 的请求体：说明非空、节点 id 合法且不多于上限（去重） */
+export function parseDelegateRequest(body: unknown): DelegateRequest | null {
+  if (!isObject(body) || !shortString(body.agentId, ID_MAX) || !shortString(body.toolCallId, ID_MAX)) return null
+  if (typeof body.brief !== 'string' || !body.brief.trim() || body.brief.length > DELEGATE_BRIEF_MAX) return null
+  const raw = body.nodeIds ?? []
+  if (!Array.isArray(raw) || raw.length > DELEGATE_NODE_IDS_MAX) return null
+  if (!raw.every((id) => typeof id === 'string' && NODE_ID_PATTERN.test(id))) return null
+  return { agentId: body.agentId, toolCallId: body.toolCallId, brief: body.brief.trim(), nodeIds: [...new Set(raw as string[])] }
+}
+
+const nullableNote = (value: unknown): string | null | undefined =>
+  value === null || value === undefined ? null : typeof value === 'string' ? value.slice(0, SUBAGENT_NOTE_MAX) : undefined
+
+/** `/agent/finish` 的请求体 */
+export function parseSubagentFinishRequest(body: unknown): SubagentFinishRequest | null {
+  if (!isObject(body) || !shortString(body.agentId, ID_MAX)) return null
+  if (body.status !== 'done' && body.status !== 'failed' && body.status !== 'needs_confirmation') return null
+  if (typeof body.text !== 'string') return null
+  const question = nullableNote(body.question)
+  const error = nullableNote(body.error)
+  if (question === undefined || error === undefined) return null
+  return { agentId: body.agentId, status: body.status, text: body.text.slice(0, SUBAGENT_TEXT_MAX), question, error }
 }
 
 /** `/run/finish` 的请求体 */

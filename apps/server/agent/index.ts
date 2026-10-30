@@ -228,8 +228,9 @@ function buildRuntime(): AgentRuntime {
     // 看图只读本服务的对象存储：没配 S3 就不接（工具也就不给模型）；还要模型吃图片，由编排层判
     ...(s3Enabled ? { mediaReader: agentMediaReader } : {}),
     sandbox: { image: agentConfig.sandboxImage, resources: agentConfig.sandboxResources },
-    // 空闲上限（docs/20 §3.10.8）：网关上既没有在途请求、也这么久没有新请求就停下这一轮
-    limits: { idleTimeoutMs: agentConfig.runIdleTimeoutMs },
+    // 空闲上限（docs/20 §3.10.8）：网关上既没有在途请求、也这么久没有新请求就停下这一轮；
+    // 总时长上限（§3.10.11）：含子 agent 的墙钟上限，沙箱硬期限与 Grant 的绝对过期按它算
+    limits: { idleTimeoutMs: agentConfig.runIdleTimeoutMs, totalTimeoutMs: agentConfig.runTotalTimeoutMs },
     ...agentHostOptions,
   })
   if (!created.enabled) return disabled(created.disabledReason ?? '模型不可用')

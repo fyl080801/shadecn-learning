@@ -268,3 +268,86 @@ describe("接回一轮", () => {
     expect(conversation.messages[conversation.messages.length - 1]).toMatchObject({ role: "assistant", error: STREAM_INTERRUPTED_TEXT })
   })
 })
+
+describe("子任务条目（docs/20 §3.10.11）", () => {
+  const delegateStart: AgentStreamEvent = {
+    type: "TOOL_CALL_START",
+    toolCallId: "call_d",
+    toolCallName: "delegate_task",
+    parentMessageId: "a1",
+    metadata: { summary: "子任务：搭场景", status: "running" }
+  }
+  const subtask = (patch: Record<string, unknown> = {}): AgentStreamEvent =>
+    ({
+      type: "CUSTOM",
+      name: "agent.subtask",
+      value: {
+        id: "sub_1",
+        toolCallId: "call_d",
+        brief: "搭场景",
+        nodeIds: ["d1"],
+        status: "running",
+        startedAt: 10,
+        toolCalls: [],
+        text: "",
+        changedNodeIds: [],
+        ...patch
+      }
+    }) as AgentStreamEvent
+
+  it("每帧按 id 整条替换进本轮 assistant 消息的 subtasks；补发里重复的帧不会多出一条", () => {
+    const conversation = turn([
+      started,
+      echoed,
+      delegateStart,
+      subtask(),
+      subtask({ toolCalls: [{ id: "t1", name: "add_node", summary: "新建", status: "running" }] }),
+      subtask({ status: "done", text: "好了", finishedAt: 20, changedNodeIds: ["n1"], toolCalls: [{ id: "t1", name: "add_node", summary: "新建", status: "done" }] })
+    ])
+    const assistant = conversation.messages.find((message) => message.role === "assistant") as Extract<AgentChatMessage, { role: "assistant" }>
+    expect(assistant.toolCalls.map((call) => call.name)).toEqual(["delegate_task"])
+    expect(assistant.subtasks).toEqual([
+      expect.objectContaining({ id: "sub_1", status: "done", text: "好了", finishedAt: 20, changedNodeIds: ["n1"] })
+    ])
+  })
+
+  it("畸形的帧丢掉、不抛；RUN_ERROR / 中断时还在跑的子任务标成失败", () => {
+    const conversation = turn([
+      started,
+      echoed,
+      delegateStart,
+      subtask(),
+      { type: "CUSTOM", name: "agent.subtask", value: { id: "bad" } } as unknown as AgentStreamEvent,
+      { type: "RUN_ERROR", message: "炸了" }
+    ])
+    const assistant = conversation.messages.find((message) => message.role === "assistant") as Extract<AgentChatMessage, { role: "assistant" }>
+    expect(assistant.subtasks).toHaveLength(1)
+    expect(assistant.subtasks![0]).toMatchObject({ status: "failed" })
+  })
+
+  it("落定消息（RUN_FINISHED）里的子任务替换本地拼的那份", () => {
+    const conversation = turn([
+      started,
+      echoed,
+      delegateStart,
+      subtask(),
+      {
+        type: "RUN_FINISHED",
+        threadId: "f1",
+        runId: "r1",
+        outcome: { type: "success" },
+        result: {
+          id: "a1",
+          role: "assistant",
+          text: "都好了",
+          toolCalls: [{ id: "call_d", name: "delegate_task", summary: "子任务完成", status: "done" }],
+          createdAt: 3,
+          subtasks: [
+            { id: "sub_1", toolCallId: "call_d", brief: "搭场景", nodeIds: [], status: "done", startedAt: 10, finishedAt: 30, toolCalls: [], text: "好", changedNodeIds: [] }
+          ]
+        }
+      }
+    ])
+    expect(conversation.messages[conversation.messages.length - 1]).toMatchObject({ id: "a1", subtasks: [{ id: "sub_1", status: "done", finishedAt: 30 }] })
+  })
+})

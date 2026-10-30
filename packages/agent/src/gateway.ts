@@ -7,16 +7,22 @@ import {
   PROTOCOL_MISMATCH_ERROR,
   PROTOCOL_MISMATCH_STATUS,
   RUNNER_PROTOCOL_VERSION,
+  parseDelegateRequest,
   parseEventsRequest,
   parseFinishRequest,
+  parseSubagentFinishRequest,
   parseStsTokenRequest,
   parseToolCallRequest,
   type CanvasChangesResponse,
+  type DelegateRequest,
+  type DelegateResponse,
   type FinishRequest,
   type ProtocolMismatchBody,
   type RunnerEvent,
   type RunnerInput,
   type StsTokenResponse,
+  type SubagentFinishRequest,
+  type SubagentFinishResponse,
   type ToolCallRequest,
   type ToolCallResponse,
 } from './protocol.ts'
@@ -164,6 +170,10 @@ export interface GatewayRunHandlers {
   input(): Promise<RunnerInput>
   tool(request: ToolCallRequest): Promise<ToolCallResponse>
   changes(): Promise<CanvasChangesResponse>
+  /** 派一个子 agent（docs/20 §3.10.11）：发起者、上限、转交占用都由编排层判；拒绝是 `{ ok: false }`，不是 HTTP 错误 */
+  delegate(request: DelegateRequest): Promise<DelegateResponse>
+  /** 一个子 agent 做完了：编排层释放它的占用、拼好给父 agent 的结果 */
+  agentFinish(request: SubagentFinishRequest): Promise<SubagentFinishResponse>
   /** 同步处理一批事件（批内按顺序；批与批之间网关保证不并发、不乱序） */
   events(events: RunnerEvent[]): void
   finish(request: FinishRequest): void
@@ -533,6 +543,16 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
       }
       case GATEWAY_ROUTES.changes:
         return json(await handlers.changes())
+      case GATEWAY_ROUTES.delegate: {
+        const body = parseDelegateRequest(await readJson(request))
+        if (!body) throw new GatewayHttpError(400, '派子任务的请求不对')
+        return json(await handlers.delegate(body))
+      }
+      case GATEWAY_ROUTES.agentFinish: {
+        const body = parseSubagentFinishRequest(await readJson(request))
+        if (!body) throw new GatewayHttpError(400, '子任务收尾的请求不对')
+        return json(await handlers.agentFinish(body))
+      }
       case GATEWAY_ROUTES.events: {
         const body = parseEventsRequest(await readJson(request))
         if (!body) throw new GatewayHttpError(400, '事件的形状不对')

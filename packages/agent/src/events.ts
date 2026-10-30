@@ -2,18 +2,21 @@ import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import {
   AGENT_CANVAS_CHANGE_EVENT,
   AGENT_SKILL_LOADED_EVENT,
+  AGENT_SUBTASK_EVENT,
   AGENT_USER_MESSAGE_EVENT,
   AgentEventType,
   type AgentCanvasChangeMessage,
   type AgentSkillLoadedMessage,
   type AgentChatMessage,
   type AgentStreamEvent,
+  type AgentSubtaskStatus,
+  type AgentSubtaskView,
   type AgentToolCallMetadata,
   type AgentToolCallView,
 } from '@shadecn/shared/agent'
 import { createId } from '@shadecn/shared/id'
 import type { RunnerEvent } from './protocol.ts'
-import { LOAD_SKILL_TOOL_NAME } from './skills/registry.ts'
+import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/registry.ts'
 
 /**
  * pi 的 `AgentEvent` → 线上事件（AG-UI 子集，形状见 `@shadecn/shared/agent`）。
@@ -42,6 +45,10 @@ import { LOAD_SKILL_TOOL_NAME } from './skills/registry.ts'
  *   模型上下文时 —— pi 把 steer 的消息放进上下文的那一刻），这里只管形状。
  * - 技能加载（docs/23 §3.6）：`load_skill` **不作为工具调用条目出现**（不发 TOOL_CALL_*，也不进 assistant 消息的
  *   `toolCalls`）；网关加载成功时发 CUSTOM `agent.skill-loaded`，`value` 就是对话里存的那条 `skill-loaded` 消息。
+ * - 子任务（docs/20 §3.10.11）：父 agent 的 `delegate_task` 照常是一条工具调用；子 agent 的事件（runner 带着它的 agent id 上报）
+ *   **不进**这条 assistant 消息的文字和 `toolCalls`，而是改它 `subtasks` 里对应的那一项，每次变化发一帧 CUSTOM `agent.subtask`
+ *   （`value` = 这一项的完整样子）。子 agent 的文字增量不逐帧发：只在它的一条回复结束（message_end）时更新 `text`。
+ *   它的 `load_skill` / `request_confirmation` 不列进它的工具调用（状态和问题已经在条目上了）。
  */
 
 /** 一轮怎么收的尾 */
@@ -60,6 +67,27 @@ export interface RunEventMapperOptions {
   /** 工具调用开始时给人看的那句话（结束时以工具自己 `details.summary` 为准） */
   describeTool: (name: string, args: unknown) => string
   now?: () => number
+}
+
+/** 一个子任务条目里最多记多少条工具调用（落库、每次快照都带着它们；预算本来就全轮共用，到不了） */
+const SUBTASK_TOOL_CALLS_LIMIT = 100
+
+/** 子任务条目开始时要的东西（服务端在 `/agent/delegate` 登记时给） */
+export interface SubtaskStart {
+  id: string
+  toolCallId: string
+  brief: string
+  nodeIds: readonly string[]
+  startedAt: number
+}
+
+/** 子任务条目结束时（`/agent/finish`，服务端已改判过状态） */
+export interface SubtaskEnd {
+  status: Exclude<AgentSubtaskStatus, 'running'>
+  text: string
+  question?: string | null
+  error?: string | null
+  changedNodeIds: readonly string[]
 }
 
 /** 发给前端的工具结果文本上限。`read_canvas` 的 JSON 可能很大，前端只拿它做展开查看 */
@@ -95,7 +123,15 @@ export interface RunEventMapper {
   canvasChange(message: AgentCanvasChangeMessage): AgentStreamEvent[]
   /** 一次技能加载（同上，先关文字段） */
   skillLoaded(message: AgentSkillLoadedMessage): AgentStreamEvent[]
-  /** 收尾：关掉没关的文字段，再发 RUN_FINISHED / RUN_ERROR */
+  /** 一个子任务开始了（父 agent 的 `delegate_task` 登记成功）：条目进 `subtasks`，发一帧 */
+  subtaskStart(start: SubtaskStart): AgentStreamEvent[]
+  /** 一个子 agent 上报的事件 → 它那一项的变化（没变化就是空数组）；认不出的 id 忽略 */
+  subtaskEvent(agentId: string, event: AgentEvent | RunnerEvent): AgentStreamEvent[]
+  /** 一个子任务结束了 */
+  subtaskFinish(agentId: string, end: SubtaskEnd): AgentStreamEvent[]
+  /** 这一轮的某个子任务条目（只读用）；没有为 undefined */
+  subtask(agentId: string): AgentSubtaskView | undefined
+  /** 收尾：关掉没关的文字段，还在跑的子任务标成失败，再发 RUN_FINISHED / RUN_ERROR */
   finish(outcome: RunOutcome): AgentStreamEvent[]
   /** 这一轮的 assistant 消息（随事件推进；`finish` 之后是最终态） */
   readonly message: AssistantChatMessage
@@ -115,6 +151,8 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
     createdAt: now(),
   }
   const calls = new Map<string, AgentToolCallView>()
+  /** 子 agent id → 它的条目（就是 `message.subtasks` 里的那个对象）和它的工具调用 */
+  const subtasks = new Map<string, { view: AgentSubtaskView; calls: Map<string, AgentToolCallView> }>()
   let textOpen = false
   let modelError: string | undefined
 
@@ -142,6 +180,27 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
       summary: call.summary,
       status: call.status,
       ...(call.error !== undefined ? { error: call.error } : {}),
+    }
+  }
+
+  function subtaskFrame(view: AgentSubtaskView): AgentStreamEvent {
+    // 拷一份：同 RUN_FINISHED 的 result（事件可能被异步序列化，之后条目还会变）
+    return { type: AgentEventType.CUSTOM, name: AGENT_SUBTASK_EVENT, value: structuredClone(view), timestamp: now() }
+  }
+
+  /** 结束一个条目：还在转的工具调用一律算出错 */
+  function settle(view: AgentSubtaskView, end: SubtaskEnd) {
+    view.status = end.status
+    view.text = end.text
+    view.finishedAt = now()
+    view.changedNodeIds = [...end.changedNodeIds]
+    if (end.question) view.question = end.question
+    if (end.error) view.error = end.error
+    for (const call of view.toolCalls) {
+      if (call.status === 'running') {
+        call.status = 'error'
+        call.error = '未完成'
+      }
     }
   }
 
@@ -189,6 +248,80 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
       })
       return out
     },
+
+    subtaskStart(start) {
+      const view: AgentSubtaskView = {
+        id: start.id,
+        toolCallId: start.toolCallId,
+        brief: start.brief,
+        nodeIds: [...start.nodeIds],
+        status: 'running',
+        startedAt: start.startedAt,
+        toolCalls: [],
+        text: '',
+        changedNodeIds: [],
+      }
+      message.subtasks ??= []
+      message.subtasks.push(view)
+      subtasks.set(view.id, { view, calls: new Map() })
+      return [subtaskFrame(view)]
+    },
+
+    subtaskEvent(agentId, event) {
+      const entry = subtasks.get(agentId)
+      if (!entry || entry.view.status !== 'running') return []
+      const { view } = entry
+      switch (event.type) {
+        case 'message_end': {
+          if (event.message.role !== 'assistant') return []
+          const text = event.message.content
+            .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+            .map((part) => part.text)
+            .join('')
+            .trim()
+          if (!text || text === view.text) return []
+          view.text = text
+          return [subtaskFrame(view)]
+        }
+        case 'tool_execution_start': {
+          if (event.toolName === LOAD_SKILL_TOOL_NAME || event.toolName === REQUEST_CONFIRMATION_TOOL_NAME) return []
+          if (entry.calls.has(event.toolCallId) || view.toolCalls.length >= SUBTASK_TOOL_CALLS_LIMIT) return []
+          let summary: string
+          try {
+            summary = describeTool(event.toolName, event.args)
+          } catch {
+            summary = event.toolName
+          }
+          const call: AgentToolCallView = { id: event.toolCallId, name: event.toolName, summary, status: 'running' }
+          entry.calls.set(call.id, call)
+          view.toolCalls.push(call)
+          return [subtaskFrame(view)]
+        }
+        case 'tool_execution_end': {
+          const call = entry.calls.get(event.toolCallId)
+          if (!call) return []
+          if (event.isError) {
+            call.status = 'error'
+            call.error = clip(resultText(event.result) || '工具调用失败', 500)
+          } else {
+            call.status = 'done'
+            call.summary = resultSummary(event.result) ?? call.summary
+          }
+          return [subtaskFrame(view)]
+        }
+        default:
+          return []
+      }
+    },
+
+    subtaskFinish(agentId, end) {
+      const entry = subtasks.get(agentId)
+      if (!entry || entry.view.status !== 'running') return []
+      settle(entry.view, end)
+      return [subtaskFrame(entry.view)]
+    },
+
+    subtask: (agentId) => subtasks.get(agentId)?.view,
 
     handle(event) {
       const out: AgentStreamEvent[] = []
@@ -282,6 +415,17 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
     finish(outcome) {
       const out: AgentStreamEvent[] = []
       closeText(out)
+      // 还在跑的子任务（这一轮被停 / 出错打断的）：标成失败，各发一帧（RUN_ERROR 不带落定的消息，前端靠这一帧收住它）
+      for (const { view } of subtasks.values()) {
+        if (view.status !== 'running') continue
+        settle(view, {
+          status: 'failed',
+          text: view.text,
+          error: outcome.type === 'cancelled' || outcome.type === 'expired' ? (outcome.reason ?? '已中止') : '这一轮结束时它还没做完',
+          changedNodeIds: view.changedNodeIds,
+        })
+        out.push(subtaskFrame(view))
+      }
       // 一轮收尾时还挂着的工具调用（中止 / 出错打断的）：别让界面一直转圈
       for (const call of message.toolCalls) {
         if (call.status === 'running') {

@@ -13,6 +13,7 @@ import { createMemoryBackend } from '../../cluster/memory.ts'
 
 const lease = (runId: string): NodeLease => ({
   runId,
+  agentId: 'main',
   conversationId: `c_${runId}`,
   owner: { id: 'u1', name: '甲', avatarUrl: null },
   instanceId: 'i1',

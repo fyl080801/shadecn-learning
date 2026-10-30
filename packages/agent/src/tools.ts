@@ -150,9 +150,14 @@ export interface CanvasTool<TParameters extends TSchema = TSchema>
   readonly capability: AgentCapability
   /**
    * 在哪执行（docs/23 §3.1）：`gateway`（缺省）= runner 只转发，服务端在网关上执行（读写 Y.Doc 只走 `flow-ops`）；
-   * `runner` = 在 runner 的工作目录里起子进程执行（必须要求 `sandbox:exec`），服务端只留定义给 `describe`，网关拒绝代它执行。
+   * `runner` = 在 runner 里执行（媒体命令、派子 agent），服务端只留定义给 `describe`，网关拒绝代它执行。
    */
   readonly execution?: 'gateway' | 'runner'
+  /**
+   * 要在 runner 的工作目录里**起子进程**（ffmpeg / ffprobe）：只能是 `execution: 'runner'` 的工具，所在技能必须要求 `sandbox:exec`
+   * （注册表建表时校验）。在 runner 里执行但不起进程的（`delegate_task`：子 agent 的每一步仍经网关）不设它。
+   */
+  readonly spawnsProcess?: boolean
   describe(args: Static<TParameters>): string
 }
 

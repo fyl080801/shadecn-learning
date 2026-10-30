@@ -261,6 +261,7 @@ describe('会话的入口节点（docs/20 §3.10.9）', () => {
       skills: [
         { id: 'canvas', title: '画布' },
         { id: 'director', title: '导演台' },
+        { id: 'delegate', title: '子任务' },
       ],
     })
     // 列表里也带着

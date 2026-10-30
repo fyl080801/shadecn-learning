@@ -185,9 +185,114 @@ export type AgentChatMessage =
       createdAt: number
       /** 这一轮以失败 / 中止收尾时的说明 */
       error?: string
+      /**
+       * 这一轮派出的子任务（docs/20 §3.10.11）：每个 `delegate_task` 工具调用一项（`toolCallId` 对得上 {@link toolCalls} 里那一条），
+       * 按派发的先后。没派过子任务就没有这个字段。
+       */
+      subtasks?: AgentSubtaskView[]
     }
   | AgentCanvasChangeMessage
   | AgentSkillLoadedMessage
+
+// —— 子任务（docs/20 §3.10.11） ——
+
+/** `delegate_task` 的工具名：前端据此把那一条工具调用画成子任务条目 */
+export const AGENT_DELEGATE_TOOL_NAME = 'delegate_task'
+
+/** 子任务的状态：进行中 / 完成 / 失败 / 需要确认（子 agent 不直接问人，以「需要确认 + 问题」交回父 agent） */
+export type AgentSubtaskStatus = 'running' | 'done' | 'failed' | 'needs_confirmation'
+
+/**
+ * 父会话里的一个子任务条目：父 agent 的一次 `delegate_task`。子 agent 在父 run 的沙箱里跑，**没有自己的会话**；
+ * 它的工具调用和最终回复只在这里给人看（只读），不进父 agent 的模型上下文。
+ *
+ * 实时流里经 CUSTOM {@link AGENT_SUBTASK_EVENT} 到达，`value` 是这个条目**当前的完整样子**（不是增量）：
+ * 前端按 `id` 整条替换。随 assistant 消息落库（{@link AgentChatMessage} 的 `subtasks`），刷新 / 接回补发 / 只读旁观看到的一样。
+ */
+export interface AgentSubtaskView {
+  /** 子 agent 的 id（服务端分配，一轮之内唯一） */
+  id: string
+  /** 父 agent 那次 `delegate_task` 调用的 id */
+  toolCallId: string
+  /** 任务说明（父 agent 写的） */
+  brief: string
+  /** 派给它处理的节点 */
+  nodeIds: string[]
+  status: AgentSubtaskStatus
+  /** UTC epoch 毫秒（服务端时钟） */
+  startedAt: number
+  /** 结束的时刻；还在跑没有这个字段 */
+  finishedAt?: number
+  /** 子 agent 的工具调用（同 assistant 消息的 `toolCalls`，只读） */
+  toolCalls: AgentToolCallView[]
+  /** 子 agent 的回复（最后一次的文字）；还没说话为空串 */
+  text: string
+  /** 需要确认时它要问的问题 */
+  question?: string
+  /** 失败的原因 */
+  error?: string
+  /** 它改过的节点（服务端按执行记录汇总） */
+  changedNodeIds: string[]
+}
+
+const SUBTASK_STATUSES: readonly AgentSubtaskStatus[] = ['running', 'done', 'failed', 'needs_confirmation']
+const TOOL_CALL_STATUSES: readonly AgentToolCallView['status'][] = ['running', 'done', 'error']
+/** 一个子任务条目里最多收几条工具调用、几个节点 id（防一条畸形载荷撑爆界面） */
+const SUBTASK_TOOL_CALLS_MAX = 200
+const SUBTASK_NODE_IDS_MAX = 200
+
+function parseToolCallView(value: unknown): AgentToolCallView | null {
+  if (!isObject(value)) return null
+  const { id, name, summary, status, error } = value
+  if (typeof id !== 'string' || !id || typeof name !== 'string' || typeof summary !== 'string') return null
+  if (!TOOL_CALL_STATUSES.includes(status as AgentToolCallView['status'])) return null
+  return { id, name, summary, status: status as AgentToolCallView['status'], ...(typeof error === 'string' ? { error } : {}) }
+}
+
+function stringIds(value: unknown, max: number): string[] {
+  const out: string[] = []
+  if (!Array.isArray(value)) return out
+  for (const id of value) {
+    if (out.length >= max) break
+    if (typeof id === 'string' && id && id.length <= OCCUPIED_ID_MAX && !out.includes(id)) out.push(id)
+  }
+  return out
+}
+
+/**
+ * 解析一个子任务条目（CUSTOM {@link AGENT_SUBTASK_EVENT} 的 `value`、落库的 `subtasks` 里的一项）；形状不对返回 null。
+ * **防御着写**：认不出的字段丢掉，列表里个别项不对只丢那一项，不让一条畸形载荷把界面带崩。
+ */
+export function parseAgentSubtask(value: unknown): AgentSubtaskView | null {
+  if (!isObject(value)) return null
+  const { id, toolCallId, brief, status, startedAt, finishedAt, text, question, error } = value
+  if (typeof id !== 'string' || !id || typeof toolCallId !== 'string' || !toolCallId) return null
+  if (typeof brief !== 'string') return null
+  if (!SUBTASK_STATUSES.includes(status as AgentSubtaskStatus)) return null
+  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) return null
+  const toolCalls: AgentToolCallView[] = []
+  if (Array.isArray(value.toolCalls)) {
+    for (const item of value.toolCalls) {
+      if (toolCalls.length >= SUBTASK_TOOL_CALLS_MAX) break
+      const call = parseToolCallView(item)
+      if (call) toolCalls.push(call)
+    }
+  }
+  return {
+    id,
+    toolCallId,
+    brief,
+    nodeIds: stringIds(value.nodeIds, SUBTASK_NODE_IDS_MAX),
+    status: status as AgentSubtaskStatus,
+    startedAt,
+    ...(typeof finishedAt === 'number' && Number.isFinite(finishedAt) ? { finishedAt } : {}),
+    toolCalls,
+    text: typeof text === 'string' ? text : '',
+    ...(typeof question === 'string' && question ? { question } : {}),
+    ...(typeof error === 'string' && error ? { error } : {}),
+    changedNodeIds: stringIds(value.changedNodeIds, SUBTASK_NODE_IDS_MAX),
+  }
+}
 
 // —— 技能（docs/23） ——
 
@@ -330,6 +435,11 @@ export interface AgentRunEntry {
    * （副本崩溃时没人发「离开」）。和本机时钟的偏差用载荷里的 `now` 换算；没有这个字段 = 不按时过期（老的载荷）。
    */
   expiresAt?: number
+  /**
+   * 这一轮此刻在跑的子任务数（docs/20 §3.10.11，任务列表显示「含 N 个子任务进行中」）；没有在跑的子任务时没有这个字段。
+   * 子任务不是单独的一轮，任务列表里仍只有父 run 这一项。
+   */
+  subtasks?: number
 }
 
 /**
@@ -454,6 +564,8 @@ function parseRunEntry(value: unknown): AgentRunEntry | null {
   }
   // expiresAt：不是有限数字就当没有（不按时过期）
   const expiresAt = typeof value.expiresAt === 'number' && Number.isFinite(value.expiresAt) ? value.expiresAt : undefined
+  // subtasks：正整数才算（0 / 不是数字 = 没有在跑的子任务）
+  const subtasks = typeof value.subtasks === 'number' && Number.isInteger(value.subtasks) && value.subtasks > 0 ? value.subtasks : undefined
   // 只取认得的字段：载荷里多出来的东西不往下传
   return {
     runId,
@@ -464,6 +576,7 @@ function parseRunEntry(value: unknown): AgentRunEntry | null {
     ...(nodeId ? { nodeId } : {}),
     occupies,
     ...(expiresAt !== undefined ? { expiresAt } : {}),
+    ...(subtasks !== undefined ? { subtasks } : {}),
   }
 }
 
@@ -549,7 +662,7 @@ export function agentConversationPath(flowId: string, conversationId?: string): 
 //   RUN_STARTED → CUSTOM(agent.user-message) → CUSTOM(agent.canvas-change, since-last-run)?
 //   → ( TEXT_MESSAGE_START → TEXT_MESSAGE_CONTENT* → TEXT_MESSAGE_END
 //     | TOOL_CALL_START → TOOL_CALL_ARGS* → TOOL_CALL_END → TOOL_CALL_RESULT
-//     | CUSTOM(agent.canvas-change, live) | CUSTOM(agent.skill-loaded) )*
+//     | CUSTOM(agent.canvas-change, live) | CUSTOM(agent.skill-loaded) | CUSTOM(agent.subtask) )*
 //   → RUN_FINISHED | RUN_ERROR
 // 最后一帧之后服务端关流。同一轮里 assistant 的文字可能分几段（每次调工具前后各一段），
 // 它们共用一个 `messageId` —— 对应对话记录里的同一条 assistant 消息。
@@ -595,6 +708,12 @@ export const AGENT_CANVAS_CHANGE_EVENT = 'agent.canvas-change'
 /** CUSTOM 事件的名字：技能加载（{@link AgentSkillLoadedMessage}），前端按 id 去重后追加到对话末尾 */
 export const AGENT_SKILL_LOADED_EVENT = 'agent.skill-loaded'
 
+/**
+ * CUSTOM 事件的名字：子任务条目变了（{@link AgentSubtaskView}，派发 / 子 agent 调工具 / 回复 / 结束）。
+ * `value` 是条目的完整样子，前端先 {@link parseAgentSubtask} 再按 `id` 整条替换进这一轮的 assistant 消息
+ */
+export const AGENT_SUBTASK_EVENT = 'agent.subtask'
+
 export type AgentStreamEvent =
   | (AgentBaseEvent & {
       type: typeof AgentEventType.RUN_STARTED
@@ -619,6 +738,11 @@ export type AgentStreamEvent =
       type: typeof AgentEventType.CUSTOM
       name: typeof AGENT_SKILL_LOADED_EVENT
       value: AgentSkillLoadedMessage
+    })
+  | (AgentBaseEvent & {
+      type: typeof AgentEventType.CUSTOM
+      name: typeof AGENT_SUBTASK_EVENT
+      value: AgentSubtaskView
     })
   | (AgentBaseEvent & {
       type: typeof AgentEventType.TEXT_MESSAGE_START

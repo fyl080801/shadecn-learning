@@ -71,6 +71,22 @@ export function systemPromptFor(input: SystemPromptInput): string {
   return parts.join('\n\n')
 }
 
+/**
+ * 子 agent 的提示段（docs/20 §3.10.11），接在它的系统提示末尾：它是谁派来的、做完怎么交回、不能问人、遇到占用 / 冲突怎么办。
+ * 平台基础段里「停下来、结束这一轮、问用户」的说法对子 agent 不适用 —— 这一段明确改成「以需要确认结束」。
+ */
+export const SUBAGENT_PROMPT = `## 你是子 agent
+你是另一个 agent（父 agent）为了一件具体的事派出来的子 agent，和它在同一张画布上、用同一套工具（不能再派子任务）。
+1. **只做任务说明（brief）里的事**，做完就用一段简短的文字回复结束：做了什么、结果如何（例如新建 / 修改了哪些节点）。这段回复会交给父 agent，不是给用户看的。
+2. **你不能直接问用户**。上面说「停下来问用户 / 结束这一轮」的情况 —— 要写的节点「正在被某某修改」、写入「在你读过之后被改过」且和你要做的冲突、任务说明不清楚做不下去 —— 一律调用 request_confirmation({ question })，把问题交回父 agent，由它决定。request_confirmation 必须单独调用，调了你就结束了。
+3. 别的子 agent 可能同时在改别的节点：只碰任务说明里给你的、和你要新建的节点。`
+
+/** 子 agent 的第一条用户消息：任务说明 + 要处理的节点（提及，之后由 {@link expandMentions} 附上它们当前的内容） */
+export function subagentBrief(brief: string, nodeIds: readonly string[]): string {
+  const nodes = nodeIds.length > 0 ? `\n\n要处理的节点：${nodeIds.map((id) => formatNodeMention(id)).join(' ')}` : ''
+  return `【父 agent 交给你的任务】\n${brief}${nodes}`
+}
+
 /** `load_skill` 成功时回给模型的那段：工具名单 + 这个技能的提示段（跟着对话历史走，系统提示不变） */
 export function loadedSkillText(skill: Pick<AgentSkill, 'id' | 'title' | 'prompt'>, toolNames: readonly string[]): string {
   return `已加载技能「${skill.title}」（${skill.id}）。现在可以用这些工具：${toolNames.join('、')}。\n\n## ${skill.title} 的用法\n${skill.prompt}`

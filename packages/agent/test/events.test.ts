@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
-import { AGENT_CANVAS_CHANGE_EVENT, AGENT_USER_MESSAGE_EVENT, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
+import { AGENT_CANVAS_CHANGE_EVENT, AGENT_SUBTASK_EVENT, AGENT_USER_MESSAGE_EVENT, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { createRunEventMapper } from '../src/events.ts'
 
 /**
@@ -174,5 +174,62 @@ describe('画布改动通知', () => {
     expect(custom.value).not.toBe(change)
     // 不改 assistant 消息本身
     expect(m.message.text).toBe('先说一句')
+  })
+})
+
+describe('子任务条目（docs/20 §3.10.11）', () => {
+  const subtaskFrames = (events: AgentStreamEvent[]) =>
+    events.filter((event) => event.type === AgentEventType.CUSTOM && event.name === AGENT_SUBTASK_EVENT)
+
+  it('开始 / 子 agent 调工具 / 回复 / 结束：每次变化一帧 CUSTOM agent.subtask（完整快照），不进 assistant 的文字和 toolCalls', () => {
+    const m = mapper()
+    const started = m.subtaskStart({ id: 'sub_1', toolCallId: 'call_d', brief: '搭场景', nodeIds: ['d1'], startedAt: 500 })
+    expect(subtaskFrames(started)).toHaveLength(1)
+    expect(started[0]).toMatchObject({ value: { id: 'sub_1', toolCallId: 'call_d', status: 'running', toolCalls: [], text: '', nodeIds: ['d1'] } })
+
+    const toolStart = m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 't1', toolName: 'add_node', args: { type: 'text' } })
+    expect(toolStart[0]).toMatchObject({ value: { toolCalls: [{ id: 't1', name: 'add_node', status: 'running', summary: 'add_node:{"type":"text"}' }] } })
+    const toolEnd = m.subtaskEvent('sub_1', {
+      type: 'tool_execution_end',
+      toolCallId: 't1',
+      toolName: 'add_node',
+      result: { content: [{ type: 'text', text: 'ok' }], details: { summary: '新建节点「A」' } },
+      isError: false,
+    })
+    expect(toolEnd[0]).toMatchObject({ value: { toolCalls: [{ id: 't1', status: 'done', summary: '新建节点「A」' }] } })
+    // load_skill / request_confirmation 不列进它的工具调用
+    expect(m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 't2', toolName: 'load_skill', args: {} })).toEqual([])
+    expect(m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 't3', toolName: 'request_confirmation', args: {} })).toEqual([])
+    // 文字增量不逐帧发；一条回复结束时更新 text
+    expect(m.subtaskEvent('sub_1', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '做' } })).toEqual([])
+    const reply = m.subtaskEvent('sub_1', {
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: '做好了' }], stopReason: 'stop' } as never,
+    })
+    expect(reply[0]).toMatchObject({ value: { text: '做好了' } })
+
+    const finished = m.subtaskFinish('sub_1', { status: 'done', text: '做好了', changedNodeIds: ['n_a'] })
+    expect(finished[0]).toMatchObject({ value: { status: 'done', finishedAt: 1000, changedNodeIds: ['n_a'] } })
+    // 结束之后的事件不再改它；认不出的 id 忽略
+    expect(m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 't4', toolName: 'get_node', args: {} })).toEqual([])
+    expect(m.subtaskEvent('sub_x', { type: 'tool_execution_start', toolCallId: 't5', toolName: 'get_node', args: {} })).toEqual([])
+
+    // 父 agent 的 assistant 消息：没有子 agent 的文字和工具调用，只有 subtasks
+    expect(m.message.text).toBe('')
+    expect(m.message.toolCalls).toEqual([])
+    expect(m.message.subtasks).toHaveLength(1)
+    // 帧里是拷贝：之后的变化不会改到已经发出去的帧
+    expect((started[0] as { value: { status: string } }).value.status).toBe('running')
+  })
+
+  it('收尾时还在跑的子任务标成失败（原因随结局），先各发一帧再发最后一帧；落定的消息里带着它们', () => {
+    const m = mapper()
+    m.subtaskStart({ id: 'sub_1', toolCallId: 'call_d', brief: 'a', nodeIds: [], startedAt: 1 })
+    m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 't1', toolName: 'get_node', args: {} })
+    const out = m.finish({ type: 'cancelled', reason: '已中止' })
+    const frames = subtaskFrames(out)
+    expect(frames).toHaveLength(1)
+    expect(frames[0]).toMatchObject({ value: { status: 'failed', error: '已中止', toolCalls: [{ status: 'error' }] } })
+    expect(out.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, result: { subtasks: [{ id: 'sub_1', status: 'failed' }] } })
   })
 })

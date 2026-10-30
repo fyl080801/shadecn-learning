@@ -1,8 +1,10 @@
 import {
   AGENT_CANVAS_CHANGE_EVENT,
   AGENT_SKILL_LOADED_EVENT,
+  AGENT_SUBTASK_EVENT,
   AGENT_USER_MESSAGE_EVENT,
   AgentEventType,
+  parseAgentSubtask,
   type AgentChatMessage,
   type AgentStreamEvent,
   type AgentToolCallMetadata,
@@ -132,11 +134,37 @@ function findToolCall(conversation: AgentConversation, toolCallId: string) {
   return null
 }
 
-/** 还挂着「运行中」的工具调用在一轮结束时一律算出错 —— 留着会是一个永远在转的圈 */
+/** 还挂着「运行中」的工具调用 / 子任务在一轮结束时一律算出错 —— 留着会是一个永远在转的圈 */
 function settleRunningTools(message: AssistantMessage | null) {
   for (const call of message?.toolCalls ?? []) {
     if (call.status === "running") call.status = "error"
   }
+  for (const task of message?.subtasks ?? []) {
+    if (task.status !== "running") continue
+    task.status = "failed"
+    for (const call of task.toolCalls) if (call.status === "running") call.status = "error"
+  }
+}
+
+/**
+ * 子任务条目（docs/20 §3.10.11）：服务端每次发的是这一项的完整样子 —— 解析过（畸形的丢掉）再按 id 整条替换进它所属的 assistant 消息。
+ * 属于哪条消息：本轮那条；还没有（理论上不会：派发之前一定有那次 delegate_task 的 TOOL_CALL_START）就按 toolCallId 找。
+ */
+function applySubtask(conversation: AgentConversation, value: unknown) {
+  const task = parseAgentSubtask(value)
+  if (!task) return
+  const owner =
+    findAssistant(conversation, conversation.assistantId) ??
+    conversation.messages.find(
+      (message): message is AssistantMessage =>
+        message.role === "assistant" && message.toolCalls.some((call) => call.id === task.toolCallId)
+    ) ??
+    null
+  if (!owner) return
+  const list = (owner.subtasks ??= [])
+  const index = list.findIndex((item) => item.id === task.id)
+  if (index >= 0) list.splice(index, 1, task)
+  else list.push(task)
 }
 
 /** 用服务端落定的那条替换本地拼出来的；本地没有就追加 */
@@ -165,6 +193,10 @@ export function applyAgentEvent(conversation: AgentConversation, event: AgentStr
         if (!conversation.messages.some((message) => message.id === event.value.id)) {
           conversation.messages.push(event.value)
         }
+        return
+      }
+      if (event.name === AGENT_SUBTASK_EVENT) {
+        applySubtask(conversation, event.value)
         return
       }
       if (event.name !== AGENT_USER_MESSAGE_EVENT) return
@@ -213,6 +245,12 @@ export function applyAgentEvent(conversation: AgentConversation, event: AgentStr
       const result = event.result
       if (result && result.role === "assistant") {
         const settled: AssistantMessage = { ...result, toolCalls: [...(result.toolCalls ?? [])] }
+        // 落定消息里的子任务同样防御着读（只留认得出的）
+        if (result.subtasks !== undefined) {
+          const subtasks = Array.isArray(result.subtasks) ? result.subtasks.flatMap((item) => parseAgentSubtask(item) ?? []) : []
+          if (subtasks.length > 0) settled.subtasks = subtasks
+          else delete settled.subtasks
+        }
         if (event.outcome?.type === "cancelled" && !settled.error) settled.error = RUN_CANCELLED_TEXT
         replaceMessage(conversation, conversation.assistantId, settled)
         conversation.assistantId = settled.id

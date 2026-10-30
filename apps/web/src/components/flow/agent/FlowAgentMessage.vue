@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed } from "vue"
 import { ChevronRight, CircleAlert, CircleCheck, Eye, Puzzle } from "@lucide/vue"
-import { agentAttachmentKind, type AgentChatMessage } from "@shadecn/shared/agent"
+import { AGENT_DELEGATE_TOOL_NAME, agentAttachmentKind, type AgentChatMessage, type AgentSubtaskView } from "@shadecn/shared/agent"
 import AssetPreview from "@/components/flow/asset-upload/AssetPreview.vue"
 import { Attachment, AttachmentGroup, AttachmentMedia, AttachmentTrigger } from "@/components/ui/attachment"
 import { Message, MessageContent } from "@/components/ui/message"
 import { Spinner } from "@/components/ui/spinner"
 import FlowAgentMarkdown from "./FlowAgentMarkdown.vue"
 import FlowAgentMention from "./FlowAgentMention.vue"
+import FlowAgentSubtask from "./FlowAgentSubtask.vue"
 import { splitMentions } from "./nodeMention"
 
 /**
@@ -19,6 +20,8 @@ import { splitMentions } from "./nodeMention"
  * 一轮以失败或中止收尾时在最后挂一行原因。用户消息和 assistant 消息用 shadcn 的 `Message` 排版。
  * 画布改动通知（docs/20 §3.10.2）：灰色的一行系统提示（图标 + 概括），有条目时可以展开看每一处。
  * 技能加载（docs/23 §3.6）：同样灰色的一行「已加载：<技能标题>」。
+ * 子任务（docs/20 §3.10.11）：父 agent 的 `delegate_task` 那一条工具调用画成可展开的子任务条目（`FlowAgentSubtask`，按 `toolCallId` 对上）；
+ * 被拒、没派出去的 delegate_task 没有条目，照常是一条出错的工具调用。
  */
 const props = defineProps<{
   message: AgentChatMessage
@@ -39,6 +42,22 @@ const assistant = computed(() => (props.message.role === "assistant" ? props.mes
 const change = computed(() => (props.message.role === "canvas-change" ? props.message : null))
 
 const skillLoaded = computed(() => (props.message.role === "skill-loaded" ? props.message : null))
+
+/** 子任务条目按父 agent 那次 delegate_task 的 id 认 */
+const subtaskByCall = computed(() => {
+  const map = new Map<string, AgentSubtaskView>()
+  for (const task of assistant.value?.subtasks ?? []) map.set(task.toolCallId, task)
+  return map
+})
+
+/** 对不上任何一条工具调用的子任务（不该有，容错）：排在工具调用之后 */
+const looseSubtasks = computed(() => {
+  const ids = new Set(assistant.value?.toolCalls.map((call) => call.id) ?? [])
+  return (assistant.value?.subtasks ?? []).filter((task) => !ids.has(task.toolCallId))
+})
+
+const subtaskOf = (call: { id: string; name: string }) =>
+  call.name === AGENT_DELEGATE_TOOL_NAME ? subtaskByCall.value.get(call.id) : undefined
 </script>
 
 <template>
@@ -113,26 +132,33 @@ const skillLoaded = computed(() => (props.message.role === "skill-loaded" ? prop
 
   <Message v-else-if="assistant" class="pr-4" data-role="assistant">
     <MessageContent class="gap-2">
-      <ul v-if="assistant.toolCalls.length > 0" class="space-y-1">
-        <li
-          v-for="call in assistant.toolCalls"
-          :key="call.id"
-          class="flex items-start gap-2 rounded-md border bg-muted/40 px-2 py-1.5 text-xs"
-          :data-tool-status="call.status"
-        >
-          <Spinner
-            v-if="call.status === 'running'"
-            class="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
-          />
-          <CircleCheck v-else-if="call.status === 'done'" class="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
-          <CircleAlert v-else class="mt-0.5 size-3.5 shrink-0 text-destructive" />
-          <span class="min-w-0 flex-1">
-            <span class="block break-words">{{ call.summary || call.name }}</span>
-            <span class="block font-mono text-[10px] text-muted-foreground">{{ call.name }}</span>
-            <span v-if="call.status === 'error' && call.error" class="block text-destructive">
-              {{ call.error }}
+      <ul v-if="assistant.toolCalls.length > 0 || looseSubtasks.length > 0" class="space-y-1">
+        <template v-for="call in assistant.toolCalls" :key="call.id">
+          <li v-if="subtaskOf(call)">
+            <FlowAgentSubtask :task="subtaskOf(call)!" />
+          </li>
+          <li
+            v-else
+            class="flex items-start gap-2 rounded-md border bg-muted/40 px-2 py-1.5 text-xs"
+            :data-tool-status="call.status"
+          >
+            <Spinner
+              v-if="call.status === 'running'"
+              class="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+            />
+            <CircleCheck v-else-if="call.status === 'done'" class="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
+            <CircleAlert v-else class="mt-0.5 size-3.5 shrink-0 text-destructive" />
+            <span class="min-w-0 flex-1">
+              <span class="block break-words">{{ call.summary || call.name }}</span>
+              <span class="block font-mono text-[10px] text-muted-foreground">{{ call.name }}</span>
+              <span v-if="call.status === 'error' && call.error" class="block text-destructive">
+                {{ call.error }}
+              </span>
             </span>
-          </span>
+          </li>
+        </template>
+        <li v-for="task in looseSubtasks" :key="task.id">
+          <FlowAgentSubtask :task="task" />
         </li>
       </ul>
 

@@ -10,6 +10,7 @@ import {
   canonicalSkillIds,
   formatAgentRunsMessage,
   parseAgentRunsMessage,
+  parseAgentSubtask,
   withMine,
   type AgentRunEntry,
 } from '../src/agent.ts'
@@ -183,5 +184,59 @@ describe('消息附件（docs/20 §3.10.12）', () => {
     expect(agentAttachmentKind('video/mp4')).toBe('video')
     expect(agentAttachmentKind('application/pdf')).toBe('file')
     expect(agentAttachmentKind('')).toBe('file')
+  })
+})
+
+describe('子任务（docs/20 §3.10.11）', () => {
+  const valid = {
+    id: 'sub_1',
+    toolCallId: 'call_1',
+    brief: '搭场景',
+    nodeIds: ['d1', 'd1', 7, 'd2'],
+    status: 'running',
+    startedAt: 10,
+    toolCalls: [
+      { id: 't1', name: 'add_node', summary: '新建', status: 'done' },
+      { id: 't2', name: 'x', summary: 'y', status: 'weird' },
+      'junk',
+    ],
+    text: '好',
+    changedNodeIds: ['n1'],
+    extra: 'drop me',
+  }
+
+  it('防御式解析：认不出的字段丢掉、列表里不对的项只丢那一项、id 去重', () => {
+    expect(parseAgentSubtask(valid)).toEqual({
+      id: 'sub_1',
+      toolCallId: 'call_1',
+      brief: '搭场景',
+      nodeIds: ['d1', 'd2'],
+      status: 'running',
+      startedAt: 10,
+      toolCalls: [{ id: 't1', name: 'add_node', summary: '新建', status: 'done' }],
+      text: '好',
+      changedNodeIds: ['n1'],
+    })
+    expect(parseAgentSubtask({ ...valid, status: 'needs_confirmation', question: '要等吗', finishedAt: 20 })).toMatchObject({
+      status: 'needs_confirmation',
+      question: '要等吗',
+      finishedAt: 20,
+    })
+  })
+
+  it('核心字段不对 → null，不抛', () => {
+    for (const bad of [null, 'x', [], { ...valid, id: '' }, { ...valid, status: 'paused' }, { ...valid, startedAt: 'now' }, { ...valid, toolCallId: 1 }]) {
+      expect(parseAgentSubtask(bad)).toBeNull()
+    }
+  })
+
+  it('任务列表那一项的 subtasks：正整数才留下', () => {
+    const entry = { runId: 'r1', conversationId: 'c1', conversationTitle: 't', owner: { id: 'u1', name: '甲', avatarUrl: null }, startedAt: 1, occupies: [] }
+    const parsed = (subtasks: unknown) =>
+      parseAgentRunsMessage(JSON.stringify({ type: AGENT_RUNS_MESSAGE, flowId: 'f', runs: [{ ...entry, subtasks }] }))!.runs[0]
+    expect(parsed(2)).toMatchObject({ subtasks: 2 })
+    expect(parsed(0)).not.toHaveProperty('subtasks')
+    expect(parsed('3')).not.toHaveProperty('subtasks')
+    expect(parsed(1.5)).not.toHaveProperty('subtasks')
   })
 })

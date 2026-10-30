@@ -1,11 +1,11 @@
-import { leaseKey, type NodeLease, type NodeLeaseRegistry } from '@shadecn/agent/occupancy'
+import { leaseAgentOf, leaseKey, type NodeLease, type NodeLeaseRegistry } from '@shadecn/agent/occupancy'
 import { sharedMap, stringCodec, type SharedMap } from '../cluster/index.ts'
 import { agentConfig, instanceId } from '../config.ts'
 
 /**
  * 节点占用的登记表（docs/20 §3.10.8）落在共享层：单副本是进程内存，多副本是 redis —— 和协同层的独占登记同一套 `SharedMap`。
  *
- * - 键 `<flowId>:<nodeId>`，值是 `NodeLease` 的 JSON，TTL = `AGENT_LEASE_TTL_MS`；
+ * - 键 `<flowId>:<nodeId>`，值是 `NodeLease` 的 JSON（持有者细到「这一轮里的哪个 agent」，`agentId`），TTL = `AGENT_LEASE_TTL_MS`；
  * - **占用只经服务端写**（编排层 `session.ts` 包装网关工具时），前端、runner 都碰不到这张表；
  * - 续期 / 转交用 `compareAndSet`、释放用 `deleteIfEquals`：比较的是**编码后的字符串**，所以这里用 `stringCodec`
  *   并由自己 `JSON.stringify` —— 持有者交回的是它写进去的那份对象，序列化结果逐字相同。
@@ -23,6 +23,8 @@ function parseLease(raw: string | undefined): NodeLease | null {
     if (!owner || typeof owner.id !== 'string' || typeof owner.name !== 'string') return null
     return {
       runId: value.runId,
+      // 这一轮里的哪个 agent（docs/20 §3.10.11）；子 agent 之前写的条目没有，按父 agent 读
+      agentId: leaseAgentOf(value as Pick<NodeLease, 'agentId'>),
       conversationId: value.conversationId,
       owner: { id: owner.id, name: owner.name, avatarUrl: typeof owner.avatarUrl === 'string' ? owner.avatarUrl : null },
       instanceId: typeof value.instanceId === 'string' ? value.instanceId : '',

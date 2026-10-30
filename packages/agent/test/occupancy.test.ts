@@ -115,7 +115,7 @@ describe('登记表（内存实现，语义同宿主的 SharedMap）', () => {
   it('claim 只在不存在时成功；过期后别人能占，旧持有者续不回、也删不掉别人的', async () => {
     let now = 1000
     const registry = createMemoryLeaseRegistry({ ttlMs: 100, now: () => now })
-    const a: NodeLease = { runId: 'r_a', conversationId: 'c_a', owner: { id: 'u1', name: '甲', avatarUrl: null }, instanceId: 'i1', since: 1 }
+    const a: NodeLease = { runId: 'r_a', agentId: 'main', conversationId: 'c_a', owner: { id: 'u1', name: '甲', avatarUrl: null }, instanceId: 'i1', since: 1 }
     const b: NodeLease = { ...a, runId: 'r_b', conversationId: 'c_b' }
     expect(await registry.claim('f', 'n1', a)).toBe(true)
     expect(await registry.claim('f', 'n1', b)).toBe(false)
@@ -354,7 +354,7 @@ describe('续期与过期', () => {
     expect(new Set(expiries).size).toBeGreaterThan(2)
 
     // 模拟「过期后被别人占走」：换成别人的值
-    const foreign: NodeLease = { runId: 'r_other', conversationId: 'c', owner: { id: 'u9', name: '某人', avatarUrl: null }, instanceId: 'i9', since: 1 }
+    const foreign: NodeLease = { runId: 'r_other', agentId: 'main', conversationId: 'c', owner: { id: 'u9', name: '某人', avatarUrl: null }, instanceId: 'i9', since: 1 }
     leases.entries.set(leaseKey('flow-1', 'n1'), { raw: JSON.stringify(foreign), expiresAt: Date.now() + 60_000 })
     await until(async () => (await runtime.activeRuns('flow-1'))[0]?.occupies.length === 0)
     hold.release()

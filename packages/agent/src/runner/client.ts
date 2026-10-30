@@ -6,11 +6,15 @@ import {
   RUNNER_PROTOCOL_VERSION,
   type ProtocolMismatchBody,
   type CanvasChangesResponse,
+  type DelegateRequest,
+  type DelegateResponse,
   type EventsRequest,
   type FinishRequest,
   type RunnerEvent,
   type RunnerInput,
   type StsTokenResponse,
+  type SubagentFinishRequest,
+  type SubagentFinishResponse,
   type ToolCallRequest,
   type ToolCallResponse,
 } from '../protocol.ts'
@@ -67,6 +71,8 @@ export interface GatewayClient {
   input(): Promise<RunnerInput>
   tool(request: ToolCallRequest): Promise<ToolCallResponse>
   changes(): Promise<CanvasChangesResponse>
+  delegate(request: DelegateRequest): Promise<DelegateResponse>
+  agentFinish(request: SubagentFinishRequest): Promise<SubagentFinishResponse>
   events(request: EventsRequest): Promise<void>
   finish(request: FinishRequest): Promise<void>
 }
@@ -145,6 +151,8 @@ export function createGatewayClient(options: GatewayClientOptions): GatewayClien
     input: () => authed<RunnerInput>(GATEWAY_ROUTES.input, {}),
     tool: (request) => authed<ToolCallResponse>(GATEWAY_ROUTES.tool, request),
     changes: () => authed<CanvasChangesResponse>(GATEWAY_ROUTES.changes, {}),
+    delegate: (request) => authed<DelegateResponse>(GATEWAY_ROUTES.delegate, request),
+    agentFinish: (request) => authed<SubagentFinishResponse>(GATEWAY_ROUTES.agentFinish, request),
     events: async (request) => {
       await authed(GATEWAY_ROUTES.events, request)
     },

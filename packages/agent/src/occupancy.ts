@@ -19,6 +19,11 @@ import type { AgentUserView } from '@shadecn/shared/agent'
 
 export interface NodeLease {
   runId: string
+  /**
+   * 这一轮里的哪个 agent（docs/20 §3.10.11）：父 agent 是 `MAIN_AGENT_ID`（`'main'`），子 agent 是服务端分配的 id。
+   * 同一轮的不同 agent 互相算「别人」。只用于这一轮内部的区分；老的条目没有这个字段，按父 agent 读（{@link leaseAgentOf}）
+   */
+  agentId: string
   conversationId: string
   /** 发起人（「某某的助手」里的某某）；不带邮箱 */
   owner: AgentUserView
@@ -40,14 +45,19 @@ export interface NodeLeaseRegistry {
   /** 续期：值仍是 `lease` 时重设 TTL 并返回 true；已过期 / 已易主返回 false */
   renew(flowId: string, nodeId: string, lease: NodeLease): Promise<boolean>
   /**
-   * 转交（父 run → 子 run，docs/20 §3.10.8「转交给子 run」）：值仍是 `from` 时原子地换成 `to` 并重设 TTL。
-   * **预留**：子 agent 还没实现，现在没有调用方。
+   * 转交（同一轮里父 agent → 子 agent，docs/20 §3.10.8「转交给子 agent」）：值仍是 `from` 时原子地换成 `to` 并重设 TTL。
+   * 已易主 / 已过期返回 false（这个节点就不再是这一轮的了）。
    */
   transfer(flowId: string, nodeId: string, from: NodeLease, to: NodeLease): Promise<boolean>
   /** 释放：只删自己的（值仍是 `lease` 才删）；返回删没删 */
   release(flowId: string, nodeId: string, lease: NodeLease): Promise<boolean>
   /** 这张画布上此刻的全部占用：节点 id → 占用者（读类工具标注、展示用） */
   list(flowId: string): Promise<Map<string, NodeLease>>
+}
+
+/** 占用者是这一轮里的哪个 agent：老的条目（子 agent 之前写的）没有 `agentId`，按父 agent 算 */
+export function leaseAgentOf(lease: Pick<NodeLease, 'agentId'>): string {
+  return typeof lease.agentId === 'string' && lease.agentId ? lease.agentId : 'main'
 }
 
 /** 登记表的键：节点 id 的字符集里没有 `:`（`[A-Za-z0-9_-]`），按画布前缀扫描不会串 */

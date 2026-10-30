@@ -66,6 +66,8 @@ function handlers(overrides: Partial<GatewayRunHandlers> = {}): GatewayRunHandle
     input: async () => ({ runId: 'run_1' }) as never,
     tool: async () => ({ isError: true as const, message: 'x' }),
     changes: async () => ({ change: null }),
+    delegate: async () => ({ ok: false as const, message: '不派' }),
+    agentFinish: async () => ({ isError: true, text: 'x', summary: 'x', changedNodeIds: [] }),
     events(events: RunnerEvent[]) {
       out.batches.push(events)
     },

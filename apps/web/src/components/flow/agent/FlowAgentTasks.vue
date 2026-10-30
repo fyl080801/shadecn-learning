@@ -28,7 +28,7 @@ import FlowAgentTitle from "./FlowAgentTitle.vue"
  * 「进行中的任务」—— 和对话 / 历史在同一个面板里三选一（docs/20 §3.10.4）。
  *
  * 数据是 `useFlowAgent().activeRuns`（推送实时更新），这里只展示；点一行只 emit `select`，
- * 打开那个会话（别人的只读 + 旁观实时进度）是父级的事。已运行时长每秒走一次，
+ * 打开那个会话（别人的只读 + 旁观实时进度）是父级的事。子任务不是单独的一项，父 run 那一行带「含 N 个子任务进行中」（docs/20 §3.10.11）。已运行时长每秒走一次，
  * 只在这个列表挂着时走（父级 `v-if`）。开始时刻是服务端打的，和本机时钟差出来的负数按 0 算。
  */
 const props = defineProps<{
@@ -112,6 +112,7 @@ const now = useNow({ interval: 1000 })
             <div class="flex items-center gap-2 text-[11px] text-muted-foreground">
               <FlowAgentOwner v-if="props.showOwners" :owner="run.owner" :mine="run.mine" />
               <span class="shrink-0" data-role="elapsed">已运行 {{ formatDuration(now.getTime() - run.startedAt) }}</span>
+              <span v-if="run.subtasks" class="shrink-0" data-role="subtasks">含 {{ run.subtasks }} 个子任务进行中</span>
             </div>
           </ItemContent>
           <ItemActions>

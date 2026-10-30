@@ -288,7 +288,8 @@ describe('到期与定时对账', () => {
     let offset = 0
     const authority = createGrantAuthority({ expiryMarginMs: 0, entitled: () => true, now: () => Date.now() + offset })
     const { step, reached } = gated()
-    useFaux([step], { authorities: authority, limits: { timeoutMs: 60_000 } })
+    // Grant 的绝对过期按总时长上限算（docs/20 §3.10.11）
+    useFaux([step], { authorities: authority, limits: { timeoutMs: 60_000, totalTimeoutMs: 60_000 } })
     const alice = await actor()
     const flowId = await createFlow(alice, await createProject(alice))
     const res = send(alice, flowId, '慢慢来')

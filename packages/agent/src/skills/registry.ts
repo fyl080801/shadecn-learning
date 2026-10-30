@@ -67,6 +67,15 @@ export interface SkillContext {
    * 只有服务端有；runner 只造定义，不给
    */
   attachments?: readonly AgentAttachment[]
+  /**
+   * 派一个子 agent 并等它做完（docs/20 §3.10.11，`delegate_task` 的执行）：**只有 runner 里父 agent 的上下文有**
+   * （runner 实现：网关登记 → 同一进程里再建一个 pi `Agent` → 交回结果）。服务端和子 agent 的上下文都没有，一调就报错。
+   */
+  delegate?: (
+    toolCallId: string,
+    args: { brief: string; nodeIds?: string[] },
+    signal?: AbortSignal,
+  ) => Promise<AgentToolResult<CanvasToolDetails>>
 }
 
 export type SkillActivation = 'always' | 'auto' | 'on-demand'
@@ -151,6 +160,9 @@ export function definitionContext(side: SkillContext['side'], sandbox: Sandbox =
 /** 加载技能的平台工具：不属于任何技能，每一轮都给 */
 export const LOAD_SKILL_TOOL_NAME = 'load_skill'
 
+/** 子 agent 的平台工具「需要确认」（`skills/delegate/`）：不属于任何技能，技能里的工具不能叫这个名字 */
+export const REQUEST_CONFIRMATION_TOOL_NAME = 'request_confirmation'
+
 /** 同一批里还有别的工具调用时，runner 拦下 load_skill 回给模型的原因 */
 export const LOAD_SKILL_ALONE_REASON = 'load_skill 必须单独调用：这一批里还有别的工具调用，已拦下这次加载。请先让别的工具做完，再单独调用 load_skill'
 
@@ -192,6 +204,8 @@ export interface SkillPlanInput {
   previous: readonly AgentSkillId[]
   /** 用户这条消息 `@` 提及的节点的类型（不存在的节点不算） */
   mentionedNodeTypes: readonly string[]
+  /** 这次不提供的技能（子 agent 不给 `delegate`：只有一层，docs/20 §3.10.11） */
+  exclude?: readonly AgentSkillId[]
 }
 
 /** 一轮的技能集合（docs/23 §3.2） */
@@ -220,7 +234,11 @@ export interface SkillRegistry {
 /**
  * 建注册表，并校验全部技能的工具（用没有画布的上下文造一遍定义）：
  * 技能 id 不重复；工具名全局唯一、不和 `load_skill` 撞；`requires` 覆盖每个工具的 `capability`；
- * `offeredWith` ⊆ `requires`；`runner` 执行的工具所在技能必须要求 `sandbox:exec`。违反任何一条都在建表时抛出（开发期就炸，不留到某一轮）。
+ * `offeredWith` ⊆ `requires`；要起子进程的工具（`spawnsProcess`）必须在 runner 里执行、所在技能必须要求 `sandbox:exec`。
+ * 违反任何一条都在建表时抛出（开发期就炸，不留到某一轮）。
+ *
+ * 「在 runner 里执行」本身不要求 `sandbox:exec`：`delegate_task` 在 runner 里跑，但不起进程，子 agent 的每一步
+ * （模型请求、画布工具）仍是经网关判权的普通请求；要求 `sandbox:exec` 的只有真在工作目录里起子进程的那种（ffmpeg）。
  */
 export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistry {
   const byId = new Map<string, AgentSkill>()
@@ -234,15 +252,20 @@ export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistr
       }
     }
     for (const tool of skill.tools(definitionContext('runner'))) {
-      if (tool.name === LOAD_SKILL_TOOL_NAME) throw new Error(`技能 ${skill.id} 的工具不能叫 ${LOAD_SKILL_TOOL_NAME}`)
+      if (tool.name === LOAD_SKILL_TOOL_NAME || tool.name === REQUEST_CONFIRMATION_TOOL_NAME) {
+        throw new Error(`技能 ${skill.id} 的工具不能叫 ${tool.name}（平台工具的名字）`)
+      }
       const other = toolOwner.get(tool.name)
       if (other) throw new Error(`工具 ${tool.name} 同时属于技能 ${other.id} 和 ${skill.id}`)
       toolOwner.set(tool.name, skill)
       if (!skill.requires.includes(tool.capability)) {
         throw new Error(`技能 ${skill.id} 的 requires 没有覆盖工具 ${tool.name} 要的 ${tool.capability}`)
       }
-      if (tool.execution === 'runner' && !skill.requires.includes('sandbox:exec')) {
-        throw new Error(`工具 ${tool.name} 在 runner 里执行，技能 ${skill.id} 必须要求 sandbox:exec`)
+      if (tool.spawnsProcess && tool.execution !== 'runner') {
+        throw new Error(`工具 ${tool.name} 要起子进程，只能在 runner 里执行（execution: 'runner'）`)
+      }
+      if (tool.spawnsProcess && !skill.requires.includes('sandbox:exec')) {
+        throw new Error(`工具 ${tool.name} 要在 runner 里起子进程，技能 ${skill.id} 必须要求 sandbox:exec`)
       }
     }
   }
@@ -263,7 +286,8 @@ export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistr
     offers,
     plan(input) {
       const previous = new Set(input.previous)
-      const offered = skills.filter((skill) => offers(skill, input.env))
+      const excluded = new Set(input.exclude ?? [])
+      const offered = skills.filter((skill) => !excluded.has(skill.id) && offers(skill, input.env))
       const loaded = offered.filter(
         (skill) =>
           skill.activation === 'always' ||
