@@ -2,7 +2,7 @@
 
 > 状态：**一期（身份核心）、二期（网关 + runner + `process` 驱动）、三期（`oci` 驱动 + 沙箱镜像）、四期（`k8s` 驱动 + 部署清单，§9 第 1～4 项）已实现**；
 > 四期**还没在真实集群上跑过**（单元测试对着假的 k8s API，真集群的用例默认跳过，见 §7.5）。五期起为方案。
-> 模型请求改由服务端发起（§4.3）：**第 1 步（换传输：runner 用 `streamProxy`、服务端调上游、按请求数步数）、第 2 步（服务端维护权威 transcript，模型请求与落库只用它）、第 3 步（对话里给人看的事件由服务端产生）、第 4 步（清理线协议，`RUNNER_PROTOCOL_VERSION` 6 → 7）已实现**，第 5 步为规划。
+> 模型请求改由服务端发起（§4.3）：**第 1 步（换传输：runner 用 `streamProxy`、服务端调上游、按请求数步数）、第 2 步（服务端维护权威 transcript，模型请求与落库只用它）、第 3 步（对话里给人看的事件由服务端产生）、第 4 步（清理线协议，`RUNNER_PROTOCOL_VERSION` 6 → 7）、第 5 步（模型用量累计进 `agent_run`）已实现**。
 > 一期已实现：Grant / scope 表（`agent_grant` / `agent_grant_scope`，签发时 scope = 请求的 ∩ 发起人当时的权限 ∩ 服务端配置）；
 > run 状态机 running → success / cancelled / error / expired（线上 RUN_FINISHED 仍只有 success / cancelled，expired 在线上是 cancelled）；
 > 全部工具执行前、每次请求模型前、画布每次读写前 `authorize(capability)`；失效即 `stop`（整轮立即停，cancelled + 原因，Grant 标撤销）；
@@ -140,10 +140,10 @@
   实际做到的程度见 §7.4：只有 `--internal` 网络 + 服务端也接在里面才真的「只到网关」；默认的 `bridge` 网络可以出网（启动告警）。
 - `process`：不隔离网络，**生产环境拒绝启用**。
 
-### 4.3 服务端调用模型（第 1～4 步已实现）
+### 4.3 服务端调用模型（第 1～5 步已实现）
 
-> 状态：**第 1～4 步已实现**（见下面「迁移步骤」表），取代了原来的 `POST /llm/*` 透传代理和 runner 的「`baseUrl` = 网关、`apiKey` = run 令牌」，
-> §9 第 2 项里「模型代理」「改动通知下行」两条只作为历史保留；第 5 步（用量落库）仍是规划。依据 pi 1.4.0（`@earendil-works/pi-agent-core` 的 `streamProxy`，`dist/proxy.js`）。
+> 状态：**第 1～5 步已实现**（见下面「迁移步骤」表），取代了原来的 `POST /llm/*` 透传代理和 runner 的「`baseUrl` = 网关、`apiKey` = run 令牌」，
+> §9 第 2 项里「模型代理」「改动通知下行」两条只作为历史保留。依据 pi 1.4.0（`@earendil-works/pi-agent-core` 的 `streamProxy`，`dist/proxy.js`）。
 
 **为什么改**：现在网关只是**透传**：runner 拼好 OpenAI / Anthropic 的请求体，网关校验一个 `model` 字段、换上真实 key 就转给上游。
 于是请求里除了模型名，**一切都由不可信的 runner 决定**，落库的模型上下文也来自它的上报：
@@ -255,7 +255,7 @@ runner 上报的只剩 runner 执行的工具的开始 / 结束。顺序天然�
   空闲上限照旧看「在途」：模型请求从进来算到服务端的流结束（或断开）为止。
 
 **用量**：服务端拿到的 `usage`（输入 / 输出 / 缓存读写 token，按模型价格算出的费用）是可信的，runner 报的不再看。
-第 1 步只打一行日志（`[agent-gateway] run=… agent=… step=n` + 用量）；之后在运行日志 `agent_run` 上加累计列（`db:push` 可加列），
+每次请求结束打一行日志（`[agent-gateway] run=… agent=… step=n` + 用量），并累计进这一轮在运行日志 `agent_run` 上的用量列（第 5 步，见「第 5 步的实现说明」），
 供审计和以后的每用户预算（docs/20 §3.10.6、§9 第 6 项的「预算计量」）。会话里不存。
 
 **pi #9265（`streamProxy` 每个增量都重新解析整段工具参数）**：
@@ -287,7 +287,7 @@ runner 上报的只剩 runner 执行的工具的开始 / 结束。顺序天然�
 | 2（**已实现**） | **权威 transcript**：服务端按上表维护每个 agent 的 transcript 并只用它发请求；工具调用与 `delegate` 绑到服务端回复；通知改由服务端在请求时插（`/canvas/changes` 恒回 `null`）；落库改用服务端 transcript | 不升（第 1 步的 runner 行为兼容）；动了 `protocol.ts` 就照规矩升 | 大（`session.ts` 核心路径）/ 高：要逐条对齐 pi 的行为（`toolsAdded` 的位置、runner 侧拒绝的文字、并行批的结果顺序），对抗性用例要多 |
 | 3（**已实现**） | **事件由服务端产生**（见「事件从哪来」） | 不升 | 中 / 中 |
 | 4（**已实现**） | **清理**：runner 只送空上下文、请求体上限降下来；`RunnerInput` 去掉 `llmMessages`；删 `/canvas/changes` 与 `steerId`；runner 侧的「单独调用 / 工具调用上限」拦截挪到网关（服务端不必再代算这两种文字）；父 agent 不再上报 `message_end` | 6 → 7 | 中（以删为主）/ 低 |
-| 5 | **用量落库**（`agent_run` 加列，`finishRun` 写入） | 不升 | 小 / 低 |
+| 5（**已实现**） | **用量落库**（`agent_run` 加列，`finishRun` 写入） | 不升 | 小 / 低 |
 
 **第 1 步的实现说明**（`packages/agent/src/model-stream.ts` + `gateway.ts` 的模型路由 + `session.ts` 的 `modelRequest`；runner 的 `runner/stream.ts` 删掉）：
 
@@ -378,6 +378,22 @@ runner 上报的只剩 runner 执行的工具的开始 / 结束。顺序天然�
 本文 §4 的图与 §9 第 2 项；docs/20 §3.10.2 的插入时机、§3.10.8 空闲上限里的 `/llm`、§3.10.11「步数各算」；REQ-DEPLOY 里「网关的模型代理」的说法。
 不变的：key 只在服务端；令牌、判权、Grant；`model.ts` 的 `CUSTOM_ENDPOINT_COMPAT`（服务端调用时同样生效）；上下文的裁剪规则。
 
+**第 5 步的实现说明**（`session.ts` 的 `modelRequest` / 收尾、`store.ts` 的 `AgentRunUsage`、`apps/server` 的 `agent_run` 实体与 `store/agent.ts`；协议不升，runner 不变）：
+
+- **落了什么**：`agent_run` 加五列 —— `input_tokens`（不含缓存命中 / 写入的输入，pi-ai 的 `usage.input`）、`output_tokens`、`cache_read_tokens`、
+  `cache_write_tokens`、`cost_micro_usd`（费用，**百万分之一美元的整数**），都可空、`db:push` 直接加列。
+  一轮一行、**父 agent 与全部子 agent 合计**，不分开记（子 agent 不是 run，预算按 run / 按人计；按 agent 的明细在每次请求的那行日志里）。
+- **累计口径**：每次模型请求交回定稿时（网关的 `release`，和那行日志同一个 `usage`）加一次 —— 成功、出错、中止、参数过长被掐断的请求都算 pi 报了的那部分；
+  上游直接拒绝、一个 token 都没报的加 0；没调上游的（开流前拒绝、子 agent 步数用完那一帧）不算。这一轮被叫停之后才交回的回复不进上下文，用量照算（请求已经发出去了）。
+  收尾写运行日志之前，最多等 5 秒让还在途的请求（叫停时被掐断的）交回定稿，等不到的那几次不计、打一行警告。
+- **费用**：pi-ai 按模型价格表算（`calculateCost`，含分档价、1 小时缓存写入的倍价），各次请求的 `usage.cost.total` 相加，**整轮合计上**换成微美元舍入一次。
+  只能用五种列类型（没有小数 / decimal），浮点列又不能精确求和，所以存整数；微美元在最便宜的模型上也分得出几十个 token，
+  PG 的 32 位 `int` 上限约 2147 美元一轮（token 列同理，一轮到不了 21 亿），超出按上限记。
+  **模型没有价格信息**（价格表全是 0：自定义端点、`ollama` 预设）→ 费用为空，而不是 0：「不知道多少钱」不能被预算当成「免费」。
+- **空值**：`startRun` 写的那一行五列都是空，`finishRun` 才写（按 runId upsert，同其他收尾字段）；进程被硬杀、停在 `running` 的行和加列之前的旧行都是空 = 「没记」，与「一个 token 都没用」的 0 分得开。
+  写失败照旧 fail open（运行日志是旁路）。
+- **不展示**：这一步只落库，接口与前端都不出用量；每用户预算是规划（docs/20 §3.10.6）。
+
 **新旧镜像**：直接不兼容。第 1 步把协议升到 6、第 4 步升到 7，老镜像在兑换 bootstrap 时就被 409 拒掉，这一轮以 `runner_protocol_mismatch` 收尾（§7.2）；
 不做双栈：`process` 驱动永远一致，`oci` / `k8s` 的镜像和服务端同一次 CI 构建、同一个 tag，错位只出现在本地没重建镜像时，提示里已经写明怎么办。
 
@@ -392,7 +408,7 @@ runner 上报的只剩 runner 执行的工具的开始 / 结束。顺序天然�
 7. #9265：先上线 + 两道缓解（`maxTokens` 上限、参数增量超过最大合法参数约 2 倍就掐断，阈值按 `TOOL_LIMITS` 定），pi 发版后升级。
 8. 被叫停时的半截回复不进上下文（保持现状）。
 9. Bedrock / Vertex 等要凭据链的协议不在这次放开，另立需求。
-10. 用量：第 1 步只打日志，第 5 步在 `agent_run` 加列。
+10. 用量：第 1 步只打日志，第 5 步在 `agent_run` 加列（已实现）。
 
 ## 5. 有效权限与撤销
 

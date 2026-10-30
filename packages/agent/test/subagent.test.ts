@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { fauxAssistantMessage, fauxText, fauxToolCall, type AssistantMessage, type Context, type JsonObject } from '@earendil-works/pi-ai'
+import {
+  fauxAssistantMessage,
+  fauxText,
+  fauxToolCall,
+  type Api,
+  type AssistantMessage,
+  type Context,
+  type JsonObject,
+  type Model,
+} from '@earendil-works/pi-ai'
 import {
   AGENT_SUBTASK_EVENT,
   AGENT_SUBTASK_UPDATE_EVENT,
@@ -96,13 +105,15 @@ function seedText(doc: Y.Doc, id: string, text = '原文') {
 const dataText = (doc: Y.Doc, id: string) => nodeGroupMap(nodesMap(doc).get(id)!, 'data')?.get('text')
 
 interface SetupExtras {
+  /** 脚本化模型的价格（每百万 token 的美元价）；不给 = 没有价格信息 */
+  cost?: Model<Api>['cost']
   wrapDriver?: (driver: SandboxDriver) => SandboxDriver
   /** 改写 runner 发往网关的请求体（模拟不守规矩 / 老镜像的 runner）；返回 undefined = 不改 */
   rewrite?: (route: string, body: unknown) => unknown
 }
 
 function setup(handler: Handler, overrides: Partial<AgentRuntimeOptions> & SetupExtras = {}) {
-  const faux = registerScriptedModel()
+  const faux = registerScriptedModel(overrides.cost ? { cost: overrides.cost } : {})
   const turns: Turn[] = []
   const route: ScriptedStep = async (context, options) => {
     const turn = turnOf(context)
@@ -115,7 +126,7 @@ function setup(handler: Handler, overrides: Partial<AgentRuntimeOptions> & Setup
   const authorities = createMemoryAuthorityProvider()
   const changes: AgentRunEntry[][] = []
   const base = faux.runtimeOptions()
-  const { wrapDriver, rewrite, ...rest } = overrides
+  const { wrapDriver, rewrite, cost: _cost, ...rest } = overrides
   const runtime = createAgentRuntime({
     ...base,
     driver: wrapDriver ? wrapDriver(base.driver) : base.driver,
@@ -443,6 +454,54 @@ describe('随父 run 一起停（验收 21）', () => {
     expect(last.outcome).toEqual({ type: 'cancelled' })
     expect(last.result.subtasks).toMatchObject([{ status: 'failed', error: '已中止' }])
     expect(await runtime.leases.list('flow-1')).toEqual(new Map())
+  })
+})
+
+/** 给脚本里的一步配上上游报的用量（脚本化上游随流发用量块，pi-ai 据此算 usage 与费用） */
+function withUsage(message: AssistantMessage, tokens: { input: number; output: number; cacheRead?: number; cacheWrite?: number }): AssistantMessage {
+  const cacheRead = tokens.cacheRead ?? 0
+  const cacheWrite = tokens.cacheWrite ?? 0
+  return {
+    ...message,
+    usage: {
+      input: tokens.input,
+      output: tokens.output,
+      cacheRead,
+      cacheWrite,
+      totalTokens: tokens.input + tokens.output + cacheRead + cacheWrite,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+  }
+}
+
+describe('模型用量落进运行日志（docs/22 §4.3 第 5 步）', () => {
+  it('父 agent 与子 agent 的每次请求都累加进这一轮；子 agent 中途失败的那次请求报了的部分也算；费用按模型价格算', async () => {
+    const doc = new Y.Doc()
+    const runLog = createMemoryRunLog()
+    const runtime = setup(
+      async (turn) => {
+        if (turn.brief === null) {
+          if (turn.step === 1) return withUsage(calls(delegate('会断掉的事')), { input: 1000, output: 50, cacheRead: 200, cacheWrite: 100 })
+          return withUsage(say('子任务断了，到此为止'), { input: 1500, output: 30, cacheRead: 1000 })
+        }
+        // 上游开了流、报了用量，然后中途断开
+        return withUsage(fauxAssistantMessage('写了一半', { stopReason: 'error', errorMessage: '上游中途断了' }), { input: 400, output: 20 })
+      },
+      { runLog, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+    )
+    const run = await start(runtime, doc)
+    await run.done
+    const last = finished(run.events)
+    expect(last.outcome).toEqual({ type: 'success' })
+    expect(last.result.subtasks).toMatchObject([{ status: 'failed' }])
+    const row = runLog.runs.get(run.runId)
+    expect(row).toMatchObject({
+      status: 'success',
+      usage: { inputTokens: 2900, outputTokens: 100, cacheReadTokens: 1200, cacheWriteTokens: 100 },
+    })
+    // 每百万 token：输入 3、输出 15、缓存读 0.3、缓存写 3.75 美元
+    const expected = (2900 * 3 + 100 * 15 + 1200 * 0.3 + 100 * 3.75) / 1_000_000
+    expect(row && 'usage' in row ? row.usage.costUsd : undefined).toBeCloseTo(expected, 12)
   })
 })
 

@@ -146,10 +146,32 @@ function chunksOf(message: AssistantMessage, model: string): string[] {
       toolIndex += 1
     }
   }
-  const finish = message.stopReason === 'toolUse' ? 'tool_calls' : message.stopReason === 'length' ? 'length' : 'stop'
-  out.push(chunk({}, finish))
+  // 出错的那一步（流到一半断掉）没有结束块
+  if (message.stopReason !== 'error') {
+    const finish = message.stopReason === 'toolUse' ? 'tool_calls' : message.stopReason === 'length' ? 'length' : 'stop'
+    out.push(chunk({}, finish))
+  }
+  // 用量块（OpenAI 的 `stream_options.include_usage` 写法：`choices` 为空、带 `usage`，在结束块之后）；脚本没给用量就不发
+  const { usage } = message
+  if (usage && usage.input + usage.output + usage.cacheRead + usage.cacheWrite > 0) {
+    out.push(
+      JSON.stringify({
+        ...base,
+        choices: [],
+        usage: {
+          prompt_tokens: usage.input + usage.cacheRead + usage.cacheWrite,
+          completion_tokens: usage.output,
+          prompt_tokens_details: { cached_tokens: usage.cacheRead, cache_write_tokens: usage.cacheWrite },
+        },
+      }),
+    )
+  }
   return out
 }
+
+/** 脚本给了用量（token 数不全为 0） */
+const hasUsage = (message: AssistantMessage) =>
+  Boolean(message.usage) && message.usage.input + message.usage.output + message.usage.cacheRead + message.usage.cacheWrite > 0
 
 function abortError(): Error {
   const err = new Error('This operation was aborted')
@@ -157,8 +179,16 @@ function abortError(): Error {
   return err
 }
 
-/** `imageInput`：模型声明吃图片（`model.input` 含 `image`），测多模态工具用 */
-export function registerScriptedModel(options: { label?: string; imageInput?: boolean } = {}): ScriptedModel {
+/**
+ * `imageInput`：模型声明吃图片（`model.input` 含 `image`），测多模态工具用。
+ * `cost`：模型的价格（每百万 token 的美元价，同 pi 的 `Model.cost`）；不给 = 全 0（没有价格信息，同自定义端点）。
+ *
+ * 一步的 `usage` 给了 token 数就随流发一个用量块（pi-ai 据此算 `usage` 与费用）。`stopReason: 'error'` 的一步：
+ * 没给用量 = 上游直接回 400；给了用量 = 开流、发完内容和用量块后流断掉（上游中途失败，pi 报出已有的那部分用量）。
+ */
+export function registerScriptedModel(
+  options: { label?: string; imageInput?: boolean; cost?: Model<Api>['cost'] } = {},
+): ScriptedModel {
   const queue: ScriptedStep[] = []
   const state = { callCount: 0 }
   const requests: UpstreamRequest[] = []
@@ -170,7 +200,7 @@ export function registerScriptedModel(options: { label?: string; imageInput?: bo
     baseUrl: SCRIPTED_UPSTREAM_URL,
     reasoning: false,
     input: options.imageInput ? ['text', 'image'] : ['text'],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: options.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128_000,
     maxTokens: 8192,
     compat: {
@@ -216,10 +246,11 @@ export function registerScriptedModel(options: { label?: string; imageInput?: bo
       signal?.addEventListener('abort', onAbort, { once: true })
       produce.then(resolve, reject).finally(() => signal?.removeEventListener('abort', onAbort))
     })
-    if (message.stopReason === 'error') return errorReply(400, message.errorMessage || '模型调用失败')
+    if (message.stopReason === 'error' && !hasUsage(message)) return errorReply(400, message.errorMessage || '模型调用失败')
+    const breaks = message.stopReason === 'error'
 
     const lines = chunksOf(message, model.id).map((data) => `data: ${data}\n\n`)
-    lines.push('data: [DONE]\n\n')
+    if (!breaks) lines.push('data: [DONE]\n\n')
     const encoder = new TextEncoder()
     let index = 0
     const stream = new ReadableStream<Uint8Array>({
@@ -229,7 +260,8 @@ export function registerScriptedModel(options: { label?: string; imageInput?: bo
       pull(controller) {
         if (signal?.aborted) return
         if (index >= lines.length) {
-          controller.close()
+          if (breaks) controller.error(new Error(message.errorMessage || '上游的流中途断开'))
+          else controller.close()
           return
         }
         controller.enqueue(encoder.encode(lines[index]!))

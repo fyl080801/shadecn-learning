@@ -72,7 +72,7 @@ import {
  * - **一次请求 = 一步**、同一个 agent 同时只能有一个在途请求：由这一轮的 {@link GatewayRunHandlers.modelRequest} 判（编排层按 agent 计数）；
  * - 上游的信号 = 这一轮的 `signal` ∪ 这次 HTTP 请求的 `signal` ∪ 掐断（参数过长、runner 断开）；被叫停时补一帧 `error { reason: 'aborted' }` 再正常结束
  *   （中断是预期内的结局，不让它变成 HTTP 层的流错误）；
- * - 在途从请求进来算到服务端的流结束（或断开）为止，空闲上限据此判断；结束时打一行用量日志（第 1 步只打日志）。
+ * - 在途从请求进来算到服务端的流结束（或断开）为止，空闲上限据此判断；结束时打一行用量日志；累计进运行日志的是同一个数，经 `release` 交回的定稿里的 `usage`（docs/22 §4.3 第 5 步）。
  * 支持的线协议见 `model-stream.ts` 的 `SERVED_MODEL_APIS`；其余的宿主据此把 agent 标成未启用。
  */
 
@@ -94,8 +94,9 @@ const DEFAULT_MAX_RETRY_DELAY_MS = 60_000
 /**
  * 编排层对一次模型请求的判定（{@link GatewayRunHandlers.modelRequest}）：
  * - `stream`：放行，用 `context`（服务端的 transcript，runner 送的上下文不用）调上游；终止帧发给 runner **之前**调一次 `release`，
- *   交回这条回复的定稿（编排层记进 transcript、释放这个 agent 的在途名额 —— runner 拿到终止帧就可能来执行工具）；
- *   拿不到定稿（不该发生）给 null。`frame`：终止帧之前的每一帧，写给 runner **之前**交给编排层一份
+ *   交回这条回复的定稿（编排层记进 transcript、释放这个 agent 的在途名额 —— runner 拿到终止帧就可能来执行工具；
+ *   定稿的 `usage` 就是终止帧的 / 用量日志里的那个数，编排层据此累计这一轮的用量）；**开流了就一定调且只调一次**
+ *   （上游抛错 / 没给终止帧时是补的那条出错回复，用量为 0），编排层收尾时要等它；拿不到定稿（不该发生）给 null。`frame`：终止帧之前的每一帧，写给 runner **之前**交给编排层一份
  *   （界面上的文字流由服务端从这里产生，docs/22 §4.3 第 3 步；编排层抛错不影响下发）；
  * - `refuse`：开流之前拒绝（`{ error }` + 状态码），不调上游；
  * - `fail`：开流、只发一帧 `error`（如子 agent 步数用完），不调上游。
@@ -501,7 +502,7 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
       end()
       const usage = terminal && (terminal.type === 'done' || terminal.type === 'error') ? terminal.usage : ZERO_USAGE
       const outcome = terminal?.type === 'done' ? terminal.reason : terminal?.type === 'error' ? terminal.reason : 'disconnected'
-      // 用量是服务端拿到的，可信（runner 报的不看）；第 1 步只打日志，之后落库（docs/22 §4.3「用量」）
+      // 用量是服务端拿到的，可信（runner 报的不看）；累计落库的是 release 交回的定稿里的同一个数（docs/22 §4.3「用量」）
       console.info(
         `[agent-gateway] run=${runId} agent=${agentId} step=${decision.step} 模型请求结束（${outcome}）：` +
           `输入 ${usage.input} / 输出 ${usage.output} / 缓存读 ${usage.cacheRead} / 缓存写 ${usage.cacheWrite} token，费用 ${usage.cost.total}`,

@@ -105,6 +105,7 @@ import type {
   AgentRunFinish,
   AgentRunLog,
   AgentRunStart,
+  AgentRunUsage,
   StoredConversation,
   StoredConversationMeta,
 } from './store.ts'
@@ -136,7 +137,8 @@ import {
  * - **会话**（对话记录 + 模型上下文）经注入的 {@link AgentConversationStore} 落库，按「画布 + 发起人」归属，
  *   一个人在一张画布上可以有多个会话；项目画布上别人的会话只读可见（读的口径见 store.ts「归属」）。
  *   进程重启、换到另一个副本，会话都还在。
- * - **运行日志**（每轮一行 + 每次工具调用一行）经注入的 {@link AgentRunLog} 落库，审计用途。
+ * - **运行日志**（每轮一行 + 每次工具调用一行）经注入的 {@link AgentRunLog} 落库，审计用途。每轮那一行带着这一轮的模型用量
+ *   （服务端调模型拿到的 `usage`，父子 agent 合计，docs/22 §4.3 第 5 步），收尾时随 `finishRun` 写。
  * - **「谁在跑」分两层**（docs/20 §3.10.10，F14）：本进程的 `runs` / `busyConversations`（`RunState` 本体、同一 tick 的占位），
  *   和注入的 {@link RunRegistry}（宿主：共享层，多副本是 redis）里的**任务登记**、**会话槽位**、**补发日志**、**停止指令**。
  *   任务列表、「这个会话在不在跑」、接回、停止都以共享层为准，所以落在哪个副本上都一样；
@@ -775,6 +777,11 @@ function protocolMismatchMessage(info: { runnerVersion: number | null; serverVer
 
 /** runner 收尾（`/run/finish`）之后最多等它自己退出多久，过了就杀 */
 const RUNNER_EXIT_GRACE_MS = 5000
+/**
+ * 收尾写运行日志之前，最多等还在途的模型请求交回定稿多久（为了把它们的用量算进来）。
+ * 走到这里令牌已作废、上游请求已掐断，正常几毫秒就交回；过了就不等，那几次的用量不计（打一行警告）
+ */
+const USAGE_SETTLE_MS = 5000
 /** 沙箱存活的兜底上限比一轮的总时长上限多这么多 */
 const SANDBOX_DEADLINE_MARGIN_MS = 30_000
 
@@ -1090,6 +1097,47 @@ function conversationGone(): AgentStreamEvent {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * 模型有没有价格信息：pi 的价格表（每百万 token 的美元价）全是 0 —— 自定义端点 / 预设（`CUSTOM_DEFAULTS`）就是这样 ——
+ * 算出来的费用恒为 0，那是「不知道」，不是「免费」（{@link AgentRunUsage.costUsd} 记 null）
+ */
+export function modelHasPricing(model: Pick<Model<Api>, 'cost'>): boolean {
+  const { cost } = model
+  const rates = [cost.input, cost.output, cost.cacheRead, cost.cacheWrite, ...(cost.tiers ?? []).flatMap((tier) => [tier.input, tier.output, tier.cacheRead, tier.cacheWrite])]
+  return rates.some((rate) => typeof rate === 'number' && rate > 0)
+}
+
+/** 一轮开始时的用量：全 0；模型没有价格信息时费用为 null */
+export function emptyRunUsage(model: Pick<Model<Api>, 'cost'>): AgentRunUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: modelHasPricing(model) ? 0 : null }
+}
+
+/** 非负有限数，否则 0（上游 / SDK 给了怪值也不让累计变成 NaN） */
+const usageNumber = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0)
+
+/** 把一次模型请求的 `usage`（服务端拿到的，pi-ai 已按模型价格算好 `cost`）加进这一轮的累计；没有 usage 的不加 */
+export function addRunUsage(totals: AgentRunUsage, usage: AssistantMessage['usage'] | undefined): void {
+  if (!usage) return
+  totals.inputTokens += usageNumber(usage.input)
+  totals.outputTokens += usageNumber(usage.output)
+  totals.cacheReadTokens += usageNumber(usage.cacheRead)
+  totals.cacheWriteTokens += usageNumber(usage.cacheWrite)
+  if (totals.costUsd !== null) totals.costUsd += usageNumber(usage.cost?.total)
+}
+
+/** 等还在途的模型请求交回定稿，最多 {@link USAGE_SETTLE_MS}；等不到的只打警告（它们的用量不计） */
+async function settleRequests(runId: string, pending: ReadonlySet<Promise<void>>): Promise<void> {
+  if (pending.size === 0) return
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timedOut = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(true), USAGE_SETTLE_MS)
+    timer.unref?.()
+  })
+  const late = await Promise.race([Promise.all(pending).then(() => false), timedOut])
+  clearTimeout(timer)
+  if (late) console.warn(`[agent] run=${runId} 还有 ${pending.size} 次模型请求没在 ${USAGE_SETTLE_MS}ms 内收尾，它们的用量不计入运行日志`)
 }
 
 /** 查不到这个人（已被删）时的兜底，名字与 apps/server `displayNameOf` 的兜底一致 */
@@ -1986,6 +2034,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
      * runner 执行的命令在它上报开始时计（{@link countLocalCall}）。`request_confirmation` 不计（它是子 agent 交回的方式）
      */
     let toolCallCount = 0
+    /**
+     * 这一轮的模型用量（docs/22 §4.3「用量」）：每次模型请求交回定稿时（`release`）累加服务端拿到的 `usage` ——
+     * 父 agent 和子 agent 都算进这一轮；失败 / 中止的请求里 pi 报了的那部分也算。收尾时写进运行日志
+     */
+    const usage = emptyRunUsage(resolved.model)
+    /** 已经开流、还没交回定稿的模型请求：收尾写运行日志前等它们（被掐断的请求报的部分用量也要算进来） */
+    const unsettledRequests = new Set<Promise<void>>()
     /** 已经计过数的 runner 执行的调用（上报重复的开始不重复计） */
     const countedLocal = new WeakSet<TranscriptCall>()
     /**
@@ -2924,6 +2979,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           return { kind: 'refuse', status: 401, message: '这一轮已经停止' }
         }
         let released = false
+        let settled!: () => void
+        const settling = new Promise<void>((resolve) => {
+          settled = resolve
+        })
+        unsettledRequests.add(settling)
         agent.refusal = null
         return {
           kind: 'stream',
@@ -2937,6 +2997,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             if (released) return
             released = true
             agent.requesting = false
+            // 用量先记（这一轮已停、回复不进上下文的也算：请求发出去了，钱就花了）
+            addRunUsage(usage, result?.message.usage)
+            unsettledRequests.delete(settling)
+            settled()
             onReply(agent, result)
           },
         }
@@ -3145,6 +3209,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     // —— 5. 收尾 ——
     send(finishing)
 
+    // 还在途的模型请求（被叫停时掐断的）交回定稿之后才算得清用量：令牌已作废、上游已掐断，等一小会儿
+    await settleRequests(run.runId, unsettledRequests)
+
     const closing: Promise<unknown>[] = []
     if (canvas) closing.push(canvas.close())
     const closed = await Promise.allSettled(closing)
@@ -3168,6 +3235,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       // 父 agent 的 + 全部子 agent 的
       toolCallCount:
         mapper.message.toolCalls.length + (mapper.message.subtasks ?? []).reduce((sum, task) => sum + task.toolCalls.length, 0),
+      // 父 agent 的 + 全部子 agent 的；在途的请求在上面等过了（等不到的不计）
+      usage: { ...usage },
       finishedAt: Date.now(),
     }
     // 关掉 Grant：这一轮结束了，它不能再被用来做任何事（已因失权撤销的，宿主保留那个原因）
@@ -3178,7 +3247,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
     console.info(
       `[agent] run=${run.runId} flow=${flowId} 结束（${finish.status}，${finish.toolCallCount} 次工具调用，` +
-        `${finish.finishedAt - startedAt}ms）`,
+        `${finish.finishedAt - startedAt}ms；输入 ${usage.inputTokens} / 输出 ${usage.outputTokens} / 缓存读 ${usage.cacheReadTokens} / ` +
+        `缓存写 ${usage.cacheWriteTokens} token，费用 ${usage.costUsd ?? '未知'}）`,
     )
   }
 

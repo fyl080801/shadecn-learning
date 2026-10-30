@@ -193,10 +193,19 @@ describe('运行日志', () => {
     grantId: 'grant-x',
     startedAt: Date.UTC(2026, 0, 1),
   }
+  const noUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null }
 
-  it('startRun 写一行 running；finishRun 只改收尾字段', async () => {
+  it('startRun 写一行 running（用量为空 = 还没记）；finishRun 只改收尾字段', async () => {
     await agentRunLog.startRun(start)
-    expect(await db().findOne(AgentRun, 'run_test_1')).toMatchObject({ status: 'running', finishedAt: null })
+    expect(await db().findOne(AgentRun, 'run_test_1')).toMatchObject({
+      status: 'running',
+      finishedAt: null,
+      inputTokens: null,
+      outputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costMicroUsd: null,
+    })
 
     await agentRunLog.finishRun({
       ...start,
@@ -204,22 +213,69 @@ describe('运行日志', () => {
       status: 'cancelled',
       error: '已中止',
       toolCallCount: 3,
+      usage: { inputTokens: 1200, outputTokens: 80, cacheReadTokens: 300, cacheWriteTokens: 40, costUsd: 0.0123456 },
       finishedAt: Date.UTC(2026, 0, 1, 0, 1),
     })
     const row = await db().findOneOrFail(AgentRun, 'run_test_1')
-    expect(row).toMatchObject({ status: 'cancelled', error: '已中止', toolCallCount: 3, conversationId: 'conv-1', grantId: 'grant-x' })
+    expect(row).toMatchObject({
+      status: 'cancelled',
+      error: '已中止',
+      toolCallCount: 3,
+      conversationId: 'conv-1',
+      grantId: 'grant-x',
+      inputTokens: 1200,
+      outputTokens: 80,
+      cacheReadTokens: 300,
+      cacheWriteTokens: 40,
+      // 美元 → 整数微美元，合计上舍入一次
+      costMicroUsd: 12346,
+    })
     expect(row.finishedAt?.toISOString()).toBe('2026-01-01T00:01:00.000Z')
     expect(row.startedAt.toISOString()).toBe('2026-01-01T00:00:00.000Z')
   })
 
   it('startRun 没写进去时 finishRun 照样留下完整的一行', async () => {
-    await agentRunLog.finishRun({ ...start, status: 'success', error: null, toolCallCount: 0, finishedAt: start.startedAt + 1 })
-    expect(await db().findOne(AgentRun, 'run_test_1')).toMatchObject({ status: 'success', flowId: 'flow-x', model: 'Faux', grantId: 'grant-x' })
+    await agentRunLog.finishRun({
+      ...start,
+      status: 'success',
+      error: null,
+      toolCallCount: 0,
+      usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+      finishedAt: start.startedAt + 1,
+    })
+    expect(await db().findOne(AgentRun, 'run_test_1')).toMatchObject({
+      status: 'success',
+      flowId: 'flow-x',
+      model: 'Faux',
+      grantId: 'grant-x',
+      inputTokens: 10,
+      outputTokens: 2,
+      costMicroUsd: 0,
+    })
   })
 
   it('expired 是合法的收尾状态，原因写在 error', async () => {
-    await agentRunLog.finishRun({ ...start, status: 'expired', error: '这一轮的授权已到期', toolCallCount: 1, finishedAt: start.startedAt + 1 })
+    await agentRunLog.finishRun({
+      ...start,
+      status: 'expired',
+      error: '这一轮的授权已到期',
+      toolCallCount: 1,
+      usage: noUsage,
+      finishedAt: start.startedAt + 1,
+    })
     expect(await db().findOne(AgentRun, 'run_test_1')).toMatchObject({ status: 'expired', error: '这一轮的授权已到期' })
+  })
+
+  it('模型没有价格信息 → 费用为空（不是 0），token 照记；超出 32 位整数的按上限记', async () => {
+    await agentRunLog.finishRun({
+      ...start,
+      status: 'success',
+      error: null,
+      toolCallCount: 0,
+      usage: { ...noUsage, inputTokens: 5_000_000_000, outputTokens: 7 },
+      finishedAt: start.startedAt + 1,
+    })
+    expect(await db().findOne(AgentRun, 'run_test_1')).toMatchObject({ inputTokens: 2_147_483_647, outputTokens: 7, costMicroUsd: null })
   })
 
   it('recordToolCall 一次一行；不建外键 —— 画布 / 会话不存在也写得进去', async () => {

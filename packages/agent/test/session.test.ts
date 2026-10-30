@@ -1207,6 +1207,45 @@ describe('步数与请求上限（docs/22 §4.3：一次模型请求 = 一步，
     expect(faux!.state.callCount).toBe(1)
   })
 
+  it('用量累计进运行日志：每次模型请求各加一次；模型没有价格信息时费用记空（不是 0）；模型出错的请求报了的用量也算', async () => {
+    const usageOf = (input: number, output: number) => ({
+      input,
+      output,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: input + output,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    })
+    const runtime = runtimeWith([
+      { ...fauxAssistantMessage([fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' }), usage: usageOf(120, 8) },
+      { ...fauxAssistantMessage('读完了'), usage: usageOf(300, 12) },
+      // 第二轮：上游开流、报了用量后中途断开 → 这一轮 model_error，用量照记
+      { ...fauxAssistantMessage('写到一半', { stopReason: 'error', errorMessage: '上游中途断了' }), usage: usageOf(50, 4) },
+    ])
+    const first = await runOnce(runtime, '读一下画布')
+    const firstRun = [...runtime.runLog.runs.values()].at(-1)!
+    expect(firstRun).toMatchObject({
+      status: 'success',
+      usage: { inputTokens: 420, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null },
+    })
+
+    const second = await runOnce(runtime, '再来', threadOf(first.events))
+    expect(second.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_ERROR, code: 'model_error' })
+    const secondRun = [...runtime.runLog.runs.values()].at(-1)!
+    expect(secondRun.runId).not.toBe(firstRun.runId)
+    // 每轮只记自己的（不跨轮累加）
+    expect(secondRun).toMatchObject({ status: 'error', usage: { inputTokens: 50, outputTokens: 4, costUsd: null } })
+  })
+
+  it('一次模型请求都没开流（上游直接拒绝、没报用量）：用量全 0', async () => {
+    const runtime = runtimeWith([fauxAssistantMessage('', { stopReason: 'error', errorMessage: '上游拒了' })])
+    await runOnce(runtime, '你好')
+    expect([...runtime.runLog.runs.values()].at(-1)).toMatchObject({
+      status: 'error',
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null },
+    })
+  })
+
   it('父 agent 的 sessionId 是会话 id（前后几轮命中同一份缓存）；每次模型请求结束打一行用量日志', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     const runtime = runtimeWith([fauxAssistantMessage('一'), fauxAssistantMessage('二')])

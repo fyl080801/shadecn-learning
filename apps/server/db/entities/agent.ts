@@ -81,6 +81,22 @@ export const AgentRun = defineEntity({
     toolCallCount: p.integer().default(0),
     /** 给人看的模型名 */
     model: p.text().strictNullable(),
+    /*
+     * 这一轮累计的模型用量（docs/22 §4.3 第 5 步）：服务端调模型拿到的 usage，父 agent + 全部子 agent，收尾时写。
+     * 都可空：null = 没记（进程被硬杀停在 running 的行、有这几列之前的旧行），和「一个 token 都没用」的 0 分得开。
+     * 加的是可空列，`db:push` 直接加（不重建表）。PG 上 `p.integer()` 是 32 位 int：一轮的 token 数到不了 21 亿
+     */
+    /** 输入 token（不含缓存命中 / 写入那部分，pi-ai 的 `usage.input`） */
+    inputTokens: p.integer().strictNullable(),
+    outputTokens: p.integer().strictNullable(),
+    cacheReadTokens: p.integer().strictNullable(),
+    cacheWriteTokens: p.integer().strictNullable(),
+    /**
+     * 费用，**百万分之一美元**（整数）：只能用五种列类型（没有小数 / decimal，见 ./columns.ts），浮点又不能精确求和；
+     * 微美元在最便宜的模型上也能分辨几十个 token，32 位上限约 2147 美元一轮，够用（超出按上限记）。
+     * 舍入只在整轮的合计上做一次。null = 模型没有价格信息（自定义端点），或没记
+     */
+    costMicroUsd: p.integer().strictNullable(),
     startedAt: p.datetime(),
     finishedAt: p.datetime().strictNullable(),
   },

@@ -119,11 +119,31 @@ export interface AgentRunStart {
   startedAt: number
 }
 
+/**
+ * 一轮的模型用量（docs/22 §4.3「用量」）：服务端调模型时拿到的 `usage`（可信；runner 报的不看），
+ * 每次模型请求结束时累加 —— **父 agent 与全部子 agent 合在一起**（子 agent 不是 run，预算按 run / 按人计）；
+ * 失败、中止的请求里 pi 报了的那部分用量也算，一个 token 都没报的请求加的是 0。
+ */
+export interface AgentRunUsage {
+  /** 不含缓存命中 / 写入的输入 token（pi-ai 的 `usage.input`） */
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  /**
+   * 按模型价格算出的费用，**美元**（pi-ai 的 `calculateCost`，各次请求的 `usage.cost.total` 之和）。
+   * 模型没有价格信息（自定义端点 / 预设，价格全是 0）→ null：「不知道多少钱」不能记成「免费」
+   */
+  costUsd: number | null
+}
+
 export interface AgentRunFinish extends AgentRunStart {
   status: Exclude<AgentRunStatus, 'running'>
   /** 收尾原因：失败的报错，或 cancelled / expired 的原因（给人看的中文）；success 为 null */
   error: string | null
   toolCallCount: number
+  /** 这一轮累计的模型用量 */
+  usage: AgentRunUsage
   finishedAt: number
 }
 
@@ -147,7 +167,7 @@ export interface AgentRunLog {
   recordToolCall(call: AgentToolCallRecord): Promise<void>
   /**
    * 收尾时带上**完整**的一行（含 start 时的字段）：实现应按 runId upsert ——
-   * `startRun` 那一笔写失败了，结束这一笔照样能留下记录。
+   * `startRun` 那一笔写失败了，结束这一笔照样能留下记录。用量只在这一笔里写（`startRun` 的行没有用量 = 还没记 / 进程被硬杀）
    */
   finishRun(run: AgentRunFinish): Promise<void>
 }
@@ -276,7 +296,7 @@ export function createMemoryRunLog(): MemoryRunLog {
       toolCalls.push(structuredClone(call))
     },
     async finishRun(run) {
-      runs.set(run.runId, { ...run })
+      runs.set(run.runId, { ...run, usage: { ...run.usage } })
     },
   }
 }

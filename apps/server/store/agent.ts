@@ -4,6 +4,7 @@ import {
   parseCanvasDigest,
   type AgentConversationStore,
   type AgentRunLog,
+  type AgentRunUsage,
   type StoredConversation,
   type StoredConversationMeta,
   type StoredConversationWithContext,
@@ -157,6 +158,24 @@ export const agentConversations: AgentConversationStore = {
   },
 }
 
+/** PG 的 `int` 是 32 位：落库的整数夹在这个范围里（超出的写不进去，整行收尾就丢了） */
+const INT_MAX = 2_147_483_647
+
+const storedInt = (value: number) => Math.min(INT_MAX, Math.max(0, Math.round(value)))
+
+/**
+ * 一轮的用量 → `agent_run` 的列。费用从美元换成整数的微美元（理由见实体的注释），舍入只在合计上做这一次
+ */
+export function usageColumns(usage: AgentRunUsage) {
+  return {
+    inputTokens: storedInt(usage.inputTokens),
+    outputTokens: storedInt(usage.outputTokens),
+    cacheReadTokens: storedInt(usage.cacheReadTokens),
+    cacheWriteTokens: storedInt(usage.cacheWriteTokens),
+    costMicroUsd: usage.costUsd === null ? null : storedInt(usage.costUsd * 1_000_000),
+  }
+}
+
 /**
  * 运行日志。调用方（编排层）对这里抛出的错误一律 fail open，所以这里不吞错：
  * 吞了，console 里就看不到日志没写进去。
@@ -173,6 +192,12 @@ export const agentRunLog: AgentRunLog = {
       error: null,
       toolCallCount: 0,
       model: run.model,
+      // 用量收尾时才写：停在 running 的行（进程被硬杀）就是「没记」
+      inputTokens: null,
+      outputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costMicroUsd: null,
       startedAt: new Date(run.startedAt),
       finishedAt: null,
     })
@@ -210,12 +235,24 @@ export const agentRunLog: AgentRunLog = {
         error: run.error,
         toolCallCount: run.toolCallCount,
         model: run.model,
+        ...usageColumns(run.usage),
         startedAt: new Date(run.startedAt),
         finishedAt: new Date(run.finishedAt),
       },
       {
         onConflictFields: ['id'],
-        onConflictMergeFields: ['grantId', 'status', 'error', 'toolCallCount', 'finishedAt'],
+        onConflictMergeFields: [
+          'grantId',
+          'status',
+          'error',
+          'toolCallCount',
+          'inputTokens',
+          'outputTokens',
+          'cacheReadTokens',
+          'cacheWriteTokens',
+          'costMicroUsd',
+          'finishedAt',
+        ],
       },
     )
   },
