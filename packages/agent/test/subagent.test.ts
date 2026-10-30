@@ -23,6 +23,7 @@ import type { SandboxDriver, SandboxSpec } from '../src/sandbox/driver.ts'
 import { createAgentRuntime, type AgentRuntimeOptions, type OpenedCanvas } from '../src/session.ts'
 import { createMemoryConversationStore, createMemoryRunLog } from '../src/store.ts'
 import { gatewayFetch, registerScriptedModel, TEST_GATEWAY_URL, type ScriptedStep } from '../src/testing.ts'
+import { TOOL_CALL_UNBOUND } from '../src/transcript.ts'
 
 /**
  * 子 agent（docs/20 §3.10.11，F19，验收 16 / 21 / 22）：走完整的二期路径（进程内 runner → 网关 → 编排层 → 脚本化上游）。
@@ -360,7 +361,8 @@ describe('只有一层：子 agent 不能再派（验收 21）', () => {
     expect(subTurn.tools).not.toContain('delegate_task')
     expect(forged.delegate).toMatchObject({ ok: false, message: expect.stringContaining('只有一层') })
     expect(forged.tool).toMatchObject({ isError: true, message: 'Tool delegate_task not found' })
-    expect(forged.load).toMatchObject({ isError: true, message: expect.stringContaining('只有一层') })
+    // load_skill('delegate') 以前到 loadSkill 才被「只有一层」拒；第 2 步起它先得对上子 agent 回复里的一次调用 —— 伪造的对不上
+    expect(forged.load).toMatchObject({ isError: true, message: TOOL_CALL_UNBOUND })
     // 只派出了父 agent 的那一个
     expect(finished(run.events).result.subtasks).toHaveLength(1)
   })

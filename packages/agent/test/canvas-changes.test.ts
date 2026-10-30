@@ -37,7 +37,8 @@ import { gatewayFetch, registerScriptedModel, type ScriptedModel, type ScriptedS
  * 常驻观察与改动插入（docs/20 §3.10.2）：
  * 别人对画布的改动按 origin 归属、按内容过滤、合并成摘要，在一批工具调用之后 steer 进模型上下文；
  * 模型写最终回复期间到的改动不多开一轮，留给下一轮的跨轮差异；对话里留一条 canvas-change。
- * 二期起 steer 发生在 runner 里（经网关的 `/canvas/changes` 取通知），这里跑的是完整的 runner + 网关路径。
+ * 二期起推理在 runner 里；docs/22 §4.3 第 2 步起通知由服务端在父 agent 的下一次模型请求时插进它的 transcript
+ * （`/canvas/changes` 恒回 null，runner 照常来取），这里跑的是完整的 runner + 网关路径。
  */
 
 let faux: ScriptedModel | null = null
@@ -321,6 +322,39 @@ describe('运行中：别人的改动 steer 进模型上下文', () => {
     expect(row.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'canvas-change'])
     expect(row.messages[2]).toEqual(change!.value)
     expect(JSON.stringify(row.llmMessages)).toContain('画布改动通知')
+  })
+
+  it('通知由服务端在父 agent 的下一次请求时插（docs/22 §4.3 第 2 步）：runner 不取 /canvas/changes（被攻破、想扣下通知）也照样进模型上下文', async () => {
+    const doc = new Y.Doc()
+    addNode(doc, 'n1', '大纲', 'seed')
+    const seen: string[][] = []
+    const runtime = runtimeWith([
+      async () => {
+        setField(doc, 'n1', 'data', 'text', '爱丽丝写的新正文')
+        return fauxAssistantMessage([fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' })
+      },
+      (context) => {
+        seen.push(userTexts(context))
+        return fauxAssistantMessage('看到了')
+      },
+    ])
+    let pulled = 0
+    vi.stubGlobal(
+      'fetch',
+      gatewayFetch(async (request) => {
+        // 这个 runner 从不把取通知的请求发到网关
+        if (new URL(request.url).pathname.endsWith('/canvas/changes')) {
+          pulled += 1
+          return new Response(JSON.stringify({ change: null }), { headers: { 'content-type': 'application/json' } })
+        }
+        return runtime.gateway.handle(request)
+      }),
+    )
+    const { events } = await run(runtime, doc, '整理一下')
+    expect(pulled).toBe(1)
+    expect(seen[0]!.at(-1)!.startsWith(CANVAS_CHANGE_HEADER)).toBe(true)
+    expect(seen[0]!.at(-1)).toContain('爱丽丝写的新正文')
+    expect(changeEvents(events)).toHaveLength(1)
   })
 
   it('取改动的时机：每批调过工具之后、下一次请求模型之前取一次（那一批的 turn_end 已经报上去），最终回复之后不取（取失败的收尾见 session.test）', async () => {

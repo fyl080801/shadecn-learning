@@ -164,6 +164,9 @@ export const LOAD_SKILL_TOOL_NAME = 'load_skill'
 export const REQUEST_CONFIRMATION_TOOL_NAME = 'request_confirmation'
 
 /** 同一批里还有别的工具调用时，runner 拦下 load_skill 回给模型的原因 */
+/** 工具调用次数到顶时给模型的话（runner 的 `beforeToolCall` 拦下时用，服务端代算 runner 侧的拒绝时用同一句，docs/22 §4.3） */
+export const toolCallLimitReason = (max: number) => `本轮工具调用已达上限 ${max} 次，请停止并向用户说明进度`
+
 export const LOAD_SKILL_ALONE_REASON = 'load_skill 必须单独调用：这一批里还有别的工具调用，已拦下这次加载。请先让别的工具做完，再单独调用 load_skill'
 
 const loadSkillParams = Type.Object(

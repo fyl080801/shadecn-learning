@@ -38,6 +38,7 @@ import {
   type ScriptedStep,
 } from '../src/testing.ts'
 import type { CanvasTool } from '../src/tools.ts'
+import { TOOL_CALL_UNBOUND } from '../src/transcript.ts'
 
 /**
  * 内置技能（docs/23）走完整的二期路径：scripted model + 进程内驱动（runner 就在本进程，照样只经网关协议说话）。
@@ -560,7 +561,7 @@ describe('验收 4：load_skill 必须单独成批', () => {
 })
 
 describe('验收 5：伪造的 runner', () => {
-  it('直接请求网关执行没加载的技能里的工具 → 拒绝，画布不变；不提供的工具不存在；已加载（提及触发）的照常执行', async () => {
+  it('直接请求网关执行没加载的技能里的工具 → 拒绝，画布不变；不提供的工具不存在；已加载（提及触发）的也不执行 —— 模型没要过这次调用', async () => {
     const replies: { name: string; reply: unknown }[] = []
     /** 一个「被攻破」的 runner：不跑 pi，拿到令牌就直接点名工具 */
     const forged: SandboxDriver = {
@@ -594,8 +595,9 @@ describe('验收 5：伪造的 runner', () => {
     expect((replies[0]!.reply as { message: string }).message).toContain('未加载')
     // 脚本技能这一轮不提供（没开沙箱执行）：对网关来说就是不存在的工具
     expect(replies[1]!.reply).toMatchObject({ isError: true, message: 'Tool run_scene_script not found' })
-    // 已加载（auto）的技能里的工具照常执行
-    expect(replies[2]!.reply).toMatchObject({ isError: false })
+    // 已加载（auto）的技能里的工具：以前照常执行；第 2 步起它必须对得上服务端回复里的一次调用（docs/22 §4.3「工具调用」），
+    // 这个 runner 没请求过模型，所以同样被拒、画布不变
+    expect(replies[2]!.reply).toMatchObject({ isError: true, message: TOOL_CALL_UNBOUND })
     expect(doc.getMap('stamps').size).toBe(0)
     expect([...nodesMap(doc).keys()]).toEqual(['n_dir'])
     expect(Y.encodeStateAsUpdate(doc)).toEqual(before)

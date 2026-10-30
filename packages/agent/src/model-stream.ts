@@ -67,14 +67,26 @@ export function outputTokenLimit(model: Model<Api>, configured?: number): number
  */
 export const MAX_TOOL_ARGUMENT_CHARS = 2 * TOOL_LIMITS.dataBytes
 
+/** 参数过长被掐断时给模型的话（作为那次调用的工具错误结果，这一轮继续） */
 export const TOOL_ARGUMENTS_TOO_LONG = (name: string, limit: number) =>
-  `模型输出的工具调用参数过长（${name || '未知工具'} 超过 ${limit} 字），服务端已掐断这次请求；请把内容拆成多次较小的调用`
+  `模型输出的工具调用参数过长（${name || '未知工具'} 超过 ${limit} 字），服务端已掐断这次回复，这次调用没有执行；请把内容拆成多次较小的调用`
+
+/**
+ * 一次模型请求的定稿（记进服务端 transcript 的那一份，docs/22 §4.3 第 2 步）：调用 id 已补齐（和下发给 runner 的一致）、
+ * 调用块上的原始参数文本已去掉。`cut` = 参数过长被掐断的调用（id → 给模型的话），runner 执行不了它们，结果由服务端给
+ */
+export interface ModelTurnResult {
+  message: AssistantMessage
+  cut: ReadonlyMap<string, string>
+}
 
 export interface ProxyFrameOptions {
   /** 参数累计超过这么多字就掐断；不给用 {@link MAX_TOOL_ARGUMENT_CHARS} */
   maxToolArgumentChars?: number
-  /** 参数过长：调用方据此 abort 上游请求（之后 pi-ai 以 aborted 收尾，这里换成「参数过长」的 error 帧） */
+  /** 参数过长：调用方据此 abort 上游请求（之后 pi-ai 以 aborted 收尾，这里把这条回复收成「调用了工具」，被掐断的调用不带参数） */
   onArgumentsTooLong(name: string, chars: number): void
+  /** 终止帧发出**之前**调：这条回复的定稿（runner 拿到终止帧就可能来执行工具，transcript 必须先记好） */
+  onResult?(result: ModelTurnResult): void
   /** 补调用 id；不给用 `createId('call')` */
   mintId?: () => string
 }
@@ -90,10 +102,18 @@ const EMPTY_USAGE: Usage = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 }
 
+const NO_CUT: ReadonlyMap<string, string> = new Map()
+
 /** 定稿的调用块：去掉 pi-ai 流式解析留下的原始参数文本（失败的流里会留着），只发可序列化的定义 */
 function finalToolCall(call: ToolCall): ToolCall {
   const { partialJson: _json, partialArgs: _args, ...rest } = call as ToolCall & { partialJson?: unknown; partialArgs?: unknown }
   return rest
+}
+
+/** 下发过的一个内容块：还开着（start 发了、end 没发）/ 关了；调用块记下发给 runner 的 id */
+interface ForwardedBlock {
+  open: boolean
+  id?: string
 }
 
 /**
@@ -101,27 +121,77 @@ function finalToolCall(call: ToolCall): ToolCall {
  *
  * - **`toolcall_delta` 不转发**：`streamProxy` 在 `toolcall_start` 建空的调用块、`toolcall_end` 整个覆盖，runner 拿到的定稿一样；
  *   转发的话 runner 那边的 `streamProxy` 也要每个增量整段解析一次（#9265）。服务端只数它们的长度；
- * - **调用 id 在这里补齐**：上游没给（pi-ai 填空串）或同一条回复里重复的，`toolcall_end` 时就地换一个新的，随帧交给 runner
- *   （runner 执行、上报、放进上下文的都是这一个）；
- * - 参数过长：通知调用方掐断上游，之后只发一帧 `error`（原因写明），不再转发别的。
+ * - **调用 id 在这里补齐**：上游没给（pi-ai 填空串）或同一条回复里重复的，`toolcall_end` 时换一个新的，随帧交给 runner
+ *   （runner 执行、上报的和服务端 transcript 里记的都是这一个）；
+ * - **参数过长**：通知调用方掐断上游；等 pi-ai 收尾后把这条回复收成「调用了工具」—— 还开着的块补上结束帧，
+ *   被掐断的调用（及同时还没收完的调用）以空参数下发、记进 `cut`，其后才开始的块不下发也不记；终止帧是 `done { reason: 'toolUse' }`。
+ *   runner 照常「执行」它们（参数过不了 schema 就本地报错；过得了的到网关被拒），服务端在下一次请求时把「参数过长」作为工具错误结果交给模型，
+ *   这一轮继续（docs/22 §4.3「#9265」对策 ②）。
  */
 export async function* proxyFramesOf(stream: AssistantMessageEventStream, options: ProxyFrameOptions): AsyncGenerator<ProxyAssistantMessageEvent> {
   const limit = options.maxToolArgumentChars ?? MAX_TOOL_ARGUMENT_CHARS
   const mint = options.mintId ?? (() => createId('call'))
   const argumentChars = new Map<number, number>()
   const seenIds = new Set<string>()
+  const forwarded = new Map<number, ForwardedBlock>()
   let tooLong: { name: string; chars: number } | null = null
   let terminal = false
+
+  /** 调用 id：空的、这条回复里已经用过的换一个 */
+  const idFor = (raw: string) => {
+    const id = !raw || seenIds.has(raw) ? mint() : raw
+    seenIds.add(id)
+    return id
+  }
+
+  /** 正常收尾的定稿：调用块换成下发过的 id、去掉原始参数文本；没下发过的块（不该有）原样留着 */
+  const settled = (message: AssistantMessage): AssistantMessage => ({
+    ...message,
+    content: message.content.map((part, index) => {
+      if (part.type !== 'toolCall') return part
+      const id = forwarded.get(index)?.id
+      return { ...finalToolCall(part), ...(id !== undefined ? { id } : {}) }
+    }),
+  })
 
   for await (const event of stream) {
     if (terminal) break
     if (tooLong) {
-      // 已经掐断：等 pi-ai 收尾，中间的一概不发；收尾时换成「参数过长」
-      if (event.type === 'done' || event.type === 'error') {
-        terminal = true
-        const usage = event.type === 'done' ? event.message.usage : event.error.usage
-        yield { type: 'error', reason: 'error', errorMessage: TOOL_ARGUMENTS_TOO_LONG(tooLong.name, limit), usage: usage ?? EMPTY_USAGE }
+      // 已经掐断：等 pi-ai 收尾，中间的一概不发；收尾时把下发过的块收好，以「调用了工具」结束
+      if (event.type !== 'done' && event.type !== 'error') continue
+      terminal = true
+      const source = event.type === 'done' ? event.message : event.error
+      const usage = source.usage ?? EMPTY_USAGE
+      const reason = TOOL_ARGUMENTS_TOO_LONG(tooLong.name, limit)
+      const cut = new Map<string, string>()
+      const closing: ProxyAssistantMessageEvent[] = []
+      const content: AssistantMessage['content'] = []
+      for (const index of [...forwarded.keys()].sort((a, b) => a - b)) {
+        const block = forwarded.get(index)!
+        const part = source.content[index]
+        if (!part) continue
+        if (part.type === 'toolCall') {
+          if (!block.open) {
+            content.push({ ...finalToolCall(part), ...(block.id !== undefined ? { id: block.id } : {}) })
+            continue
+          }
+          const call: ToolCall = { type: 'toolCall', id: idFor(part.id), name: part.name, arguments: {} }
+          cut.set(call.id, reason)
+          closing.push({ type: 'toolcall_end', contentIndex: index, toolCall: call })
+          content.push(call)
+          continue
+        }
+        if (block.open) {
+          closing.push(part.type === 'text' ? { type: 'text_end', contentIndex: index } : { type: 'thinking_end', contentIndex: index })
+        }
+        content.push(part)
       }
+      const message: AssistantMessage = { ...source, content, stopReason: 'toolUse', usage }
+      // 被掐断时 pi-ai 以 aborted 收尾、带着原因；这条回复按「调用了工具」收，不带它
+      delete message.errorMessage
+      options.onResult?.({ message, cut })
+      yield* closing
+      yield { type: 'done', reason: 'toolUse', usage }
       continue
     }
     switch (event.type) {
@@ -129,30 +199,35 @@ export async function* proxyFramesOf(stream: AssistantMessageEventStream, option
         yield { type: 'start' }
         break
       case 'text_start':
+        forwarded.set(event.contentIndex, { open: true })
         yield { type: 'text_start', contentIndex: event.contentIndex }
         break
       case 'text_delta':
         yield { type: 'text_delta', contentIndex: event.contentIndex, delta: event.delta }
         break
       case 'text_end': {
+        forwarded.set(event.contentIndex, { open: false })
         const block = event.partial.content[event.contentIndex]
         const signature = block?.type === 'text' ? block.textSignature : undefined
         yield { type: 'text_end', contentIndex: event.contentIndex, ...(signature !== undefined ? { contentSignature: signature } : {}) }
         break
       }
       case 'thinking_start':
+        forwarded.set(event.contentIndex, { open: true })
         yield { type: 'thinking_start', contentIndex: event.contentIndex }
         break
       case 'thinking_delta':
         yield { type: 'thinking_delta', contentIndex: event.contentIndex, delta: event.delta }
         break
       case 'thinking_end': {
+        forwarded.set(event.contentIndex, { open: false })
         const block = event.partial.content[event.contentIndex]
         const signature = block?.type === 'thinking' ? block.thinkingSignature : undefined
         yield { type: 'thinking_end', contentIndex: event.contentIndex, ...(signature !== undefined ? { contentSignature: signature } : {}) }
         break
       }
       case 'toolcall_start': {
+        forwarded.set(event.contentIndex, { open: true })
         const block = event.partial.content[event.contentIndex]
         const call = block?.type === 'toolCall' ? block : null
         yield { type: 'toolcall_start', contentIndex: event.contentIndex, id: call?.id ?? '', toolName: call?.name ?? '' }
@@ -169,25 +244,28 @@ export async function* proxyFramesOf(stream: AssistantMessageEventStream, option
         break
       }
       case 'toolcall_end': {
-        const call = event.toolCall
-        if (!call.id || seenIds.has(call.id)) call.id = mint()
-        seenIds.add(call.id)
-        yield { type: 'toolcall_end', contentIndex: event.contentIndex, toolCall: finalToolCall(call) }
+        const call = { ...finalToolCall(event.toolCall), id: idFor(event.toolCall.id) }
+        forwarded.set(event.contentIndex, { open: false, id: call.id })
+        yield { type: 'toolcall_end', contentIndex: event.contentIndex, toolCall: call }
         break
       }
       case 'done': {
         terminal = true
         // 我们从不要延迟响应（`deferred`），`streamProxy` 也不认它：当成出错
         if (event.reason === 'deferred') {
-          yield { type: 'error', reason: 'error', errorMessage: '上游返回了延迟响应（不支持）', usage: event.message.usage }
+          const errorMessage = '上游返回了延迟响应（不支持）'
+          options.onResult?.({ message: { ...settled(event.message), stopReason: 'error', errorMessage }, cut: NO_CUT })
+          yield { type: 'error', reason: 'error', errorMessage, usage: event.message.usage }
           break
         }
+        options.onResult?.({ message: settled(event.message), cut: NO_CUT })
         const level = event.message.providerThinkingLevel
         yield { type: 'done', reason: event.reason, usage: event.message.usage, ...(level !== undefined ? { providerThinkingLevel: level } : {}) }
         break
       }
       case 'error': {
         terminal = true
+        options.onResult?.({ message: settled(event.error), cut: NO_CUT })
         const level = event.error.providerThinkingLevel
         yield {
           type: 'error',

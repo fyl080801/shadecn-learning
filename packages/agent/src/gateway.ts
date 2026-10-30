@@ -1,8 +1,8 @@
 import type { ProxyAssistantMessageEvent } from '@earendil-works/pi-agent-core'
-import { normalizeContext, type Api, type AssistantMessage, type Model } from '@earendil-works/pi-ai'
+import type { Api, AssistantMessage, Model, TranscriptContext } from '@earendil-works/pi-ai'
 import { isRunAuthorityError } from './authority.ts'
 import { BUILD_ID, buildsDiffer } from './build-id.ts'
-import { AGENT_CLIENT_IDENTITY, outputTokenLimit, proxyFramesOf, streamUpstream } from './model-stream.ts'
+import { AGENT_CLIENT_IDENTITY, outputTokenLimit, proxyFramesOf, streamUpstream, type ModelTurnResult } from './model-stream.ts'
 import {
   AGENT_GATEWAY_PATH,
   GATEWAY_ROUTES,
@@ -64,7 +64,8 @@ import {
  * ## 服务端调用模型（docs/22 §4.3）
  *
  * runner 的 `streamFn` 是 pi 的 `streamProxy`：`POST /model/<agentId>/api/stream`，`Authorization: Bearer <run 短令牌>`，
- * 请求体 `{ model, context, options }`。这里**只取 `context.messages`**（第 1 步上下文仍是 runner 送的，只校验形状与大小）；
+ * 请求体 `{ model, context, options }`：**一个字段都不用**（只校验大小与形状；第 4 步起 runner 只送空的上下文）。
+ * 上下文是编排层给的、服务端维护的 transcript（{@link ModelRequestDecision} 的 `context`，docs/22 §4.3 第 2 步）；
  * 模型是服务端解析的那个，`maxTokens`（有上限）、重试、`sessionId`、`identity`、请求头都由服务端定，runner 送的 `model` / `options` 一概不看。
  * 服务端带真实 key 用 pi-ai 的 `streamSimple` 调上游（`model-stream.ts`），把事件流换成 `ProxyAssistantMessageEvent` 以 SSE 下发。
  *
@@ -81,7 +82,7 @@ const STOPPED_MESSAGE = '这一轮已经停止，模型请求已取消'
 
 /** 请求体上限：事件一批、工具参数都远到不了 */
 const BODY_LIMIT = 4 * 1024 * 1024
-/** 模型请求：第 1 步 runner 仍送整段上下文（120 条消息 × 工具结果，含图片），给足余量；第 4 步只送空的之后降下来 */
+/** 模型请求：runner 仍送整段上下文（不用，只校验；120 条消息 × 工具结果，含图片），给足余量；第 4 步只送空的之后降下来 */
 const MODEL_BODY_LIMIT = 32 * 1024 * 1024
 
 /** 上游请求重试（pi-ai 的 `retryProviderRequest` 只重试建立请求那一段，退避可被中止打断）：默认同 SDK */
@@ -90,12 +91,14 @@ const DEFAULT_MAX_RETRY_DELAY_MS = 60_000
 
 /**
  * 编排层对一次模型请求的判定（{@link GatewayRunHandlers.modelRequest}）：
- * - `stream`：放行，调上游；结束（或断开）时网关调一次 `release`（释放这个 agent 的在途名额）；
+ * - `stream`：放行，用 `context`（服务端的 transcript，runner 送的上下文不用）调上游；终止帧发给 runner **之前**调一次 `release`，
+ *   交回这条回复的定稿（编排层记进 transcript、释放这个 agent 的在途名额 —— runner 拿到终止帧就可能来执行工具）；
+ *   拿不到定稿（不该发生）给 null；
  * - `refuse`：开流之前拒绝（`{ error }` + 状态码），不调上游；
  * - `fail`：开流、只发一帧 `error`（如子 agent 步数用完），不调上游。
  */
 export type ModelRequestDecision =
-  | { kind: 'stream'; sessionId: string; step: number; release(): void }
+  | { kind: 'stream'; sessionId: string; step: number; context: TranscriptContext; release(result: ModelTurnResult | null): void }
   | { kind: 'refuse'; status: number; message: string }
   | { kind: 'fail'; message: string }
 
@@ -421,11 +424,12 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
         })
       }
       if (entry.closed) {
-        decision.release()
+        decision.release(null)
         return modelError(401, UNAUTHORIZED_MESSAGE)
       }
       handedOff = true
-      return serveModel(request, entry, upstream, agentId, body.messages, decision, end)
+      // body.messages 只校验过形状：上下文用编排层给的服务端 transcript（docs/22 §4.3 第 2 步）
+      return serveModel(request, entry, upstream, agentId, decision, end)
     } finally {
       if (!handedOff) end()
     }
@@ -436,7 +440,6 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
     entry: Entry,
     upstream: ModelUpstream,
     agentId: string,
-    messages: Parameters<typeof normalizeContext>[0]['messages'],
     decision: Extract<ModelRequestDecision, { kind: 'stream' }>,
     end: () => void,
   ): Response {
@@ -445,11 +448,33 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
     const cutoff = new AbortController()
     const signal = AbortSignal.any([entry.registration.signal, request.signal, cutoff.signal])
     const stopped = () => entry.closed || entry.registration.signal.aborted
+    /** 交回定稿（只一次）：终止帧写出去之前 */
+    let settled = false
+    const settle = (result: ModelTurnResult | null) => {
+      if (settled) return
+      settled = true
+      decision.release(result)
+    }
+    /** 没有定稿时（上游流抛错 / 没给终止事件）按终止帧补一条出错的回复 */
+    const failedReply = (frame: ProxyAssistantMessageEvent): ModelTurnResult => ({
+      message: {
+        role: 'assistant',
+        content: [],
+        api: upstream.model.api,
+        provider: upstream.model.provider,
+        model: upstream.model.id,
+        usage: frame.type === 'error' ? frame.usage : ZERO_USAGE,
+        stopReason: frame.type === 'error' ? frame.reason : 'error',
+        ...(frame.type === 'error' && frame.errorMessage !== undefined ? { errorMessage: frame.errorMessage } : {}),
+        timestamp: now(),
+      },
+      cut: new Map(),
+    })
     let ended = false
     const finish = (terminal: ProxyAssistantMessageEvent | null) => {
       if (ended) return
       ended = true
-      decision.release()
+      settle(null)
       end()
       const usage = terminal && (terminal.type === 'done' || terminal.type === 'error') ? terminal.usage : ZERO_USAGE
       const outcome = terminal?.type === 'done' ? terminal.reason : terminal?.type === 'error' ? terminal.reason : 'disconnected'
@@ -474,8 +499,9 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
         }
         void (async () => {
           let terminal: ProxyAssistantMessageEvent | null = null
+          let reported: ModelTurnResult | null = null
           try {
-            const stream = streamUpstream(upstream.model, normalizeContext({ messages }), {
+            const stream = streamUpstream(upstream.model, decision.context, {
               apiKey: upstream.apiKey,
               signal,
               maxTokens: outputTokenLimit(upstream.model, options.maxOutputTokens),
@@ -491,12 +517,19 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
                 console.warn(`[agent-gateway] run=${runId} agent=${agentId} 工具 ${name || '?'} 的参数已累计 ${chars} 字，掐断这次模型请求`)
                 cutoff.abort()
               },
+              onResult(result) {
+                reported = result
+              },
             })
             for await (const frame of frames) {
               // 这一轮被叫停：pi-ai 以 aborted 收尾，原因换成我们的
               const out: ProxyAssistantMessageEvent =
                 frame.type === 'error' && frame.reason === 'aborted' && stopped() ? { ...frame, errorMessage: STOPPED_MESSAGE } : frame
-              if (out.type === 'done' || out.type === 'error') terminal = out
+              if (out.type === 'done' || out.type === 'error') {
+                terminal = out
+                // 先记进 transcript，再让 runner 看到终止帧
+                settle((reported as ModelTurnResult | null) ?? failedReply(out))
+              }
               write(out)
             }
           } catch (err) {
@@ -507,11 +540,13 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
               errorMessage: stopped() ? STOPPED_MESSAGE : `模型请求失败：${err instanceof Error ? err.message : String(err)}`,
               usage: ZERO_USAGE,
             }
+            settle(failedReply(terminal))
             write(terminal)
           }
           if (!terminal) {
             // pi-ai 没给终止帧就结束了（不该发生）：补一帧，别让 runner 等一个不会来的结果
             terminal = { type: 'error', reason: 'error', errorMessage: '模型的响应流没有正常结束', usage: ZERO_USAGE }
+            settle(failedReply(terminal))
             write(terminal)
           }
           finish(terminal)

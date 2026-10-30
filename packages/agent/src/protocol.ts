@@ -25,7 +25,8 @@ import type { CanvasToolDetails } from './tools.ts'
  *    以 SSE 下发 `ProxyAssistantMessageEvent`，docs/22 §4.3）；画布工具走 `/canvas/tool`；
  *    pi 的事件裁成 {@link RunnerEvent} 分批 `/events` 上报（服务端经 `events.ts` 映射成 AG-UI —— 映射只在服务端）；
  *    **一批工具调用结束时**（`turn_end` 先把事件冲完；循环要接着请求模型时，pi 的 `prepareNextTurnWithContext` 里）
- *    `/canvas/changes` 取别人的改动通知，有就作为下一次请求前追加的消息交给 pi（docs/20 §3.10.2 的插入时机，规则在 runner 里执行）；
+ *    `/canvas/changes` 取别人的改动通知（docs/22 §4.3 第 2 步起恒回 null：通知由服务端在父 agent 的下一次模型请求时插进它的 transcript；
+ *    runner 照常来取，第 4 步删掉这条路由）；
  * 4. 事件冲完后 `/run/finish`，然后进程退出。
  *
  * ## 子 agent（docs/20 §3.10.11）
@@ -224,7 +225,8 @@ export type ToolCallResponse =
 // —— 别人的改动（下行） ——
 
 /**
- * `/canvas/changes` 的回复：服务端先把合并窗口里攒着的冲掉，排着的通知并成一条（docs/20 §3.10.2）。
+ * `/canvas/changes` 的回复。docs/22 §4.3 第 2 步起**恒为 `{ change: null }`**（通知改由服务端插进 transcript）；下面是这条路由原来的约定，
+ * 留给第 4 步删除之前的 runner：服务端先把合并窗口里攒着的冲掉，排着的通知并成一条（docs/20 §3.10.2）。
  * runner 拿 `text` 作为一条用户消息交给 pi（`prepareNextTurnWithContext` 返回的 `messages`）；pi 把它放进上下文时，上报的 `message_end` 带上 `steerId = id`，
  * 服务端那时才发 `agent.canvas-change`、记进对话。没交出去的那些留给跨轮差异。
  */
@@ -238,7 +240,7 @@ export interface CanvasChangesResponse {
  * pi 事件裁剪后的上报形状 —— **只有 `events.ts` 与编排层要读的字段**（同名同形，`events.ts` 直接吃）。
  * 最占地方的 `message_update.message`（每个 token 一份完整的半成品消息）不上报；思考内容、工具调用的增量也不报。
  * **图片块不上报**：`message_end` 的消息和 `tool_execution_end` 的结果里的图片换成文字占位（{@link slimMessage}）——
- * 服务端据此重建、落库的模型上下文因此不带 base64，前端的工具结果里也没有图片字节。
+ * 补发缓冲与前端的工具结果里因此没有图片字节（落库的模型上下文取服务端 transcript，落库前同样换成占位）。
  * 这只是裁剪，不是映射：pi → AG-UI 的映射**只在服务端的 `events.ts`**。
  */
 export type RunnerEvent = RunnerEventBody & {
@@ -248,7 +250,7 @@ export type RunnerEvent = RunnerEventBody & {
 
 export type RunnerEventBody =
   | { type: 'message_update'; assistantMessageEvent: { type: 'text_delta'; delta: string } | { type: 'text_end' } }
-  /** pi 往上下文里追加的每一条消息（用户提示、assistant 回复、工具结果、steer 进去的通知）；服务端据此重建模型上下文 */
+  /** pi 往上下文里追加的每一条消息（用户提示、assistant 回复、工具结果）；服务端只拿它映射界面事件（第 3 步之前），模型上下文是服务端的 transcript */
   | { type: 'message_end'; message: AgentMessage; steerId?: string }
   | { type: 'tool_execution_start'; toolCallId: string; toolName: string; args: unknown }
   | {
@@ -349,7 +351,7 @@ export interface ModelStreamErrorBody {
 
 /**
  * `streamProxy` 的请求体 `{ model, context, options }` 里服务端**唯一**还看的部分：`context.messages`
- * （第 1 步上下文仍取 runner 送来的，只校验形状与大小；`model` / `options` 一个字段都不用 —— 模型、参数、请求头由服务端定）
+ * （第 2 步起这一部分也只校验形状与大小、内容不用 —— 上下文是服务端维护的 transcript；`model` / `options` 一个字段都不用 —— 模型、参数、请求头由服务端定）
  */
 export interface ModelStreamRequest {
   messages: Message[]

@@ -1,10 +1,8 @@
 import type { AgentMessage } from '@earendil-works/pi-agent-core'
 import {
   isContextOverflow,
-  validateToolArguments,
   type Api,
   type AssistantMessage,
-  type JsonObject,
   type Message,
   type Model,
   type ToolCall,
@@ -56,12 +54,12 @@ import {
   type CanvasWatch,
   type NoticeLimits,
 } from './canvas-changes.ts'
-import { createRunEventMapper, type RunOutcome } from './events.ts'
+import { createRunEventMapper, TOOL_RESULT_CONTENT_LIMIT, type RunOutcome } from './events.ts'
 import { nodesMap } from '@shadecn/shared/flow-doc'
 import { createdNodeIds, dataWriteTargets, leaseAgentOf, type NodeLease, type NodeLeaseRegistry } from './occupancy.ts'
 import type { ConversationSlot, ReplayEntry, ReplayRecord, RunRecord, RunRegistry, StopCommand } from './run-registry.ts'
 import { createAgentGateway, type GatewayRun, type ModelRequestDecision } from './gateway.ts'
-import { isServedModelApi, SERVED_MODEL_APIS } from './model-stream.ts'
+import { isServedModelApi, SERVED_MODEL_APIS, type ModelTurnResult } from './model-stream.ts'
 import type { MediaReader } from './media.ts'
 import type { ResolvedAgentModel } from './model.ts'
 import {
@@ -91,10 +89,12 @@ import type { SandboxDriver, SandboxExit, SandboxHandle, SandboxResources } from
 import {
   BUILTIN_SKILLS,
   createLoadSkillTool,
+  createRequestConfirmationTool,
   DELEGATE_SKILL_ID,
   LOAD_SKILL_TOOL_NAME,
   NO_SANDBOX,
   REQUEST_CONFIRMATION_TOOL_NAME,
+  toolCallLimitReason,
   type AgentSkill,
   type SkillAvailability,
   type SkillContext,
@@ -109,6 +109,22 @@ import type {
   StoredConversationMeta,
 } from './store.ts'
 import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunState } from './tools.ts'
+import {
+  appendUserText,
+  bindCall,
+  closeBatch,
+  createTranscript,
+  declareTools,
+  gatewayResultRecord,
+  persistedMessages,
+  recordReply,
+  requestContext,
+  TOOL_INTERRUPTED,
+  toolErrorRecord,
+  type AgentTranscript,
+  type TranscriptCall,
+  type TranscriptTool,
+} from './transcript.ts'
 
 /**
  * 编排：会话、「一个会话同时只跑一轮」、把一轮 pi Agent 跑完。
@@ -191,7 +207,8 @@ import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunS
  *
  * - **事件**：runner 把 pi 事件裁成 `RunnerEvent` 上报，这里原样喂给 `events.ts` 的映射器 —— 映射只在服务端，
  *   所以 runner 被杀之后，收尾帧（关文字段、把还在转的工具标成「已中止」）和落库的 assistant 消息照样由这里补齐；
- * - **模型上下文**：由上报的 `message_end` 按顺序重建（= pi 的 `agent.state.messages`）；被杀时最后一批工具调用
+ * - **模型上下文**：服务端为每个 agent 维护一份权威 transcript（`transcript.ts`，docs/22 §4.3 第 2 步），模型请求只用它、
+ *   父 agent 的那份落库；runner 送来的上下文和上报的 `message_end` 都不进去。被杀时最后一批工具调用
  *   缺的结果补成「已中止」的错误结果，下一轮的上下文才合法；
  * - **工具调用日志**：画布工具以网关的执行记录为准（runner 在不可信区，它报的成败不算数）；
  *   只在 runner 里跑的媒体工具按它上报的记；
@@ -243,9 +260,9 @@ import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunS
  * 开画布时挂上常驻观察（`canvas-changes.ts` 的 {@link createCanvasWatch}）：
  * - 本轮自己的写入不报；别的轮次报成「某某 的 agent」，人报成他自己，认不出的报成「其他协作者」；
  * - 改动按 `changeWindowMs` 合并成一条通知，排队；**只在一批调过工具之后、下一次请求模型之前**
- *   由 runner 来取（`/canvas/changes`：先把窗口里攒着的冲掉，排着的并成一条），runner 在 pi 的 `prepareNextTurnWithContext` 里交给 pi ——
- *   模型正在写最终回复时到的改动不交出去（pi 那时不调这个钩子），留给跨轮差异；这条时机规则由 runner 执行；
- * - 那条消息真正进入模型上下文（runner 上报 pi 的 message_end，带着这条通知的 `steerId`）时，
+ *   由服务端插进父 agent 的 transcript（父 agent 的下一次模型请求进来、它正停在一批工具结果之后时：先把窗口里攒着的冲掉，排着的并成一条）——
+ *   模型写最终回复（没调工具）之后 runner 不会再请求，那时到的改动不插，留给跨轮差异；`/canvas/changes` 恒回 null；
+ * - 那条消息插进 transcript（这次请求就带着它）时，
  *   发 CUSTOM `agent.canvas-change`、记进对话记录；
  * - 收尾时存一份画布摘要（没交给模型的通知涉及的元素退回改动之前），下一轮开始时对比，
  *   有差异就把「自你上次运行以来画布的变化」放在这一轮的用户消息前面，并同样发一条通知。
@@ -706,12 +723,11 @@ function runnerModelOf(model: Model<Api>): RunnerModel {
 
 /**
  * 被杀时最后一批工具调用缺的结果：补成错误结果，下一轮的上下文才合法（各家 API 都拒「有调用没结果」）。
+ * 服务端 transcript 收尾时已经按调用补齐（`closeBatch(…, 'final')`，同一句 {@link TOOL_INTERRUPTED}），这里是落库前的兜底。
  * pi-ai 的 `transformMessages` 发请求前也会给孤立的工具调用补一条结果（所以只靠它模型那头也不会报错），
  * 这里仍然自己补：补的是**画布语义**的那句话（结果未知、需要时重读画布），而且落库的上下文、对话里的工具条目与下一轮
  * 实际发给模型的是同一份 —— 不依赖 pi-ai 在请求时临时补、库里却缺着。
  */
-const TOOL_INTERRUPTED = '这一轮在这次工具调用完成之前被停止，结果未知；需要时请重新读取画布确认'
-
 export function completeToolResults(messages: AgentMessage[]): AgentMessage[] {
   let index = messages.length - 1
   while (index >= 0 && messages[index]!.role !== 'assistant') index -= 1
@@ -783,8 +799,12 @@ const STALE_SUMMARIES = 3
  */
 interface RunAgent {
   id: string
-  /** 子 agent 的派发信息；父 agent 为 null */
-  sub: { toolCallId: string; brief: string; nodeIds: string[]; offered: Map<string, AgentSkill> } | null
+  /**
+   * 子 agent 的派发信息；父 agent 为 null。`bound` = 父 agent 那条回复里派出它的那次 `delegate_task`（交回时把服务端拼的结果记在它上面）
+   */
+  sub: { toolCallId: string; brief: string; nodeIds: string[]; offered: Map<string, AgentSkill>; bound: TranscriptCall } | null
+  /** 服务端维护的这个 agent 的 transcript（docs/22 §4.3 第 2 步）：模型请求只用它；父 agent 的那份落库。准备好之前为 null */
+  transcript: AgentTranscript | null
   /** 这个 agent 已加载的技能：网关只执行这些技能里的工具 */
   loadedSkills: Set<string>
   /** 这个 agent `load_skill` 成功的次数（每个 agent 各自不超过 `maxSkillLoads`） */
@@ -815,6 +835,7 @@ function newRunAgent(id: string, sub: RunAgent['sub']): RunAgent {
     finished: false,
     exhausted: false,
     changed: new Set(),
+    transcript: null,
   }
 }
 
@@ -1815,10 +1836,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     let canvas: OpenedCanvas | null = null
     let watch: CanvasWatch | null = null
     const noticeLimits: NoticeLimits = { maxItems: limits.changeItems, maxChars: limits.changeChars }
-    /** 合并好、还没交给 runner 的通知（按时间先后） */
+    /** 合并好、还没插进父 agent 的 transcript 的通知（按时间先后） */
     const queuedNotices: CanvasChangeNotice[] = []
-    /** 已经交给 runner（它再交给 pi）、等 pi 把它放进上下文的那条 → 它对应的通知与对话里的那条 */
-    const steered = new Map<string, { notice: CanvasChangeNotice; display: AgentCanvasChangeMessage }>()
     /** 对话记录里这一轮的通知：跨轮差异那条排在 assistant 之前，运行中的排在之后（和前端折叠的顺序一致） */
     let sinceLastRun: AgentCanvasChangeMessage | null = null
     /** 运行中插进对话的系统行：别人的改动通知、技能加载（按发生的先后，排在 assistant 消息之后） */
@@ -1837,8 +1856,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     /** 网关拒了 runner 的 bootstrap 兑换，因为协议版本对不上（镜像没重建）；没发生为 null */
     let protocolMismatch: { runnerVersion: number | null; serverVersion: number } | null = null
     let exitGrace: ReturnType<typeof setTimeout> | undefined
-    /** runner 上报的 message_end：pi 这一轮追加进上下文的全部消息，按顺序（重建模型上下文） */
-    const appended: AgentMessage[] = []
+    /**
+     * runner 的工具调用计数（父子共用），服务端照 runner 的口径代算（找得到工具、参数过了 schema 的才计，按回复定稿的先后）：
+     * 预判哪些调用会被 runner 以「已达上限」拦下（transcript.ts 的 `recordReply`）。网关自己的硬上限另是 `gatewayToolCalls`
+     */
+    let modelToolCalls = 0
     /** 网关代执行过、还没等到 runner 报结束的画布工具调用：toolCallId → 执行记录 */
     const executed = new Map<string, ExecutedCall>()
     /**
@@ -1973,10 +1995,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         attachments: conversationAttachments(chat),
       }
       const files: Record<string, string> = {}
+      /** 每个提供的技能的工具名（按定义的顺序）：服务端按「这个 agent 已加载的技能」造工具表（{@link definitionsOf}） */
+      const skillToolNames = new Map<string, string[]>()
       for (const skill of plan.offered) {
         offeredSkills.set(skill.id, skill)
+        const names: string[] = []
         // 网关工具执行之前判它声明的能力（executeTool，失权时整轮停）；runner 工具只留定义（不经网关、不判权，docs/22 §3）
-        for (const tool of skill.tools(skillContext)) tools.set(tool.name, tool)
+        for (const tool of skill.tools(skillContext)) {
+          tools.set(tool.name, tool)
+          names.push(tool.name)
+        }
+        skillToolNames.set(skill.id, names)
         // 初始化钩子：写进 runner 工作目录的文件（media-exec 的 canvas.json）
         if (skill.workdirFiles) Object.assign(files, await skill.workdirFiles({ canvas: opened }))
       }
@@ -2085,7 +2114,69 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         files,
       }
 
-      /** runner 的一次画布工具调用：网关在这里判权、校验参数、执行（一次调用一个 Y 事务） */
+      /** 子 agent 的「需要确认」：在 runner 里执行（结果取它上报的），这里只要定义 */
+      const confirmDefinition: TranscriptTool = { ...createRequestConfirmationTool(() => {}), execution: 'runner' }
+      /**
+       * 这个 agent 此刻的工具表（docs/22 §4.3「工具定义」）：`load_skill`（子 agent 再加 `request_confirmation`）+ 它已加载的技能的工具，
+       * 和 runner 里 pi 的工具表同一个顺序（一开始加载的在前，`load_skill` 加载的依次在后）；子 agent 没有 `delegate_task`。
+       * 和网关执行时的「已加载」检查同一个来源，runner 加不进、改不了描述
+       */
+      const definitionsOf = (agent: RunAgent): TranscriptTool[] => {
+        const list: TranscriptTool[] = [tools.get(LOAD_SKILL_TOOL_NAME)!]
+        if (agent.sub) list.push(confirmDefinition)
+        for (const id of agent.loadedSkills) {
+          if (agent.sub && id === DELEGATE_SKILL_ID) continue
+          for (const name of skillToolNames.get(id) ?? []) {
+            const tool = tools.get(name)
+            if (tool) list.push(tool)
+          }
+        }
+        return list
+      }
+      // 父 agent 的 transcript：服务端的系统提示 + 工具表、库里之前几轮的上下文、服务端拼的这一轮提示词
+      mainAgent.transcript = createTranscript(runnerInput.systemPrompt, definitionsOf(mainAgent), llmHistory, prompt)
+      const replyContext = { countCall: () => (modelToolCalls += 1), maxToolCalls: limits.maxToolCalls }
+
+      /** 把别人的改动插进父 agent 的 transcript（下一次请求之前）：先冲合并窗口，排着的并成一条用户消息，同时发 `agent.canvas-change` */
+      const insertNotice = async (transcript: AgentTranscript) => {
+        try {
+          await activeWatch.flush()
+        } catch (err) {
+          // 读不到画布（失权 / 连接没了）：这次不插，排着的留到下一次或跨轮差异
+          console.warn(`[agent] run=${run.runId} 冲画布改动的合并窗口失败，这次不插通知`, err)
+          return
+        }
+        if (run.stopped !== null || queuedNotices.length === 0) return
+        const merged = mergeNotices(queuedNotices.splice(0))
+        const rendered = merged ? renderNotice(merged, noticeLimits) : null
+        if (!rendered) return
+        appendUserText(transcript, rendered.modelText)
+        // 模型确实会看到它（它进了这次请求）：这时才记进对话
+        const display = canvasChangeMessage(rendered)
+        liveChanges.push(display)
+        send(mapper.canvasChange(display))
+      }
+
+      /**
+       * 服务端调模型拿到的定稿（终止帧发给 runner 之前，`model-stream.ts`）：记进这个 agent 的 transcript。
+       * 这一轮已被叫停时那段回复不进（与以前一致：叫停之后 runner 的上报一律 401）
+       */
+      const onReply = (agent: RunAgent, result: ModelTurnResult | null) => {
+        const transcript = agent.transcript
+        if (!transcript) return
+        if (!result || run.stopped !== null) {
+          transcript.open = false
+          transcript.pending = null
+          return
+        }
+        recordReply(transcript, result.message, result.cut, replyContext)
+      }
+
+      /**
+       * runner 的一次画布工具调用：先对上这个 agent 最近一条回复里还没有结果的那次调用（docs/22 §4.3「工具调用」：名字、参数以服务端那份为准），
+       * 再判权、执行（一次调用一个 Y 事务）。对上之后网关回给 runner 的每一个结果（成功、拒绝、出错）都记成那次调用的执行记录 ——
+       * transcript 里的工具结果就是它
+       */
       const executeTool = async (request: ToolCallRequest): Promise<ToolCallResponse> => {
         // 哪个 agent 调的：只认服务端分配过、还没结束的（runner 不可信，报来的 id 只用于这一轮内部的区分）
         const agent = agents.get(request.agentId ?? MAIN_AGENT_ID)
@@ -2108,23 +2199,23 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             message: `工具 ${tool.name} 未加载：它属于技能「${owner.title}」（${owner.id}），先单独调用 load_skill({ id: '${owner.id}' })`,
           }
         }
+        // 必须是模型要的：对上服务端回复里还没有结果的那次调用（runner 不能替模型做决定）。对不上的不记、不执行
+        const bound = agent.transcript
+          ? bindCall(agent.transcript, request.toolCallId, request.name, request.args ?? {})
+          : ({ ok: false, message: '这个 agent 还没有请求过模型，这次调用没有执行' } as const)
+        if (!bound.ok) return { isError: true, message: bound.message }
+        const response = await executeBound(agent, tool, request.toolCallId, bound.entry.args)
+        bound.entry.result = gatewayResultRecord(response)
+        return response
+      }
+
+      /** 对上了的一次调用：计数、判权、写入检查、执行。参数是服务端按同一份 schema 校验过的那份（`bindCall`） */
+      const executeBound = async (agent: RunAgent, tool: CanvasTool, toolCallId: string, args: unknown): Promise<ToolCallResponse> => {
         gatewayToolCalls += 1
         if (gatewayToolCalls > limits.maxToolCalls) {
-          return { isError: true, message: `本轮工具调用已达上限 ${limits.maxToolCalls} 次，请停止并向用户说明进度` }
+          return { isError: true, message: toolCallLimitReason(limits.maxToolCalls) }
         }
-        let args: unknown
-        try {
-          // runner 那边 pi 校验过一次，但它在不可信区：这里按同一份 schema 再校验，工具只吃校验过的参数
-          args = validateToolArguments(tool, {
-            type: 'toolCall',
-            id: request.toolCallId,
-            name: request.name,
-            arguments: (request.args ?? {}) as JsonObject,
-          })
-        } catch (err) {
-          return { isError: true, message: errorText(err) }
-        }
-        const key = callKey(agent.id, request.toolCallId)
+        const key = callKey(agent.id, toolCallId)
         const at = Date.now()
         const fail = (message: string): ToolCallResponse => {
           executed.set(key, {
@@ -2148,7 +2239,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           if (!guard.ok) return fail(guard.message)
           claimed = guard.claimed
           const readMark = dataSeq
-          const result = await tool.execute(request.toolCallId, args as never, runAbort.signal)
+          const result = await tool.execute(toolCallId, args as never, runAbort.signal)
           const details = result.details
           const elementIds = Array.isArray(details?.elementIds)
             ? details.elementIds.filter((id): id is string => typeof id === 'string')
@@ -2319,16 +2410,36 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           return refuse('没有对应的 delegate_task 调用，没有派出子任务')
         }
         if (delegatedCalls.has(request.toolCallId)) return refuse('这次 delegate_task 已经派过子任务了')
+        /*
+         * 必须对得上父 agent 最近一条回复里还没有结果的那次 delegate_task（docs/22 §4.3「工具调用」）：任务说明、节点以服务端那份为准，
+         * runner 送的只用来核对。对上之后的拒绝都记成那次调用的结果（runner 把它原样交给 pi）
+         */
+        const entry = mainAgent.transcript?.pending?.get(request.toolCallId)
+        if (!entry || entry.call.name !== AGENT_DELEGATE_TOOL_NAME || entry.claimed || entry.result !== null) {
+          return refuse('没有对应的 delegate_task 调用，没有派出子任务')
+        }
+        if (entry.refused !== null) return refuse(entry.refused)
+        const args = entry.args as { brief: string; nodeIds?: string[] }
+        const brief = args.brief
+        const nodeIds = args.nodeIds ?? []
+        if (request.brief !== brief || request.nodeIds.length !== nodeIds.length || request.nodeIds.some((id, index) => id !== nodeIds[index])) {
+          return refuse('派发的任务说明或节点和模型回复里的那次 delegate_task 不一致，没有派出子任务')
+        }
+        entry.claimed = true
+        const refuseBound = (message: string): DelegateResponse => {
+          entry.result = toolErrorRecord(message)
+          return refuse(message)
+        }
         // delegate_task 本身也是一次工具调用：全轮共用的次数
         gatewayToolCalls += 1
         if (gatewayToolCalls > limits.maxToolCalls) {
-          return refuse(`本轮工具调用已达上限 ${limits.maxToolCalls} 次，没有派出子任务；请停止并向用户说明进度`)
+          return refuseBound(`本轮工具调用已达上限 ${limits.maxToolCalls} 次，没有派出子任务；请停止并向用户说明进度`)
         }
         if (run.activeSubagents >= limits.maxSubagents) {
-          return refuse(`同时最多 ${limits.maxSubagents} 个子任务在跑，这一个没有派出；等前面的做完再派，或自己做`)
+          return refuseBound(`同时最多 ${limits.maxSubagents} 个子任务在跑，这一个没有派出；等前面的做完再派，或自己做`)
         }
         if (delegatedTotal >= limits.maxSubagentsPerRun) {
-          return refuse(`这一轮已经派了 ${delegatedTotal} 个子任务，达到上限 ${limits.maxSubagentsPerRun}，不能再派；剩下的自己做，或向用户说明`)
+          return refuseBound(`这一轮已经派了 ${delegatedTotal} 个子任务，达到上限 ${limits.maxSubagentsPerRun}，不能再派；剩下的自己做，或向用户说明`)
         }
         /*
          * 同步占住名额（同一批并行的几个派发之间没有空子可钻）。**派发没成功就全部退回**（这次调用的登记、累计数、在跑数 + 计时、
@@ -2341,7 +2452,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         const id = createId('sub')
         let registered: RunAgent | null = null
         try {
-          const text = subagentBrief(request.brief, request.nodeIds)
+          const text = subagentBrief(brief, nodeIds)
           // 展开提及（= 它读过这些节点）、拿节点类型定自动加载的技能：经 canvas.read，照样重查权限
           const { types, prompt } = await opened.read((doc) => ({
             types: parseNodeMentions(text).flatMap((nodeId) => {
@@ -2363,18 +2474,21 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           })}\n\n${subagentPrompt({ maxTurns: limits.maxTurns, replyChars: limits.subagentReplyChars })}`
           const agent = newRunAgent(id, {
             toolCallId: request.toolCallId,
-            brief: request.brief,
-            nodeIds: request.nodeIds,
+            brief,
+            nodeIds,
             offered: subOffered,
+            bound: entry,
           })
           for (const skill of loaded) agent.loadedSkills.add(skill.id)
+          // 它自己的 transcript（不落库，交回后丢掉）：它的系统提示 + 工具表 + 服务端展开过提及的任务说明
+          agent.transcript = createTranscript(systemPrompt, definitionsOf(agent), [], prompt)
           agents.set(id, agent)
           registered = agent
           // 父 agent 正占着的节点，原子地转交给它（比较后写）；它结束时释放，不还给父 agent。登记表出错 = 这次没派成
-          await transferNodes(run, MAIN_AGENT_ID, id, request.nodeIds)
+          await transferNodes(run, MAIN_AGENT_ID, id, nodeIds)
           // 到这里才开条目（之后不会再失败）：派发失败的那次没有条目
           send(
-            mapper.subtaskStart({ id, toolCallId: request.toolCallId, brief: request.brief, nodeIds: request.nodeIds, startedAt: Date.now() }),
+            mapper.subtaskStart({ id, toolCallId: request.toolCallId, brief, nodeIds, startedAt: Date.now() }),
           )
           scheduleRunsChange(flowId)
           console.info(`[agent] run=${run.runId} 派出子任务 ${id}（同时 ${run.activeSubagents} 个，累计 ${delegatedTotal} 个）`)
@@ -2403,7 +2517,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           delegatedTotal -= 1
           run.activeSubagents = Math.max(0, run.activeSubagents - 1)
           if (run.activeSubagents === 0) resumeClock()
-          return refuse(`没有派出子任务：${errorText(err)}`)
+          return refuseBound(`没有派出子任务：${errorText(err)}`)
         }
       }
 
@@ -2429,6 +2543,21 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
          * 老镜像取的是最后一条 assistant（只调了工具 / 出错 / 被中止时为空），而且条目上显示的和交回父 agent 的必须是同一段
          */
         const reply = mapper.subtaskReply(agent.id)
+        const resultText = subagentResultText({
+          brief: agent.sub.brief,
+          status,
+          text: reply,
+          question,
+          error,
+          changed,
+          maxChars: limits.subagentReplyChars,
+        })
+        const summary = `子任务${SUBTASK_STATUS_LABEL[status]}：${clipText(agent.sub.brief.replace(/\s+/g, ' '), 40)}`
+        // 父 agent 那次 delegate_task 的结果就是这一段（runner 原样交给 pi；失败时它抛成错误结果）
+        agent.sub.bound.result =
+          status === 'failed'
+            ? toolErrorRecord(resultText)
+            : { content: [{ type: 'text', text: resultText }], details: { summary, elementIds: changed }, isError: false }
         send(
           mapper.subtaskFinish(agent.id, {
             status,
@@ -2437,20 +2566,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             changedNodeIds: changed,
           }),
         )
-        return {
-          isError: status === 'failed',
-          text: subagentResultText({
-            brief: agent.sub.brief,
-            status,
-            text: reply,
-            question,
-            error,
-            changed,
-            maxChars: limits.subagentReplyChars,
-          }),
-          summary: `子任务${SUBTASK_STATUS_LABEL[status]}：${clipText(agent.sub.brief.replace(/\s+/g, ' '), 40)}`,
-          changedNodeIds: changed,
-        }
+        return { isError: status === 'failed', text: resultText, summary, changedNodeIds: changed }
       }
 
       /** 父 agent 已经不等了（它进了下一步），子任务却没交回：不可能出自守规矩的 runner —— 服务端把它们收掉、标成失败 */
@@ -2470,26 +2586,29 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       }
 
       /**
-       * 一批调过工具之后、下一次请求模型之前（runner 在 pi 的 `prepareNextTurnWithContext` 里来取）：把窗口里攒着的先合并，
-       * 排着的通知并成**一条**交出去。叫停中的不交 —— 没有下一次请求了。
+       * `/canvas/changes`：**恒回 null**（docs/22 §4.3 第 2 步）。通知改由服务端在父 agent 的下一次模型请求进来时插进它的 transcript
+       * （{@link insertNotice}），runner 照常来取（老 / 现在的 runner 都调它）、拿不到也不出错；被攻破的 runner 也没法靠不取来扣下通知
        */
-      const takeChanges = async (): Promise<CanvasChangesResponse> => {
-        await activeWatch.flush()
-        if (run.stopped !== null || queuedNotices.length === 0) return { change: null }
-        const merged = mergeNotices(queuedNotices.splice(0))
-        const rendered = merged ? renderNotice(merged, noticeLimits) : null
-        if (!merged || !rendered) return { change: null }
-        const id = createId('chg')
-        steered.set(id, { notice: merged, display: canvasChangeMessage(rendered) })
-        return { change: { id, text: rendered.modelText } }
-      }
-      /** pi 把 steer 的那条放进上下文了：这时才发通知、记进对话（模型确实看到了） */
-      const deliverSteered = (id: string, out: AgentStreamEvent[]) => {
-        const entry = steered.get(id)
-        if (!entry) return
-        steered.delete(id)
-        liveChanges.push(entry.display)
-        out.push(...mapper.canvasChange(entry.display))
+      const takeChanges = async (): Promise<CanvasChangesResponse> => ({ change: null })
+
+      /**
+       * runner 执行的工具（`run_media_command`、子 agent 的 `request_confirmation`）的结果：transcript 里**唯一**取 runner 上报的
+       * （docs/22 §4.3）。只认服务端那条回复里确有、名字对得上、runner 本该执行的那次调用；只留文字（图片在上报时已换成占位）、限长
+       */
+      const noteLocalResult = (agent: RunAgent, event: Extract<RunnerEvent, { type: 'tool_execution_end' }>) => {
+        const entry = agent.transcript?.pending?.get(event.toolCallId)
+        if (!entry || !entry.local || entry.refused !== null || entry.result !== null) return
+        if (entry.call.name !== event.toolName || entry.call.name === AGENT_DELEGATE_TOOL_NAME) return
+        const content = Array.isArray(event.result.content) ? (event.result.content as { type?: unknown; text?: unknown }[]) : []
+        const text = content
+          .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+          .map((part) => part.text as string)
+          .join('\n')
+        entry.result = {
+          content: [{ type: 'text', text: clipText(text, TOOL_RESULT_CONTENT_LIMIT) }],
+          details: {},
+          isError: event.isError,
+        }
       }
 
       /**
@@ -2546,14 +2665,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           if (event.type === 'tool_execution_start') {
             startedCalls.set(callKey(agent.id, event.toolCallId), { name: event.toolName, args: event.args, at: Date.now() })
           }
+          if (event.type === 'tool_execution_end') noteLocalResult(agent, event)
           if (agent.sub) {
-            // 子 agent：它的事件只改它的子任务条目，不进父 agent 的上下文和 assistant 消息（步数在 modelRequest 里数）
+            // 子 agent：它的事件只改它的子任务条目，不进父 agent 的 assistant 消息（它的上下文是服务端的 transcript；步数在 modelRequest 里数）
             batch.push(...mapper.subtaskEvent(agent.id, event))
             if (event.type === 'tool_execution_end') logToolCall(event, agent)
             continue
           }
-          // turn_end 从此只用于界面：步数、「父 agent 进了下一步」都看它的下一次模型请求（modelRequest）
-          if (event.type === 'message_end') appended.push(event.message)
+          // 上报的事件只用于界面（第 3 步之前）：模型上下文是服务端的 transcript，message_end 不再进它；
+          // turn_end 也只用于界面：步数、「父 agent 进了下一步」都看它的下一次模型请求（modelRequest）
           const mapped = mapper.handle(event)
           if (event.type === 'tool_execution_end') {
             logToolCall(event, agent)
@@ -2561,24 +2681,30 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             delegatedCalls.delete(event.toolCallId)
           }
           batch.push(...mapped)
-          if (event.type === 'message_end' && event.steerId) deliverSteered(event.steerId, batch)
         }
         send(batch)
       }
 
       /**
-       * 一次模型请求（docs/22 §4.3「步数与请求上限」）：**一次请求 = 一步**，在这里按 agent 硬计数，不信上报的 turn_end。
+       * 一次模型请求（docs/22 §4.3「步数与请求上限」「权威 transcript」）：**一次请求 = 一步**，在这里按 agent 硬计数，不信上报的 turn_end；
+       * 发给上游的上下文是这个 agent 的服务端 transcript，runner 送来的一个字都不用。
        * - 只认服务端分配过、还没结束的 agent；同一个 agent 同时只能有一个在途请求（pi 的循环是串行的）；
+       * - 只有刚开始、或最近一条回复调了工具时才能再请求（最终回复 / 出错 / 中止之后再来 = runner 不守规矩，拒）；
        * - 父 agent 第 `maxTurns + 1` 次 → 不调上游，整轮以「超过本轮步数上限」停下；子 agent 超了 → 一帧 error、标成步数用完；
        * - 父 agent 的下一次请求 = 它进了下一步：它不在 delegate_task 里等了，还没交回的子任务收掉、在途的派发清空
-       *   （上游复用调用 id，下一步同 id 的 delegate_task 是新的一次）。
+       *   （上游复用调用 id，下一步同 id 的 delegate_task 是新的一次）；
+       * - 最近一条回复的调用按执行记录补齐结果（`closeBatch`），加载了技能就补一条 `toolsAdded`，父 agent 再插别人的改动通知（docs/20 §3.10.2 的时机）。
        * 被叫停、出错、runner 断开的请求同样算一步（请求已经发出去了）。
        */
-      const modelRequest = (agentId: string): ModelRequestDecision => {
+      const modelRequest = async (agentId: string): Promise<ModelRequestDecision> => {
         if (run.stopped !== null) return { kind: 'refuse', status: 401, message: '这一轮已经停止' }
         const agent = agents.get(agentId)
-        if (!agent || agent.finished) return { kind: 'refuse', status: 403, message: '没有这个 agent，或它已经结束' }
+        const transcript = agent?.transcript
+        if (!agent || agent.finished || !transcript) return { kind: 'refuse', status: 403, message: '没有这个 agent，或它已经结束' }
         if (agent.requesting) return { kind: 'refuse', status: 409, message: '这个 agent 已经有一个在途的模型请求' }
+        if (!transcript.open) {
+          return { kind: 'refuse', status: 409, message: '这个 agent 的上一条回复已经结束了它的这一段（最终回复、出错或中止），不能再请求模型' }
+        }
         agent.turns += 1
         if (!agent.sub) {
           if (agent.turns > limits.maxTurns) {
@@ -2593,16 +2719,32 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           }
         } else if (agent.turns > limits.maxTurns) {
           agent.exhausted = true
+          transcript.open = false
           return { kind: 'fail', message: `子任务的步数已达上限 ${limits.maxTurns}，这次请求没有发给模型` }
         }
+        // 先占住在途名额（下面插通知要 await）
         agent.requesting = true
+        if (transcript.pending) {
+          closeBatch(transcript, 'request')
+          declareTools(transcript, definitionsOf(agent))
+          if (!agent.sub) await insertNotice(transcript)
+        }
+        if (run.stopped !== null) {
+          agent.requesting = false
+          return { kind: 'refuse', status: 401, message: '这一轮已经停止' }
+        }
+        let released = false
         return {
           kind: 'stream',
           // 缓存键（docs/22 §4.3 已定第 5 条）：父 agent 用会话 id（前后几轮都能命中），子 agent 每个一份
           sessionId: agent.sub ? `${run.runId}:${agent.id}` : conversationId,
           step: agent.turns,
-          release: () => {
+          context: requestContext(transcript),
+          release: (result) => {
+            if (released) return
+            released = true
             agent.requesting = false
+            onReply(agent, result)
           },
         }
       }
@@ -2683,7 +2825,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       }
 
       const stopped = run.stopped
-      const received = completeToolResults(appended)
+      /*
+       * 落库的模型上下文 = 父 agent 的服务端 transcript 里这一轮的那段（docs/22 §4.3「落库」）：最后一批没结果的按执行记录补齐
+       * （没有记录的「结果未知」），去掉 system 消息、调用块上的原始参数文本，图片换占位；再按原来的规则补齐 / 裁剪。
+       * 一次模型请求都没发出去（runner 没起来、协议不对）就不留这一轮的用户消息 —— 模型没看到它
+       */
+      const mainTranscript = mainAgent.transcript as AgentTranscript | null
+      if (mainTranscript) closeBatch(mainTranscript, 'final')
+      const received = completeToolResults(mainTranscript && mainAgent.turns > 0 ? persistedMessages(mainTranscript) : [])
       // 跨轮的上下文按条数、也按 token 裁（余量规则见 llmHistoryTokenBudget）：固定部分 = 这一轮的系统提示 + 提供的全部工具定义
       const fixedTokens =
         estimateTextTokens(runnerInput.systemPrompt) +
@@ -2741,7 +2890,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     if (watch && canvas) {
       await watch.flush()
       watch.stop()
-      const undelivered = [...[...steered.values()].map((entry) => entry.notice), ...queuedNotices]
+      // 没插进父 agent 的 transcript 的那些（插进去 = 模型看到了）
+      const undelivered = [...queuedNotices]
       const opened = canvas
       try {
         closingCanvasDigest = await opened.read((doc) => closingDigest(doc, undelivered))

@@ -23,6 +23,7 @@ import {
   LOAD_SKILL_TOOL_NAME,
   REQUEST_CONFIRMATION_ALONE_REASON,
   REQUEST_CONFIRMATION_TOOL_NAME,
+  toolCallLimitReason,
   type SkillContext,
   type SkillRegistry,
 } from '../skills/index.ts'
@@ -62,7 +63,9 @@ export { GatewayUnauthorizedError, RunnerProtocolMismatchError } from './client.
  * ## 它守的规矩（与服务端在进程内跑 pi 时逐条相同）
  *
  * - 工具按模型给的顺序一个一个执行（除了 `delegate_task`，别的工具都是 `executionMode: 'sequential'`）；超过 `maxToolCalls` 的被拦下并告诉模型；
- * - **别人的改动只在 `prepareNextTurnWithContext` 里交**：pi 只在循环确实要再请求模型时调它（一批工具执行完之后；
+ * - （docs/22 §4.3 第 2 步起网关的 `/canvas/changes` 恒回 null：通知由服务端在父 agent 的下一次模型请求时插进**服务端的** transcript，
+ *   这里照旧去取、拿到 null 什么都不做 —— 下面是原来的约定，第 4 步删掉）
+ *   **别人的改动只在 `prepareNextTurnWithContext` 里交**：pi 只在循环确实要再请求模型时调它（一批工具执行完之后；
  *   最终回复没调工具、循环就此结束时不调），所以「写最终回复时不插通知、不为它多请求一次模型」是结构保证。
  *   `turn_end` 里先把事件冲完，钩子里再向网关要合并好的那一条通知，作为钩子返回的 `messages` 交给 pi
  *   （和新加载的工具在同一个钩子里：加载技能的那一批也照常交付）；没交出去的由服务端留给跨轮差异。
@@ -277,7 +280,7 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
         beforeToolCall: async ({ toolCall, assistantMessage }) => {
           toolCalls += 1
           if (toolCalls > input.limits.maxToolCalls) {
-            return { block: true, reason: `本轮工具调用已达上限 ${input.limits.maxToolCalls} 次，请停止并向用户说明进度` }
+            return { block: true, reason: toolCallLimitReason(input.limits.maxToolCalls) }
           }
           // 和别的工具同批的这两个拦下（别的照常执行）。load_skill：docs/23 S4 要它单独成批（同批的别的调用是模型读到技能说明之前定的）；
           // request_confirmation：pi 只在一批结果**全部** terminate 时提前结束
