@@ -9,7 +9,7 @@ import { useFlowEditor } from "@/composables/flow/editor-context"
 import type { AssetUploadList as AssetUploadListState } from "@/composables/useAssetUpload"
 import { cn } from "@/lib/utils"
 import FlowAgentMention from "./FlowAgentMention.vue"
-import { NODE_MENTION, appendMentions, nodeMentionIdOf, removeMentions, useNodeMentionMenu } from "./nodeMention"
+import { NODE_MENTION, nodeMentionIdOf, syncSelectionMentions, useNodeMentionMenu } from "./nodeMention"
 
 /**
  * 对话面板底部的输入区：附件 + PromptInput + 「提及节点」插件 + 发送 / 停止。
@@ -66,11 +66,7 @@ watch(
   () => [...canvas.selectedNodeIds.value],
   (next, previous) => {
     if (props.ignoreSelection) return
-    const before = new Set(previous)
-    const after = new Set(next)
-    const removed = previous.filter((id) => !after.has(id))
-    const added = next.filter((id) => !before.has(id))
-    draft.value = appendMentions(removeMentions(draft.value, removed), added)
+    draft.value = syncSelectionMentions(draft.value, next, previous)
   }
 )
 

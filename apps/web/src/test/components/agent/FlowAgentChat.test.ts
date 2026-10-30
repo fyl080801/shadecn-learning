@@ -1249,6 +1249,30 @@ describe("选中节点自动带上提及", () => {
     expect(quickInput(wrapper)!.props("modelValue")).toBe("我的草稿")
   })
 
+  it("快捷会话：收起时换了选中 / 取消选中，再打开提及跟着换（点画布本身就会收起弹层）", async () => {
+    selectedNodeIds.value = ["n1"]
+    const wrapper = await mountWithSelection()
+    await toggleQuick(wrapper)
+    expect(quickInput(wrapper)!.props("modelValue")).toBe("@{node:n1} ")
+    await toggleQuick(wrapper)
+    expect(quickInput(wrapper)).toBeUndefined()
+
+    // 收起着选中另一个节点
+    selectedNodeIds.value = ["n2"]
+    await flushPromises()
+    await toggleQuick(wrapper)
+    expect(quickInput(wrapper)!.props("modelValue")).toBe("@{node:n2} ")
+
+    // 收起着点空白处取消选中：提及去掉，自己写的字留着
+    quickInput(wrapper)!.vm.$emit("update:modelValue", "@{node:n2} 改一下")
+    await flushPromises()
+    await toggleQuick(wrapper)
+    selectedNodeIds.value = []
+    await flushPromises()
+    await toggleQuick(wrapper)
+    expect(quickInput(wrapper)!.props("modelValue")).toBe("改一下")
+  })
+
   it("对话框：点「新会话」→ 空输入框开头放上选中节点的提及；已有草稿不动；打开续聊的会话不加", async () => {
     session.mockResolvedValue(sessionView({ latest: view("c1") }))
     selectedNodeIds.value = ["n2", "n1"]

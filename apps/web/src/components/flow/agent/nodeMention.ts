@@ -261,3 +261,15 @@ export function removeMentions(text: string, nodeIds: readonly string[]): string
   }
   return result + text.slice(cursor)
 }
+
+/**
+ * 画布选区从 `previous` 变成 `next`：取消选中的去掉提及，新选中的在末尾加上（docs/20 §3.10.9）。
+ * 只看变化，所以删掉的提及不会因为节点还选中着被加回来；重复跑一次结果不变。
+ */
+export function syncSelectionMentions(text: string, next: readonly string[], previous: readonly string[]): string {
+  const before = new Set(previous)
+  const after = new Set(next)
+  const removed = previous.filter((id) => !after.has(id))
+  const added = next.filter((id) => !before.has(id))
+  return appendMentions(removeMentions(text, removed), added)
+}

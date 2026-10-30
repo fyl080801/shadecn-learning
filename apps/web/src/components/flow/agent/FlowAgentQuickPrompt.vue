@@ -13,6 +13,7 @@ import { useFlowAgentPanel } from "@/composables/flow/agent-panel"
 import { useAssetUploadList } from "@/composables/useAssetUpload"
 import { AGENT_ATTACHMENT_LIMIT, attachmentsOf } from "./attachments"
 import FlowAgentComposer from "./FlowAgentComposer.vue"
+import { syncSelectionMentions } from "./nodeMention"
 
 /**
  * 底部工具栏右侧的 agent 快捷入口（独立深色圆钮，不在胶囊里）：点开弹出一个输入框，发出去就**开一个新会话**执行，
@@ -24,12 +25,12 @@ import FlowAgentComposer from "./FlowAgentComposer.vue"
  * 导演台底部工具栏也挂它，读到的是导演台那一份（新会话的入口记成那个节点）。
  *
  * **打开时输入框为空，就在开头放上选中节点的提及**（docs/20 §3.10.9；画布选区按选中的先后，导演台里是这个导演台）：
- * 和手动 @ 出来的一样，可以删。只在打开的那一下放、已有草稿不动；开着时再选中 / 取消选中，由输入区同步增删提及。
+ * 和手动 @ 出来的一样，可以删。只在打开的那一下放、已有草稿不动；之后再选中 / 取消选中，开着时由输入区、收起时由这里同步增删提及。
  *
  * **附件**（docs/20 §3.10.12）同对话框：输入区上方的附件列表，发出去就摘走；这一轮没开始（被拒）就和文字一起还回来，
  * 弹层收起也留着（和草稿一样），换画布时清空。
  */
-const { flowId } = useFlowEditor()
+const { flowId, canvas } = useFlowEditor()
 const { agent, copy, startConversation, selectionMentions } = useFlowAgentPanel()
 
 const open = ref(false)
@@ -49,6 +50,18 @@ watch(open, (value) => {
   if (draft.value === "") draft.value = selectionMentions()
   void nextTick(() => composer.value?.focus())
 })
+
+/**
+ * 收起时输入区跟着弹层卸载了，选区的变化由这里接着同步进草稿 —— 点画布空白处 / 另一个节点本身就会把弹层收起，
+ * 不接的话再打开时还是上一次选中的提及（草稿非空，打开时也不会重放）。开着时由输入区同步；同一拍两边都跑也不会重复。
+ */
+watch(
+  () => [...canvas.selectedNodeIds.value],
+  (next, previous) => {
+    if (open.value || copy.ignoreSelection) return
+    draft.value = syncSelectionMentions(draft.value, next, previous)
+  }
+)
 
 // 换画布：收起、草稿清空 —— 草稿里的提及指向的是上一张画布的节点
 watch(flowId, () => {
