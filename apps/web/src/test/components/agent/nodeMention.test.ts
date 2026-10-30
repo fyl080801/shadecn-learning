@@ -8,6 +8,7 @@ import type { CustomInline, Paragraph } from "@/components/prompt-input/types"
 import {
   NODE_MENTION,
   appendMentions,
+  removeMentions,
   createNodeMentionPlugin,
   nodeMentionCandidates,
   splitMentions,
@@ -84,11 +85,18 @@ describe("提及节点的 parse / serialize", () => {
     ])
   })
 
-  it("快捷引用：追加到末尾，已经提及的不重复", () => {
+  it("选中节点：追加到末尾，已经提及的不重复", () => {
     expect(appendMentions("", ["a", "b"])).toBe("@{node:a} @{node:b} ")
     expect(appendMentions("改一下", ["a"])).toBe("改一下 @{node:a} ")
     expect(appendMentions("改 @{node:a} ", ["a", "b"])).toBe("改 @{node:a} @{node:b} ")
     expect(appendMentions("改 @{node:a}", ["a"])).toBe("改 @{node:a}")
+  })
+
+  it("取消选中：去掉那几枚提及和紧跟的空格，别的不动", () => {
+    expect(removeMentions("@{node:a} @{node:b} ", ["a"])).toBe("@{node:b} ")
+    expect(removeMentions("改 @{node:a}，再看 @{node:b}", ["a", "b"])).toBe("改 ，再看 ")
+    expect(removeMentions("改 @{node:ab} ", ["a"])).toBe("改 @{node:ab} ")
+    expect(removeMentions("改一下", [])).toBe("改一下")
   })
 })
 

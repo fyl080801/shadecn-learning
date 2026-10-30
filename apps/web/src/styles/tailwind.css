@@ -202,3 +202,85 @@
 @utility scrollbar-gutter-stable {
   scrollbar-gutter: stable;
 }
+
+/*
+ * `ui/attachment`（shadcn-vue registry 的 `@shadcn/attachment`）用到、项目里原来没有的三个工具类：
+ * - `scrollbar-none`：横向排开的附件组不显示滚动条（仍可滚）；
+ * - `scroll-fade-x`：附件组横向溢出时，两端随滚动位置淡出（滚动驱动动画；不支持的浏览器 / 没溢出时不加遮罩）；
+ * - `shimmer`：上传中 / 处理中的附件标题文字上扫过一道光（系统开了「减少动态效果」就不动）。
+ */
+@utility scrollbar-none {
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@property --scroll-fade-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --scroll-fade-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@keyframes scroll-fade-x {
+  0% {
+    --scroll-fade-start: 0px;
+    --scroll-fade-end: 1.5rem;
+  }
+  10%,
+  90% {
+    --scroll-fade-start: 1.5rem;
+    --scroll-fade-end: 1.5rem;
+  }
+  100% {
+    --scroll-fade-start: 1.5rem;
+    --scroll-fade-end: 0px;
+  }
+}
+
+@utility scroll-fade-x {
+  @supports (animation-timeline: scroll()) {
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      #000 var(--scroll-fade-start),
+      #000 calc(100% - var(--scroll-fade-end)),
+      transparent
+    );
+    animation: scroll-fade-x linear both;
+    animation-timeline: scroll(self inline);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+@utility shimmer {
+  color: transparent;
+  background-image: linear-gradient(
+    90deg,
+    var(--color-muted-foreground) 40%,
+    var(--color-foreground) 50%,
+    var(--color-muted-foreground) 60%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  animation: shimmer 2s linear infinite;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}

@@ -39,7 +39,8 @@ paths:
 
 - In `components/ui/`, added with `pnpm exec shadcn-vue add <name>` **from `apps/web`**; check that new packages landed in `devDependencies`.
 - **Icons: `@lucide/vue` only.** Deprecated names (`Home`, `Loader2`, `MoreHorizontal`, `Grid3X3`) still resolve. v1 dropped all brand icons, so brands are inline SVG components like `components/icons/GithubMark.vue` (shared by settings and login) — never a new dependency.
-- `cn()` in `lib/utils.ts` = `clsx` + `tailwind-merge`.
+- `cn()` in `lib/utils.ts` = `clsx` + `tailwind-merge`. **Registry items can import `cn` from the bare package `"cn"`**, and the CLI then installs an unrelated npm package `cn` into `apps/web` `dependencies` (happened with `@shadecn/attachment`): rewrite the import to `@/lib/utils` and `pnpm --filter @shadecn/web remove cn`.
+- `ui/attachment` (`@shadecn/attachment`) is hand-fixed: `AttachmentTrigger` imports `Primitive`, `AttachmentAction` forwards `class` / `as` to `Button`; its `shimmer` / `scroll-fade-x` / `scrollbar-none` utilities live in `styles/tailwind.css`.
 - **`button` is hand-edited**: extra `loading` prop (spinner + auto-`disabled`) and `size` variants `xs` / `icon-xs`. **The CLI rewrites `Button.vue` whenever it's pulled in as a dependency** (e.g. adding `command`) — `git diff apps/web/src/components/ui/button/` after any `add` and `git checkout` it back.
 - **`command` is filter-it-yourself for large lists**: its built-in filter renders every item and hides misses with `v-if`. `TimeZonePicker.vue` drives its own keyword + matcher + hard cap and uses `Command` only for keyboard nav, feeding input via reka-ui's `ListboxFilter` (not `CommandInput`). `CommandItem` **must** be inside a `CommandGroup` (throws otherwise); `CommandEmpty` doesn't work in this mode — write the empty state by hand.
 

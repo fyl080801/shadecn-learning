@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed } from "vue"
 import { ChevronRight, CircleAlert, CircleCheck, Eye, Puzzle } from "@lucide/vue"
-import type { AgentChatMessage } from "@shadecn/shared/agent"
+import { agentAttachmentKind, type AgentChatMessage } from "@shadecn/shared/agent"
+import AssetPreview from "@/components/flow/asset-upload/AssetPreview.vue"
+import { Attachment, AttachmentGroup, AttachmentMedia, AttachmentTrigger } from "@/components/ui/attachment"
 import { Message, MessageContent } from "@/components/ui/message"
 import { Spinner } from "@/components/ui/spinner"
 import FlowAgentMarkdown from "./FlowAgentMarkdown.vue"
@@ -11,7 +13,8 @@ import { splitMentions } from "./nodeMention"
 /**
  * 对话里的一条消息。
  *
- * 用户消息：文字 + 提及 badge（和输入框里同一个组件，名字现查，删了的节点灰掉）。
+ * 用户消息：文字 + 提及 badge（和输入框里同一个组件，名字现查，删了的节点灰掉）；带了附件时文字上方一排缩略图
+ * （docs/20 §3.10.12，`ui/attachment` 的小方块，预览和输入区里的附件同一个组件，地址是对象存储的；点开在新标签页里看原文件）。只有附件没写字时不画文字气泡。
  * assistant 消息：工具调用条目（名字 / 一句话 / 运行中·完成·出错）+ 流式的 Markdown 正文（docs/20 F16），
  * 一轮以失败或中止收尾时在最后挂一行原因。用户消息和 assistant 消息用 shadcn 的 `Message` 排版。
  * 画布改动通知（docs/20 §3.10.2）：灰色的一行系统提示（图标 + 概括），有条目时可以展开看每一处。
@@ -27,6 +30,10 @@ const segments = computed(() =>
   props.message.role === "user" ? splitMentions(props.message.text) : []
 )
 
+const attachments = computed(() =>
+  props.message.role === "user" && Array.isArray(props.message.attachments) ? props.message.attachments : []
+)
+
 const assistant = computed(() => (props.message.role === "assistant" ? props.message : null))
 
 const change = computed(() => (props.message.role === "canvas-change" ? props.message : null))
@@ -37,7 +44,35 @@ const skillLoaded = computed(() => (props.message.role === "skill-loaded" ? prop
 <template>
   <Message v-if="props.message.role === 'user'" align="end" data-role="user">
     <MessageContent>
-      <div class="ml-8 self-end rounded-lg bg-primary/10 px-3 py-2 whitespace-pre-wrap break-words">
+      <AttachmentGroup
+        v-if="attachments.length > 0"
+        class="ml-8 max-w-[calc(100%-2rem)] gap-1.5 self-end"
+        aria-label="附件"
+        data-role="user-attachments"
+      >
+        <Attachment
+          v-for="item in attachments"
+          :key="item.key"
+          state="done"
+          orientation="vertical"
+          size="xs"
+          class="w-16"
+          :title="item.name"
+          :data-attachment="item.key"
+        >
+          <AttachmentMedia
+            :variant="agentAttachmentKind(item.contentType) === 'file' ? 'icon' : 'image'"
+            class="group-data-[size=xs]/attachment:w-full"
+          >
+            <AssetPreview :kind="agentAttachmentKind(item.contentType)" :src="item.url" :name="item.name" />
+          </AttachmentMedia>
+          <AttachmentTrigger as="a" :href="item.url" target="_blank" rel="noopener noreferrer" :aria-label="`打开附件 ${item.name}`" />
+        </Attachment>
+      </AttachmentGroup>
+      <div
+        v-if="segments.length > 0"
+        class="ml-8 self-end rounded-lg bg-primary/10 px-3 py-2 whitespace-pre-wrap break-words"
+      >
         <template v-for="(segment, index) in segments" :key="index">
           <FlowAgentMention v-if="segment.kind === 'mention'" :node-id="segment.id" class="mx-0.5" />
           <template v-else>{{ segment.text }}</template>

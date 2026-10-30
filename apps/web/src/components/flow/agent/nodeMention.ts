@@ -232,7 +232,7 @@ export function useNodeMentionMenu(nodes: () => readonly FlowNode[]) {
 export type NodeMentionMenu = ReturnType<typeof useNodeMentionMenu>
 
 /**
- * 把一批节点作为提及追加到输入框文本末尾（「引用选中的节点」那个快捷按钮）。
+ * 把一批节点作为提及追加到输入框文本末尾（画布上新选中的节点，`FlowAgentComposer`）。
  * 已经提及过的跳过；前面没有空白就补一个，末尾留一个空格好接着打字。
  */
 export function appendMentions(text: string, nodeIds: readonly string[]): string {
@@ -242,4 +242,22 @@ export function appendMentions(text: string, nodeIds: readonly string[]): string
   const joined = fresh.map(formatNodeMention).join(" ")
   const separator = text === "" || /\s$/.test(text) ? "" : " "
   return `${text}${separator}${joined} `
+}
+
+/**
+ * 去掉这批节点的提及（画布上取消选中的节点）；连带吃掉紧跟的一个空格 —— `appendMentions` 加进来时带的那个。
+ * 别的提及和文字不动。
+ */
+export function removeMentions(text: string, nodeIds: readonly string[]): string {
+  const gone = new Set(nodeIds)
+  if (gone.size === 0) return text
+  let result = ""
+  let cursor = 0
+  for (const match of text.matchAll(NODE_MENTION_PATTERN)) {
+    if (!gone.has(match[1] ?? "")) continue
+    result += text.slice(cursor, match.index)
+    cursor = match.index + match[0].length
+    if (text[cursor] === " ") cursor += 1
+  }
+  return result + text.slice(cursor)
 }

@@ -1,6 +1,6 @@
 import type { AgentToolResult } from '@mariozechner/pi-agent-core'
 import { Type } from '@mariozechner/pi-ai'
-import type { AgentSkillId } from '@shadecn/shared/agent'
+import type { AgentAttachment, AgentSkillId } from '@shadecn/shared/agent'
 import type { AgentCapability } from '../authority.ts'
 import type { CanvasHandle } from '../canvas.ts'
 import type { MediaReader } from '../media.ts'
@@ -62,6 +62,11 @@ export interface SkillContext {
    * 服务端是只给定义用的桩，一调就报错（网关从不代 runner 工具执行）
    */
   sandbox: Sandbox
+  /**
+   * 这个会话里用户消息带过的附件（docs/20 §3.10.12，宿主核对过归属）：`view_attachment` 只认这些。
+   * 只有服务端有；runner 只造定义，不给
+   */
+  attachments?: readonly AgentAttachment[]
 }
 
 export type SkillActivation = 'always' | 'auto' | 'on-demand'

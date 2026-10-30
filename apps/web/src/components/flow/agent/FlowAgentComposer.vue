@@ -1,23 +1,30 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
-import { AtSign, SendHorizontal, Square } from "@lucide/vue"
-import { parseNodeMentions } from "@shadecn/shared/agent"
+import { computed, ref, watch } from "vue"
+import { Plus, SendHorizontal, Square } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { PromptInput, createEditor, type CustomInline } from "@/components/prompt-input"
+import AssetUploadList from "@/components/flow/asset-upload/AssetUploadList.vue"
 import { flowNodeTypeOf } from "@/components/flow/node-types"
 import { useFlowEditor } from "@/composables/flow/editor-context"
+import type { AssetUploadList as AssetUploadListState } from "@/composables/useAssetUpload"
 import { cn } from "@/lib/utils"
 import FlowAgentMention from "./FlowAgentMention.vue"
-import { NODE_MENTION, appendMentions, nodeMentionIdOf, useNodeMentionMenu } from "./nodeMention"
+import { NODE_MENTION, appendMentions, nodeMentionIdOf, removeMentions, useNodeMentionMenu } from "./nodeMention"
 
 /**
- * 对话面板底部的输入区：PromptInput + 「提及节点」插件 + 发送 / 停止。
+ * 对话面板底部的输入区：附件 + PromptInput + 「提及节点」插件 + 发送 / 停止。
  *
+ * - **附件**（docs/20 §3.10.12）：发送按钮同一行最左边一个加号图标按钮选文件；传着的、传完的附件以缩略图排在输入框上方
+ *   （`AssetUploadList`，不画它自己的加号方框），没有附件时这一排不占位。附件列表的状态由父组件建（`useAssetUploadList`）传进来：发送时摘走、没发出去还回来是父组件的事。
+ *   有附件在传或传失败了不能发；只有附件、没写字也能发。不给 `attachments` 就没有这一排。
  * - **Enter 发送、Shift+Enter 换行**。提及列表开着时 Enter / Tab 是「选中这一项」，
  *   由插件的 `onKeyDown` 先拦掉，不会走到这里的发送。
  * - `defer-focus-on-click`：面板收起时这个输入框也一直挂着（草稿不丢），
  *   挂载时要是自己抢了焦点，画布上的 Delete / Ctrl+Z 就全落进输入框里了。
  *   只有用户点它、或者打开面板时才聚焦。
+ * - **画布选区跟着输入框走**（docs/20 §3.10.9）：新选中的节点在输入框末尾加一枚提及，取消选中就把它的提及去掉。
+ *   只看选区的**变化**：挂载时已有的选区由父组件按「新会话」规则放（`selectionMentions`）；删掉某个选中节点的提及后，
+ *   它保持选中不会再被加回来。已经提及过的节点再选中不重复加。
  */
 const props = defineProps<{
   /** 当前会话正在跑：不能再发，按钮换成「停止」（别的会话在跑不挡这里，docs/20 §3.10.3） */
@@ -25,8 +32,10 @@ const props = defineProps<{
   aborting: boolean
   /** 不给就是画布对话框的那句 */
   placeholder?: string
-  /** 不显示「引用选中的节点」（导演台的对话面板里画布被盖住了）。布尔 prop 缺省就是 false，所以写成反的 */
-  hideQuote?: boolean
+  /** 不跟画布选区同步提及（导演台的对话面板里画布被盖住了）。布尔 prop 缺省就是 false，所以写成反的 */
+  ignoreSelection?: boolean
+  /** 这条消息的附件（父组件的 `useAssetUploadList`）；不给就不显示附件区 */
+  attachments?: AssetUploadListState
 }>()
 
 const draft = defineModel<string>({ required: true })
@@ -42,19 +51,44 @@ const menu = useNodeMentionMenu(() => store.nodes)
 const { editor } = createEditor({ plugins: [menu.plugin] })
 
 const input = ref<InstanceType<typeof PromptInput> | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
 
-/** 画布上选中了、但输入框里还没提及的节点 —— 快捷按钮只管这些 */
-const unmentionedSelection = computed(() => {
-  const mentioned = new Set(parseNodeMentions(draft.value))
-  return canvas.selectedNodeIds.value.filter((id) => !mentioned.has(id))
-})
-
-function quoteSelection() {
-  draft.value = appendMentions(draft.value, unmentionedSelection.value)
-  input.value?.focus()
+function onFilesPicked(event: Event) {
+  const target = event.target as HTMLInputElement
+  const files = target.files ? [...target.files] : []
+  // 清空，下次选同一个文件也能触发 change
+  target.value = ""
+  if (files.length > 0) props.attachments?.add(files)
 }
 
-const canSend = computed(() => !props.running && draft.value.trim().length > 0)
+// 拷一份再比：选区数组要是原地改的，新旧会是同一个对象
+watch(
+  () => [...canvas.selectedNodeIds.value],
+  (next, previous) => {
+    if (props.ignoreSelection) return
+    const before = new Set(previous)
+    const after = new Set(next)
+    const removed = previous.filter((id) => !after.has(id))
+    const added = next.filter((id) => !before.has(id))
+    draft.value = appendMentions(removeMentions(draft.value, removed), added)
+  }
+)
+
+/** 附件在传 / 传失败了：先等它传完、或者重试 / 删掉，再发（不然就是悄悄少发了一个） */
+const attachmentsBlocking = computed(() => Boolean(props.attachments?.uploading || props.attachments?.failed))
+
+const canSend = computed(
+  () =>
+    !props.running &&
+    !attachmentsBlocking.value &&
+    (draft.value.trim().length > 0 || (props.attachments?.ready.length ?? 0) > 0)
+)
+
+const hint = computed(() => {
+  if (props.attachments?.uploading) return "附件上传中…"
+  if (props.attachments?.failed) return "有附件没传上去：重试或移除后再发送"
+  return "Enter 发送 · Shift+Enter 换行"
+})
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key !== "Enter" || event.shiftKey) return
@@ -76,22 +110,11 @@ defineExpose({
 
 <template>
   <div class="space-y-2">
-    <!--
-      「引用选中的节点」：画布上选中了还没提及的节点时才出现。新会话的空输入框会自动带上选中节点的提及
-      （快捷会话打开时、点「新会话」时，docs/20 §3.10.9）；这个按钮管剩下的情况 —— 续聊、已有草稿、
-      面板开着时又换了选中。
-    -->
-    <Button
-      v-if="!props.hideQuote && unmentionedSelection.length > 0"
-      variant="outline"
-      size="xs"
-      class="max-w-full"
-      data-testid="agent-quote-selection"
-      @click="quoteSelection()"
-    >
-      <AtSign />
-      引用选中的 {{ unmentionedSelection.length }} 个节点
-    </Button>
+    <AssetUploadList
+      v-if="props.attachments && props.attachments.items.length > 0"
+      :list="props.attachments"
+      :addable="false"
+    />
 
     <!-- 画布里的输入区不带边框也不留内边距，文字占满：外面的弹层 / 面板已经框住了它 -->
     <div>
@@ -153,7 +176,33 @@ defineExpose({
       </PromptInput>
 
       <div class="flex items-center justify-between gap-2 pt-2">
-        <span class="text-[11px] text-muted-foreground">Enter 发送 · Shift+Enter 换行</span>
+        <div class="flex min-w-0 items-center gap-1.5">
+          <template v-if="props.attachments">
+            <!-- 满了（一条消息最多 AGENT_ATTACHMENT_MAX_COUNT 个）就点不了 -->
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              class="-ml-1.5 text-muted-foreground"
+              aria-label="添加附件"
+              :title="props.attachments.remaining > 0 ? '添加附件' : '附件已满'"
+              :disabled="props.attachments.remaining === 0"
+              data-testid="asset-upload-add"
+              @click="fileInput?.click()"
+            >
+              <Plus class="size-4" />
+            </Button>
+            <input
+              ref="fileInput"
+              type="file"
+              multiple
+              accept="image/*,video/*"
+              class="hidden"
+              data-testid="asset-upload-input"
+              @change="onFilesPicked"
+            />
+          </template>
+          <span class="truncate text-[11px] text-muted-foreground" data-testid="agent-composer-hint">{{ hint }}</span>
+        </div>
         <Button
           v-if="props.running"
           variant="outline"

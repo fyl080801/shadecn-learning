@@ -1,12 +1,14 @@
 import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import type { AgentStreamEvent } from '@shadecn/shared/agent'
+import type { AgentAttachment, AgentAttachmentRef, AgentStreamEvent } from '@shadecn/shared/agent'
 import { validatePrompt } from '@shadecn/agent/session'
 import { flowHasNode, openAgentCanvas } from '../agent/canvas-access.ts'
 import { agentRuntime } from '../agent/index.ts'
 import type { AuthVariables } from '../auth/middleware.ts'
 import { currentUserId, type ProjectVariables } from '../auth/project.ts'
+import { assetStorage } from '../storage/index.ts'
+import { flowAssets } from '../store/assets.ts'
 import { INVALID_JSON, readJson } from './params.ts'
 
 /**
@@ -51,6 +53,35 @@ const CONVERSATION_NOT_FOUND = { error: 'Not Found', message: '会话不存在' 
 const RUN_NOT_FOUND = { error: 'Not Found', message: '这一轮已经结束或不存在' } as const
 const NOT_CONVERSATION_OWNER = { error: 'Forbidden', message: '这是别人的会话，只能查看，不能继续对话' } as const
 const NODE_NOT_FOUND = { error: 'Not Found', message: '这张画布上没有这个节点' } as const
+
+const FOREIGN_ATTACHMENT = {
+  error: 'Bad Request',
+  message: '附件必须是在这张画布上传的资源',
+} as const
+const ATTACHMENTS_UNAVAILABLE = { error: 'Service Unavailable', message: '未配置对象存储，不能带附件' } as const
+
+/**
+ * 附件（docs/20 §3.10.12）：每个键都必须是**这张画布**上传时记下的（`FlowAsset`）—— 别的画布的、猜的、
+ * 从没上传成功过的一律不认（整条消息 400，不挑着收）。类型取上传记录里服务端看到的，地址按键现算；
+ * 客户端给的只有键和显示名。返回 Response = 直接回给客户端的错误。
+ */
+async function resolveAttachments(
+  c: Context<Env>,
+  flowId: string,
+  refs: readonly AgentAttachmentRef[],
+): Promise<AgentAttachment[] | Response> {
+  if (refs.length === 0) return []
+  const storage = assetStorage()
+  if (!storage) return c.json(ATTACHMENTS_UNAVAILABLE, 503)
+  const records = await flowAssets.findInFlow(flowId, refs.map((ref) => ref.key))
+  if (records.length !== refs.length) return c.json(FOREIGN_ATTACHMENT, 400)
+  return refs.map((ref, index) => ({
+    key: ref.key,
+    url: storage.objectUrl(ref.key),
+    contentType: records[index]!.contentType,
+    name: ref.name,
+  }))
+}
 
 /** 请求者在这张画布所属项目里是不是管理员 —— `requireFlowMember` 这次请求刚查的，不缓存 */
 function isProjectAdmin(c: Context<Env>): boolean {
@@ -167,6 +198,8 @@ export const agent = new Hono<Env>()
    *
    * `conversationId` 为空 = 新会话：编排层在这一轮开始时建好它，id 经 RUN_STARTED 的 `threadId` 带回。
    * 新会话可以带 `nodeId` = 会话的入口节点（docs/20 §3.10.9，只记录、不限制工具）：节点不在这张画布上 → 404；续聊时给 → 400。
+ * 附件（`attachments`，docs/20 §3.10.12）：形状由 `validatePrompt` 校验，归属在 {@link resolveAttachments} 查上传记录 ——
+ * 有一个不是这张画布上传的就 400。带了附件时 `text` 可以为空。
    *
    * **客户端断开不中止这一轮**：只是发起者不再收事件，这一轮照常跑完、照常落库；
    * 重新打开画布后经 `GET /runs/:runId/events` 接回。中止只有 `POST /runs/:runId/abort`、时长上限、失权、服务端退出。
@@ -199,6 +232,8 @@ export const agent = new Hono<Env>()
       if (!existing.mine) return c.json(NOT_CONVERSATION_OWNER, 403)
     }
     if (prompt.nodeId !== null && !(await flowHasNode(flowId, prompt.nodeId))) return c.json(NODE_NOT_FOUND, 404)
+    const attachments = await resolveAttachments(c, flowId, prompt.attachments)
+    if (attachments instanceof Response) return attachments
 
     const relay = sseRelay()
     const started = await runtime.start({
@@ -207,6 +242,7 @@ export const agent = new Hono<Env>()
       text: prompt.text,
       conversationId: prompt.conversationId,
       nodeId: prompt.nodeId,
+      attachments,
       openCanvas: (runId, authority) => openAgentCanvas({ flowId, userId, runId, authority }),
       emit: relay.emit,
     })

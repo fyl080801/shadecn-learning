@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ASSET_PART_SIZE, type AssetUploadSession, type UploadedAsset } from '@shadecn/shared/canvas'
 import type { S3Client } from '../../storage/s3.ts'
 import { replaceAssetStorage } from '../../storage/index.ts'
+import { flowAssets } from '../../store/assets.ts'
 import { resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject, type Actor } from '../helpers/project.ts'
 
@@ -98,6 +99,15 @@ describe('POST /api/flows/:flowId/assets（一次传完）', () => {
     expect(file.startsWith(`${a}${b}`)).toBe(true)
     expect(body).toMatchObject({ url: s3.client.objectUrl(body.key), contentType: 'image/png', size: 4 })
     expect(s3.objects.get(body.key)).toEqual({ size: 4, contentType: 'image/png' })
+  })
+
+  it('上传成功即记下归属（键 → 这张画布 + 服务端看到的类型）；别的画布查不到它', async () => {
+    const { alice, projectId, flowId } = await memberFlow()
+    const other = await createFlow(alice, projectId)
+
+    const body = (await (await alice.request(`/api/flows/${flowId}/assets`, form(png()))).json()) as UploadedAsset
+    expect(await flowAssets.findInFlow(flowId, [body.key])).toEqual([{ key: body.key, contentType: 'image/png' }])
+    expect(await flowAssets.findInFlow(other, [body.key])).toEqual([])
   })
 
   it('视频和图片进同一个素材目录', async () => {
@@ -202,6 +212,8 @@ describe('分片上传 /api/flows/:flowId/assets/multipart', () => {
       contentType: 'video/mp4',
       size,
     })
+    // 完成时才记归属，类型取 S3 拼完后 HEAD 回来的
+    expect(await flowAssets.findInFlow(flowId, [session.key])).toEqual([{ key: session.key, contentType: 'video/mp4' }])
   })
 
   it('开始时：类型不对 415、超过总上限 413、参数缺失 400', async () => {

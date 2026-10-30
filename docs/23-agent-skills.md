@@ -121,7 +121,7 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 ### 3.6 界面
 
 - 对话流里，每次加载显示一行「已加载：导演台」（由 `agent.skill-loaded` 事件驱动，刷新、接回补发、只读旁观看到的一样）。
-  一轮开始时自动加载的技能不逐条刷屏，输入框上方列出当前已加载的技能（标题里不显示；新会话的第一轮里，这一栏要到下次打开会话才包含自动加载的技能 —— 已知缺口）。
+  一轮开始时自动加载的技能不逐条刷屏。**界面上不再列出已加载的技能**（输入框上方、标题里都没有；会话接口的 `skills` 仍照返回，只是前端不显示）。
 - 被拒的 `load_skill`（不提供、同批混用、超次数）在界面上看不到，只在工具调用日志里。
 - `load_skill` 本身不作为普通工具调用条目展示，只显示上面那一行。
 
@@ -130,10 +130,10 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 | id | 标题 | 工具 | requires | 可用条件 | activation |
 |---|---|---|---|---|---|
 | `canvas` | 画布 | 读 `read_canvas`、`get_node`、`check_connection`；写 `add_node`、`update_node`、`duplicate_node`、`connect`、`delete_elements`、`move_nodes`、`resize_node`、`group_nodes`、`ungroup`、`auto_layout` | `flow:read`、`flow:write`、`flow:delete` | — | `always` |
-| `media-view` | 查看素材 | `view_node_media` | `flow:read` | 模型支持图片输入，并且配了对象存储（[REQ-AGENT §3.10.7](20-agent-canvas.md)） | `on-demand` |
+| `media-view` | 查看素材 | `view_node_media`、`view_attachment` | `flow:read` | 模型支持图片输入，并且配了对象存储（[REQ-AGENT §3.10.7](20-agent-canvas.md)；看消息附件见 §3.10.12） | `on-demand` |
 | `media-exec` | 媒体处理 | `run_media_command`（runner） | `sandbox:exec` | `AGENT_SANDBOX_EXEC=1` | `on-demand` |
 | `director` | 导演台：写 + 量 | 原子操作 `get_director_scene`、`add_objects`、`transform_objects`、`place_object`、`align_objects`、`distribute_objects`、`aim_camera`、`update_objects`、`set_director_settings`、`set_keyframes`、`animate_motion`、`delete_director_elements`；测量 `measure_objects`、`measure_distance`、`check_scene`、`camera_view`（都在网关执行） | `flow:read`、`flow:write`、`flow:delete` | — | `auto`：`nodeTypes: ['director']` |
-| `director-view` | 导演台：看 | `render_view`（网关调渲染服务） | `flow:read` | 配了渲染服务，并且模型支持图片输入 | `auto`：同上 |
+| `director-view` | 导演台：看 | `render_view`（网关调单独部署的渲染服务，和视口共用渲染库 `@shadecn/three-render`，见 REQ-DIRECTOR §7.9） | `flow:read` | 配了渲染服务（`DIRECTOR_RENDER_URL`），并且模型支持图片输入；不需要 `sandbox:exec` | `auto`：同上 |
 | `director-script` | 导演台：脚本 | `run_scene_script`（runner，产出操作列表交网关执行） | `flow:read`、`flow:write`、`sandbox:exec` | `AGENT_SANDBOX_EXEC=1` | `on-demand` |
 
 - `canvas` 是基础技能，不做按需加载：几乎每一轮都要读写画布，按需加载只会多一次往返。
@@ -156,7 +156,7 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 | S4 | `load_skill` 单独成批，加载后新工具在同一轮里可用；每轮加载次数有上限 |
 | S5 | 网关拒绝执行本轮没加载的技能里的工具 |
 | S6 | 会话记住加载过的技能，下一轮预加载（仍受 S2 约束） |
-| S7 | 对话里显示技能加载，输入框上方列出已加载的技能 |
+| S7 | 对话里显示技能加载（一行「已加载：…」）；不单独列出已加载的技能 |
 
 ## 6. 验收标准
 

@@ -23,10 +23,13 @@ import {
 import { nodesMap, toYNode } from '@shadecn/shared/flow-doc'
 import { emptyGraph } from '@shadecn/shared/flow-graph'
 import { buildNodeRecord } from '@shadecn/shared/flow-node-types'
+import type { UploadedAsset } from '@shadecn/shared/canvas'
 import { replaceAgentRuntime } from '../../agent/index.ts'
 import { attachCollabServer, collabInstance } from '../../collab/hocuspocus.ts'
 import { flushCollabWrites, loadFlowState, roomOf } from '../../collab/persistence.ts'
 import { AgentConversation, AgentRun, AgentToolCall } from '../../db/entities/index.ts'
+import { replaceAssetStorage } from '../../storage/index.ts'
+import type { S3Client } from '../../storage/s3.ts'
 import { agentConversations } from '../../store/agent.ts'
 import { useScripted } from '../helpers/agent.ts'
 import { writeGraph } from '../helpers/collab.ts'
@@ -283,6 +286,97 @@ describe('会话的入口节点（docs/20 §3.10.9）', () => {
     } finally {
       await connection.disconnect()
     }
+  })
+})
+
+describe('消息附件（docs/20 §3.10.12）', () => {
+  /** 只管单次上传的假 S3：附件走的就是画布资源的上传接口 */
+  const fakeStorage: S3Client = {
+    objectUrl: (key) => `https://s3.example.test/bucket/${key}`,
+    async putObject(key) {
+      return fakeStorage.objectUrl(key)
+    },
+    async headObject() {
+      return null
+    },
+    async getObject() {
+      return { status: 'not_found' }
+    },
+    async createMultipartUpload() {
+      throw new Error('不用')
+    },
+    async uploadPart() {
+      throw new Error('不用')
+    },
+    async completeMultipartUpload() {
+      throw new Error('不用')
+    },
+    async abortMultipartUpload() {},
+  }
+
+  beforeEach(() => replaceAssetStorage(fakeStorage))
+  afterEach(() => replaceAssetStorage(undefined))
+
+  async function upload(who: Actor, flowId: string, name: string, type: string): Promise<UploadedAsset> {
+    const body = new FormData()
+    body.set('file', new File([new Uint8Array([1, 2, 3])], name, { type }))
+    const res = await who.request(`/api/flows/${flowId}/assets`, { method: 'POST', body })
+    expect(res.status).toBe(201)
+    return (await res.json()) as UploadedAsset
+  }
+
+  it('附件核对归属后存进用户消息（类型、地址取服务端记录），并列进交给模型的消息；只发附件不写字也行', async () => {
+    let prompt = ''
+    useFaux([
+      (context) => {
+        const last = context.messages.findLast((message) => message.role === 'user')
+        prompt = last && last.role === 'user' && typeof last.content === 'string' ? last.content : JSON.stringify(last)
+        return fauxAssistantMessage('收到')
+      },
+    ])
+    const alice = await actor()
+    const flowId = await createFlow(alice, await createProject(alice))
+    const cat = await upload(alice, flowId, 'cat.png', 'image/png')
+
+    const res = await send(alice, flowId, { text: '', attachments: [{ key: cat.key, name: ' 猫.png ' }] })
+    expect(res.status).toBe(200)
+    const events = parseSse(await res.text())
+    expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
+    const attachment = { key: cat.key, url: fakeStorage.objectUrl(cat.key), contentType: 'image/png', name: '猫.png' }
+    expect(prompt).toContain(`- 附件 ${cat.key}：图片（image/png），文件名「猫.png」，地址 ${attachment.url}`)
+
+    const started = events[0]
+    if (started?.type !== AgentEventType.RUN_STARTED) throw new Error('第一帧不是 RUN_STARTED')
+    const conversation = (await (await alice.request(agentConversationPath(flowId, started.threadId))).json()) as AgentConversationView
+    expect(conversation.title).toBe('[附件] 猫.png')
+    expect(conversation.messages[0]).toMatchObject({ role: 'user', text: '', attachments: [attachment] })
+  })
+
+  it('不是这张画布上传的（别的画布的、没上传过的）→ 400；形状不对 → 400；没配对象存储 → 503；都不开始这一轮', async () => {
+    useFaux([fauxAssistantMessage('x')])
+    const alice = await actor()
+    const projectId = await createProject(alice)
+    const flowId = await createFlow(alice, projectId)
+    const otherFlow = await createFlow(alice, projectId)
+    const mine = await upload(alice, flowId, 'a.png', 'image/png')
+    const foreign = await upload(alice, otherFlow, 'b.png', 'image/png')
+
+    const refused = await send(alice, flowId, {
+      text: '看看',
+      attachments: [
+        { key: mine.key, name: 'a.png' },
+        { key: foreign.key, name: 'b.png' },
+      ],
+    })
+    expect(refused.status).toBe(400)
+    expect(await refused.json()).toMatchObject({ message: '附件必须是在这张画布上传的资源' })
+    expect((await send(alice, flowId, { text: '看看', attachments: [{ key: 'canvas/assets/00/00/nope.png', name: 'x' }] })).status).toBe(400)
+    expect((await send(alice, flowId, { text: '看看', attachments: [{ key: mine.key }] })).status).toBe(400)
+    expect((await send(alice, flowId, { text: '   ', attachments: [] })).status).toBe(400)
+
+    replaceAssetStorage(undefined)
+    expect((await send(alice, flowId, { text: '看看', attachments: [{ key: mine.key, name: 'a.png' }] })).status).toBe(503)
+    expect(await db().count(AgentConversation, {})).toBe(0)
   })
 })
 

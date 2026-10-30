@@ -10,6 +10,8 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 import { useFlowAgentPanel } from "@/composables/flow/agent-panel"
+import { useAssetUploadList } from "@/composables/useAssetUpload"
+import { AGENT_ATTACHMENT_LIMIT, attachmentsOf } from "./attachments"
 import FlowAgentComposer from "./FlowAgentComposer.vue"
 
 /**
@@ -18,17 +20,21 @@ import FlowAgentComposer from "./FlowAgentComposer.vue"
  *
  * 不在这里续聊 —— 续聊、看历史、停止都在对话框里；这里只负责「起一个头」。
  * 别的任务在跑（别人的、我别的会话里的）不挡它：并发单位是会话，新会话总能发起（docs/20 §3.10.3）。
- * 输入框和对话框底部是同一个 `FlowAgentComposer`（含 @ 提及节点、引用选中）。
+ * 输入框和对话框底部是同一个 `FlowAgentComposer`（含 @ 提及节点、跟画布选区同步提及）。
  * 导演台底部工具栏也挂它，读到的是导演台那一份（新会话的入口记成那个节点）。
  *
  * **打开时输入框为空，就在开头放上选中节点的提及**（docs/20 §3.10.9；画布选区按选中的先后，导演台里是这个导演台）：
- * 和手动 @ 出来的一样，可以删。只在打开的那一下放 —— 开着时换了选中，已经放进去的不跟着变；已有草稿不动。
+ * 和手动 @ 出来的一样，可以删。只在打开的那一下放、已有草稿不动；开着时再选中 / 取消选中，由输入区同步增删提及。
+ *
+ * **附件**（docs/20 §3.10.12）同对话框：输入区上方的附件列表，发出去就摘走；这一轮没开始（被拒）就和文字一起还回来，
+ * 弹层收起也留着（和草稿一样），换画布时清空。
  */
 const { flowId } = useFlowEditor()
 const { agent, copy, startConversation, selectionMentions } = useFlowAgentPanel()
 
 const open = ref(false)
 const draft = ref("")
+const attachments = useAssetUploadList(flowId, { max: AGENT_ATTACHMENT_LIMIT })
 const composer = ref<InstanceType<typeof FlowAgentComposer> | null>(null)
 
 const enabled = computed(() => agent.session.value?.enabled === true)
@@ -51,13 +57,20 @@ watch(flowId, () => {
 })
 
 async function send() {
+  if (attachments.uploading || attachments.failed) return
   const text = draft.value
-  if (!text.trim()) return
+  if (!text.trim() && attachments.ready.length === 0) return
   draft.value = ""
+  const items = attachments.detach()
   open.value = false
-  const accepted = await startConversation(text)
-  // 根本没开始：把字还回去，除非用户已经又打了新的
-  if (!accepted && draft.value === "") draft.value = text
+  const accepted = await startConversation(text, attachmentsOf(items))
+  if (accepted) {
+    attachments.release(items)
+    return
+  }
+  // 根本没开始：把字和附件还回去（字只在用户没又打新的时还）
+  if (draft.value === "") draft.value = text
+  attachments.restore(items)
 }
 
 /**
@@ -131,7 +144,8 @@ function isolateKeys(event: KeyboardEvent) {
               :running="false"
               :aborting="false"
               :placeholder="copy.placeholder"
-              :hide-quote="copy.hideQuote"
+              :ignore-selection="copy.ignoreSelection"
+              :attachments="attachments"
               @send="send()"
             />
           </PopoverContent>

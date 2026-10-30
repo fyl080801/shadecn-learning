@@ -905,9 +905,9 @@ describe('持久化的失败语义', () => {
 
 describe('输入与历史', () => {
   it('validatePrompt：去空白后为空、超长、类型不对都拒；conversationId 缺省 / null = 新会话', () => {
-    expect(validatePrompt({ text: '  好  ' })).toEqual({ ok: true, text: '好', conversationId: null, nodeId: null })
-    expect(validatePrompt({ text: '好', conversationId: null })).toEqual({ ok: true, text: '好', conversationId: null, nodeId: null })
-    expect(validatePrompt({ text: '好', conversationId: 'c1' })).toEqual({ ok: true, text: '好', conversationId: 'c1', nodeId: null })
+    expect(validatePrompt({ text: '  好  ' })).toEqual({ ok: true, text: '好', conversationId: null, nodeId: null, attachments: [] })
+    expect(validatePrompt({ text: '好', conversationId: null })).toEqual({ ok: true, text: '好', conversationId: null, nodeId: null, attachments: [] })
+    expect(validatePrompt({ text: '好', conversationId: 'c1' })).toEqual({ ok: true, text: '好', conversationId: 'c1', nodeId: null, attachments: [] })
     expect(validatePrompt({ text: '   ' }).ok).toBe(false)
     expect(validatePrompt({ text: 'x'.repeat(5000) }).ok).toBe(false)
     expect(validatePrompt({}).ok).toBe(false)
@@ -917,8 +917,25 @@ describe('输入与历史', () => {
     expect(validatePrompt({ text: '好', conversationId: 'c'.repeat(200) }).ok).toBe(false)
   })
 
+  it('validatePrompt：附件只校验形状；带了附件时 text 可以为空，两样都没有才拒', () => {
+    const attachments = [{ key: 'canvas/assets/aa/bb/x.png', name: ' 猫.png ' }]
+    expect(validatePrompt({ text: '  ', attachments })).toEqual({
+      ok: true,
+      text: '',
+      conversationId: null,
+      nodeId: null,
+      attachments: [{ key: 'canvas/assets/aa/bb/x.png', name: '猫.png' }],
+    })
+    expect(validatePrompt({ text: '  ', attachments: [] })).toMatchObject({ ok: false, error: 'text 不能为空' })
+    expect(validatePrompt({ text: '好', attachments: 'x' })).toMatchObject({ ok: false })
+    expect(validatePrompt({ text: '好', attachments: [{ key: 'k', name: '' }] })).toMatchObject({ ok: false })
+    expect(validatePrompt({ text: '好', attachments: Array.from({ length: 9 }, (_, i) => ({ key: `k${i}`, name: 'a' })) })).toMatchObject({
+      ok: false,
+    })
+  })
+
   it('validatePrompt：nodeId 只在新建会话时给；格式不对、续聊时给都拒', () => {
-    expect(validatePrompt({ text: '好', nodeId: 'n_a' })).toEqual({ ok: true, text: '好', conversationId: null, nodeId: 'n_a' })
+    expect(validatePrompt({ text: '好', nodeId: 'n_a' })).toEqual({ ok: true, text: '好', conversationId: null, nodeId: 'n_a', attachments: [] })
     expect(validatePrompt({ text: '好', nodeId: null })).toMatchObject({ ok: true, nodeId: null })
     expect(validatePrompt({ text: '好', nodeId: 'a b' }).ok).toBe(false)
     expect(validatePrompt({ text: '好', nodeId: 3 }).ok).toBe(false)

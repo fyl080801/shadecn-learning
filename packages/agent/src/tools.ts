@@ -19,6 +19,7 @@ import {
 import * as ops from '@shadecn/shared/flow-ops'
 import { FlowOpError } from '@shadecn/shared/flow-ops'
 import { createId, NODE_ID_PREFIX } from '@shadecn/shared/id'
+import { agentAttachmentKind, type AgentAttachment } from '@shadecn/shared/agent'
 import type { AgentCapability } from './authority.ts'
 import type { CanvasHandle } from './canvas.ts'
 import { MediaReadError, sniffImageType, VIEWABLE_IMAGE_TYPES, type MediaReader } from './media.ts'
@@ -92,6 +93,8 @@ export const TOOL_LIMITS = {
 
 /** 多模态查看工具的名字：编排层只在模型支持图片输入、宿主接了素材读取时才把它交给模型 */
 export const VIEW_MEDIA_TOOL_NAME = 'view_node_media'
+/** 看用户消息附件的工具（docs/20 §3.10.12）：和 `view_node_media` 同属技能 `media-view`、同一份图片字节预算 */
+export const VIEW_ATTACHMENT_TOOL_NAME = 'view_attachment'
 
 /** 节点 / 连线 id 的格式 —— 和提及格式 `@{node:<id>}` 认的字符集一致 */
 const ID_PATTERN = '^[A-Za-z0-9_-]{1,64}$'
@@ -657,6 +660,17 @@ const viewMediaParams = Type.Object(
   { additionalProperties: false },
 )
 
+const viewAttachmentParams = Type.Object(
+  {
+    keys: Type.Array(Type.String({ minLength: 1, maxLength: 512, description: '附件的键（用户消息末尾「附件」块里列的那个）' }), {
+      minItems: 1,
+      maxItems: TOOL_LIMITS.mediaPerCall,
+      description: `要查看的附件，一次最多 ${TOOL_LIMITS.mediaPerCall} 个；只有图片附件能看`,
+    }),
+  },
+  { additionalProperties: false },
+)
+
 export interface CanvasToolsOptions {
   canvas: CanvasHandle
   /** 一轮共享的状态；不给就每次 `createCanvasTools` 新建一份 */
@@ -666,6 +680,11 @@ export interface CanvasToolsOptions {
    * 但执行即报错 —— 给不给模型由技能 `media-view` 的可用条件定（模型支持图片输入 + 宿主接了它，`skills/media/`）。
    */
   media?: MediaReader
+  /**
+   * 这个会话里用户消息带过的附件（docs/20 §3.10.12，宿主核对过都是这张画布的资源）—— `view_attachment` 只认这些键。
+   * runner 那侧（只造定义）不给。
+   */
+  attachments?: readonly AgentAttachment[]
 }
 
 const MB = 1024 * 1024
@@ -723,6 +742,7 @@ function pickTools(options: CanvasToolsOptions, names: readonly string[]): Canva
 export const createCanvasBaseTools = (options: CanvasToolsOptions) =>
   pickTools(options, [...CANVAS_READ_TOOL_NAMES, ...CANVAS_EDIT_TOOL_NAMES])
 export const createViewMediaTool = (options: CanvasToolsOptions) => pickTools(options, [VIEW_MEDIA_TOOL_NAME])[0]!
+export const createViewAttachmentTool = (options: CanvasToolsOptions) => pickTools(options, [VIEW_ATTACHMENT_TOOL_NAME])[0]!
 
 /** 全部画布工具（三组之和）—— 工具单测用；编排层按技能取（`skills/`） */
 export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
@@ -1234,6 +1254,42 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
     },
   }
 
+  /**
+   * 读一张图交给模型：读字节（宿主的 `MediaReader`，只读本服务的对象存储）→ 单张上限 → 按字节嗅类型 → 本轮累计预算。
+   * `view_node_media` 和 `view_attachment` 共用，所以两者花的是同一份 `runState.mediaBytes`。
+   */
+  async function readViewableImage(
+    reader: MediaReader,
+    url: string,
+    what: string,
+    signal: AbortSignal | undefined,
+  ): Promise<
+    | { ok: true; image: { type: 'image'; data: string; mimeType: string }; size: number }
+    | { ok: false; message: string }
+  > {
+    if (signal?.aborted) throw new Error('已中止')
+    let asset
+    try {
+      asset = await reader.read(url, { maxBytes: TOOL_LIMITS.mediaBytes, ...(signal ? { signal } : {}) })
+    } catch (err) {
+      return { ok: false, message: mediaFailure(err, what) }
+    }
+    const size = asset.data.byteLength
+    if (size > TOOL_LIMITS.mediaBytes) return { ok: false, message: `${what}超过 ${megabytes(TOOL_LIMITS.mediaBytes)}，不能查看` }
+    const mimeType = sniffImageType(asset.data)
+    if (!mimeType) {
+      return { ok: false, message: `${what}不是能查看的图片格式（只支持 ${VIEWABLE_IMAGE_TYPES.join(' / ')}）` }
+    }
+    if (runState.mediaBytes + size > TOOL_LIMITS.mediaBytesPerRun) {
+      return {
+        ok: false,
+        message: `本轮已查看 ${megabytes(runState.mediaBytes)} 的素材，再看这张会超过每轮上限 ${megabytes(TOOL_LIMITS.mediaBytesPerRun)}，已拒绝`,
+      }
+    }
+    runState.mediaBytes += size
+    return { ok: true, image: { type: 'image', data: Buffer.from(asset.data).toString('base64'), mimeType }, size }
+  }
+
   const viewNodeMedia: CanvasTool<typeof viewMediaParams> = {
     name: VIEW_MEDIA_TOOL_NAME,
     capability: 'flow:read',
@@ -1277,40 +1333,19 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
           continue
         }
         const what = node.type === 'video' ? '它的预览图' : '它的图片'
-        if (signal?.aborted) throw new Error('已中止')
-        let asset
-        try {
-          asset = await reader.read(url, { maxBytes: TOOL_LIMITS.mediaBytes, ...(signal ? { signal } : {}) })
-        } catch (err) {
-          say(mediaFailure(err, what), true)
+        const viewed = await readViewableImage(reader, url, what, signal)
+        if (!viewed.ok) {
+          say(viewed.message, true)
           continue
         }
-        const size = asset.data.byteLength
-        if (size > TOOL_LIMITS.mediaBytes) {
-          say(`${what}超过 ${megabytes(TOOL_LIMITS.mediaBytes)}，不能查看`, true)
-          continue
-        }
-        const mimeType = sniffImageType(asset.data)
-        if (!mimeType) {
-          say(`${what}不是能查看的图片格式（只支持 ${VIEWABLE_IMAGE_TYPES.join(' / ')}）`, true)
-          continue
-        }
-        if (runState.mediaBytes + size > TOOL_LIMITS.mediaBytesPerRun) {
-          say(
-            `本轮已查看 ${megabytes(runState.mediaBytes)} 的素材，再看这张会超过每轮上限 ${megabytes(TOOL_LIMITS.mediaBytesPerRun)}，已拒绝`,
-            true,
-          )
-          continue
-        }
-        runState.mediaBytes += size
         images += 1
         say(
           node.type === 'video'
-            ? `视频本身看不到，下面是它的预览图（${mimeType}，${megabytes(size)}）`
-            : `下面是它的图片（${mimeType}，${megabytes(size)}）`,
+            ? `视频本身看不到，下面是它的预览图（${viewed.image.mimeType}，${megabytes(viewed.size)}）`
+            : `下面是它的图片（${viewed.image.mimeType}，${megabytes(viewed.size)}）`,
           false,
         )
-        content.push({ type: 'image', data: Buffer.from(asset.data).toString('base64'), mimeType })
+        content.push(viewed.image)
       }
 
       if (lines.every((line) => line.error)) throw new Error(lines.map((line) => line.text).join('\n'))
@@ -1325,10 +1360,65 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
     },
   }
 
+  const viewAttachment: CanvasTool<typeof viewAttachmentParams> = {
+    name: VIEW_ATTACHMENT_TOOL_NAME,
+    capability: 'flow:read',
+    label: '查看附件',
+    description:
+      `用多模态直接看用户随消息上传的图片附件（用户消息末尾「附件」块里列出的键）。` +
+      `一次最多 ${TOOL_LIMITS.mediaPerCall} 个，单张不超过 ${megabytes(TOOL_LIMITS.mediaBytes)}，和 view_node_media 共用每轮 ${megabytes(TOOL_LIMITS.mediaBytesPerRun)} 的上限；` +
+      '视频和其他文件看不到内容。只需要地址或名字时不用调它。',
+    parameters: viewAttachmentParams,
+    executionMode: 'sequential',
+    describe: (args) => `查看 ${args.keys.length} 个附件`,
+    async execute(_id, args, signal) {
+      if (!Array.isArray(args.keys) || args.keys.length === 0 || args.keys.length > TOOL_LIMITS.mediaPerCall) {
+        throw new Error(`要查看的附件需要 1–${TOOL_LIMITS.mediaPerCall} 个`)
+      }
+      const reader = options.media
+      if (!reader) throw new Error('服务端没有接入素材读取，看不了附件')
+      const known = new Map((options.attachments ?? []).map((item) => [item.key, item]))
+      // 只认这个会话里用户发过的附件：别的键（猜的、别的画布的）一律拒，不去读
+      const missing = args.keys.filter((key) => !known.has(key))
+      if (missing.length > 0) throw new Error(`这些不是这个会话里的附件：${missing.join(', ')}；只能看用户消息「附件」块里列出的键`)
+
+      const content: AgentToolResult<CanvasToolDetails>['content'] = []
+      const lines: { text: string; error: boolean }[] = []
+      let images = 0
+      for (const key of new Set(args.keys)) {
+        const item = known.get(key)!
+        const head = `附件 ${key}（${quote(item.name)}）`
+        const say = (text: string, error: boolean) => {
+          lines.push({ text: `${head}：${text}`, error })
+          content.push({ type: 'text', text: `${head}：${text}` })
+        }
+        if (agentAttachmentKind(item.contentType) !== 'image') {
+          say(`是 ${item.contentType || '未知类型'}，只有图片附件能查看`, true)
+          continue
+        }
+        const viewed = await readViewableImage(reader, item.url, '这个附件', signal)
+        if (!viewed.ok) {
+          say(viewed.message, true)
+          continue
+        }
+        images += 1
+        say(`下面是它的内容（${viewed.image.mimeType}，${megabytes(viewed.size)}）`, false)
+        content.push(viewed.image)
+      }
+
+      if (lines.every((line) => line.error)) throw new Error(lines.map((line) => line.text).join('\n'))
+      return {
+        content,
+        details: { summary: images > 0 ? `查看 ${images} 个附件` : '查看附件（没有可看的图）', elementIds: [] },
+      }
+    },
+  }
+
   return [
     readCanvas,
     getNode,
     viewNodeMedia,
+    viewAttachment,
     addNode,
     updateNode,
     duplicateNode,

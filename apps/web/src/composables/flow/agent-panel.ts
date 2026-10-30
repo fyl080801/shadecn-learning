@@ -1,6 +1,6 @@
 import { computed, inject, provide, ref, watch, type InjectionKey, type Ref } from "vue"
 import { createEventHook } from "@vueuse/core"
-import { formatNodeMention } from "@shadecn/shared/agent"
+import { formatNodeMention, type AgentAttachment } from "@shadecn/shared/agent"
 import type { FlowSummary } from "@shadecn/shared/canvas"
 import { projectApi } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
@@ -33,8 +33,8 @@ export interface FlowAgentPanelCopy {
   quickTitle: string
   /** 输入框占位；不给用输入框自己的 */
   placeholder?: string
-  /** 不显示「引用画布上选中的节点」（导演台里没有画布选区） */
-  hideQuote?: boolean
+  /** 输入区不跟画布选区同步提及（导演台里没有画布选区） */
+  ignoreSelection?: boolean
 }
 
 export const CANVAS_AGENT_COPY: FlowAgentPanelCopy = {
@@ -50,7 +50,7 @@ export const DIRECTOR_AGENT_COPY: FlowAgentPanelCopy = {
   emptyDescription: "摆放几何体、机位和灯光，编排移动、旋转、缩放的动画。",
   quickTitle: "让助手改这个场景（新会话）",
   placeholder: "让助手改这个场景…（回车发送）",
-  hideQuote: true
+  ignoreSelection: true
 }
 
 export interface FlowAgentPanel {
@@ -59,10 +59,10 @@ export interface FlowAgentPanel {
   /** 对话框是否展开（收起时组件仍挂着，流不断） */
   open: Ref<boolean>
   /**
-   * 开一个新会话并把 `text` 作为第一条发出去，同时展开对话框。别的任务在跑不挡它（docs/20 §3.10.3）。
-   * 返回 `true` = 服务端接下了这一轮；`false` = 没开始（被拒、空文本）。
+   * 开一个新会话并把 `text`（和附件）作为第一条发出去，同时展开对话框。别的任务在跑不挡它（docs/20 §3.10.3）。
+   * 返回 `true` = 服务端接下了这一轮；`false` = 没开始（被拒、文字和附件都没有）。
    */
-  startConversation: (text: string) => Promise<boolean>
+  startConversation: (text: string, attachments?: readonly AgentAttachment[]) => Promise<boolean>
   /** 快捷输入新开了一轮 —— 对话框借此切回对话视图、贴底 */
   onStarted: ReturnType<typeof createEventHook<void>>["on"]
   /**
@@ -140,13 +140,13 @@ export function provideFlowAgentPanel(
   const started = createEventHook<void>()
   const show = createEventHook<string>()
 
-  async function startConversation(text: string): Promise<boolean> {
-    if (!text.trim()) return false
+  async function startConversation(text: string, attachments: readonly AgentAttachment[] = []): Promise<boolean> {
+    if (!text.trim() && attachments.length === 0) return false
     agent.newConversation()
     open.value = true
     void started.trigger()
     // send 走 useAsyncAction：失败已经 toast 过，不会 reject，没接下就是 undefined
-    return (await agent.send(text)) === true
+    return (await agent.send(text, attachments)) === true
   }
 
   const panel: FlowAgentPanel = {

@@ -33,7 +33,9 @@ import {
 } from "@/components/ui/tooltip"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 import { useFlowAgentPanel } from "@/composables/flow/agent-panel"
+import { useAssetUploadList } from "@/composables/useAssetUpload"
 import { useAsyncAction } from "@/composables/useAsyncAction"
+import { AGENT_ATTACHMENT_LIMIT, attachmentsOf } from "./attachments"
 import FlowAgentComposer from "./FlowAgentComposer.vue"
 import FlowAgentHistory from "./FlowAgentHistory.vue"
 import FlowAgentMessage from "./FlowAgentMessage.vue"
@@ -54,7 +56,9 @@ import FlowAgentTitle from "./FlowAgentTitle.vue"
  *   系统开了「减少动态效果」就只留角标。
  * - **面板三个视图**：对话 / 历史会话 / 进行中的任务。点开按钮时：当前会话就是一个在跑的任务 → 留在对话；
  *   ≥2 个任务 → 先列任务；只有 1 个 → 直接进它，除非我正在自己的某个会话里（不把人从自己的对话里拽走）。
- * - **头部**列出当前会话已加载的技能（docs/23 §3.6），对话里每次加载有一行「已加载：…」。
+ * - 技能（docs/23 §3.6）：对话里每次加载有一行「已加载：…」；输入框上方不列已加载的技能。
+ * - **附件**（docs/20 §3.10.12）：输入区上方的附件列表（`useAssetUploadList`，本组件建、交给输入区画）。
+ *   发送时摘走，这一轮没开始就和文字一起还回去；换画布时清空（列表自己跟着 `flowId` 清）。
  * - **别人的会话只读**（项目画布）：头部「张三 · 标题」，输入框换成一行说明 + 「发起新会话」；
  *   在跑的话看得到实时进度，停止按钮只给项目管理员。
  *
@@ -74,6 +78,8 @@ const { flowId } = useFlowEditor()
 const { agent, copy, open, onStarted, onShowConversation, selectionMentions } = useFlowAgentPanel()
 
 const draft = ref("")
+/** 这条消息的附件：传到这张画布的资源，随消息发给 agent */
+const attachments = useAssetUploadList(flowId, { max: AGENT_ATTACHMENT_LIMIT })
 /** 面板里三选一：对话 / 历史会话列表 / 进行中的任务（同一个面板里切视图，不弹新窗口） */
 const view = ref<"chat" | "history" | "tasks">("chat")
 
@@ -153,14 +159,22 @@ function followToEnd() {
 
 async function send() {
   if (agent.running.value || !agent.mine.value) return
+  // 附件还在传 / 传失败了：输入区已经不让发，这里再挡一次
+  if (attachments.uploading || attachments.failed) return
   const text = draft.value
-  if (!text.trim()) return
+  if (!text.trim() && attachments.ready.length === 0) return
   // 先清空：用户刚发的那条已经乐观地出现在列表里了，输入框里再留一份像是没发出去
   draft.value = ""
+  const items = attachments.detach()
   followToEnd()
-  const accepted = await agent.send(text)
-  // 这一轮根本没开始（被拒）：把字还回去，除非用户已经又打了新的
-  if (accepted !== true && draft.value === "") draft.value = text
+  const accepted = await agent.send(text, attachmentsOf(items))
+  if (accepted === true) {
+    attachments.release(items)
+    return
+  }
+  // 这一轮根本没开始（被拒）：把字和附件还回去（字只在用户没又打新的时还）
+  if (draft.value === "") draft.value = text
+  attachments.restore(items)
 }
 
 function stop() {
@@ -467,19 +481,6 @@ function isolateKeys(event: KeyboardEvent) {
           </MessageScroller>
 
           <div class="border-t p-3">
-            <!-- 这个会话已加载的技能（docs/23 §3.6）：放在输入框上方，不占标题 -->
-            <ul
-              v-if="agent.skills.value.length > 0"
-              class="mb-2 flex flex-wrap gap-1"
-              aria-label="已加载的技能"
-              data-testid="agent-skills"
-            >
-              <li v-for="skill in agent.skills.value" :key="skill.id">
-                <Badge variant="secondary" class="px-1.5 py-0 text-[10px] font-normal" :data-skill="skill.id">
-                  {{ skill.title }}
-                </Badge>
-              </li>
-            </ul>
             <FlowAgentComposer
               v-if="agent.mine.value"
               ref="composer"
@@ -487,7 +488,8 @@ function isolateKeys(event: KeyboardEvent) {
               :running="agent.running.value"
               :aborting="agent.aborting.value"
               :placeholder="copy.placeholder"
-              :hide-quote="copy.hideQuote"
+              :ignore-selection="copy.ignoreSelection"
+              :attachments="attachments"
               @send="send()"
               @stop="stop()"
             />

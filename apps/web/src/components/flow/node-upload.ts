@@ -2,6 +2,7 @@ import { computed, reactive } from "vue"
 import { toast } from "vue-sonner"
 
 import type { NodePartContext } from "@/components/flow/node-kit/protocol"
+import { startUpload, type AssetUpload, type AssetUploadIo } from "@/composables/useAssetUpload"
 import { useAsyncAction } from "@/composables/useAsyncAction"
 import { isUploadCanceled } from "@/lib/asset-upload"
 
@@ -11,17 +12,11 @@ import { isUploadCanceled } from "@/lib/asset-upload"
  *
  * 登记表放在模块级、按 `画布 id:节点 id` 记，而不是放在 body 组件里：节点被虚拟化卸掉、
  * 或宿主重挂 body 时，上传还在跑，回来的组件得接着显示同一份进度、能取消同一个请求。
+ * 每一项就是 `useAssetUpload.ts` 的上传句柄（进度：分片的有百分比，不分片的为 null 只转圈；能取消）。
  */
-export interface NodeUploadState {
-  /** 0–100；`null` = 没有中间进度（一次传完的小文件、分片上传开始之前），只转圈 */
-  progress: number | null
-  controller: AbortController
-}
+export type NodeUploadState = AssetUpload<void>
 
-export interface NodeUploadIo {
-  signal: AbortSignal
-  onProgress: (loaded: number, total: number) => void
-}
+export type NodeUploadIo = AssetUploadIo
 
 const uploads = reactive(new Map<string, NodeUploadState>())
 
@@ -46,19 +41,12 @@ export function useNodeUpload(ctx: NodePartContext, task: (file: File, io: NodeU
     async (file: File) => {
       const key = keyOf(ctx)
       if (uploads.has(key)) return
-      const controller = new AbortController()
-      uploads.set(key, { progress: null, controller })
-      // 取回来的是 reactive 代理，改它的 progress 才会触发重绘
-      const entry = uploads.get(key)!
+      const handle = startUpload((io) => task(file, io))
+      uploads.set(key, handle)
       try {
-        await task(file, {
-          signal: controller.signal,
-          onProgress: (loaded, total) => {
-            entry.progress = total > 0 ? Math.round((loaded / total) * 100) : null
-          }
-        })
+        await handle.done
       } finally {
-        if (uploads.get(key)?.controller === controller) uploads.delete(key)
+        if (uploads.get(key) === handle) uploads.delete(key)
       }
     },
     {
@@ -69,7 +57,7 @@ export function useNodeUpload(ctx: NodePartContext, task: (file: File, io: NodeU
   )
 
   function cancel() {
-    state.value?.controller.abort()
+    state.value?.cancel()
   }
 
   return { upload, state, cancel }

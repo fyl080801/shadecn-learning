@@ -7,8 +7,11 @@ import {
   AgentEventType,
   canonicalSkillIds,
   NODE_MENTION_PATTERN,
+  parseAgentAttachmentRefs,
   parseNodeMentions,
   withMine,
+  type AgentAttachment,
+  type AgentAttachmentRef,
   type AgentCanvasChangeMessage,
   type AgentChatMessage,
   type AgentSkillLoadedMessage,
@@ -48,7 +51,7 @@ import type { ConversationSlot, ReplayEntry, ReplayRecord, RunRecord, RunRegistr
 import { createAgentGateway, isProxiedModelApi, PROXIED_MODEL_APIS, type GatewayRun } from './gateway.ts'
 import type { MediaReader } from './media.ts'
 import type { ResolvedAgentModel } from './model.ts'
-import { expandMentions, loadedSkillText, lookupMention, systemPromptFor } from './prompt.ts'
+import { attachmentsPrompt, expandMentions, loadedSkillText, lookupMention, systemPromptFor } from './prompt.ts'
 import type {
   CanvasChangesResponse,
   FinishRequest,
@@ -77,7 +80,7 @@ import type {
   StoredConversation,
   StoredConversationMeta,
 } from './store.ts'
-import { readNodeById, type CanvasTool, type ToolRunState } from './tools.ts'
+import { readNodeById, VIEW_ATTACHMENT_TOOL_NAME, type CanvasTool, type ToolRunState } from './tools.ts'
 
 /**
  * 编排：会话、「一个会话同时只跑一轮」、把一轮 pi Agent 跑完。
@@ -376,8 +379,13 @@ export interface AgentGatewayConfig {
 export interface StartRunInput {
   flowId: string
   userId: string
-  /** 已校验过的用户输入（见 {@link validatePrompt}） */
+  /** 已校验过的用户输入（见 {@link validatePrompt}）；带了附件时可以为空串 */
   text: string
+  /**
+   * 随这条消息的附件（docs/20 §3.10.12）：**宿主已核对过都是这张画布的资源**，类型、地址取自宿主的上传记录。
+   * 存进用户消息、列进这一轮给模型的消息；`view_attachment` 能看的是这个会话里所有用户消息带过的附件。
+   */
+  attachments?: readonly AgentAttachment[]
   /**
    * 发到哪个会话；`null` = 新会话。宿主应先用 {@link AgentRuntime.getConversation} 确认它存在
    * （状态码只能在开流之前定）；在那之后才被删掉的，这一轮以 RUN_ERROR 收尾。
@@ -484,7 +492,14 @@ export interface AgentRuntime {
 }
 
 export type ValidatedPrompt =
-  | { ok: true; text: string; conversationId: string | null; nodeId: string | null }
+  | {
+      ok: true
+      text: string
+      conversationId: string | null
+      nodeId: string | null
+      /** 只校验过形状；是不是这张画布的资源由宿主查上传记录（{@link StartRunInput.attachments}） */
+      attachments: AgentAttachmentRef[]
+    }
   | { ok: false; error: string }
 
 /** 节点 id 的格式：同提及 `@{node:<id>}` 认的字符集 */
@@ -495,7 +510,11 @@ export function validatePrompt(body: unknown): ValidatedPrompt {
   const raw = (body as { text?: unknown } | null)?.text
   if (typeof raw !== 'string') return { ok: false, error: 'text 必须是字符串' }
   const text = raw.trim()
-  if (!text) return { ok: false, error: 'text 不能为空' }
+  const parsedAttachments = parseAgentAttachmentRefs((body as { attachments?: unknown }).attachments)
+  if (!parsedAttachments.ok) return { ok: false, error: parsedAttachments.error }
+  const { attachments } = parsedAttachments
+  // 只发附件、不写字也行（docs/20 §3.10.12）：附件本身就是这一轮要处理的东西
+  if (!text && attachments.length === 0) return { ok: false, error: 'text 不能为空' }
   if (text.length > AGENT_PROMPT_MAX_LENGTH) {
     return { ok: false, error: `text 超过 ${AGENT_PROMPT_MAX_LENGTH} 字` }
   }
@@ -510,7 +529,9 @@ export function validatePrompt(body: unknown): ValidatedPrompt {
   }
 
   const conversationId = (body as { conversationId?: unknown }).conversationId
-  if (conversationId === undefined || conversationId === null) return { ok: true, text, conversationId: null, nodeId }
+  if (conversationId === undefined || conversationId === null) {
+    return { ok: true, text, conversationId: null, nodeId, attachments }
+  }
   if (typeof conversationId !== 'string' || !conversationId) {
     return { ok: false, error: 'conversationId 必须是非空字符串或 null' }
   }
@@ -519,7 +540,7 @@ export function validatePrompt(body: unknown): ValidatedPrompt {
   }
   // 入口节点只在建会话时记下（docs/20 §3.10.9）：续聊时再给一个，是想改它 —— 不支持
   if (nodeId !== null) return { ok: false, error: 'nodeId 只能在新建会话时给（续聊不能改入口节点）' }
-  return { ok: true, text, conversationId, nodeId: null }
+  return { ok: true, text, conversationId, nodeId: null, attachments }
 }
 
 interface Subscriber {
@@ -758,6 +779,21 @@ function clipText(text: string, max: number): string {
 }
 
 /** 会话标题：首条用户消息的开头，原文（提及保留，前端按提及渲染），空白折成一个空格 */
+/** 只发了附件、没写字的消息拿什么当会话标题：「[附件] a.png、b.mp4」 */
+function attachmentTitle(attachments: readonly AgentAttachment[]): string {
+  return attachments.length > 0 ? `[附件] ${attachments.map((item) => item.name).join('、')}` : ''
+}
+
+/** 这个会话里（裁剪后还留着的）用户消息带过的全部附件，按键去重 —— `view_attachment` 只认这些 */
+function conversationAttachments(chat: readonly AgentChatMessage[]): AgentAttachment[] {
+  const byKey = new Map<string, AgentAttachment>()
+  for (const message of chat) {
+    if (message.role !== 'user' || !Array.isArray(message.attachments)) continue
+    for (const item of message.attachments) if (!byKey.has(item.key)) byKey.set(item.key, item)
+  }
+  return [...byKey.values()]
+}
+
 export function conversationTitle(text: string): string {
   return clipText(text.replace(/\s+/g, ' ').trim(), AGENT_TITLE_MAX_LENGTH)
 }
@@ -1395,11 +1431,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     /** 一次 send = 一批（共享补发日志里的一条记录） */
     const send = (events: AgentStreamEvent[]) => emitBatch(run, events)
 
+    const attachments = input.attachments ?? []
     const userMessage: Extract<AgentChatMessage, { role: 'user' }> = {
       id: createId('msg'),
       role: 'user',
       text,
       createdAt: Date.now(),
+      ...(attachments.length > 0 ? { attachments: attachments.map((item) => ({ ...item })) } : {}),
     }
 
     // —— 1. 准备会话：用户消息先落库，再调模型 ——
@@ -1419,7 +1457,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         chat = [userMessage]
         llmHistory = []
         previousSummary = ''
-        title = conversationTitle(text)
+        title = conversationTitle(text || attachmentTitle(attachments))
         nodeId = input.nodeId ?? null
         const created = await store.create({
           flowId,
@@ -1502,7 +1540,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     run.heartbeatAt = Date.now()
     void notifyRunsChange(flowId)
     console.info(
-      `[agent] run=${run.runId} flow=${flowId} user=${userId} conversation=${conversationId} 开始（${text.length} 字）`,
+      `[agent] run=${run.runId} flow=${flowId} user=${userId} conversation=${conversationId} 开始（${text.length} 字，${attachments.length} 个附件）`,
     )
 
     const runStart: AgentRunStart = {
@@ -1639,6 +1677,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         runState,
         ...(options.mediaReader ? { media: options.mediaReader } : {}),
         sandbox: NO_SANDBOX,
+        attachments: conversationAttachments(chat),
       }
       const files: Record<string, string> = {}
       for (const skill of plan.offered) {
@@ -1686,7 +1725,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       }
 
       const expanded = await opened.read((doc) => expandMentions(text, (id) => lookupMention(doc, id)))
-      const prompt = since ? `${since.modelText}\n\n用户这一轮的消息：\n${expanded}` : expanded
+      // 能不能看附件：提供了 view_attachment 的那个技能（模型吃图 + 接了素材读取，同 view_node_media）
+      const viewer = tools.has(VIEW_ATTACHMENT_TOOL_NAME) ? registry.skillOfTool(VIEW_ATTACHMENT_TOOL_NAME) : undefined
+      const attached = attachmentsPrompt(attachments, {
+        viewSkill: viewer ? { id: viewer.id, loaded: loadedSkills.has(viewer.id) } : null,
+      })
+      const message = attached ? (expanded ? `${expanded}\n\n${attached}` : attached) : expanded
+      const prompt = since ? `${since.modelText}\n\n用户这一轮的消息：\n${message}` : message
 
       /**
        * `load_skill`（docs/23 §3.3）：判提供集合、是否已加载、本轮次数；通过就记进已加载、发「已加载：…」那一行，

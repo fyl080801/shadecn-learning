@@ -86,6 +86,13 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   projectApi: { get: (id: string) => projectGet(id) }
 }))
 
+/** 附件上传：只换掉真正发请求的 `uploadFlowAsset`，取消判断等照用真的 */
+const uploadAsset = vi.fn()
+vi.mock("@/lib/asset-upload", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/asset-upload")>()),
+  uploadFlowAsset: (...args: unknown[]) => uploadAsset(...args)
+}))
+
 const { ApiError } = await import("@/lib/api")
 const { formatDateTime } = await import("@/lib/format")
 const { default: FlowAgentChat } = await import("@/components/flow/agent/FlowAgentChat.vue")
@@ -453,19 +460,28 @@ describe("画布 Agent 对话框", () => {
     expect(seen).not.toHaveBeenCalled()
   })
 
-  it("画布上选中了节点 → 一键引用为提及", async () => {
-    nodes.value = [node("n1", "开场白"), node("n2", "结尾")]
-    selectedNodeIds.value = ["n1", "n2"]
+  it("选中节点 → 输入框里加上提及；取消选中 → 去掉", async () => {
+    nodes.value = [node("n1", "开场白"), node("n2", "结尾"), node("n3", "旁白")]
     const wrapper = await mountOpened()
+    const value = () => wrapper.findComponent(PromptInput).props("modelValue")
 
-    const quote = wrapper.get('[data-testid="agent-quote-selection"]')
-    expect(quote.text()).toContain("2 个节点")
-    await quote.trigger("click")
+    selectedNodeIds.value = ["n1", "n2"]
     await flushPromises()
+    expect(value()).toBe("@{node:n1} @{node:n2} ")
 
-    expect(wrapper.findComponent(PromptInput).props("modelValue")).toBe("@{node:n1} @{node:n2} ")
-    // 都引用过了，按钮收起来
-    expect(wrapper.find('[data-testid="agent-quote-selection"]').exists()).toBe(false)
+    selectedNodeIds.value = ["n2"]
+    await flushPromises()
+    expect(value()).toBe("@{node:n2} ")
+
+    // 手动提及过的节点再选中不重复加
+    await wrapper.findComponent(PromptInput).vm.$emit("update:modelValue", "改 @{node:n3} @{node:n2} ")
+    selectedNodeIds.value = ["n2", "n3"]
+    await flushPromises()
+    expect(value()).toBe("改 @{node:n3} @{node:n2} ")
+
+    selectedNodeIds.value = []
+    await flushPromises()
+    expect(value()).toBe("改 ")
   })
 
   it("换画布 → 重新拿那张画布的历史", async () => {
@@ -567,7 +583,7 @@ describe("画布 Agent 对话框", () => {
     ])
   })
 
-  it("技能：输入框上方列出会话已加载的技能、标题里不显示；实时流里加载一次，对话里多一行「已加载：…」、那一栏跟着多一个", async () => {
+  it("技能：输入框上方和标题里都不列已加载的技能；实时流里加载一次，对话里多一行「已加载：…」", async () => {
     session.mockResolvedValue(
       sessionView({
         latest: view("c1", {
@@ -599,8 +615,7 @@ describe("画布 Agent 对话框", () => {
     })
 
     const wrapper = await mountOpened()
-    const badges = () => wrapper.findAll('[data-testid="agent-skills"] [data-skill]').map((item) => item.text())
-    expect(badges()).toEqual(["画布", "导演台"])
+    expect(wrapper.find('[data-testid="agent-skills"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="agent-title"] [data-skill]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="agent-title"]').text()).not.toContain("导演台")
 
@@ -611,7 +626,7 @@ describe("画布 Agent 对话框", () => {
     const line = wrapper.get('[data-testid="agent-messages"] [data-role="skill-loaded"]')
     expect(line.text()).toBe("已加载：查看素材")
     expect(line.attributes("data-skill")).toBe("media-view")
-    expect(badges()).toEqual(["画布", "导演台", "查看素材"])
+    expect(wrapper.find('[data-testid="agent-skills"]').exists()).toBe(false)
   })
 
   it("有 latest → 默认显示它的消息和标题（含提及）", async () => {
@@ -1216,15 +1231,15 @@ describe("选中节点自动带上提及", () => {
     expect(quickInput(wrapper)!.props("modelValue")).toBe("")
   })
 
-  it("快捷会话：已有草稿不动；开着时换了选中，已经放进去的提及不跟着变", async () => {
+  it("快捷会话：已有草稿不动；开着时换了选中，提及跟着换", async () => {
     selectedNodeIds.value = ["n1"]
     const wrapper = await mountWithSelection()
     await toggleQuick(wrapper)
     expect(quickInput(wrapper)!.props("modelValue")).toBe("@{node:n1} ")
-    // 开着时换选中：不跟
+    // 开着时换选中：n1 的提及去掉，n2 的加上
     selectedNodeIds.value = ["n2"]
     await flushPromises()
-    expect(quickInput(wrapper)!.props("modelValue")).toBe("@{node:n1} ")
+    expect(quickInput(wrapper)!.props("modelValue")).toBe("@{node:n2} ")
 
     // 改成自己的草稿，收起再打开（选区已经换了）：草稿原样
     quickInput(wrapper)!.vm.$emit("update:modelValue", "我的草稿")
@@ -1249,10 +1264,13 @@ describe("选中节点自动带上提及", () => {
 
     chatInput(wrapper).vm.$emit("update:modelValue", "先问一句")
     await flushPromises()
+    // 换选中跟着加提及（取消选中的 n2 / n1 已经不在草稿里了）；之后点「新会话」草稿原样
     selectedNodeIds.value = ["n3"]
+    await flushPromises()
+    expect(chatInput(wrapper).props("modelValue")).toBe("先问一句 @{node:n3} ")
     await wrapper.get('[data-testid="agent-new"]').trigger("click")
     await flushPromises()
-    expect(chatInput(wrapper).props("modelValue")).toBe("先问一句")
+    expect(chatInput(wrapper).props("modelValue")).toBe("先问一句 @{node:n3} ")
   })
 
   it("对话框：没选中时点「新会话」→ 输入框是空的", async () => {
@@ -1531,5 +1549,187 @@ describe("任务列表与多人会话", () => {
     expect(wrapper.find('[data-conversation-id="c1"]').exists()).toBe(true)
     expect(wrapper.find('[data-role="owner"]').exists()).toBe(false)
     expect(projectGet).not.toHaveBeenCalled()
+  })
+})
+
+describe("附件（docs/20 §3.10.12）", () => {
+  type UploadIo = { signal: AbortSignal; onProgress: (loaded: number, total: number) => void }
+  /** 每次上传一份可以从测试里推进的句柄：报进度、传完、失败；被取消时像真的一样以 AbortError reject */
+  const pending: { file: File; io: UploadIo; resolve: (value: unknown) => void; reject: (error: unknown) => void }[] = []
+
+  beforeEach(() => {
+    pending.length = 0
+    uploadAsset.mockReset().mockImplementation(
+      (_flowId: string, file: File, io: UploadIo) =>
+        new Promise((resolve, reject) => {
+          pending.push({ file, io, resolve, reject })
+          io.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))
+        })
+    )
+    URL.createObjectURL = vi.fn((file: Blob) => `blob:${(file as File).name}`)
+    URL.revokeObjectURL = vi.fn()
+  })
+
+  function uploaded(name: string, type = "image/png") {
+    return { key: `canvas/assets/aa/bb/${name}`, url: `https://s3.test/b/${name}`, contentType: type, size: 3 }
+  }
+
+  async function pick(input: Element, files: File[]) {
+    Object.defineProperty(input, "files", { value: files, configurable: true })
+    input.dispatchEvent(new Event("change"))
+    await flushPromises()
+  }
+
+  function dialogInput(wrapper: VueWrapper) {
+    return wrapper.get('[data-testid="agent-dialog"] [data-testid="asset-upload-input"]').element
+  }
+
+  it("加号虚线方框选文件 → 缩略图（本地预览）+ 上传中转圈；没传完不能发，传完了只有附件也能发，发出去带键和文件名、列表清空", async () => {
+    send.mockImplementation(async (_id: string, _body: unknown, options: SendOptions) => {
+      options.onOpen?.()
+      options.onEvent({ type: "RUN_STARTED", threadId: "c-new", runId: "r1" })
+      options.onEvent({
+        type: "CUSTOM",
+        name: "agent.user-message",
+        value: {
+          id: "u1",
+          role: "user",
+          text: "",
+          createdAt: 1,
+          attachments: [{ key: "canvas/assets/aa/bb/cat.png", url: "https://s3.test/b/cat.png", contentType: "image/png", name: "cat.png" }]
+        }
+      })
+      options.onEvent({ ...finished, threadId: "c-new" })
+    })
+    const wrapper = await mountOpened()
+    const add = wrapper.get('[data-testid="agent-dialog"] [data-testid="asset-upload-add"]')
+    expect(add.attributes("aria-label")).toBe("添加附件")
+    // 加号在发送按钮那一行；还没附件时上方的缩略图排不占位
+    expect(wrapper.find('[data-testid="agent-dialog"] [data-testid="asset-upload-list"]').exists()).toBe(false)
+
+    await pick(dialogInput(wrapper), [new File(["x"], "cat.png", { type: "image/png" })])
+    const tile = wrapper.get('[data-testid="asset-upload-tile"]')
+    expect(tile.attributes("data-state")).toBe("processing")
+    expect(tile.find('[data-testid="asset-upload-pending"]').exists()).toBe(true)
+    expect(tile.find('[data-testid="asset-upload-percent"]').exists()).toBe(false)
+    expect(tile.get("img").attributes("src")).toBe("blob:cat.png")
+    expect(wrapper.find('[role="progressbar"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="agent-send"]').attributes("disabled")).toBeDefined()
+    expect(wrapper.get('[data-testid="agent-composer-hint"]').text()).toBe("附件上传中…")
+
+    pending[0]!.resolve(uploaded("cat.png"))
+    await flushPromises()
+    expect(wrapper.get('[data-testid="asset-upload-tile"]').attributes("data-state")).toBe("done")
+    expect(wrapper.get('[data-testid="agent-send"]').attributes("disabled")).toBeUndefined()
+
+    await wrapper.get('[data-testid="agent-send"]').trigger("click")
+    await flushPromises()
+    expect(send).toHaveBeenLastCalledWith(
+      "f1",
+      { text: "", conversationId: null, attachments: [{ key: "canvas/assets/aa/bb/cat.png", name: "cat.png" }] },
+      expect.anything()
+    )
+    expect(wrapper.find('[data-testid="asset-upload-tile"]').exists()).toBe(false)
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:cat.png")
+    // 对话里的用户消息：附件缩略图（对象存储地址），没写字就没有文字气泡
+    const user = wrapper.get('[data-testid="agent-messages"] [data-role="user"]')
+    expect(user.get('[data-role="user-attachments"] img').attributes("src")).toBe("https://s3.test/b/cat.png")
+    expect(user.get('[data-role="user-attachments"] a').attributes("href")).toBe("https://s3.test/b/cat.png")
+  })
+
+  it("分片上传显示百分比；上传中点删除 = 取消上传；失败的可见、可重试", async () => {
+    const wrapper = await mountOpened()
+    await pick(dialogInput(wrapper), [
+      new File(["x"], "big.mp4", { type: "video/mp4" }),
+      new File(["y"], "notes.pdf", { type: "application/pdf" })
+    ])
+    const [video, doc] = wrapper.findAll('[data-testid="asset-upload-tile"]')
+    expect(video!.get("video").attributes("src")).toBe("blob:big.mp4")
+    // 其他类型：文件图标 + 名字，没有本地预览
+    expect(doc!.get('[data-role="file-name"]').text()).toBe("notes.pdf")
+
+    pending[0]!.io.onProgress(30, 120)
+    await flushPromises()
+    expect(video!.attributes("data-state")).toBe("uploading")
+    expect(video!.get('[data-testid="asset-upload-percent"]').text()).toBe("25%")
+
+    await video!.get('[data-testid="asset-upload-remove"]').trigger("click")
+    await flushPromises()
+    expect(pending[0]!.io.signal.aborted).toBe(true)
+    expect(wrapper.findAll('[data-testid="asset-upload-tile"]')).toHaveLength(1)
+
+    pending[1]!.reject(new Error("只支持图片或视频"))
+    await flushPromises()
+    const failed = wrapper.get('[data-testid="asset-upload-tile"]')
+    expect(failed.attributes("data-state")).toBe("error")
+    expect(failed.attributes("title")).toBe("只支持图片或视频（点击重试）")
+    expect(wrapper.get('[data-testid="agent-composer-hint"]').text()).toBe("有附件没传上去：重试或移除后再发送")
+    await type(wrapper, "看看")
+    expect(wrapper.get('[data-testid="agent-send"]').attributes("disabled")).toBeDefined()
+
+    await failed.get('[data-testid="asset-upload-retry"]').trigger("click")
+    await flushPromises()
+    expect(uploadAsset).toHaveBeenCalledTimes(3)
+    expect(wrapper.get('[data-testid="asset-upload-tile"]').attributes("data-state")).toBe("processing")
+  })
+
+  it("这一轮没开始（409）→ 附件和文字一起还回来", async () => {
+    send.mockRejectedValue(new ApiError("busy", 409, null))
+    const wrapper = await mountOpened()
+    await pick(dialogInput(wrapper), [new File(["x"], "cat.png", { type: "image/png" })])
+    pending[0]!.resolve(uploaded("cat.png"))
+    await type(wrapper, "用这张图")
+    await wrapper.get('[data-testid="agent-send"]').trigger("click")
+    await flushPromises()
+
+    expect(wrapper.findComponent(PromptInput).props("modelValue")).toBe("用这张图")
+    const tile = wrapper.get('[data-testid="asset-upload-tile"]')
+    expect(tile.attributes("data-state")).toBe("done")
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+  })
+
+  it("换画布 → 附件清空，在传的取消", async () => {
+    const wrapper = await mountOpened()
+    await pick(dialogInput(wrapper), [new File(["x"], "cat.png", { type: "image/png" })])
+    flowId.value = "f2"
+    await flushPromises()
+    expect(pending[0]!.io.signal.aborted).toBe(true)
+    expect(wrapper.find('[data-testid="asset-upload-tile"]').exists()).toBe(false)
+  })
+
+  it("快捷会话：也能带附件；发送失败 → 附件和文字一起还回来", async () => {
+    send.mockRejectedValue(new ApiError("bad", 400, null))
+    const wrapper = mount(HostWithQuick, { attachTo: document.body })
+    await flushPromises()
+    await wrapper.get('[data-testid="agent-quick-toggle"]').trigger("click")
+    await flushPromises()
+    const quickInput = () => document.querySelector('[data-testid="agent-quick-prompt"] [data-testid="asset-upload-input"]')!
+
+    await pick(quickInput(), [new File(["x"], "cat.png", { type: "image/png" })])
+    pending[0]!.resolve(uploaded("cat.png"))
+    await flushPromises()
+    wrapper
+      .findAllComponents(PromptInput)
+      .find((item) => item.element.closest('[data-testid="agent-quick-prompt"]'))!
+      .vm.$emit("update:modelValue", "做封面")
+    await flushPromises()
+    document.querySelector<HTMLButtonElement>('[data-testid="agent-quick-prompt"] [data-testid="agent-send"]')!.click()
+    await flushPromises()
+
+    expect(send).toHaveBeenLastCalledWith(
+      "f1",
+      { text: "做封面", conversationId: null, attachments: [{ key: "canvas/assets/aa/bb/cat.png", name: "cat.png" }] },
+      expect.anything()
+    )
+    // 弹层收起了：再打开，字和附件都在
+    await wrapper.get('[data-testid="agent-quick-toggle"]').trigger("click")
+    await flushPromises()
+    const tiles = document.querySelectorAll('[data-testid="agent-quick-prompt"] [data-testid="asset-upload-tile"]')
+    expect(tiles).toHaveLength(1)
+    expect(tiles[0]!.getAttribute("data-state")).toBe("done")
+    const input = wrapper
+      .findAllComponents(PromptInput)
+      .find((item) => item.element.closest('[data-testid="agent-quick-prompt"]'))!
+    expect(input.props("modelValue")).toBe("做封面")
   })
 })

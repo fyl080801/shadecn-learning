@@ -4,11 +4,11 @@ import {
   AGENT_TITLE_MAX_LENGTH,
   parseAgentRunsMessage,
   type AgentActiveRunView,
+  type AgentAttachment,
   type AgentChatMessage,
   type AgentConversationView,
   type AgentRunEntry,
   type AgentSessionView,
-  type AgentSkillView,
   type AgentUserView
 } from "@shadecn/shared/agent"
 import { AGENT_RUNS_MESSAGE } from "@shadecn/shared/collab"
@@ -87,24 +87,6 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
   const owner = ref<AgentUserView | null>(null)
   /** 当前会话是不是我的 —— 别人的只读：不能发、不能删（新会话恒为 true） */
   const mine = ref(true)
-  /** 打开会话时服务端给的已加载技能（docs/23 §3.4）；新会话为空 */
-  const storedSkills = ref<AgentSkillView[]>([])
-  /**
-   * 会话头部列出的已加载技能：服务端存的 + 这一轮里「已加载：…」那几行（实时、补发、旁观都经同一个事件），
-   * 按 id 去重。一轮开始时自动加载的不逐条发事件，等下次打开会话时从服务端的记录里来
-   */
-  const skills = computed<AgentSkillView[]>(() => {
-    const seen = new Set<string>()
-    const out: AgentSkillView[] = []
-    const add = (skill: AgentSkillView) => {
-      if (seen.has(skill.id)) return
-      seen.add(skill.id)
-      out.push(skill)
-    }
-    for (const skill of storedSkills.value) add(skill)
-    for (const message of conversation.messages) if (message.role === "skill-loaded") add(message.skill)
-    return out
-  })
   /** 正在读接回 / 旁观的那条事件流（当前会话的） */
   const resuming = ref(false)
   /** 本窗口在当前会话里发起的一轮还在读它的流 */
@@ -186,7 +168,6 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
     title.value = view?.title ?? null
     owner.value = view?.owner ?? null
     mine.value = view ? view.mine : true
-    storedSkills.value = view?.skills ?? []
     if (view?.mine) learnSelf(view.owner.id)
     Object.assign(conversation, emptyConversation(view ? [...view.messages] : []))
   }
@@ -492,14 +473,16 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
   }
 
   /**
-   * 发一条 prompt，跑完一整轮（或被切走）才 resolve。
+   * 发一条 prompt（可带附件，docs/20 §3.10.12），跑完一整轮（或被切走）才 resolve。
    *
    * 返回 `true` = 服务端接下了这一轮（之后怎么收尾都在对话里展示）；
-   * 抛异常 = 这一轮根本没开始，乐观插入的那条已经撤回 —— 调用方据此把输入框的字还回去。
+   * 抛异常 = 这一轮根本没开始，乐观插入的那条已经撤回 —— 调用方据此把输入框的字和附件还回去。
+   * 附件是已经传完的（键 + 文件名 + 地址 + 类型）：请求里只带键和文件名，其余的服务端按上传记录补，
+   * 乐观插入的那条先用本地这份显示，回显（`agent.user-message`）到了换成服务端那份。
    */
-  async function sendTurn(text: string): Promise<boolean> {
+  async function sendTurn(text: string, attachments: readonly AgentAttachment[] = []): Promise<boolean> {
     const prompt = text.trim()
-    if (!prompt) return false
+    if (!prompt && attachments.length === 0) return false
     if (!mine.value) throw new Error("这是别人的会话，只能查看")
     if (prompt.length > AGENT_PROMPT_MAX_LENGTH) {
       throw new Error(`消息太长了，最多 ${AGENT_PROMPT_MAX_LENGTH} 字`)
@@ -511,8 +494,11 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
       id: `local-user-${Date.now()}`,
       role: "user",
       text: prompt,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      ...(attachments.length > 0 ? { attachments: attachments.map((item) => ({ ...item })) } : {})
     }
+    /** 只发附件时的标题，同服务端（会话标题、任务列表里先用它） */
+    const titleText = prompt || `[附件] ${attachments.map((item) => item.name).join("、")}`
     beginTurn(conversation, optimistic)
     const myView = viewSeq
     localTurn.value = true
@@ -530,7 +516,12 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
     try {
       await agentApi.send(
         id,
-        { text: prompt, conversationId: conversationId.value, ...(newNodeId ? { nodeId: newNodeId } : {}) },
+        {
+          text: prompt,
+          conversationId: conversationId.value,
+          ...(newNodeId ? { nodeId: newNodeId } : {}),
+          ...(attachments.length > 0 ? { attachments: attachments.map(({ key, name }) => ({ key, name })) } : {})
+        },
         {
           signal: controller.signal,
           onOpen: () => {
@@ -540,14 +531,14 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
             if (ticket !== generation) return
             if (event.type === "RUN_STARTED") {
               runId = event.runId
-              noteLocalRun(event.runId, event.threadId, prompt, entryNodeId)
+              noteLocalRun(event.runId, event.threadId, titleText, entryNodeId)
             }
             // 切走了：这一轮照跑，事件不再往对话区里折叠
             if (myView !== viewSeq) return
             // 新会话由服务端在这一轮开始时建好，id 在 threadId 里带回来
             if (event.type === "RUN_STARTED") {
               conversationId.value = event.threadId
-              title.value ??= prompt.slice(0, AGENT_TITLE_MAX_LENGTH)
+              title.value ??= titleText.slice(0, AGENT_TITLE_MAX_LENGTH)
             }
             applyAgentEvent(conversation, event)
           }
@@ -646,8 +637,6 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
     owner,
     /** 当前会话是不是我的；false = 只读 */
     mine,
-    /** 当前会话已加载的技能（会话头部列出来） */
-    skills,
     /** 项目画布才显示发起人（个人画布上只有自己） */
     showOwners,
     newConversation,

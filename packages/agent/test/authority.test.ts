@@ -114,6 +114,7 @@ describe('工具声明的能力', () => {
       read_canvas: 'flow:read',
       get_node: 'flow:read',
       view_node_media: 'flow:read',
+      view_attachment: 'flow:read',
       check_connection: 'flow:read',
       add_node: 'flow:write',
       update_node: 'flow:write',
