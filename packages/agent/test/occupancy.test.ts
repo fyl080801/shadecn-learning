@@ -64,9 +64,9 @@ function open(doc: Y.Doc) {
   })
 }
 
-function start(runtime: ReturnType<typeof runtimeWith>, doc: Y.Doc, userId = 'u1', text = '开始') {
+async function start(runtime: ReturnType<typeof runtimeWith>, doc: Y.Doc, userId = 'u1', text = '开始') {
   const events: AgentStreamEvent[] = []
-  const started = runtime.start({ flowId: 'flow-1', userId, conversationId: null, text, openCanvas: open(doc), emit: (e) => events.push(e) })
+  const started = await runtime.start({ flowId: 'flow-1', userId, conversationId: null, text, openCanvas: open(doc), emit: (e) => events.push(e) })
   if (!started.ok) throw new Error(`应该启动成功：${started.message}`)
   return Object.assign(started, { events })
 }
@@ -168,23 +168,23 @@ describe('两轮写同一个节点', () => {
     const doc = new Y.Doc()
     seedText(doc, 'n1')
 
-    const a = start(runtime, doc, 'u1', '甲的事')
+    const a = await start(runtime, doc, 'u1', '甲的事')
     await until(() => runtime.scripted.state.callCount >= 2)
-    expect(runtime.activeRuns('flow-1')[0]).toMatchObject({ runId: a.runId, occupies: ['n1'], expiresAt: expect.any(Number) })
+    expect((await runtime.activeRuns('flow-1'))[0]).toMatchObject({ runId: a.runId, occupies: ['n1'], expiresAt: expect.any(Number) })
     expect((await runtime.leases.get('flow-1', 'n1'))?.runId).toBe(a.runId)
 
-    const b = start(runtime, doc, 'u2', '乙的事')
+    const b = await start(runtime, doc, 'u2', '乙的事')
     await b.done
     expect(seenByB[0]!.text).toContain('节点 n1 正在被 名字-u1的助手 修改')
     expect(dataOf(doc, 'n1')).toMatchObject({ text: '甲改的' })
     // 乙那一轮照常收尾（被拒不是整轮的错误），也没占到任何节点
     expect(b.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
-    expect(runtime.activeRuns('flow-1').map((run) => run.occupies)).toEqual([['n1']])
+    expect((await runtime.activeRuns('flow-1')).map((run) => run.occupies)).toEqual([['n1']])
 
     holdA.release()
     await a.done
     expect(runtime.leases.entries.size).toBe(0)
-    expect(runtime.activeRuns('flow-1')).toEqual([])
+    expect((await runtime.activeRuns('flow-1'))).toEqual([])
     // 广播里最后一份是空列表（标签随之消失）
     expect(runtime.changes.at(-1)).toEqual([])
     // 某一次广播里出现过 occupies: ['n1']（占用变化时推过全量）
@@ -192,7 +192,7 @@ describe('两轮写同一个节点', () => {
 
     // 再来一轮写它：通过
     runtime.scripted.setResponses([call('update_node', { id: 'n1', data: { text: '丙改的' } }), fauxAssistantMessage('好了')])
-    await start(runtime, doc, 'u3').done
+    await (await start(runtime, doc, 'u3')).done
     expect(dataOf(doc, 'n1')).toMatchObject({ text: '丙改的' })
   })
 
@@ -208,11 +208,11 @@ describe('两轮写同一个节点', () => {
     ])
     const doc = new Y.Doc()
     seedText(doc, 'n1')
-    const a = start(runtime, doc)
+    const a = await start(runtime, doc)
     await until(() => runtime.scripted.state.callCount >= 3)
     expect(dataOf(doc, 'n1')).toMatchObject({ text: '二' })
-    expect(runtime.activeRuns('flow-1')[0]!.occupies).toEqual(['n1'])
-    await start(runtime, doc, 'u1', '同一个人的另一个会话').done
+    expect((await runtime.activeRuns('flow-1'))[0]!.occupies).toEqual(['n1'])
+    await (await start(runtime, doc, 'u1', '同一个人的另一个会话')).done
     expect(seen[0]!.text).toContain('正在被 名字-u1的助手 修改')
     hold.release()
     await a.done
@@ -245,7 +245,7 @@ describe('哪些写占用', () => {
     const doc = new Y.Doc()
     seedText(doc, 'n1')
     nodesMap(doc).set('n2', toYNode(buildNodeRecord({ id: 'n2', type: 'image', label: '图', position: { x: 400, y: 0 } })))
-    const out = start(runtime, doc)
+    const out = await start(runtime, doc)
     await out.done
     expect(edgesMap(doc).size).toBe(1)
     expect(leasesSeen).toEqual([0])
@@ -271,7 +271,7 @@ describe('哪些写占用', () => {
     seedText(doc, 'n2')
     seedText(doc, 'n3')
     edgesMap(doc).set('e1', toYEdge({ id: 'e1', source: 'n2', target: 'n3', data: {} } as never))
-    const out = start(runtime, doc)
+    const out = await start(runtime, doc)
     await out.done
     const created = [...nodesMap(doc).keys()].filter((id) => !['n2', 'n3'].includes(id))
     expect(created).toHaveLength(2)
@@ -288,9 +288,9 @@ describe('一轮结束释放占用', () => {
     const runtime = runtimeWith([call('update_node', { id: 'n1', data: { text: '改' } }), hold.step])
     const doc = new Y.Doc()
     seedText(doc, 'n1')
-    const a = start(runtime, doc)
+    const a = await start(runtime, doc)
     await until(() => runtime.leases.entries.size === 1 && runtime.scripted.state.callCount >= 2)
-    expect(runtime.abort('flow-1', a.runId, { userId: 'u1', admin: false })).toBe('aborted')
+    expect(await runtime.abort('flow-1', a.runId, { userId: 'u1', admin: false })).toBe('aborted')
     await a.done
     expect(a.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'cancelled' } })
     expect(runtime.leases.entries.size).toBe(0)
@@ -303,7 +303,7 @@ describe('一轮结束释放占用', () => {
     ])
     const doc = new Y.Doc()
     seedText(doc, 'n1')
-    const a = start(runtime, doc)
+    const a = await start(runtime, doc)
     await a.done
     expect(a.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_ERROR })
     expect(runtime.leases.entries.size).toBe(0)
@@ -314,7 +314,7 @@ describe('一轮结束释放占用', () => {
     const runtime = runtimeWith([call('update_node', { id: 'n1', data: { text: '改' } }), hold.step])
     const doc = new Y.Doc()
     seedText(doc, 'n1')
-    start(runtime, doc)
+    await start(runtime, doc)
     await until(() => runtime.leases.entries.size === 1 && runtime.scripted.state.callCount >= 2)
     await runtime.abortAll('服务正在停止')
     expect(runtime.leases.entries.size).toBe(0)
@@ -331,7 +331,7 @@ describe('一轮结束释放占用', () => {
       },
     ])
     registry = runtime.leases
-    await start(runtime, new Y.Doc()).done
+    await (await start(runtime, new Y.Doc())).done
     expect(size).toBe(0)
   })
 })
@@ -343,7 +343,7 @@ describe('续期与过期', () => {
     const runtime = runtimeWith([call('update_node', { id: 'n1', data: { text: '改' } }), hold.step], { leases })
     const doc = new Y.Doc()
     seedText(doc, 'n1')
-    const a = start(runtime, doc)
+    const a = await start(runtime, doc)
     await until(() => leases.entries.size === 1 && runtime.scripted.state.callCount >= 2)
     const firstExpiry = leases.entries.get(leaseKey('flow-1', 'n1'))!.expiresAt
     // 等过好几个 TTL：一直续着
@@ -356,7 +356,7 @@ describe('续期与过期', () => {
     // 模拟「过期后被别人占走」：换成别人的值
     const foreign: NodeLease = { runId: 'r_other', conversationId: 'c', owner: { id: 'u9', name: '某人', avatarUrl: null }, instanceId: 'i9', since: 1 }
     leases.entries.set(leaseKey('flow-1', 'n1'), { raw: JSON.stringify(foreign), expiresAt: Date.now() + 60_000 })
-    await until(() => runtime.activeRuns('flow-1')[0]?.occupies.length === 0)
+    await until(async () => (await runtime.activeRuns('flow-1'))[0]?.occupies.length === 0)
     hold.release()
     await a.done
     expect(await leases.get('flow-1', 'n1')).toEqual(foreign)
@@ -379,7 +379,7 @@ describe('「改过」检查', () => {
       capture(seen, fauxAssistantMessage('好了')),
     ])
     seedText(doc, 'n1')
-    await start(runtime, doc).done
+    await (await start(runtime, doc)).done
     expect(seen[0]!.text).toContain('节点 n1 在你读过之后被改过')
     expect(seen[0]!.text).toContain('其他协作者')
     expect(seen[0]!.text).toContain('data.text')
@@ -401,7 +401,7 @@ describe('「改过」检查', () => {
     }
     const runtime = runtimeWith([call('get_node', { id: 'n1' }), humanMoves, capture(seen, fauxAssistantMessage('好了'))])
     seedText(doc, 'n1')
-    await start(runtime, doc).done
+    await (await start(runtime, doc)).done
     expect(seen[0]!.text).not.toContain('没有执行')
     expect(dataOf(doc, 'n1')).toMatchObject({ text: 'agent 写的' })
   })
@@ -413,11 +413,11 @@ describe('「改过」检查', () => {
     const doc = new Y.Doc()
     seedText(doc, 'n1')
     // 乙先开始（打开画布），停在模型那里
-    const b = start(runtime, doc, 'u2', '乙')
+    const b = await start(runtime, doc, 'u2', '乙')
     await until(() => runtime.scripted.state.callCount >= 1)
     // 甲来写 n1、结束（占用随之释放）
     runtime.scripted.appendResponses([call('update_node', { id: 'n1', data: { text: '甲写的' } }), fauxAssistantMessage('甲完了')])
-    await start(runtime, doc, 'u1', '甲').done
+    await (await start(runtime, doc, 'u1', '甲')).done
     // 乙接着写 n1：不是「正在改」（甲已结束），而是「改过」—— 说是甲的 agent 改的
     runtime.scripted.appendResponses([capture(seen, fauxAssistantMessage('乙停下'))])
     holdB.release()
@@ -443,9 +443,9 @@ describe('读类工具标出占用', () => {
     const doc = new Y.Doc()
     seedText(doc, 'n1')
     seedText(doc, 'n2')
-    const a = start(runtime, doc)
+    const a = await start(runtime, doc)
     await until(() => runtime.scripted.state.callCount >= 2)
-    const b = start(runtime, doc, 'u2', '乙看看')
+    const b = await start(runtime, doc, 'u2', '乙看看')
     await b.done
     expect(seen[0]!.text).toContain('【节点占用】')
     expect(seen[0]!.text).toContain('n1（名字-u1的助手）')
@@ -489,7 +489,7 @@ describe('空闲上限', () => {
     }
     const runtime = runtimeWith([], { driver: stuck, limits: { idleTimeoutMs: 80 } })
     runtimeRef.current = runtime
-    const a = start(runtime, new Y.Doc())
+    const a = await start(runtime, new Y.Doc())
     await a.done
     expect(a.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'cancelled' } })
     expect(JSON.stringify(a.events.at(-1))).toContain('空闲')
@@ -499,7 +499,7 @@ describe('空闲上限', () => {
   it('模型请求在途（长时间流式输出）不算空闲', async () => {
     const hold = gated('想好了')
     const runtime = runtimeWith([hold.step], { limits: { idleTimeoutMs: 60 } })
-    const a = start(runtime, new Y.Doc())
+    const a = await start(runtime, new Y.Doc())
     await new Promise((resolve) => setTimeout(resolve, 250))
     hold.release()
     await a.done

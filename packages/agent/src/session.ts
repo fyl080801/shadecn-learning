@@ -44,6 +44,7 @@ import {
 import { createRunEventMapper, type RunOutcome } from './events.ts'
 import { nodesMap } from '@shadecn/shared/flow-doc'
 import { createdNodeIds, dataWriteTargets, type NodeLease, type NodeLeaseRegistry } from './occupancy.ts'
+import type { ConversationSlot, ReplayEntry, ReplayRecord, RunRecord, RunRegistry, StopCommand } from './run-registry.ts'
 import { createAgentGateway, isProxiedModelApi, PROXIED_MODEL_APIS, type GatewayRun } from './gateway.ts'
 import type { MediaReader } from './media.ts'
 import type { ResolvedAgentModel } from './model.ts'
@@ -87,9 +88,11 @@ import { readNodeById, type CanvasTool, type ToolRunState } from './tools.ts'
  *   一个人在一张画布上可以有多个会话；项目画布上别人的会话只读可见（读的口径见 store.ts「归属」）。
  *   进程重启、换到另一个副本，会话都还在。
  * - **运行日志**（每轮一行 + 每次工具调用一行）经注入的 {@link AgentRunLog} 落库，审计用途。
- * - **「谁在跑」**（`runs` + `busyConversations`）是进程内存里的 `Map`：**多副本之间不共享** ——
- *   「一个会话同一时刻一轮」只在单副本下成立，任务列表也只列本进程的；进程重启时正在跑的轮次随之没了。
- *   跨副本的 run 注册表要上共享层（`SharedMap.claim` + TTL + 心跳，docs/20 §3.7.2），属于 F14，留到后续。
+ * - **「谁在跑」分两层**（docs/20 §3.10.10，F14）：本进程的 `runs` / `busyConversations`（`RunState` 本体、同一 tick 的占位），
+ *   和注入的 {@link RunRegistry}（宿主：共享层，多副本是 redis）里的**任务登记**、**会话槽位**、**补发日志**、**停止指令**。
+ *   任务列表、「这个会话在不在跑」、接回、停止都以共享层为准，所以落在哪个副本上都一样；
+ *   工具执行、画布连接、模型代理仍只在持有副本上（runner 只连回发起它的副本）。进程崩溃时这一轮没了，
+ *   它的登记 / 槽位 / 日志不再续期，一个 TTL 内过期。
  *
  * ## 并发单位是会话
  *
@@ -102,6 +105,9 @@ import { readNodeById, type CanvasTool, type ToolRunState } from './tools.ts'
  *
  * 一轮在 RUN_STARTED 发出（会话已建好、标题与发起人已知）之后才进列表（{@link AgentRuntime.activeRuns}），
  * 彻底结束（从 `runs` 删掉）时离开；两个时刻各调一次 `onRunsChange`，宿主拿去广播给房间。
+ * **列表是共享登记的全量**（docs/20 §3.10.10）：每次推送先把本副本在这张画布上的轮次写进登记（`syncRecord`），再按画布前缀读出
+ * 全部（含别的副本上的），所以哪个副本发的广播都是完整的；推送按画布串成一条链，后发的不会比先发的旧。
+ * 登记的值 = 列表那一项 + `instanceId`，由持有副本覆盖写（心跳续 TTL，不等节流），收尾时比较后删。
  * 准备会话就失败的那种（只发一帧 RUN_ERROR）从没进过列表，也就不会「出现又消失」。
  * 列表里每一项带 `occupies`（这一轮占用的节点）和 `expiresAt`（最近一次续期 + TTL）：占用变化、每次续期（1/3 TTL）
  * 也重推全量列表，**每张画布每 `runsThrottleMs` 至多一次**（{@link scheduleRunsChange}）；进 / 离列表不节流。
@@ -121,8 +127,9 @@ import { readNodeById, type CanvasTool, type ToolRunState } from './tools.ts'
  *
  * ## 一轮的生命周期与失败语义
  *
- * `start()` **同步**占住这个会话的槽位（同一会话的第二个发起者立刻得到 `busy`，中间没有 await 可插队；
- * 新会话没有可撞的槽位，总能开始），然后异步跑：
+ * `start()` 先在本进程里**同步**占住这个会话的槽位（同一会话的第二个发起者立刻得到 `busy`，中间没有 await 可插队），
+ * 再到共享登记 `claimSlot`（原子的「不存在才写」：同一个会话在两个副本上同时发起只有一个占得到，另一个 `busy`；
+ * 共享登记不可用 → `unavailable`）。新会话没有可撞的槽位，总能开始（建好会话后同样占上共享槽位）。然后异步跑：
  *
  * 1. **准备会话**：没给会话 id 就 `create`（标题取自这条用户消息），给了就读出来（含模型上下文），
  *    把用户消息追加进去并 `save`。这一步**先于调用模型**：用户消息先落库，模型再贵也不会白跑一趟却没留下记录。
@@ -217,6 +224,15 @@ import { readNodeById, type CanvasTool, type ToolRunState } from './tools.ts'
  * 最后一帧（RUN_FINISHED / RUN_ERROR）发出后通知订阅者「完了」；这一轮从 `runs` 删掉时缓冲随之释放。
  * 最后一帧之后、删掉之前（关画布、写运行日志那一小段）接回的，补发里就带着最后一帧，随即完结 ——
  * 只要任务列表里还看得见它，就接得回。
+ *
+ * **共享补发日志（多副本，docs/20 §3.10.10）**：同一批帧另外**按批**追加进 {@link RunRegistry} 的补发日志 ——
+ * 一次 `send`（runner 上报的一批事件映射之后的全部帧、一次收尾……）= 一条记录，带从 1 起连续的 `seq`，文字增量不逐帧写。
+ * 追加按顺序串成一条链（{@link RunState.replayLog}），收尾时先等它写完再删登记。本进程的订阅者走上面的内存快路径；
+ * 别的副本收到接回请求时（这一轮不在它的 `runs` 里）：先查任务登记（没有 = 404），再从头读日志补发（断号或带溢出标记 = 410），
+ * 然后阻塞读后续的；一段时间没有新帧就查一次登记，登记没了（持有副本崩溃，收尾帧不会来了）就关流。
+ * 两条路在同一批上判溢出（内存缓冲溢出的那一批起，日志记录都带 `overflow`，并只留最近 {@link REPLAY_TAIL_RECORDS} 条给
+ * 还挂着的跨副本订阅者），所以接回得到的结果（补发 / 410 / 404）和落在哪个副本无关。日志每次追加、每次心跳续一个 TTL，
+ * 这一轮结束后不再续，一个 TTL 后自然删掉。
  */
 
 export interface RunLimits {
@@ -339,6 +355,12 @@ export interface AgentRuntimeOptions {
    * 宿主用共享层（单副本内存、多副本 redis）实现；测试用 `createMemoryLeaseRegistry`。
    */
   leases: NodeLeaseRegistry
+  /**
+   * 运行中轮次的共享登记（docs/20 §3.10.10，`run-registry.ts`）：任务登记、会话槽位、补发日志、停止指令。
+   * **必填**，理由同 `store`：没有「只在本进程登记」的默认值 —— 那正是多副本下任务列表不全、同一会话两边同时跑的来源。
+   * 宿主用共享层（单副本内存、多副本 redis）实现；测试用 `createMemoryRunRegistry`（多个 runtime 共用一个 hub = 多副本）。
+   */
+  runRegistry: RunRegistry
   limits?: Partial<RunLimits>
 }
 
@@ -388,8 +410,11 @@ export type StartRunResult =
       /** 发起者不再收事件（连接断了）；这一轮照常跑 */
       unsubscribe: () => void
     }
-  /** `busy` = 这个会话已经有一轮在跑（别的会话不影响） */
-  | { ok: false; reason: 'disabled' | 'busy'; message: string }
+  /**
+   * `busy` = 这个会话已经有一轮在跑（别的会话不影响；不论跑在哪个副本上）；
+   * `unavailable` = 共享登记暂时不可用，确认不了这个会话有没有在跑（宿主回 503）
+   */
+  | { ok: false; reason: 'disabled' | 'busy' | 'unavailable'; message: string }
 
 export type SubscribeResult =
   | {
@@ -421,24 +446,34 @@ export interface AgentRuntime {
   readonly disabledReason: string | null
   /** `userId` 是请求者：决定 `mine` 和默认打开哪个会话 */
   view(flowId: string, userId: string): Promise<AgentSessionView>
-  /** 这张画布此刻在跑、已进列表的轮次（全量，按 startedAt 升序）—— 广播与 `view` 用的是同一份 */
-  activeRuns(flowId: string): AgentRunEntry[]
+  /**
+   * 这张画布此刻在跑、已进列表的轮次（全量，按 startedAt 升序；**读共享登记**，含别的副本上的）——
+   * 广播与 `view` 用的是同一份。共享登记读不到时退回本副本的
+   */
+  activeRuns(flowId: string): Promise<AgentRunEntry[]>
   /** 这张画布上所有人的会话（`userId` 只用来算 `mine`）；能不能进这张画布由宿主判 */
   listConversations(flowId: string, userId: string): Promise<AgentConversationSummary[]>
   /** 这张画布上的一个会话，不论是谁的（只读）；不在这张画布上 → null */
   getConversation(flowId: string, userId: string, id: string): Promise<AgentConversationView | null>
   /** 只有发起人能删；这个会话正在跑一轮时拒绝 */
   deleteConversation(flowId: string, userId: string, id: string): Promise<DeleteConversationResult>
-  /** 这张画布上有没有任何一轮在跑（含还没进列表、正在准备会话的） */
+  /** **本副本**上这张画布有没有任何一轮在跑（含还没进列表、正在准备会话的）—— 测试 / 收尾用，不看别的副本 */
   isRunning(flowId: string): boolean
-  start(input: StartRunInput): StartRunResult
   /**
-   * 接回 / 旁观一轮：只要是这张画布此刻在跑的那一轮。谁能看由宿主判（能进这张画布的人都能看，只读）。
-   * 先**同步**补发自第一帧起的全部事件，再推后续的；最后一帧之后 `done` 兑现。返回之前补发就已经发完了。
+   * 发起一轮。本进程里**同步**占会话的位（同一个 tick 的第二个发起者立刻 `busy`），再到共享登记占会话槽位
+   * （别的副本上这个会话在跑 → `busy`）；兑现时这一轮已经开始，状态码据此在开流之前定。
    */
-  subscribe(flowId: string, runId: string, onEvent: (event: AgentStreamEvent) => void): SubscribeResult
-  /** 中止这张画布上的某一轮：只有发起人或项目管理员能中止 */
-  abort(flowId: string, runId: string, actor: AbortActor): AbortResult
+  start(input: StartRunInput): Promise<StartRunResult>
+  /**
+   * 接回 / 旁观一轮：只要是这张画布此刻在跑的那一轮（不论在哪个副本上）。谁能看由宿主判（能进这张画布的人都能看，只读）。
+   * 先补发自第一帧起的全部事件，再推后续的；最后一帧之后 `done` 兑现。兑现之前补发就已经交给 `onEvent` 了。
+   */
+  subscribe(flowId: string, runId: string, onEvent: (event: AgentStreamEvent) => void): Promise<SubscribeResult>
+  /**
+   * 中止这张画布上的某一轮：只有发起人或项目管理员能中止（在收到请求的这个副本上判）。
+   * 这一轮在别的副本上 → 按登记里的 `instanceId` 把停止指令发给持有副本；登记已经没了 = 已经结束（`not-running`）
+   */
+  abort(flowId: string, runId: string, actor: AbortActor): Promise<AbortResult>
   /**
    * 进程退出前：中止所有在跑的轮次，并等它们收尾（对话落库、运行日志写完、画布关掉）。
    * 宿主要在关数据库之前 await 它（给个上限）。
@@ -528,12 +563,36 @@ interface RunState {
   claiming: Promise<unknown>
   /** 最近一次续期（心跳）的时刻；任务列表那一项的 `expiresAt` = 它 + TTL */
   heartbeatAt: number
-  /** 续期定时器（进列表时起、收尾时停） */
+  /** 续期定时器（发起时起、收尾时停）：占用、会话槽位、任务登记、补发日志都在这一拍续 */
   heartbeat: ReturnType<typeof setInterval> | null
+  /** 这一轮在共享登记里占着的会话槽位（续期 / 释放原样交回）；还没占到为 null */
+  slot: ConversationSlot | null
+  /** 最近一次**写成功**的任务登记 / 最近一次**试着写**的（写失败时不知道落没落地，收尾时两份都试着删） */
+  record: RunRecord | null
+  recordAttempt: RunRecord | null
+  /** 任务登记的写入串成一条链：心跳、列表推送各自触发，不能让旧值后到覆盖新值 */
+  registryChain: Promise<void>
+  /** 共享补发日志：已追加到第几条（`seq`）、追加串成的链、写失败过没有（只记一次日志） */
+  replaySeq: number
+  replayLog: Promise<void>
+  replayWriteFailed: boolean
 }
 
 /** 被叫停的一轮以什么状态收尾：Grant 到期是 expired，其余（停止按钮、超时、失权、进程退出）是 cancelled */
 type StopStatus = 'cancelled' | 'expired'
+
+/**
+ * 内存缓冲溢出之后，共享补发日志只留最近这么多条（给还挂着的跨副本订阅者接着读；新来的反正都是 410）。
+ * 溢出之前不裁（条数上限 = `replayEvents`，一条记录至少一帧，到不了）。
+ */
+const REPLAY_TAIL_RECORDS = 256
+
+/** 认别的副本上轮次的发起人（常驻观察的「某某 的 agent」）：缓存多少个 runId */
+const REMOTE_OWNER_CACHE = 256
+/** 查过共享登记、没查到的 runId 多久之内不再查（它已经结束了，别每个事务都查一次） */
+const MISSING_OWNER_RETRY_MS = 5000
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 /** 叫停一轮：记下第一个原因（之后的不覆盖），并让正在跑的那一步停下。幂等 */
 function stopRun(run: RunState, reason: string, status: StopStatus = 'cancelled') {
@@ -768,7 +827,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       : null
   const resolved = unproxied ? null : options.model
   const disabledReason = unproxied ?? options.disabledReason ?? '没有配置模型'
-  const { store, runLog, leases } = options
+  const { store, runLog, leases, runRegistry } = options
   /** 技能注册表：runner 那边用的必须是同一份（生产都是内置的，测试显式传同一个） */
   const registry = options.skills ?? BUILTIN_SKILLS
   const gateway = createAgentGateway({
@@ -784,12 +843,35 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     deadlineMs: limits.timeoutMs + SANDBOX_DEADLINE_MARGIN_MS,
     ...options.sandbox?.resources,
   }
-  /** runId → 正在跑的一轮（含还在准备会话的）。进程内存，多副本不共享（见文件头） */
+  /** runId → 本副本上正在跑的一轮（含还在准备会话的）。别的副本上的只在共享登记里（见文件头） */
   const runs = new Map<string, RunState>()
-  /** 会话的槽位：`conversationKey` → 在它上面跑的那一轮。一个会话同时只跑一轮 */
+  /** 会话的本进程槽位：`conversationKey` → 在它上面跑的那一轮（同一 tick 的占位；跨副本靠共享槽位） */
   const busyConversations = new Map<string, RunState>()
 
-  const isConversationRunning = (flowId: string, id: string) => busyConversations.has(conversationKey(flowId, id))
+  /** 本副本上这个会话有没有一轮（含刚同步占位、还在共享登记里占槽位的） */
+  const runningHere = (flowId: string, id: string) => busyConversations.has(conversationKey(flowId, id))
+
+  /** 这个会话此刻有没有一轮在跑，不论在哪个副本上（共享槽位）。读不到共享登记就抛 —— 调用方决定怎么退 */
+  async function conversationRunning(flowId: string, id: string): Promise<boolean> {
+    if (runningHere(flowId, id)) return true
+    return (await runRegistry.getSlot(flowId, id)) !== null
+  }
+
+  /** 这张画布上在跑的会话 id（本副本 ∪ 共享槽位）；共享登记读不到就只给本副本的，记一笔 */
+  async function busyIn(flowId: string): Promise<Set<string>> {
+    const busy = new Set<string>()
+    for (const run of runs.values()) {
+      if (run.flowId === flowId && run.conversationId !== null && busyConversations.get(conversationKey(flowId, run.conversationId)) === run) {
+        busy.add(run.conversationId)
+      }
+    }
+    try {
+      for (const id of await runRegistry.busyConversations(flowId)) busy.add(id)
+    } catch (err) {
+      console.warn(`[agent] flow=${flowId} 读不到共享的会话槽位，只按本副本标「在跑」`, err)
+    }
+    return busy
+  }
 
   async function profiles(userIds: string[]): Promise<Map<string, AgentUserView>> {
     const unique = [...new Set(userIds)]
@@ -803,7 +885,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     }
   }
 
-  function entryOf(run: RunState): AgentRunEntry | null {
+  /** 这一轮在共享登记里的那一项（任务列表那一项 + 本副本）；还没进列表为 null */
+  function recordOf(run: RunState): RunRecord | null {
     if (!run.listed || run.conversationId === null) return null
     return {
       runId: run.runId,
@@ -814,27 +897,100 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       // 只有带入口节点的会话才带（只是回显入口，不表示在改它）
       ...(run.nodeId ? { nodeId: run.nodeId } : {}),
       occupies: [...run.held.keys()],
-      expiresAt: run.heartbeatAt + leases.ttlMs,
+      expiresAt: run.heartbeatAt + runRegistry.ttlMs,
+      instanceId: runRegistry.instanceId,
     }
   }
 
-  function activeRuns(flowId: string): AgentRunEntry[] {
-    const entries: AgentRunEntry[] = []
+  /** 登记 → 线上的那一项：去掉副本标识（客户端不需要知道跑在哪） */
+  function entryOfRecord(record: RunRecord): AgentRunEntry {
+    const entry: AgentRunEntry & { instanceId?: string } = { ...record }
+    delete entry.instanceId
+    return entry
+  }
+
+  /**
+   * 全量任务列表：共享登记里这张画布的全部，本副本自己的轮次以内存里的为准（刚变的占用、刚续的 `expiresAt`
+   * 可能还没写进去）。共享登记读不到 → 只给本副本的，记一笔（多副本下这时列表不全）。
+   */
+  async function activeRuns(flowId: string): Promise<AgentRunEntry[]> {
+    const byRun = new Map<string, AgentRunEntry>()
+    try {
+      for (const record of await runRegistry.listRuns(flowId)) {
+        // 本副本的登记但内存里已经没有了：这一轮刚结束、登记正在删，别再列出来
+        if (record.instanceId === runRegistry.instanceId && !runs.has(record.runId)) continue
+        byRun.set(record.runId, entryOfRecord(record))
+        if (!runs.has(record.runId)) rememberOwner(record.runId, record.owner.name)
+      }
+    } catch (err) {
+      console.warn(`[agent] flow=${flowId} 读不到共享的任务登记，任务列表只给本副本的`, err)
+    }
     for (const run of runs.values()) {
       if (run.flowId !== flowId) continue
-      const entry = entryOf(run)
-      if (entry) entries.push(entry)
+      const record = recordOf(run)
+      if (record) byRun.set(record.runId, entryOfRecord(record))
     }
-    return entries.sort((a, b) => a.startedAt - b.startedAt || (a.runId < b.runId ? -1 : 1))
+    return [...byRun.values()].sort((a, b) => a.startedAt - b.startedAt || (a.runId < b.runId ? -1 : 1))
+  }
+
+  /**
+   * 不在本进程 `runs` 里的轮次的发起人名字（runId → 名字）：常驻观察出通知时要同步地叫出「某某 的 agent」。
+   * 别的副本上的从共享登记查好放这；本副本刚结束的也记一笔（名字在出通知时才定，那时它可能已经收尾了）。
+   */
+  const remoteOwners = new Map<string, string>()
+  function rememberOwner(runId: string, name: string) {
+    remoteOwners.delete(runId)
+    remoteOwners.set(runId, name)
+    while (remoteOwners.size > REMOTE_OWNER_CACHE) remoteOwners.delete(remoteOwners.keys().next().value!)
+  }
+
+  /** 正在查的（runId → 那次查询）；查过没查到的记下时刻，{@link MISSING_OWNER_RETRY_MS} 内不再查 */
+  const ownerLookups = new Map<string, Promise<void>>()
+  const missingOwners = new Map<string, number>()
+
+  /** 去共享登记查一轮的发起人（同一个 runId 同时只查一次） */
+  function lookupOwner(flowId: string, runId: string): Promise<void> {
+    if (runs.has(runId) || remoteOwners.has(runId)) return Promise.resolve()
+    const missedAt = missingOwners.get(runId)
+    if (missedAt !== undefined && Date.now() - missedAt < MISSING_OWNER_RETRY_MS) return Promise.resolve()
+    let pending = ownerLookups.get(runId)
+    if (!pending) {
+      pending = runRegistry
+        .getRun(flowId, runId)
+        .then(
+          (record) => {
+            if (record) {
+              missingOwners.delete(runId)
+              rememberOwner(record.runId, record.owner.name)
+              return
+            }
+            missingOwners.set(runId, Date.now())
+            while (missingOwners.size > REMOTE_OWNER_CACHE) missingOwners.delete(missingOwners.keys().next().value!)
+          },
+          (err: unknown) => console.warn(`[agent] flow=${flowId} 查不到 run=${runId} 的发起人`, err),
+        )
+        .finally(() => ownerLookups.delete(runId))
+      ownerLookups.set(runId, pending)
+    }
+    return pending
+  }
+
+  /** 改动者里有本副本不认识的轮次：等它们的发起人查完（常驻观察出通知之前调；查不到的照旧叫「另一个 agent」） */
+  async function resolveActors(flowId: string, actors: readonly CanvasActor[]) {
+    await Promise.all(actors.flatMap((actor) => (actor.kind === 'agent' ? [lookupOwner(flowId, actor.runId)] : [])))
   }
 
   /** 画布改动是谁做的 → 显示名；`null` = 本轮自己的写入，不报 */
-  function actorName(actor: CanvasActor, ownRunId: string): string | null {
+  function actorName(actor: CanvasActor, ownRunId: string, flowId: string): string | null {
     if (actor.kind === 'agent') {
       if (actor.runId === ownRunId) return null
       const other = runs.get(actor.runId)
-      // 别的副本上的轮次这里不认识（注册表在进程内存，F14）
-      return other ? `${other.owner?.name ?? unknownUser(other.userId).name} 的 agent` : '另一个 agent'
+      if (other) return `${other.owner?.name ?? unknownUser(other.userId).name} 的 agent`
+      const remote = remoteOwners.get(actor.runId)
+      if (remote) return `${remote} 的 agent`
+      // 别的副本上的轮次：趁它还在（它此刻正在写）就去共享登记查发起人，出通知时（resolveActors）等这次查询
+      void lookupOwner(flowId, actor.runId)
+      return '另一个 agent'
     }
     if (actor.kind === 'user') return actor.name || '其他协作者'
     return '其他协作者'
@@ -843,18 +999,104 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   /** 每张画布上次推任务列表的时刻和等着补推的定时器（{@link scheduleRunsChange} 的节流） */
   const runsPush = new Map<string, { at: number; timer: ReturnType<typeof setTimeout> | null }>()
 
-  /** 列表变了：把这张画布的全量列表交给宿主（广播）。宿主的错不该打断这一轮。进 / 离列表走它，不节流 */
-  function notifyRunsChange(flowId: string) {
+  /** 每张画布的推送串成一条链：后一次读到的全量一定不比前一次旧，广播不会乱序 */
+  const pushChain = new Map<string, Promise<void>>()
+
+  /**
+   * 列表变了：先把本副本在这张画布上的轮次写进共享登记，再读**共享登记的全量**交给宿主（广播，经 redis 扩展到所有副本的客户端）。
+   * 宿主的错不该打断这一轮。进 / 离列表走它，不节流；返回的 promise 在这次推送做完时兑现（从不 reject）。
+   */
+  function notifyRunsChange(flowId: string): Promise<void> {
     const state = runsPush.get(flowId)
     if (state?.timer) clearTimeout(state.timer)
     // 没有在跑的了：节流状态也不用留
     if (![...runs.values()].some((run) => run.flowId === flowId)) runsPush.delete(flowId)
     else runsPush.set(flowId, { at: Date.now(), timer: null })
-    if (!options.onRunsChange) return
+    const previous = pushChain.get(flowId) ?? Promise.resolve()
+    const next = previous.then(async () => {
+      await Promise.all([...runs.values()].filter((run) => run.flowId === flowId).map((run) => syncRecord(run)))
+      if (!options.onRunsChange) return
+      const list = await activeRuns(flowId)
+      try {
+        options.onRunsChange(flowId, list)
+      } catch (err) {
+        console.error(`[agent] flow=${flowId} 任务列表变更通知失败`, err)
+      }
+    })
+    pushChain.set(flowId, next)
+    void next.then(() => {
+      if (pushChain.get(flowId) === next) pushChain.delete(flowId)
+    })
+    return next
+  }
+
+  /**
+   * 把这一轮的登记写进共享层（进列表、占用变化、续期都走它；没进列表的什么都不做）。
+   * 串成一条链，旧值不会后到覆盖新值；和上次写成功的一样就不写。写失败只记一笔：下一拍心跳再写，
+   * 一直写不上就在 TTL 内从别的副本的列表里消失（本副本的列表仍从内存补上）。
+   */
+  function syncRecord(run: RunState): Promise<void> {
+    const task = async () => {
+      const next = recordOf(run)
+      // 已经收尾（从 runs 删掉）的不再写：收尾那次比较后删之后不能又写回来
+      if (!next || !runs.has(run.runId)) return
+      if (run.record && JSON.stringify(run.record) === JSON.stringify(next)) return
+      run.recordAttempt = next
+      try {
+        await runRegistry.putRun(run.flowId, next)
+        run.record = next
+      } catch (err) {
+        console.warn(`[agent] run=${run.runId} 任务登记写入失败（下一次心跳再试）`, err)
+      }
+    }
+    run.registryChain = run.registryChain.then(task, task)
+    return run.registryChain
+  }
+
+  /** 收尾：删掉这一轮的任务登记（比较后删）和会话槽位（比较后删）。失败只记一笔，TTL 兜底 */
+  async function releaseShared(run: RunState) {
+    await run.registryChain
+    const candidates = [run.recordAttempt, run.record].filter((record): record is RunRecord => record !== null)
+    for (const record of new Set(candidates)) {
+      try {
+        if (await runRegistry.releaseRun(run.flowId, record)) break
+      } catch (err) {
+        console.warn(`[agent] run=${run.runId} 删除任务登记失败（等它过期）`, err)
+        break
+      }
+    }
+    const slot = run.slot
+    if (slot && run.conversationId !== null) {
+      run.slot = null
+      try {
+        await runRegistry.releaseSlot(run.flowId, run.conversationId, slot)
+      } catch (err) {
+        console.warn(`[agent] run=${run.runId} 释放会话槽位失败（等它过期）`, err)
+      }
+    }
+  }
+
+  /** 在共享登记里占会话槽位：占到了记在 run 上（续期 / 释放原样交回） */
+  async function claimSlot(run: RunState, conversationId: string): Promise<boolean> {
+    const slot: ConversationSlot = { runId: run.runId, instanceId: runRegistry.instanceId }
+    if (!(await runRegistry.claimSlot(run.flowId, conversationId, slot))) return false
+    run.slot = slot
+    return true
+  }
+
+  /** 心跳里续会话槽位：续不上（过期了）就再占一次；被别的副本占走了只能记一笔（这时同一个会话两边都在跑） */
+  async function renewSlot(run: RunState) {
+    const slot = run.slot
+    if (!slot || run.conversationId === null) return
     try {
-      options.onRunsChange(flowId, activeRuns(flowId))
+      if (await runRegistry.renewSlot(run.flowId, run.conversationId, slot)) return
+      // 这期间收尾已经开始释放了（run.slot 被清掉）：别把刚删的槽位又占回来
+      if (run.slot !== slot) return
+      if (await runRegistry.claimSlot(run.flowId, run.conversationId, slot)) return
+      console.warn(`[agent] run=${run.runId} 会话槽位已过期并被别的轮次占走（conversation=${run.conversationId}）`)
+      run.slot = null
     } catch (err) {
-      console.error(`[agent] flow=${flowId} 任务列表变更通知失败`, err)
+      console.warn(`[agent] run=${run.runId} 会话槽位续期失败（下一次心跳再试）`, err)
     }
   }
 
@@ -977,7 +1219,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     return true
   }
 
-  /** 续期：每 1/3 TTL 给自己的每个占用续一次（比较后写），已易主 / 已过期的拿掉；然后重推一次列表（新的 `expiresAt`） */
+  /**
+   * 续期：每 1/3 TTL 给自己的每个占用续一次（比较后写），已易主 / 已过期的拿掉；会话槽位、补发日志、任务登记一起续；
+   * 然后重推一次列表（新的 `expiresAt`，节流）。发起时就起（准备会话那段也要续槽位），进列表之前只续槽位和日志。
+   */
   function startHeartbeat(run: RunState) {
     run.heartbeatAt = Date.now()
     const tick = async () => {
@@ -996,10 +1241,20 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         }
       })
       if (run.heartbeat === null) return
+      await renewSlot(run)
+      if (run.replaySeq > 0) {
+        await runRegistry.keepReplay(run.runId).catch((err: unknown) => {
+          console.warn(`[agent] run=${run.runId} 补发日志续期失败（下一次心跳再试）`, err)
+        })
+      }
+      if (run.heartbeat === null) return
       run.heartbeatAt = Date.now()
+      if (!run.listed) return
+      // 登记的 TTL 不能等节流：直接写，列表推送再按节流来
+      await syncRecord(run)
       scheduleRunsChange(run.flowId)
     }
-    run.heartbeat = setInterval(() => void tick(), Math.max(1, Math.floor(leases.ttlMs / 3)))
+    run.heartbeat = setInterval(() => void tick(), Math.max(1, Math.floor(Math.min(leases.ttlMs, runRegistry.ttlMs) / 3)))
     run.heartbeat.unref?.()
   }
 
@@ -1027,11 +1282,31 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     }
   }
 
-  /** 一轮的每一帧都从这里出去：先进补发缓冲，再按顺序交给每个订阅者（见文件头） */
-  function publish(run: RunState, event: AgentStreamEvent) {
+  /**
+   * 一批帧：逐帧 {@link publish}（本进程的缓冲与订阅者），收下的那些再作为**一条**记录追加进共享补发日志（见文件头）。
+   * 一轮的每一帧都从这里出去。
+   */
+  function emitBatch(run: RunState, events: readonly AgentStreamEvent[]) {
+    const accepted = events.filter((event) => publish(run, event))
+    if (accepted.length === 0) return
+    run.replaySeq += 1
+    // 内存缓冲溢出的那一批起都带标记：新来的订阅者（不论哪个副本）都是 410
+    const overflowed = run.replay === null
+    const record: ReplayRecord = { seq: run.replaySeq, events: accepted, ...(overflowed ? { overflow: true as const } : {}) }
+    const maxLen = overflowed ? REPLAY_TAIL_RECORDS : limits.replayEvents
+    const append = () => runRegistry.appendReplay(run.runId, record, maxLen)
+    run.replayLog = run.replayLog.then(append).catch((err: unknown) => {
+      // 断了一条：之后的 seq 不连续，跨副本接回的按溢出处理（410），已挂着的跨副本订阅者到断号处关流
+      if (!run.replayWriteFailed) console.warn(`[agent] run=${run.runId} 共享补发日志写入失败，别的副本接不回这一轮`, err)
+      run.replayWriteFailed = true
+    })
+  }
+
+  /** 一帧进本进程的补发缓冲、交给本进程的每个订阅者（见文件头）；收下了返回 true（最后一帧之后的丢弃） */
+  function publish(run: RunState, event: AgentStreamEvent): boolean {
     if (run.finished) {
       console.warn(`[agent] run=${run.runId} 最后一帧之后还有事件（${event.type}），丢弃`)
-      return
+      return false
     }
     if (run.replay) {
       const chars = JSON.stringify(event).length
@@ -1053,6 +1328,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       for (const subscriber of run.subscribers) subscriber.complete()
       run.subscribers.clear()
     }
+    return true
   }
 
   function subscriberOf(onEvent: (event: AgentStreamEvent) => void) {
@@ -1066,6 +1342,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     row: StoredConversationMeta,
     viewerId: string,
     owners: Map<string, AgentUserView>,
+    running: boolean,
   ): AgentConversationSummary {
     return {
       id: row.id,
@@ -1076,7 +1353,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       updatedAt: row.updatedAt,
       owner: owners.get(row.userId) ?? unknownUser(row.userId),
       mine: row.userId === viewerId,
-      running: isConversationRunning(row.flowId, row.id),
+      running,
       nodeId: row.nodeId,
       skills: skillViews(row.skills),
     }
@@ -1087,7 +1364,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   }
 
   async function viewOf(row: StoredConversation, viewerId: string): Promise<AgentConversationView> {
-    return { ...summaryOf(row, viewerId, await profiles([row.userId])), messages: row.messages }
+    let running = runningHere(row.flowId, row.id)
+    if (!running) {
+      try {
+        running = await conversationRunning(row.flowId, row.id)
+      } catch (err) {
+        console.warn(`[agent] conversation=${row.id} 读不到共享的会话槽位，按本副本标「在跑」`, err)
+      }
+    }
+    return { ...summaryOf(row, viewerId, await profiles([row.userId]), running), messages: row.messages }
   }
 
   /** 旁路写入：失败只记一笔（见文件头「运行日志 fail open」） */
@@ -1107,9 +1392,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     // 和准备会话并行：进列表之前要有发起人的名字头像
     const ownerLookup = profiles([userId]).then((found) => found.get(userId) ?? unknownUser(userId))
 
-    const send = (events: AgentStreamEvent[]) => {
-      for (const event of events) publish(run, event)
-    }
+    /** 一次 send = 一批（共享补发日志里的一条记录） */
+    const send = (events: AgentStreamEvent[]) => emitBatch(run, events)
 
     const userMessage: Extract<AgentChatMessage, { role: 'user' }> = {
       id: createId('msg'),
@@ -1179,8 +1463,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       ])
       return
     }
-    // 新会话此刻才有 id：占上它的槽位（刚建好的会话没人知道 id，不可能被别人占着）
-    if (input.conversationId === null) claimConversation(run, conversationId)
+    // 新会话此刻才有 id：占上它的槽位（刚建好的会话没人知道 id，不可能被别人占着）；共享槽位同样占上，别的副本才知道它在跑
+    if (input.conversationId === null) {
+      claimConversation(run, conversationId)
+      run.conversationId = conversationId
+      try {
+        if (!(await claimSlot(run, conversationId))) console.warn(`[agent] run=${run.runId} 新会话的共享槽位已被占（不该发生）`)
+      } catch (err) {
+        console.warn(`[agent] run=${run.runId} 新会话的共享槽位没占上（别的副本看不到它在跑）`, err)
+      }
+    }
     run.conversationId = conversationId
     run.conversationTitle = title
     run.nodeId = nodeId
@@ -1205,10 +1497,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       describeTool: (name, args) => tools.get(name)?.describe(args as never) ?? name,
     })
     send(mapper.start(userMessage))
-    // RUN_STARTED 发出去了：进运行中任务列表，告诉房间；从此每 1/3 TTL 续期（占用 + 列表那一项的 expiresAt）
+    // RUN_STARTED 发出去了：进运行中任务列表（共享登记），告诉房间；之后心跳每 1/3 TTL 续期（占用 + 登记的 expiresAt）
     run.listed = true
-    startHeartbeat(run)
-    notifyRunsChange(flowId)
+    run.heartbeatAt = Date.now()
+    void notifyRunsChange(flowId)
     console.info(
       `[agent] run=${run.runId} flow=${flowId} user=${userId} conversation=${conversationId} 开始（${text.length} 字）`,
     )
@@ -1361,7 +1653,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       const activeWatch = createCanvasWatch({
         canvas: opened,
         windowMs: limits.changeWindowMs,
-        nameOf: (actor) => actorName(actor, run.runId),
+        nameOf: (actor) => actorName(actor, run.runId, flowId),
+        // 别的副本上的轮次改了画布：出通知之前先去共享登记查它的发起人（docs/20 §3.10.10「改动归属」）
+        resolveActors: (actors) => resolveActors(flowId, actors),
         onNotice: (notice) => queuedNotices.push(notice),
         // 「改过」（docs/20 §3.10.8）：别人改了节点的 data → 记进这一轮的过期集合（同步，只记 id 和人）
         onDataTouched: (nodeIds, actor) => {
@@ -1634,12 +1928,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         return { change: { id, text: rendered.modelText } }
       }
       /** pi 把 steer 的那条放进上下文了：这时才发通知、记进对话（模型确实看到了） */
-      const deliverSteered = (id: string) => {
+      const deliverSteered = (id: string, out: AgentStreamEvent[]) => {
         const entry = steered.get(id)
         if (!entry) return
         steered.delete(id)
         liveChanges.push(entry.display)
-        send(mapper.canvasChange(entry.display))
+        out.push(...mapper.canvasChange(entry.display))
       }
 
       /** 工具结束时写一行工具调用日志：画布工具以网关的执行记录为准，媒体工具按 runner 报的 */
@@ -1675,11 +1969,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         })
       }
 
-      /** runner 上报的一批事件：按顺序映射、发出去（批内同步，网关保证批与批不并发） */
+      /**
+       * runner 上报的一批事件：按顺序映射，映射出的全部帧**作为一批**发出去（共享补发日志里一条记录，文字增量不逐帧写；
+       * 批内同步，网关保证批与批不并发）
+       */
       const onEvents = (events: RunnerEvent[]) => {
+        const batch: AgentStreamEvent[] = []
         for (const event of events) {
           // 叫停之后（比如这一批里的 turn_end 刚撞上步数上限）的事件不再收
-          if (run.stopped !== null) return
+          if (run.stopped !== null) break
           if (event.type === 'tool_execution_start') {
             startedCalls.set(event.toolCallId, { args: event.args, at: Date.now() })
           }
@@ -1690,9 +1988,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           if (event.type === 'message_end') appended.push(event.message)
           const mapped = mapper.handle(event)
           if (event.type === 'tool_execution_end') logToolCall(event)
-          send(mapped)
-          if (event.type === 'message_end' && event.steerId) deliverSteered(event.steerId)
+          batch.push(...mapped)
+          if (event.type === 'message_end' && event.steerId) deliverSteered(event.steerId, batch)
         }
+        send(batch)
       }
 
       const registration = gateway.open({
@@ -1896,6 +2195,102 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     )
   }
 
+  /**
+   * 跨副本接回（docs/20 §3.10.10）：这一轮不在本副本 —— 查共享登记（不在 = 404），从头读补发日志（断号 / 溢出 = 410），
+   * 补发完再阻塞读后续的，直到收尾帧、断号、或这一轮的登记没了（持有副本崩溃）。
+   */
+  async function subscribeShared(
+    flowId: string,
+    runId: string,
+    onEvent: (event: AgentStreamEvent) => void,
+  ): Promise<SubscribeResult> {
+    let entries: ReplayEntry[]
+    try {
+      if (!(await runRegistry.getRun(flowId, runId))) return { ok: false, reason: 'not-found' }
+      entries = await runRegistry.readReplay(runId, null)
+    } catch (err) {
+      console.warn(`[agent] run=${runId} 读不到共享登记 / 补发日志，按接不回处理`, err)
+      return { ok: false, reason: 'not-found' }
+    }
+    // 补发必须从第一批起连续、且没有溢出标记：否则接不回完整序列（和本副本的 410 同一个口径）
+    for (const [index, entry] of entries.entries()) {
+      if (entry.record.seq !== index + 1 || entry.record.overflow) return { ok: false, reason: 'overflowed' }
+    }
+
+    const { subscriber, done } = subscriberOf(onEvent)
+    let ended = false
+    const end = () => {
+      if (ended) return
+      ended = true
+      subscriber.complete()
+    }
+    let cursor: string | null = null
+    let expected = 1
+    /** 交出一批读到的；断号（中间丢了，比如溢出后裁剪、写失败）或收尾帧 → 结束 */
+    const take = (batch: ReplayEntry[]) => {
+      for (const entry of batch) {
+        if (ended) return
+        if (entry.record.seq !== expected) {
+          console.warn(`[agent] run=${runId} 跨副本接回的补发断号（要 ${expected}，读到 ${entry.record.seq}），关流`)
+          end()
+          return
+        }
+        expected += 1
+        cursor = entry.cursor
+        for (const event of entry.record.events) {
+          deliver(subscriber, event)
+          if (isTerminal(event)) {
+            end()
+            return
+          }
+        }
+      }
+    }
+    take(entries)
+    if (ended) return { ok: true, done, unsubscribe: () => {} }
+
+    // 等后续：每等满一段没有新帧就查一次登记，登记没了（持有副本崩溃 / 已收尾）就把最后的读完、关流
+    const blockMs = Math.max(50, Math.min(5000, Math.floor(runRegistry.ttlMs / 3)))
+    void (async () => {
+      while (!ended) {
+        let batch: ReplayEntry[]
+        try {
+          batch = await runRegistry.waitReplay(runId, cursor, blockMs)
+        } catch (err) {
+          console.warn(`[agent] run=${runId} 跨副本接回读补发日志失败，稍后再试`, err)
+          await sleep(Math.min(blockMs, 1000))
+          continue
+        }
+        if (ended) return
+        if (batch.length > 0) {
+          take(batch)
+          continue
+        }
+        let alive = true
+        try {
+          alive = (await runRegistry.getRun(flowId, runId)) !== null
+        } catch {
+          // 读不到登记：当它还在，下一轮再看
+        }
+        if (alive || ended) continue
+        // 收尾帧可能正好在这两步之间写进去
+        take(await runRegistry.readReplay(runId, cursor).catch(() => []))
+        end()
+      }
+    })()
+    return { ok: true, done, unsubscribe: end }
+  }
+
+  // 别的副本转来的停止指令（docs/20 §3.10.10「停止」）：权限在收到请求的副本上判过，这里只认「是不是我手上的这一轮」
+  runRegistry
+    .onStop((command: StopCommand) => {
+      const run = runs.get(command.runId)
+      if (!run || run.flowId !== command.flowId) return
+      console.info(`[agent] run=${run.runId} 收到别的副本转来的停止指令（${command.reason}）`)
+      stopRun(run, command.reason)
+    })
+    .catch((err: unknown) => console.error('[agent] 订阅停止指令失败：别的副本停不了本副本上的轮次', err))
+
   return {
     enabled: resolved !== null,
     modelLabel: resolved?.label ?? null,
@@ -1903,8 +2298,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     gateway: { handle: (request) => gateway.handle(request) },
 
     async view(flowId, userId) {
-      // 先同步取一份快照：下面的 await 期间列表可能变化，但这次回复要自洽
-      const entries = withMine(activeRuns(flowId), userId)
+      // 先取一份快照：下面的 await 期间列表可能变化，但这次回复要自洽
+      const entries = withMine(await activeRuns(flowId), userId)
       // 我有任务在跑：面板默认打开最近发起的那一轮所在的会话（它也可能刚被删掉 —— 退回最近的那个）
       const own = entries.filter((entry) => entry.mine).at(-1) ?? null
 
@@ -1925,8 +2320,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
     async listConversations(flowId, userId) {
       const rows = await store.list(flowId)
-      const owners = await profiles(rows.map((row) => row.userId))
-      return rows.map((row) => summaryOf(row, userId, owners))
+      const [owners, busy] = await Promise.all([profiles(rows.map((row) => row.userId)), busyIn(flowId)])
+      return rows.map((row) => summaryOf(row, userId, owners, busy.has(row.id)))
     },
 
     async getConversation(flowId, userId, id) {
@@ -1938,21 +2333,21 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       const row = await store.get(flowId, id)
       if (!row) return 'not-found'
       if (row.userId !== userId) return 'forbidden'
-      // 正在跑的那个会话不能删：结尾那次 save 会扑空，这一轮的对话就凭空没了
-      if (isConversationRunning(flowId, id)) return 'running'
+      // 正在跑的那个会话不能删（不论跑在哪个副本上）：结尾那次 save 会扑空，这一轮的对话就凭空没了。
+      // 共享槽位读不到就抛（500）—— 宁可这次删不成，也不删掉别的副本上正在跑的会话
+      if (await conversationRunning(flowId, id)) return 'running'
       return (await store.remove(flowId, userId, id)) ? 'deleted' : 'not-found'
     },
 
     isRunning: (flowId) => [...runs.values()].some((run) => run.flowId === flowId),
 
-    start(input) {
+    async start(input) {
       if (!resolved) {
         return { ok: false, reason: 'disabled', message: disabledReason }
       }
+      const busy = { ok: false as const, reason: 'busy' as const, message: '这个会话已经有一轮 agent 正在运行，请等它结束或先停止它' }
       // 同步占位：从这里到 claimConversation 之间没有 await，同一个会话的第二个发起者不可能插进来
-      if (input.conversationId !== null && isConversationRunning(input.flowId, input.conversationId)) {
-        return { ok: false, reason: 'busy', message: '这个会话已经有一轮 agent 正在运行，请等它结束或先停止它' }
-      }
+      if (input.conversationId !== null && runningHere(input.flowId, input.conversationId)) return busy
 
       // 发起者是第一个订阅者，在第一帧之前挂上（execute 的同步段就可能发出那一帧 RUN_ERROR）
       const initiator = subscriberOf(input.emit)
@@ -1978,9 +2373,33 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         claiming: Promise.resolve(),
         heartbeatAt: Date.now(),
         heartbeat: null,
+        slot: null,
+        record: null,
+        recordAttempt: null,
+        registryChain: Promise.resolve(),
+        replaySeq: 0,
+        replayLog: Promise.resolve(),
+        replayWriteFailed: false,
       }
       runs.set(run.runId, run)
-      if (input.conversationId !== null) claimConversation(run, input.conversationId)
+      if (input.conversationId !== null) {
+        claimConversation(run, input.conversationId)
+        // 跨副本：共享槽位是原子的「不存在才写」，两个副本同时发起只有一个占得到
+        let refused: StartRunResult | null = null
+        try {
+          if (!(await claimSlot(run, input.conversationId))) refused = busy
+        } catch (err) {
+          console.error(`[agent] flow=${input.flowId} conversation=${input.conversationId} 共享登记不可用，这一轮不开始`, err)
+          refused = { ok: false, reason: 'unavailable', message: '暂时无法确认这个会话是否已有一轮在运行，请稍后再试' }
+        }
+        if (refused) {
+          runs.delete(run.runId)
+          releaseConversation(run)
+          return refused
+        }
+      }
+      // 从这里起每 1/3 TTL 续期：会话槽位（准备会话那段也要续）、补发日志，进列表后还有登记与占用
+      startHeartbeat(run)
 
       run.done = execute(input, run)
         .catch((err: unknown) => console.error(`[agent] run=${run.runId} 异常`, err))
@@ -1988,21 +2407,28 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         .then(async () => {
           await releaseAll(run)
         })
-        .finally(() => {
+        .then(async () => {
           // 没走到最后一帧就异常退出了：补一帧收尾，订阅者才知道这一轮完了
           if (!run.finished) {
-            publish(run, {
-              type: AgentEventType.RUN_ERROR,
-              message: '这一轮异常结束',
-              code: 'run_failed',
-              timestamp: Date.now(),
-            })
+            emitBatch(run, [
+              {
+                type: AgentEventType.RUN_ERROR,
+                message: '这一轮异常结束',
+                code: 'run_failed',
+                timestamp: Date.now(),
+              },
+            ])
           }
-          // 删掉条目 = 释放补发缓冲与会话槽位；之后再来接回的一律 not-found
+          // 收尾帧先写进共享补发日志，再删登记：别的副本上跟着的人一定读得到它
+          await run.replayLog
+          // 删掉条目 = 释放补发缓冲与会话槽位；之后再来接回的一律 not-found（共享日志再留一个 TTL 给还在读的人）
+          if (run.owner) rememberOwner(run.runId, run.owner.name)
           runs.delete(run.runId)
           releaseConversation(run)
-          if (run.listed) notifyRunsChange(run.flowId)
+          await releaseShared(run)
+          if (run.listed) await notifyRunsChange(run.flowId)
         })
+        .catch((err: unknown) => console.error(`[agent] run=${run.runId} 收尾异常`, err))
 
       return {
         ok: true,
@@ -2014,9 +2440,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       }
     },
 
-    subscribe(flowId, runId, onEvent) {
+    async subscribe(flowId, runId, onEvent) {
       const run = runs.get(runId)
-      if (!run || run.flowId !== flowId) return { ok: false, reason: 'not-found' }
+      // 不在本副本：去共享登记找（别的副本上的，或刚收尾、本副本已经删掉的）
+      if (!run) return subscribeShared(flowId, runId, onEvent)
+      if (run.flowId !== flowId) return { ok: false, reason: 'not-found' }
       if (!run.replay) return { ok: false, reason: 'overflowed' }
 
       const { subscriber, done } = subscriberOf(onEvent)
@@ -2037,11 +2465,21 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       }
     },
 
-    abort(flowId, runId, actor) {
+    async abort(flowId, runId, actor) {
       const run = runs.get(runId)
-      if (!run || run.flowId !== flowId) return 'not-running'
-      if (run.userId !== actor.userId && !actor.admin) return 'forbidden'
-      stopRun(run, run.userId === actor.userId ? '已中止' : '已被项目管理员中止')
+      if (run) {
+        if (run.flowId !== flowId) return 'not-running'
+        if (run.userId !== actor.userId && !actor.admin) return 'forbidden'
+        stopRun(run, run.userId === actor.userId ? '已中止' : '已被项目管理员中止')
+        return 'aborted'
+      }
+      // 别的副本上的：权限在这里判（发起人 / 项目管理员），再把停止指令发给持有副本
+      const record = await runRegistry.getRun(flowId, runId)
+      // 登记没了 = 这一轮已经不在了；登记说在本副本、内存里却没有 = 刚收尾，登记还没删完
+      if (!record || record.instanceId === runRegistry.instanceId) return 'not-running'
+      const own = record.owner.id === actor.userId
+      if (!own && !actor.admin) return 'forbidden'
+      await runRegistry.sendStop(record.instanceId, { flowId, runId, reason: own ? '已中止' : '已被项目管理员中止' })
       return 'aborted'
     },
 

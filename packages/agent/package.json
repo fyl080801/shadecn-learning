@@ -11,6 +11,7 @@
     "./model": "./src/model.ts",
     "./media": "./src/media.ts",
     "./occupancy": "./src/occupancy.ts",
+    "./run-registry": "./src/run-registry.ts",
     "./session": "./src/session.ts",
     "./store": "./src/store.ts",
     "./protocol": "./src/protocol.ts",

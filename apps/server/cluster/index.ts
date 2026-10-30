@@ -1,13 +1,16 @@
 import { clusterMode, isClustered, redisKeyPrefix, redisUrl } from '../config.ts'
 import { createMemoryBackend } from './memory.ts'
 import {
+  SharedChannel,
   SharedCounter,
   SharedLock,
+  SharedLog,
   SharedMap,
   jsonCodec,
   type ClusterBackend,
   type ClusterHealth,
   type Codec,
+  type LogAppendOptions,
 } from './shared.ts'
 
 /**
@@ -148,6 +151,56 @@ class LazyLock extends SharedLock {
   }
 }
 
+class LazyLog<V> extends SharedLog<V> {
+  #real: SharedLog<V> | null = null
+  #generation = -1
+
+  get #target(): SharedLog<V> {
+    if (!this.#real || this.#generation !== generation) {
+      this.#real = backend.createLog<V>(this.namespace, this.codec)
+      this.#generation = generation
+    }
+    return this.#real
+  }
+
+  append(key: string, value: V, options?: LogAppendOptions) {
+    return this.#target.append(key, value, options)
+  }
+  read(key: string, after: string | null, count?: number) {
+    return this.#target.read(key, after, count)
+  }
+  wait(key: string, after: string | null, blockMs: number) {
+    return this.#target.wait(key, after, blockMs)
+  }
+  expire(key: string, ttlMs: number) {
+    return this.#target.expire(key, ttlMs)
+  }
+  delete(key: string) {
+    return this.#target.delete(key)
+  }
+}
+
+/** 订阅建在**订阅那一刻**的 backend 上，换 backend 不迁移（见 {@link SharedChannel}）；发布总是走当前的 */
+class LazyChannel<V> extends SharedChannel<V> {
+  #real: SharedChannel<V> | null = null
+  #generation = -1
+
+  get #target(): SharedChannel<V> {
+    if (!this.#real || this.#generation !== generation) {
+      this.#real = backend.createChannel<V>(this.namespace, this.codec)
+      this.#generation = generation
+    }
+    return this.#real
+  }
+
+  publish(channel: string, message: V) {
+    return this.#target.publish(channel, message)
+  }
+  subscribe(channel: string, handler: (message: V) => void) {
+    return this.#target.subscribe(channel, handler)
+  }
+}
+
 /**
  * 声明一张共享表。**在模块顶层调用**，就像以前写 `new Map()` 那样。
  *
@@ -165,9 +218,21 @@ export function sharedLock(namespace: string): SharedLock {
   return new LazyLock(namespace)
 }
 
+/** 声明一份共享的有序日志（{@link SharedLog}）。同样在模块顶层调用，`namespace` 别和别的模块重名 */
+export function sharedLog<V>(namespace: string, codec: Codec<V> = jsonCodec<V>()): SharedLog<V> {
+  return new LazyLog<V>(namespace, codec)
+}
+
+/** 声明一个共享的发布 / 订阅频道组（{@link SharedChannel}） */
+export function sharedChannel<V>(namespace: string, codec: Codec<V> = jsonCodec<V>()): SharedChannel<V> {
+  return new LazyChannel<V>(namespace, codec)
+}
+
 export {
+  SharedChannel,
   SharedCounter,
   SharedLock,
+  SharedLog,
   SharedMap,
   bytesCodec,
   jsonCodec,
@@ -176,5 +241,7 @@ export {
   type ClusterBackend,
   type ClusterHealth,
   type Codec,
+  type LogAppendOptions,
+  type LogEntry,
 } from './shared.ts'
 export { createMemoryBackend } from './memory.ts'

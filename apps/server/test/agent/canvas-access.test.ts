@@ -252,7 +252,7 @@ describe('一轮一条连接与常驻观察（docs/20 §3.10.2）', () => {
       },
       fauxAssistantMessage('好了'),
     ])
-    const started = runtime.start({
+    const started = await runtime.start({
       flowId,
       userId: alice.userId,
       conversationId: null,

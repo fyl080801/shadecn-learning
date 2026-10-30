@@ -201,7 +201,7 @@ export const agent = new Hono<Env>()
     if (prompt.nodeId !== null && !(await flowHasNode(flowId, prompt.nodeId))) return c.json(NODE_NOT_FOUND, 404)
 
     const relay = sseRelay()
-    const started = runtime.start({
+    const started = await runtime.start({
       flowId,
       userId,
       text: prompt.text,
@@ -211,6 +211,7 @@ export const agent = new Hono<Env>()
       emit: relay.emit,
     })
     if (!started.ok) {
+      // busy：这个会话在跑（不论在哪个副本上，docs/20 §3.10.10）；disabled / unavailable（共享登记不可用）→ 503
       return started.reason === 'busy'
         ? c.json({ error: 'Conflict', message: started.message }, 409)
         : c.json({ error: 'Service Unavailable', message: started.message }, 503)
@@ -231,7 +232,8 @@ export const agent = new Hono<Env>()
     if (!userId) return c.json(UNAUTHORIZED, 401)
 
     const relay = sseRelay()
-    const subscribed = agentRuntime().subscribe(c.req.param('flowId')!, c.req.param('runId'), relay.emit)
+    // 这一轮可能跑在别的副本上：编排层从共享补发日志补发、再接着读后续的（docs/20 §3.10.10）
+    const subscribed = await agentRuntime().subscribe(c.req.param('flowId')!, c.req.param('runId'), relay.emit)
     if (!subscribed.ok) {
       return subscribed.reason === 'overflowed'
         ? c.json({ error: 'Gone', message: '这一轮的事件太多，接不回完整的进度；等它结束后重新打开会话' }, 410)
@@ -248,7 +250,8 @@ export const agent = new Hono<Env>()
     const userId = await currentUserId(c)
     if (!userId) return c.json(UNAUTHORIZED, 401)
 
-    const result = agentRuntime().abort(c.req.param('flowId')!, c.req.param('runId'), {
+    // 跑在别的副本上的：权限仍在这里判，停止指令经共享层转给持有副本（docs/20 §3.10.10）
+    const result = await agentRuntime().abort(c.req.param('flowId')!, c.req.param('runId'), {
       userId,
       admin: isProjectAdmin(c),
     })

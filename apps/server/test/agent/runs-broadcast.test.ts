@@ -172,7 +172,7 @@ describe('运行中任务列表的房间广播', () => {
     try {
       // 路由先 404 掉；直接走编排层，模拟「查过之后才被删」的窄窗口
       const out: unknown[] = []
-      const started = agentRuntime().start({
+      const started = await agentRuntime().start({
         flowId,
         userId: alice.userId,
         conversationId: 'conv_gone',

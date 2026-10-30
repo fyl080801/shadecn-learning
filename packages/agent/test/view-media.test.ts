@@ -81,7 +81,7 @@ async function runOnce(runtime: ReturnType<typeof runtimeWith>, doc: Y.Doc) {
     ...createDocCanvasHandle(doc, { flowId: 'flow-1', runId }),
     async close() {},
   })
-  const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '看看这张图', openCanvas: open, emit: (e) => events.push(e) })
+  const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '看看这张图', openCanvas: open, emit: (e) => events.push(e) })
   if (!started.ok) throw new Error(started.message)
   await started.done
   return events
@@ -180,7 +180,7 @@ describe('view_node_media：图片进到模型请求里', () => {
 
     runtime.scripted.setResponses([fauxAssistantMessage('好')])
     const open = async (runId: string): Promise<OpenedCanvas> => ({ ...createDocCanvasHandle(doc, { flowId: 'flow-1', runId }), async close() {} })
-    const second = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: threadId, text: '再说说', openCanvas: open, emit: () => {} })
+    const second = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: threadId, text: '再说说', openCanvas: open, emit: () => {} })
     if (!second.ok) throw new Error(second.message)
     await second.done
 

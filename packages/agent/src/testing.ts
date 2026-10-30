@@ -4,6 +4,7 @@ import type { ResolvedAgentModel } from './model.ts'
 import { AGENT_GATEWAY_PATH } from './protocol.ts'
 import { createInlineDriver } from './sandbox/drivers/inline.ts'
 import { createMemoryLeaseRegistry } from './occupancy.ts'
+import { createMemoryRunRegistry } from './run-registry.ts'
 import type { SandboxDriver } from './sandbox/driver.ts'
 
 export { createInlineDriver, type InlineDriverOptions } from './sandbox/drivers/inline.ts'
@@ -54,7 +55,7 @@ export interface ScriptedModel {
    * 一行拿齐 `createAgentRuntime` 要的模型 / 驱动 / 网关 / 占用登记表；登记表每次调用一份新的内存实现，
    * 要让两个 runtime 互相看见占用就自己传同一份
    */
-  runtimeOptions(driver?: SandboxDriver): Pick<AgentRuntimeOptions, 'model' | 'driver' | 'gateway' | 'leases'>
+  runtimeOptions(driver?: SandboxDriver): Pick<AgentRuntimeOptions, 'model' | 'driver' | 'gateway' | 'leases' | 'runRegistry'>
 }
 
 /** 文字切成几段流出去：接回 / 补发的测试要看到多帧 TEXT_MESSAGE_CONTENT */
@@ -249,7 +250,13 @@ export function registerScriptedModel(options: { label?: string; imageInput?: bo
     fetch: upstream,
     runtimeOptions(driver) {
       const gateway: AgentGatewayConfig = { url: TEST_GATEWAY_URL, secret: TEST_TOKEN_SECRET, upstreamFetch: upstream }
-      return { model: resolved, driver: driver ?? createInlineDriver(), gateway, leases: createMemoryLeaseRegistry() }
+      return {
+        model: resolved,
+        driver: driver ?? createInlineDriver(),
+        gateway,
+        leases: createMemoryLeaseRegistry(),
+        runRegistry: createMemoryRunRegistry(),
+      }
     },
   }
   return scripted

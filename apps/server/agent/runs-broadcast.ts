@@ -18,9 +18,9 @@ import { roomOf } from '../collab/persistence.ts'
  * 写在 agent 这边而不是协同层：协同层不该知道上面坐着谁（同 `collabInstance()` 的注释）。
  *
  * - **房间没加载（没人连着）就不发**：没有听众；之后连上的人会先 `GET {agentApiPath}` 拉一次全量。
- * - 多副本：`broadcastStateless` 会经 extension-redis 的 `beforeBroadcastStateless` 转发到别的副本，
- *   但列表只是**本进程**的任务登记表（F14），别的副本上的任务不在里面 —— 跨副本时列表不完整，
- *   上共享层（redis 登记表）之前只在单副本下准确。
+ * - 多副本：`broadcastStateless` 会经 extension-redis 的 `beforeBroadcastStateless` 转发到别的副本；
+ *   给的列表是编排层从**共享登记**读出的全量（docs/20 §3.10.10，`runs.ts`），含别的副本上的轮次，所以哪个副本发的都完整。
+ *   发的一方是持有轮次的副本：它的 agent 连接钉着房间，房间一定加载着。
  */
 export function broadcastAgentRuns(
   flowId: string,

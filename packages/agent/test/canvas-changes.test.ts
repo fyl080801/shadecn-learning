@@ -271,7 +271,7 @@ const changeEvents = (events: AgentStreamEvent[]) =>
 async function run(runtime: ReturnType<typeof runtimeWith>, doc: Y.Doc, text: string, conversationId: string | null = null) {
   const events: AgentStreamEvent[] = []
   const canvas = canvasOf(doc)
-  const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId, text, openCanvas: canvas.open, emit: (e) => events.push(e) })
+  const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId, text, openCanvas: canvas.open, emit: (e) => events.push(e) })
   if (!started.ok) throw new Error(started.message)
   await started.done
   const runStarted = events.find((e) => e.type === AgentEventType.RUN_STARTED)
@@ -348,7 +348,7 @@ describe('运行中：别人的改动 steer 进模型上下文', () => {
     }
     const runtime = runtimeWith([router, router, router])
 
-    const other = runtime.start({
+    const other = await runtime.start({
       flowId: 'flow-1',
       userId: 'u2',
       conversationId: null,
@@ -435,11 +435,11 @@ describe('运行中：别人的改动 steer 进模型上下文', () => {
         new Promise((resolve) => options?.signal?.addEventListener('abort', () => resolve(fauxAssistantMessage('…')))),
     ])
     const canvas = canvasOf(doc)
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvas.open, emit: () => {} })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvas.open, emit: () => {} })
     if (!started.ok) throw new Error('应该启动成功')
     await wait(30)
     expect(canvas.opened()).toBe(1)
-    runtime.abort('flow-1', started.runId, { userId: 'u1', admin: false })
+    await runtime.abort('flow-1', started.runId, { userId: 'u1', admin: false })
     await started.done
     expect(canvas.opened()).toBe(1)
     expect(canvas.closed()).toBe(1)

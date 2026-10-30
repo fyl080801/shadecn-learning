@@ -97,7 +97,7 @@ async function runOnce(
   userId = 'u1',
 ) {
   const out = collector()
-  const started = runtime.start({ flowId, userId, conversationId, text, openCanvas: canvasOf(new Y.Doc(), flowId).open, emit: out.emit })
+  const started = await runtime.start({ flowId, userId, conversationId, text, openCanvas: canvasOf(new Y.Doc(), flowId).open, emit: out.emit })
   if (!started.ok) throw new Error(`应该启动成功：${started.message}`)
   await started.done
   return out
@@ -115,7 +115,7 @@ describe('一轮跑通', () => {
     const canvas = canvasOf(doc)
     const out = collector()
 
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '加一个节点', openCanvas: canvas.open, emit: out.emit })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '加一个节点', openCanvas: canvas.open, emit: out.emit })
     expect(started.ok).toBe(true)
     if (!started.ok) return
     expect(runtime.isRunning('flow-1')).toBe(true)
@@ -192,7 +192,7 @@ describe('提及展开', () => {
     nodesMap(doc).set('n_a', toYNode({ ...buildNodeRecord({ id: 'n_a', type: 'text', label: '需求', position: { x: 0, y: 0 } }), data: { text: '正文内容' } }))
     const canvas = canvasOf(doc)
     const text = `改一下 ${formatNodeMention('n_a')} 和 ${formatNodeMention('n_gone')}`
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text, openCanvas: canvas.open, emit: () => {} })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text, openCanvas: canvas.open, emit: () => {} })
     if (started.ok) await started.done
 
     expect(prompt).toContain('「需求」')
@@ -225,10 +225,10 @@ describe('按会话并发与中止', () => {
     const conversationId = threadOf((await runOnce(runtime, '旧话题')).events)
     const canvas = canvasOf(new Y.Doc())
 
-    const one = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId, text: '续一句', openCanvas: canvas.open, emit: () => {} })
+    const one = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId, text: '续一句', openCanvas: canvas.open, emit: () => {} })
     expect(one.ok).toBe(true)
     // 同一个会话：同步拒绝（中间没有 await 可插队）
-    const again = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId, text: '再续', openCanvas: canvas.open, emit: () => {} })
+    const again = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId, text: '再续', openCanvas: canvas.open, emit: () => {} })
     expect(again).toMatchObject({ ok: false, reason: 'busy' })
     expect(again.ok === false && again.message).toContain('这个会话')
     await settle()
@@ -245,7 +245,7 @@ describe('按会话并发与中止', () => {
     if (one.ok) await one.done
     expect(runtime.isRunning('flow-1')).toBe(false)
     // 结束之后同一个会话又能发起了
-    const after = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId, text: '又来', openCanvas: canvas.open, emit: () => {} })
+    const after = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId, text: '又来', openCanvas: canvas.open, emit: () => {} })
     expect(after.ok).toBe(true)
     if (after.ok) await after.done
   })
@@ -257,25 +257,25 @@ describe('按会话并发与中止', () => {
     const doc = new Y.Doc()
     const outA = collector()
     const outB = collector()
-    const runA = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '甲的事', openCanvas: canvasOf(doc).open, emit: outA.emit })
+    const runA = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '甲的事', openCanvas: canvasOf(doc).open, emit: outA.emit })
     await settle()
-    const runB = runtime.start({ flowId: 'flow-1', userId: 'u2', conversationId: null, text: '乙的事', openCanvas: canvasOf(doc).open, emit: outB.emit })
+    const runB = await runtime.start({ flowId: 'flow-1', userId: 'u2', conversationId: null, text: '乙的事', openCanvas: canvasOf(doc).open, emit: outB.emit })
     await settle()
     if (!runA.ok || !runB.ok) throw new Error('两轮都应该启动成功')
 
-    expect(runtime.activeRuns('flow-1')).toEqual([
+    expect((await runtime.activeRuns('flow-1'))).toEqual([
       { runId: runA.runId, conversationId: threadOf(outA.events), conversationTitle: '甲的事', owner: { id: 'u1', name: '名字-u1', avatarUrl: null }, startedAt: expect.any(Number), occupies: [], expiresAt: expect.any(Number) },
       { runId: runB.runId, conversationId: threadOf(outB.events), conversationTitle: '乙的事', owner: { id: 'u2', name: '名字-u2', avatarUrl: null }, startedAt: expect.any(Number), occupies: [], expiresAt: expect.any(Number) },
     ])
-    expect(runtime.activeRuns('flow-2')).toEqual([])
+    expect((await runtime.activeRuns('flow-2'))).toEqual([])
 
     // 先放行后发起的那一轮：先结束的先离开列表，另一轮不受影响
     b.release()
     await runB.done
-    expect(runtime.activeRuns('flow-1').map((run) => run.runId)).toEqual([runA.runId])
+    expect((await runtime.activeRuns('flow-1')).map((run) => run.runId)).toEqual([runA.runId])
     a.release()
     await runA.done
-    expect(runtime.activeRuns('flow-1')).toEqual([])
+    expect((await runtime.activeRuns('flow-1'))).toEqual([])
 
     for (const out of [outA, outB]) {
       expect(out.events.filter((event) => event.type === AgentEventType.RUN_STARTED)).toHaveLength(1)
@@ -291,13 +291,13 @@ describe('按会话并发与中止', () => {
     const b = gated()
     const runtime = runtimeWith([a.step, fauxAssistantMessage('普通'), b.step])
     const doc = new Y.Doc()
-    const bound = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, nodeId: 'n_dir', text: '搭场景', openCanvas: canvasOf(doc).open, emit: () => {} })
+    const bound = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, nodeId: 'n_dir', text: '搭场景', openCanvas: canvasOf(doc).open, emit: () => {} })
     await settle()
     if (!bound.ok) throw new Error('应该启动成功')
     const plain = await runOnce(runtime, '普通的事', null, 'flow-1', 'u2')
     const plainRunId = (plain.events[0] as { runId: string }).runId
 
-    expect(runtime.activeRuns('flow-1')).toEqual([
+    expect((await runtime.activeRuns('flow-1'))).toEqual([
       expect.objectContaining({ runId: bound.runId, nodeId: 'n_dir' }),
     ])
     // 广播（onRunsChange）里同样带着 —— 前端靠它判断「有人的助手在编辑这个导演台」
@@ -311,10 +311,10 @@ describe('按会话并发与中止', () => {
     const conversationId = runtime.changes.find(({ runs }) => runs.some((run) => run.runId === bound.runId))!.runs.find(
       (run) => run.runId === bound.runId,
     )!.conversationId
-    const again = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId, text: '再调一下', openCanvas: canvasOf(doc).open, emit: () => {} })
+    const again = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId, text: '再调一下', openCanvas: canvasOf(doc).open, emit: () => {} })
     await settle()
     if (!again.ok) throw new Error('续聊应该启动成功')
-    expect(runtime.activeRuns('flow-1')).toEqual([expect.objectContaining({ runId: again.runId, nodeId: 'n_dir' })])
+    expect((await runtime.activeRuns('flow-1'))).toEqual([expect.objectContaining({ runId: again.runId, nodeId: 'n_dir' })])
     b.release()
     await again.done
   })
@@ -322,7 +322,7 @@ describe('按会话并发与中止', () => {
   it('onRunsChange：进列表（RUN_STARTED 之后）和离开列表各一次，给的是那张画布的全量列表', async () => {
     const a = gated()
     const runtime = runtimeWith([a.step, fauxAssistantMessage('快的')])
-    const runA = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '慢的', openCanvas: canvasOf(new Y.Doc()).open, emit: () => {} })
+    const runA = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '慢的', openCanvas: canvasOf(new Y.Doc()).open, emit: () => {} })
     await settle()
     if (!runA.ok) throw new Error('应该启动成功')
     const fast = await runOnce(runtime, '快的', null, 'flow-1', 'u2')
@@ -347,7 +347,7 @@ describe('按会话并发与中止', () => {
       },
     })
     const gone = collector()
-    const failed = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: 'conv_nope', text: '续', openCanvas: canvasOf(new Y.Doc()).open, emit: gone.emit })
+    const failed = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: 'conv_nope', text: '续', openCanvas: canvasOf(new Y.Doc()).open, emit: gone.emit })
     if (failed.ok) await failed.done
     expect(gone.events).toEqual([expect.objectContaining({ code: 'conversation_not_found' })])
     expect(runtime.changes).toEqual([])
@@ -374,16 +374,16 @@ describe('按会话并发与中止', () => {
     }
     const runtime = runtimeWith([step, step, step, step])
     const outA = collector()
-    const runA = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '删甲', openCanvas: canvasOf(doc).open, emit: outA.emit })
+    const runA = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '删甲', openCanvas: canvasOf(doc).open, emit: outA.emit })
     if (!runA.ok) throw new Error('应该启动成功')
     for (let i = 0; i < 50 && !outA.events.some((event) => event.type === AgentEventType.TOOL_CALL_RESULT); i += 1) await settle()
 
     const outB = collector()
-    const runB = runtime.start({ flowId: 'flow-1', userId: 'u2', conversationId: null, text: '删乙', openCanvas: canvasOf(doc).open, emit: outB.emit })
+    const runB = await runtime.start({ flowId: 'flow-1', userId: 'u2', conversationId: null, text: '删乙', openCanvas: canvasOf(doc).open, emit: outB.emit })
     if (!runB.ok) throw new Error('应该启动成功')
     await runB.done
     // 乙删完收尾时甲那一轮还活着：两轮确实同时在跑
-    expect(runtime.activeRuns('flow-1').map((run) => run.runId)).toEqual([runA.runId])
+    expect((await runtime.activeRuns('flow-1')).map((run) => run.runId)).toEqual([runA.runId])
     hold.release()
     await runA.done
 
@@ -401,7 +401,7 @@ describe('按会话并发与中止', () => {
     const { step } = gated()
     const runtime = runtimeWith([step])
     const out = collector()
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: out.emit })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: out.emit })
     if (!started.ok) throw new Error('应该启动成功')
 
     // 等模型请求真的发出去
@@ -411,10 +411,10 @@ describe('按会话并发与中止', () => {
     expect(runtime.store.rows.get(conversationId)?.messages.map((m) => m.role)).toEqual(['user'])
     expect((await runtime.listConversations('flow-1', 'u1'))[0]).toMatchObject({ id: conversationId, running: true })
     expect(await runtime.deleteConversation('flow-1', 'u1', conversationId)).toBe('running')
-    expect(runtime.abort('flow-1', started.runId, owner('u2'))).toBe('forbidden')
+    expect(await runtime.abort('flow-1', started.runId, owner('u2'))).toBe('forbidden')
     // runId 对、画布不对：当它不在跑
-    expect(runtime.abort('flow-2', started.runId, owner('u1'))).toBe('not-running')
-    expect(runtime.abort('flow-1', started.runId, owner('u1'))).toBe('aborted')
+    expect(await runtime.abort('flow-2', started.runId, owner('u1'))).toBe('not-running')
+    expect(await runtime.abort('flow-1', started.runId, owner('u1'))).toBe('aborted')
     await started.done
 
     const finished = out.events.at(-1)
@@ -423,7 +423,7 @@ describe('按会话并发与中止', () => {
     expect(conversation?.messages[1]).toMatchObject({ role: 'assistant', error: '已中止' })
     expect(conversation?.running).toBe(false)
     expect(runtime.runLog.runs.get(started.runId)).toMatchObject({ status: 'cancelled', error: '已中止' })
-    expect(runtime.abort('flow-1', started.runId, owner('u1'))).toBe('not-running')
+    expect(await runtime.abort('flow-1', started.runId, owner('u1'))).toBe('not-running')
 
     // 结束之后：别人删不得（会话只读可见，所以是 forbidden 而不是当它不存在）、自己删得掉，删完就没了
     expect(await runtime.deleteConversation('flow-1', 'u2', conversationId)).toBe('forbidden')
@@ -436,7 +436,7 @@ describe('按会话并发与中止', () => {
     const { step, release } = gated()
     const runtime = runtimeWith([step])
     const out = collector()
-    const started = runtime.start({
+    const started = await runtime.start({
       flowId: 'flow-1',
       userId: 'u1',
       conversationId: null,
@@ -467,7 +467,7 @@ describe('按会话并发与中止', () => {
     const { step } = gated()
     const runtime = runtimeWith([step])
     const out = collector()
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: out.emit })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: out.emit })
     if (!started.ok) throw new Error('应该启动成功')
     await settle()
 
@@ -507,12 +507,12 @@ describe('接回一轮', () => {
     const paused = pausedMidRun()
     const runtime = runtimeWith(paused.steps)
     const origin = collector()
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: origin.emit })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: origin.emit })
     if (!started.ok) throw new Error('应该启动成功')
     await paused.reached
 
     const rejoined = collector()
-    const sub = runtime.subscribe('flow-1', started.runId, rejoined.emit)
+    const sub = await runtime.subscribe('flow-1', started.runId, rejoined.emit)
     if (!sub.ok) throw new Error('应该接得回')
     // 补发是同步的：返回时已经追平了发起者
     expect(rejoined.events).toEqual(origin.events)
@@ -532,32 +532,32 @@ describe('接回一轮', () => {
     const { step, release } = gated()
     const runtime = runtimeWith([step])
     const origin = collector()
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: origin.emit })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: origin.emit })
     if (!started.ok) throw new Error('应该启动成功')
     await settle()
 
     // 旁观者（宿主已判过他能进这张画布）接得回，收到的和发起者一样
     const watcher = collector()
-    expect(runtime.subscribe('flow-1', started.runId, watcher.emit)).toMatchObject({ ok: true })
+    expect(await runtime.subscribe('flow-1', started.runId, watcher.emit)).toMatchObject({ ok: true })
     expect(watcher.events).toEqual(origin.events)
-    expect(runtime.subscribe('flow-1', 'run_nope', () => {})).toEqual({ ok: false, reason: 'not-found' })
-    expect(runtime.subscribe('flow-2', started.runId, () => {})).toEqual({ ok: false, reason: 'not-found' })
+    expect(await runtime.subscribe('flow-1', 'run_nope', () => {})).toEqual({ ok: false, reason: 'not-found' })
+    expect(await runtime.subscribe('flow-2', started.runId, () => {})).toEqual({ ok: false, reason: 'not-found' })
 
     release()
     await started.done
     expect(watcher.events).toEqual(origin.events)
-    expect(runtime.subscribe('flow-1', started.runId, () => {})).toEqual({ ok: false, reason: 'not-found' })
+    expect(await runtime.subscribe('flow-1', started.runId, () => {})).toEqual({ ok: false, reason: 'not-found' })
   })
 
   it('补发缓冲溢出 → 之后接回得到 overflowed；已经挂着的订阅者照常收完', async () => {
     const paused = pausedMidRun()
     const runtime = runtimeWith(paused.steps, { limits: { replayEvents: 3 } })
     const origin = collector()
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: origin.emit })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: origin.emit })
     if (!started.ok) throw new Error('应该启动成功')
     await paused.reached
 
-    expect(runtime.subscribe('flow-1', started.runId, () => {})).toEqual({ ok: false, reason: 'overflowed' })
+    expect(await runtime.subscribe('flow-1', started.runId, () => {})).toEqual({ ok: false, reason: 'overflowed' })
 
     paused.release()
     await started.done
@@ -568,14 +568,14 @@ describe('接回一轮', () => {
   it('中止后接回的流以 RUN_FINISHED cancelled 收尾', async () => {
     const { step } = gated()
     const runtime = runtimeWith([step])
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: () => {} })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: () => {} })
     if (!started.ok) throw new Error('应该启动成功')
     await settle()
 
     const rejoined = collector()
-    const sub = runtime.subscribe('flow-1', started.runId, rejoined.emit)
+    const sub = await runtime.subscribe('flow-1', started.runId, rejoined.emit)
     if (!sub.ok) throw new Error('应该接得回')
-    expect(runtime.abort('flow-1', started.runId, owner('u1'))).toBe('aborted')
+    expect(await runtime.abort('flow-1', started.runId, owner('u1'))).toBe('aborted')
     await sub.done
     expect(rejoined.types()[0]).toBe(AgentEventType.RUN_STARTED)
     expect(rejoined.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'cancelled' } })
@@ -589,11 +589,11 @@ describe('接回一轮', () => {
     // 旧会话的 updatedAt 被拨到「在跑的那个」之后：latest 要选在跑的，而不是最近更新的
     const old = threadOf((await runOnce(runtime, '旧话题')).events)
     const out = collector()
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '新话题', openCanvas: canvasOf(new Y.Doc()).open, emit: out.emit })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '新话题', openCanvas: canvasOf(new Y.Doc()).open, emit: out.emit })
     if (!started.ok) throw new Error('应该启动成功')
     await settle()
     const theirOut = collector()
-    const theirs = runtime.start({ flowId: 'flow-1', userId: 'u2', conversationId: null, text: '乙的话题', openCanvas: canvasOf(new Y.Doc()).open, emit: theirOut.emit })
+    const theirs = await runtime.start({ flowId: 'flow-1', userId: 'u2', conversationId: null, text: '乙的话题', openCanvas: canvasOf(new Y.Doc()).open, emit: theirOut.emit })
     if (!theirs.ok) throw new Error('应该启动成功')
     await settle()
     const running = threadOf(out.events)
@@ -673,11 +673,11 @@ describe('接回一轮', () => {
     const { step } = gated()
     const runtime = runtimeWith([step])
     const out = collector()
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: out.emit })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '一', openCanvas: canvasOf(new Y.Doc()).open, emit: out.emit })
     if (!started.ok) throw new Error('应该启动成功')
     await settle()
 
-    expect(runtime.abort('flow-1', started.runId, admin('u9'))).toBe('aborted')
+    expect(await runtime.abort('flow-1', started.runId, admin('u9'))).toBe('aborted')
     await started.done
     expect(out.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'cancelled' } })
     expect(runtime.runLog.runs.get(started.runId)).toMatchObject({ status: 'cancelled', error: '已被项目管理员中止' })
@@ -700,7 +700,7 @@ describe('失败的收尾', () => {
   it('打开画布失败（失权）→ RUN_ERROR，槽位释放', async () => {
     const runtime = runtimeWith([fauxAssistantMessage('不该走到这')])
     const out = collector()
-    const started = runtime.start({
+    const started = await runtime.start({
       flowId: 'flow-1',
       userId: 'u1',
       conversationId: null,
@@ -744,7 +744,7 @@ describe('失败的收尾', () => {
       now: expect.any(Number),
       latest: null,
     })
-    expect(runtime.start({ flowId: 'f', userId: 'u', conversationId: null, text: 'x', openCanvas: async () => { throw new Error() }, emit: () => {} }))
+    expect(await runtime.start({ flowId: 'f', userId: 'u', conversationId: null, text: 'x', openCanvas: async () => { throw new Error() }, emit: () => {} }))
       .toMatchObject({ ok: false, reason: 'disabled', message: '没有 key' })
   })
 
@@ -780,7 +780,7 @@ describe('失败的收尾', () => {
       ['u1', 'conv_nope'],
     ] as const) {
       const out = collector()
-      const started = runtime.start({ flowId: 'flow-1', userId, conversationId, text: '续', openCanvas: canvas.open, emit: out.emit })
+      const started = await runtime.start({ flowId: 'flow-1', userId, conversationId, text: '续', openCanvas: canvas.open, emit: out.emit })
       if (started.ok) await started.done
       expect(out.events).toEqual([expect.objectContaining({ type: AgentEventType.RUN_ERROR, code: 'conversation_not_found' })])
     }
@@ -809,7 +809,7 @@ describe('持久化的失败语义', () => {
     )
     const doc = new Y.Doc()
     const out = collector()
-    const started = runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '加', openCanvas: canvasOf(doc).open, emit: out.emit })
+    const started = await runtime.start({ flowId: 'flow-1', userId: 'u1', conversationId: null, text: '加', openCanvas: canvasOf(doc).open, emit: out.emit })
     if (started.ok) await started.done
 
     const last = out.events.at(-1)

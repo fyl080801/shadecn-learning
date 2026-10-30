@@ -13,6 +13,8 @@
  * | {@link SharedMap} | 「这个键现在是什么值 / 我能不能占住它」 | `Map` | Redis string + TTL |
  * | {@link SharedCounter} | 「下一个号是几」 | 计数器 | Redis `INCR` |
  * | {@link SharedLock} | 「同一时刻只许一个人做这件事」 | 进程内 promise 去重 | Redis `SET NX` |
+ * | {@link SharedLog} | 「按顺序记下来，谁都能从某处接着读」 | 数组 + 等待者 | Redis stream |
+ * | {@link SharedChannel} | 「把这句话告诉正在听的那个副本」 | EventEmitter | Redis pub/sub |
  *
  * 抽象是 `abstract class` 而不是 interface：命名空间拼接、编解码这些公共逻辑
  * 写在基类里，两套实现各自只写真正不同的那几行。
@@ -162,6 +164,82 @@ export abstract class SharedLock {
   ): Promise<T>
 }
 
+/** 有序日志里的一条：`id` 由实现发放，只能原样交回（当 {@link SharedLog.read} 的起点），别解析它 */
+export interface LogEntry<V> {
+  id: string
+  value: V
+}
+
+export interface LogAppendOptions {
+  /** 只留最近这么多条：超出的从最老的删起（**精确**裁剪，不是近似） */
+  maxLen?: number
+  /** 整份日志（不是这一条）的 TTL：每次追加都重设；不给 = 不动原来的过期时间 */
+  ttlMs?: number
+}
+
+/**
+ * 一份跨实例共享的**有序日志**：追加、从某一条之后读、阻塞等新条目，带长度上限和整份过期。
+ *
+ * 用在「一个副本在写、别的副本要从头补读再接着跟」的场景（agent 一轮的补发缓冲，docs/20 §3.10.10）。
+ * 和 {@link SharedMap} 的区别是**顺序与游标**：读的一方拿上次读到的 `id` 接着读，不漏不重；
+ * 写的一方只管追加。
+ *
+ * - `id` 在同一份日志里单调递增，**不透明**（内存实现是数字串，Redis 是 stream id）；
+ * - 裁剪（`maxLen`）只删最老的，游标落在被裁掉的位置时，读到的是还在的那些（**读的一方自己判断有没有漏**，
+ *   比如在值里带序号）；
+ * - 过期是整份日志一起没（`ttlMs` / {@link expire}），写的一方负责续。
+ */
+export abstract class SharedLog<V> {
+  protected readonly namespace: string
+  protected readonly codec: Codec<V>
+
+  constructor(namespace: string, codec: Codec<V>) {
+    this.namespace = namespace
+    this.codec = codec
+  }
+
+  /** 追加一条，返回它的 id */
+  abstract append(key: string, value: V, options?: LogAppendOptions): Promise<string>
+
+  /** `after` 之后（不含）的条目，按顺序；`after` 为 null 从头读；`count` 是这次最多读几条 */
+  abstract read(key: string, after: string | null, count?: number): Promise<LogEntry<V>[]>
+
+  /**
+   * 阻塞读：`after` 之后已经有条目就立刻返回它们，否则等到有新条目、或 `blockMs` 到点（返回空数组）。
+   * 日志不存在时同样等（写的一方可能还没写第一条）。`blockMs` 必须大于 0，调用方自己循环。
+   */
+  abstract wait(key: string, after: string | null, blockMs: number): Promise<LogEntry<V>[]>
+
+  /** 重设整份日志的 TTL；日志不存在返回 false */
+  abstract expire(key: string, ttlMs: number): Promise<boolean>
+
+  abstract delete(key: string): Promise<void>
+}
+
+/**
+ * 跨实例的**发布 / 订阅**：把一条消息发给此刻正在听某个频道的所有订阅者（含本进程自己）。
+ *
+ * 用在「这件事只有某个副本做得了，请求却落在了别的副本」的场景（agent 跨副本停止，docs/20 §3.10.10）。
+ * **只管送达此刻在听的人**：没人听、订阅之前发的、订阅连接断开期间发的，都丢 —— 要可靠就别用它，
+ * 或者让发送方能从别处（登记表）确认结果。投递是异步的：`publish` 兑现时订阅者不一定已经收到。
+ *
+ * 订阅在 `initCluster()` **之后**建立（换 backend 不迁移已有订阅）。
+ */
+export abstract class SharedChannel<V> {
+  protected readonly namespace: string
+  protected readonly codec: Codec<V>
+
+  constructor(namespace: string, codec: Codec<V>) {
+    this.namespace = namespace
+    this.codec = codec
+  }
+
+  abstract publish(channel: string, message: V): Promise<void>
+
+  /** 订阅一个频道；返回退订函数。`handler` 抛错只记日志，不影响别的订阅者 */
+  abstract subscribe(channel: string, handler: (message: V) => void): Promise<() => Promise<void>>
+}
+
 /** 一套实现的出厂口。`initCluster()` 按模式挑一个 */
 /** 共享层的健康快照 */
 export interface ClusterHealth {
@@ -177,6 +255,9 @@ export interface ClusterBackend {
   createMap<V>(namespace: string, codec: Codec<V>): SharedMap<V>
   createCounter(namespace: string): SharedCounter
   createLock(namespace: string): SharedLock
+  /** 同一个 backend 上同名的日志 / 频道是同一份（和 Redis 上同名键一致），不论 `create` 了几次 */
+  createLog<V>(namespace: string, codec: Codec<V>): SharedLog<V>
+  createChannel<V>(namespace: string, codec: Codec<V>): SharedChannel<V>
   close(): Promise<void>
   /**
    * 共享层现在还好使吗 —— 给监控端点读。

@@ -23,6 +23,7 @@ import { agentConversations, agentRunLog } from '../store/agent.ts'
 import { users } from '../store/users.ts'
 import { agentAuthority } from './authority.ts'
 import { agentNodeLeases } from './leases.ts'
+import { agentRunRegistry } from './runs.ts'
 import { agentMediaReader } from './media.ts'
 import { runnerCommand } from './runner-command.ts'
 import { broadcastAgentRuns } from './runs-broadcast.ts'
@@ -50,7 +51,7 @@ let runtime: AgentRuntime | null = null
 
 /**
  * 宿主这一侧接给编排层的东西：落库、用户信息、任务列表变更时的房间广播（docs/20 §3.10.4）、
- * 每一轮的执行身份（Grant 签发 / 判权 / 对账，docs/22，`authority.ts`）、节点占用的登记表（`leases.ts`）。
+ * 每一轮的执行身份（Grant 签发 / 判权 / 对账，docs/22，`authority.ts`）、节点占用的登记表（`leases.ts`）、运行中轮次的共享登记（`runs.ts`）。
  * 启用与否都一样；测试换成假模型时也展开它，测的就是生产的那套接线。
  */
 export const agentHostOptions = {
@@ -63,7 +64,12 @@ export const agentHostOptions = {
   authorities: agentAuthority,
   // 节点占用（docs/20 §3.10.8）：共享层的登记表，单副本内存、多副本 redis
   leases: agentNodeLeases,
-} satisfies Pick<AgentRuntimeOptions, 'store' | 'runLog' | 'userProfiles' | 'onRunsChange' | 'authorities' | 'leases'>
+  // 运行中轮次（docs/20 §3.10.10，F14）：任务登记、会话槽位、补发日志、停止指令，同样在共享层
+  runRegistry: agentRunRegistry,
+} satisfies Pick<
+  AgentRuntimeOptions,
+  'store' | 'runLog' | 'userProfiles' | 'onRunsChange' | 'authorities' | 'leases' | 'runRegistry'
+>
 
 /** 沙箱里看到的网关地址 */
 export const agentGatewayUrl = `${agentConfig.gatewayUrl}${AGENT_GATEWAY_PATH}`

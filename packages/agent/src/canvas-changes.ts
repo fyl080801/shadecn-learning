@@ -617,8 +617,16 @@ export function canvasChangeMessage(rendered: RenderedNotice, now: number = Date
 
 export interface CanvasWatchOptions {
   canvas: CanvasHandle
-  /** 改动者 → 显示名；`null` = 不算（本轮自己的写入） */
+  /**
+   * 改动者 → 显示名；`null` = 不算（本轮自己的写入）。**同步**（观察回调跑在别人的事务里）：
+   * 记改动时调一次（判「是不是自己」、给 `onDataTouched`），出通知时对每个改动者再调一次（那时 {@link resolveActors} 已经查过）
+   */
   nameOf: (actor: CanvasActor) => string | null
+  /**
+   * 出通知之前（读内容之前）先把这一批的改动者交给它：编排层借这个机会异步查出本进程不认识的改动者
+   * （别的副本上的轮次的发起人，docs/20 §3.10.10），之后的 `nameOf` 就叫得出名字。抛错 / 查不到不影响出通知
+   */
+  resolveActors?: (actors: CanvasActor[]) => Promise<void>
   /** 合并窗口：第一处改动之后等这么久再出一条通知 */
   windowMs: number
   /** 合并好、非空的一条通知 */
@@ -656,11 +664,18 @@ export interface CanvasWatch {
  * - 本轮自己写过的元素：下次 flush 时把基线刷成现状，不报。自己和别人在同一个窗口里改了同一个元素，
  *   这条会连同自己的改动一起报（多报，不漏报）。
  */
+/** 改动者的去重键：同一个人 / 同一轮在一个窗口里改多次只算一个 */
+function actorKey(actor: CanvasActor): string {
+  if (actor.kind === 'agent') return `agent:${actor.runId}`
+  if (actor.kind === 'user') return `user:${actor.id ?? ''}:${actor.name}`
+  return 'unknown'
+}
+
 export function createCanvasWatch(options: CanvasWatchOptions): CanvasWatch {
   const { canvas } = options
   const baseline = new Map<string, NodeDigest | EdgeDigest>()
-  /** 元素 → 这个窗口里改过它的人 */
-  let pending = new Map<string, Set<string>>()
+  /** 元素 → 这个窗口里改过它的人（按改动者去重；名字出通知时才定，见 `resolveActors`） */
+  let pending = new Map<string, Map<string, CanvasActor>>()
   let ownTouched = new Set<string>()
   let timer: ReturnType<typeof setTimeout> | null = null
   let unsubscribe: (() => void) | null = null
@@ -682,9 +697,10 @@ export function createCanvasWatch(options: CanvasWatchOptions): CanvasWatch {
         console.error('[agent] 「改过」登记出错（已忽略）', err)
       }
     }
+    const actorId = actorKey(change.actor)
     for (const key of keys) {
-      const actors = pending.get(key) ?? new Set<string>()
-      actors.add(name)
+      const actors = pending.get(key) ?? new Map<string, CanvasActor>()
+      actors.set(actorId, change.actor)
       pending.set(key, actors)
     }
     timer ??= setTimeout(() => {
@@ -710,10 +726,25 @@ export function createCanvasWatch(options: CanvasWatchOptions): CanvasWatch {
     }
     // 只有自己的写入：基线留到有别人的改动时再刷（省一次权限复核）
     if (pending.size === 0) return
-    const foreign = pending
+    const foreignActors = pending
     const own = ownTouched
     pending = new Map()
     ownTouched = new Set()
+    // 名字到这时才定：先让编排层把不认识的改动者查出来（别的副本上的轮次）
+    if (options.resolveActors) {
+      const everyone = new Map<string, CanvasActor>()
+      for (const actors of foreignActors.values()) for (const [id, actor] of actors) everyone.set(id, actor)
+      try {
+        await options.resolveActors([...everyone.values()])
+      } catch (err) {
+        console.warn('[agent] 查改动者失败（照常出通知，认不出的照旧）', err)
+      }
+      if (stopped) return
+    }
+    const foreign = new Map<string, Set<string>>()
+    for (const [key, actors] of foreignActors) {
+      foreign.set(key, new Set([...actors.values()].map((actor) => options.nameOf(actor) ?? '其他协作者')))
+    }
 
     let notice: CanvasChangeNotice | null
     /** 这一批里各节点 data 部分的改动摘要（读完再交出去：回调不该跑在 read 里） */

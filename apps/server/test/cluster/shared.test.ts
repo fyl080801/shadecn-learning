@@ -298,5 +298,165 @@ for (const candidate of candidates) {
         expect(after).toBe('还能拿到锁')
       })
     })
+
+    describe('SharedLog', () => {
+      it('按追加的顺序读出来；从某一条之后接着读不漏不重', async () => {
+        const log = backend.createLog<{ n: number }>('g1', jsonCodec())
+        const ids: string[] = []
+        for (let n = 1; n <= 4; n += 1) ids.push(await log.append('k', { n }))
+        expect((await log.read('k', null)).map((entry) => entry.value.n)).toEqual([1, 2, 3, 4])
+        expect((await log.read('k', ids[1]!)).map((entry) => entry.value.n)).toEqual([3, 4])
+        expect((await log.read('k', ids[3]!))).toEqual([])
+        expect((await log.read('k', null, 2)).map((entry) => entry.value.n)).toEqual([1, 2])
+        // id 是追加时返回的那个，读出来的一致
+        expect((await log.read('k', null)).map((entry) => entry.id)).toEqual(ids)
+      })
+
+      it('没写过的日志读出来是空的；不同的键、不同的 namespace 互不干扰', async () => {
+        const a = backend.createLog('g2', stringCodec)
+        const b = backend.createLog('g2b', stringCodec)
+        expect(await a.read('nope', null)).toEqual([])
+        await a.append('k1', 'a1')
+        await a.append('k2', 'a2')
+        await b.append('k1', 'b1')
+        expect((await a.read('k1', null)).map((entry) => entry.value)).toEqual(['a1'])
+        expect((await b.read('k1', null)).map((entry) => entry.value)).toEqual(['b1'])
+      })
+
+      it('同一个 backend 上各 createLog 一次也是同一份（两个「副本」读写同一个键）', async () => {
+        const writer = backend.createLog('g3', stringCodec)
+        const reader = backend.createLog('g3', stringCodec)
+        await writer.append('k', 'x')
+        expect((await reader.read('k', null)).map((entry) => entry.value)).toEqual(['x'])
+      })
+
+      it('maxLen 只留最近的那么多条，从最老的删起', async () => {
+        const log = backend.createLog('g4', numberCodec)
+        for (let n = 1; n <= 5; n += 1) await log.append('k', n, { maxLen: 3 })
+        expect((await log.read('k', null)).map((entry) => entry.value)).toEqual([3, 4, 5])
+      })
+
+      it('wait：已经有就立刻返回，没有就等到新条目', async () => {
+        const log = backend.createLog('g5', stringCodec)
+        const first = await log.append('k', 'a')
+        expect((await log.wait('k', null, 1000)).map((entry) => entry.value)).toEqual(['a'])
+
+        const started = Date.now()
+        const waiting = log.wait('k', first, 2000)
+        await sleep(50)
+        await log.append('k', 'b')
+        const got = await waiting
+        expect(got.map((entry) => entry.value)).toEqual(['b'])
+        expect(Date.now() - started).toBeLessThan(1500)
+      })
+
+      it('wait：日志还不存在时也等，写出第一条就醒', async () => {
+        const log = backend.createLog('g6', stringCodec)
+        const waiting = log.wait('k', null, 2000)
+        await sleep(50)
+        await log.append('k', '第一条')
+        expect((await waiting).map((entry) => entry.value)).toEqual(['第一条'])
+      })
+
+      it('wait：到点没有新条目返回空数组', async () => {
+        const log = backend.createLog('g7', stringCodec)
+        const last = await log.append('k', 'a')
+        const started = Date.now()
+        expect(await log.wait('k', last, 120)).toEqual([])
+        expect(Date.now() - started).toBeGreaterThanOrEqual(100)
+      })
+
+      it('同时等的多个读者都能醒', async () => {
+        const log = backend.createLog('g8', stringCodec)
+        const waits = [log.wait('k', null, 2000), log.wait('k', null, 2000), log.wait('k', null, 2000)]
+        await sleep(50)
+        await log.append('k', 'x')
+        for (const got of await Promise.all(waits)) expect(got.map((entry) => entry.value)).toEqual(['x'])
+      })
+
+      it('TTL：整份日志到点消失；expire 续上就还在，日志不存在时 expire 返回 false', async () => {
+        const log = backend.createLog('g9', stringCodec)
+        await log.append('k', 'a', { ttlMs: 150 })
+        await sleep(90)
+        expect(await log.expire('k', 150)).toBe(true)
+        await sleep(90)
+        // 续过了：从续期那一刻再算 150ms
+        expect((await log.read('k', null)).map((entry) => entry.value)).toEqual(['a'])
+        await sleep(120)
+        expect(await log.read('k', null)).toEqual([])
+        expect(await log.expire('k', 150)).toBe(false)
+      })
+
+      it('delete 之后读不到；之后再追加，新条目的 id 排在旧游标之后', async () => {
+        const log = backend.createLog('g10', stringCodec)
+        const old = await log.append('k', 'a')
+        await log.delete('k')
+        expect(await log.read('k', null)).toEqual([])
+        await log.append('k', 'b')
+        expect((await log.read('k', old)).map((entry) => entry.value)).toEqual(['b'])
+      })
+    })
+
+    describe('SharedChannel', () => {
+      const received = <V>() => {
+        const got: V[] = []
+        return { got, handler: (message: V) => got.push(message) }
+      }
+
+      it('发出去的消息到达这个频道此刻的全部订阅者（含同一个 backend 上另建的频道对象）', async () => {
+        const sender = backend.createChannel<{ runId: string }>('c1', jsonCodec())
+        const listenerChannel = backend.createChannel<{ runId: string }>('c1', jsonCodec())
+        const one = received<{ runId: string }>()
+        const two = received<{ runId: string }>()
+        const off1 = await listenerChannel.subscribe('inst-a', one.handler)
+        const off2 = await sender.subscribe('inst-a', two.handler)
+        await sender.publish('inst-a', { runId: 'r1' })
+        await sleep(80)
+        expect(one.got).toEqual([{ runId: 'r1' }])
+        expect(two.got).toEqual([{ runId: 'r1' }])
+        await off1()
+        await off2()
+      })
+
+      it('别的频道、别的 namespace 的消息收不到', async () => {
+        const channel = backend.createChannel('c2', stringCodec)
+        const other = backend.createChannel('c2b', stringCodec)
+        const box = received<string>()
+        const off = await channel.subscribe('inst-a', box.handler)
+        await channel.publish('inst-b', 'x')
+        await other.publish('inst-a', 'y')
+        await sleep(80)
+        expect(box.got).toEqual([])
+        await off()
+      })
+
+      it('退订之后不再收；订阅之前发的也收不到（只送达此刻在听的人）', async () => {
+        const channel = backend.createChannel('c3', stringCodec)
+        await channel.publish('inst-a', '太早了')
+        await sleep(30)
+        const box = received<string>()
+        const off = await channel.subscribe('inst-a', box.handler)
+        await channel.publish('inst-a', '一')
+        await sleep(80)
+        await off()
+        await channel.publish('inst-a', '二')
+        await sleep(80)
+        expect(box.got).toEqual(['一'])
+      })
+
+      it('一个订阅者抛错不影响别的订阅者', async () => {
+        const channel = backend.createChannel('c4', stringCodec)
+        const box = received<string>()
+        const offBad = await channel.subscribe('inst-a', () => {
+          throw new Error('坏订阅者')
+        })
+        const offGood = await channel.subscribe('inst-a', box.handler)
+        await channel.publish('inst-a', 'x')
+        await sleep(80)
+        expect(box.got).toEqual(['x'])
+        await offBad()
+        await offGood()
+      })
+    })
   })
 }

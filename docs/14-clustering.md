@@ -54,13 +54,18 @@
 
 ### 3.2 抽象层（`apps/server/cluster/`）
 
-按**用途**分三个抽象类，不是按数据结构分：
+按**用途**分五个抽象类，不是按数据结构分：
 
 | 抽象 | 回答的问题 | 单副本 | 多副本 |
 |---|---|---|---|
-| `SharedMap<V>` | 这个键是什么值 / 我能不能占住它 | `Map` + 惰性过期 | `GET` / `SET [PX]` / `SET NX` |
+| `SharedMap<V>` | 这个键是什么值 / 我能不能占住它 | `Map` + 惰性过期 | `GET` / `SET [PX]` / `SET NX`；比较后写 / 比较后删用 Lua |
 | `SharedCounter` | 下一个号是几 | 计数器 | `INCR`，键不存在时按库里的最大值播种 |
 | `SharedLock` | 同一时刻只许一个人做这件事 | 进程内 promise 去重 | `SET NX PX` + 带 token 的 Lua 释放 |
+| `SharedLog<V>` | 按顺序记下来，谁都能从某处接着读、等新的 | 数组 + 等待者 | stream：`XADD MAXLEN` + `PEXPIRE` / `XRANGE` / `XREAD BLOCK`（单独的连接） |
+| `SharedChannel<V>` | 把这句话告诉此刻正在听的那个副本 | `EventEmitter` | `PUBLISH` / `SUBSCRIBE`（订阅独占一条连接） |
+
+`SharedLog` / `SharedChannel` 是 agent 多副本（[REQ-AGENT](20-agent-canvas.md) §3.10.10）引入的：前者装一轮的补发缓冲，
+后者把停止指令转给持有那一轮的副本。频道**只送达此刻在听的人**，丢了就丢了 —— 用它的一方要有别的办法确认结果。
 
 三条约束写死在设计里：
 

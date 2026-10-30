@@ -79,7 +79,7 @@ function canvasOf(doc: Y.Doc) {
 async function run(runtime: ReturnType<typeof runtimeWith>['runtime'], doc = new Y.Doc()) {
   const events: AgentStreamEvent[] = []
   const canvas = canvasOf(doc)
-  const started = runtime.start({
+  const started = await runtime.start({
     flowId: 'flow-1',
     userId: 'u1',
     conversationId: null,
@@ -326,7 +326,7 @@ describe('Grant 失效 = 整轮停', () => {
     const { runtime, authorities, runLog } = runtimeWith([step])
     const { started } = await run(runtime)
     await reached
-    runtime.abort('flow-1', started.runId, { userId: 'u1', admin: false })
+    await runtime.abort('flow-1', started.runId, { userId: 'u1', admin: false })
     authorities.revoke(started.runId, '失权', 'expired')
     await started.done
     expect(runLog.runs.get(started.runId)).toMatchObject({ status: 'cancelled', error: '已中止' })

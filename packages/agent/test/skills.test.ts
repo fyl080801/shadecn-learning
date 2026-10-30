@@ -227,7 +227,7 @@ async function run(
     ...createDocCanvasHandle(doc, { flowId: 'flow-1', runId }),
     async close() {},
   })
-  const started = runtime.start({
+  const started = await runtime.start({
     flowId: 'flow-1',
     userId: 'u1',
     conversationId: options.conversationId ?? null,
