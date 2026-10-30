@@ -114,7 +114,7 @@ onBeforeUnmount(() => {
   <div class="nodrag nopan nowheel w-80" data-testid="prompt-composer">
     <!--
       defer-focus-on-click：浮层挂载时不能抢画布的焦点（否则 Delete / Ctrl+Z 全落进输入框），点它才聚焦。
-      wrapper-class 去掉 PromptInput 默认的边框 / 焦点环 / 背景，只留紧凑的两行起步、几行后滚动。
+      PromptInput 本身没有边框，这里嵌在节点浮层里也不加、不留内边距让文字占满；wrapper-class 只调成两行起步、几行后滚动。
     -->
     <PromptInput
       ref="inputRef"
@@ -122,7 +122,7 @@ onBeforeUnmount(() => {
       :editor="editor"
       :defer-focus-on-click="true"
       :placeholder="placeholder"
-      wrapper-class="border-0 [&_[data-slate-editor]]:min-h-14 [&_[data-slate-editor]]:max-h-32 [&_[data-slate-editor]]:overflow-y-auto [&_[data-slate-editor]]:rounded-lg [&_[data-slate-editor]]:border-0 [&_[data-slate-editor]]:bg-transparent [&_[data-slate-editor]]:px-2 [&_[data-slate-editor]]:py-1 [&_[data-slate-editor]]:leading-6 [&_[data-slate-editor]]:focus:ring-0 [&_[data-slate-editor]]:focus:ring-offset-0 [&_[data-slate-editor]]:before:left-2 [&_[data-slate-editor]]:before:top-1 [&_[data-slate-editor]]:before:leading-6"
+      wrapper-class="[&_[data-slate-editor]]:min-h-14 [&_[data-slate-editor]]:max-h-32 [&_[data-slate-editor]]:overflow-y-auto [&_[data-slate-editor]]:p-0 [&_[data-slate-editor]]:leading-6 [&_[data-slate-editor]]:before:left-0 [&_[data-slate-editor]]:before:top-0 [&_[data-slate-editor]]:before:leading-6"
       @focus="begin()"
       @blur="finish('commit')"
       @keydown="onKeydown"

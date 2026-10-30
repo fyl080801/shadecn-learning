@@ -2,7 +2,8 @@
 type FlowNodeData = Record<string, unknown>
 
 /**
- * 「平铺分键」—— 一批会被各人各改各的元素，怎么放进节点的 `data`。
+ * 「平铺分键」—— 一批会被各人各改各的元素，怎么放进节点的 `data`（docs/13 §3.7.1）。
+ * 前端（编辑器）和服务端（agent 的导演台工具，经 `director-doc`）用的是同一份。
  *
  * ## 它解决什么
  *
@@ -22,8 +23,8 @@ type FlowNodeData = Record<string, unknown>
  * 2. **key 更细**（本模块）—— `data` 仍然是**一层** Y.Map、值仍然全是普通 JSON，
  *    只是把一批元素摊成 `<前缀>.<id>` 这样一串平级的键。
  *
- * 第二条对 CRDT 层完全不可见：`toYNode` / `fromYNode`（前后端共用 `@shadecn/shared/flow-doc` 那一份）一行不用改，
- * `duplicateNode` 的「投影 → structuredClone → toYNode」照跑，服务端连知道都不用知道。
+ * 第二条对 CRDT 层完全不可见：`toYNode` / `fromYNode`（前后端共用 `flow-doc` 那一份）一行不用改，
+ * `duplicateNode` 的「投影 → 深拷贝 → toYNode」照跑，服务端连知道都不用知道。
  * 老客户端读到一堆不认识的键，原样透传 —— `data` 本来就是开放的业务字段。
  * 所谓 schema 退化成一个**命名约定**，而命名约定的版本兼容就是普通的读时兼容
  * （换了前缀就两个都认一段时间），和 v1→v2 用的是同一套办法。
@@ -43,15 +44,14 @@ type FlowNodeData = Record<string, unknown>
  * ## 粒度到哪儿为止
  *
  * 拆到「一个元素一个键」就够，不必再往元素内部拆。两个人同时改**同一个元素**
- * 仍然只剩一边 —— 那一格靠占用锁（`apps/web/src/lib/presence.ts`，已实现未启用），不靠 CRDT：
- * 两人同时摆同一个 3D 角色，就算合并得再干净，交互本身也是混乱的，那里要的是排他。
+ * 仍然只剩一边 —— 那一格靠占用提示（`apps/web/src/lib/presence.ts`），不靠 CRDT。
  *
  * 同理，**拖动中的中间态不要往这里写**，和节点拖动一条规矩（见 `useFlowCanvas`）：
  * 中间帧走 awareness 反馈层，松手才提交一次。
  */
 
 /** 前缀和 id 之间的分隔符。id 里可以随便带 `.` / `:` —— 解析时按前缀长度切，不按分隔符搜 */
-const SEPARATOR = "."
+const SEPARATOR = '.'
 
 /** 拼一个集合元素的键：`<前缀>.<id>` */
 export function collectionKey(prefix: string, id: string): string {
@@ -75,10 +75,7 @@ export function collectionIdOf(prefix: string, key: string): string | null {
  * 同一份文档在两台机器上迭代出来的顺序可以不同。要排序就让元素自己带排序字段
  * （`index` / `time` / `createdAt`），由调用方排。
  */
-export function readCollection<T = unknown>(
-  data: Readonly<FlowNodeData>,
-  prefix: string
-): Map<string, T> {
+export function readCollection<T = unknown>(data: Readonly<FlowNodeData>, prefix: string): Map<string, T> {
   const out = new Map<string, T>()
   for (const [key, value] of Object.entries(data)) {
     const id = collectionIdOf(prefix, key)
@@ -104,7 +101,7 @@ export function collectionKeys(data: Readonly<FlowNodeData>, prefix: string): st
 export function spreadCollection<T>(
   prefix: string,
   items: Iterable<T>,
-  idOf: (item: T) => string
+  idOf: (item: T) => string,
 ): Record<string, T> {
   const out: Record<string, T> = {}
   for (const item of items) {

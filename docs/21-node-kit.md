@@ -396,7 +396,7 @@ export const runnable = defineNodeFeature({
 7. ✅ 文档：REQ-CANVAS §3.7.3 / §4.4（宿主 + 类型声明 + 能力、组件层清单、节点动作快捷键）、REQ-AGENT 里的占用标签、CLAUDE.md 的节点注册表与组件清单，并新增一条 node-kit 协议的说明。
 8. ✅ 节点类型收敛为四种：`text` / `image` / `video` / `director`（shared 的 `CREATABLE_NODE_TYPES`；七种样例业务类型下线，老画布里的按兜底 `process` 显示）。
    - 每种类型往 `body` 区登记自己的内容：`TextBody`（输入框样子的正文区）/ `ImageBody`（`data.src` 的图，空时可上传）/ `VideoBody`（只画 `data.poster`，没视频时可上传）/ `DirectorBody`（「打开导演台」按钮，先空着）；`GenericBody` 删除。
-   - 底部输入框按类型登记（`composer/composer-part.ts` 的 `definePromptComposerPart`，写 `data.prompt`）：文本 / 图片 / 视频有了内容（shared 的 `hasNodeResource`）就收起，导演台一直有；`ImagePromptComposer` 删除。
+   - 底部输入框按类型登记（`composer/composer-part.ts` 的 `definePromptComposerPart`，写 `data.prompt`）：文本 / 图片 / 视频有了内容（shared 的 `hasNodeResource`）就收起，导演台一直有；`ImagePromptComposer` 删除。（后续：图片 / 视频改为看形态 `nodeFormOf`——generate 形态输入框常驻，asset 形态才收起，见 docs/13 §3.7；只有文本仍按有无内容收起）
      `edit-prompt` 模式改成**能力**（`composer/prompt.ts` 的 `editPromptFeature`）：模式 id 在注册表里全局唯一，四个类型不能各登记一份。
    - 提交只发 `composer:submit`，没有类型启用 `runnable`，所以眼下提交不触发运行；`runnable` / `output-preview` 仍在 `install.ts` 登记，作为通用能力留着。
    - 连接点：入口 `connectable-start=false`、没有加号；出口点加号 / 拉线到空白处弹出候选类型菜单（`FlowGrowMenu`），不再自动长节点。

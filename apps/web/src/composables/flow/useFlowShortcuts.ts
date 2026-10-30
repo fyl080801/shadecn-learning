@@ -3,6 +3,7 @@ import { onBeforeRouteLeave } from "vue-router"
 import type { FlowEditorContext } from "./editor-context"
 // 输入框里按 Ctrl+Z 应该是撤销输入，不是撤销画布操作
 import { isEditableTarget } from "./editable"
+import { canvasShortcutsSuspended } from "./shortcut-layer"
 
 /**
  * 编辑器的全局快捷键与「别把没保存的改动弄丢」两道保险。
@@ -12,6 +13,8 @@ export function useFlowShortcuts(context: FlowEditorContext) {
   const { store, canvas, document: doc, selection, nodeKit } = context
 
   useEventListener(window, "keydown", (event: KeyboardEvent) => {
+    // 上面盖着全屏层（导演台）：画布的快捷键一律让路
+    if (canvasShortcutsSuspended.value) return
     if (isEditableTarget(event.target)) return
 
     const mod = event.metaKey || event.ctrlKey

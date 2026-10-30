@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildAssetKey, isAssetKey } from '../../storage/keys.ts'
+import { assetKeyOfUrl, buildAssetKey, isAssetKey } from '../../storage/keys.ts'
 
 const id = '3fa85f64-5717-4562-b3fc-2c963f66afa6'
 
@@ -24,5 +24,33 @@ describe('资源对象键的目录分层', () => {
     expect(isAssetKey('canvas', `canvas/assets/3f/a8/../${id}.png`)).toBe(false)
     expect(isAssetKey('canvas', `canvas/assets/images/3f/a8/${id}.png`)).toBe(false)
     expect(isAssetKey('canvas', `canvas/projects/p1/flows/f1/images/3f/a8/${id}.png`)).toBe(false)
+  })
+})
+
+describe('素材地址 → 对象键（agent 看图只读本桶的素材，不请求节点里写的地址）', () => {
+  const base = 'https://s3.example.test/canvas-bucket/'
+  const key = `canvas/assets/3f/a8/${id}.png`
+
+  it('本桶、素材目录、我们拼出来的形状 → 键', () => {
+    expect(assetKeyOfUrl(`${base}${key}`, base, 'canvas')).toBe(key)
+  })
+
+  it('外部地址、别的桶 / 主机、别的前缀、老的分层键、穿越、编码花样、带 query → null', () => {
+    const rejected = [
+      `http://169.254.169.254/latest/meta-data/${id}.png`,
+      `https://s3.example.test.evil.test/canvas-bucket/${key}`,
+      `https://s3.example.test/other-bucket/${key}`,
+      `http://s3.example.test/canvas-bucket/${key}`,
+      `${base}other/assets/3f/a8/${id}.png`,
+      `${base}canvas/projects/p1/flows/f1/images/${id}.png`,
+      `${base}canvas/assets/3f/a8/../${id}.png`,
+      `${base}canvas/assets/3f%2Fa8/${id}.png`,
+      `${base}canvas/assets/3f/a8/${id}.png?x-id=GetObject`,
+      `${base}canvas/assets/3f/a8/${id}.png#frag`,
+      `${base}canvas/assets/3f/a8/%E0%A4%A.png`,
+      `data:image/png;base64,iVBORw0KGgo=`,
+      '',
+    ]
+    for (const url of rejected) expect([url, assetKeyOfUrl(url, base, 'canvas')]).toEqual([url, null])
   })
 })

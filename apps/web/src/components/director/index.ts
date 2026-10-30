@@ -8,6 +8,10 @@ export { default as DirectorAspectRatioOverlay } from "./DirectorAspectRatioOver
 export { default as DirectorViewHelper } from "./DirectorViewHelper.vue"
 export { default as DirectorTransformControls } from "./DirectorTransformControls.vue"
 
+// 只渲染的舞台（画布导演台节点全屏打开的那一块）与它和 /3d-viewport 共用的默认场景
+export { default as DirectorStage } from "./DirectorStage.vue"
+export { buildDirectorDefaultScene } from "./directorDefaultScene"
+
 // 渲染器与场景背景
 export { useDirectorRenderer } from "./useDirectorRenderer"
 export { useDirectorSceneBackdrop } from "./useDirectorSceneBackdrop"

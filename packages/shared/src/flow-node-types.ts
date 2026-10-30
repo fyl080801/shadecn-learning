@@ -63,6 +63,23 @@ export interface PortDef {
   max?: number
 }
 
+// —— 形态（图片 / 视频：生成 / 素材）——
+
+/**
+ * 节点的形态。只有声明了 `forms` 的类型（图片、视频）有：
+ *
+ * - `generate`（生成）：有底部输入框、接受连入 —— 「这张图要按连进来的素材生成」；
+ * - `asset`（素材）：独立的资源，没有底部输入框，**拖线连不进去**。
+ *
+ * **存，不推导**：值在 `data.form`（平铺、字符串）。只经 {@link nodeFormOf} 读；没有这个字段（老数据、
+ * 新建的节点）一律算 `generate`，不迁移、不按 `src` 反推。形态只在 `@shadecn/shared/flow-ops` 里变
+ * （`attachAsset` / 连入时），规则见那边。
+ */
+export type NodeForm = 'generate' | 'asset'
+
+/** 形态存在 `data` 上的键 */
+export const NODE_FORM_KEY = 'form'
+
 export interface FlowNodeTypeDefaults {
   /** 顶层 `type`，也是注册表的键 */
   type: string
@@ -78,17 +95,28 @@ export interface FlowNodeTypeDefaults {
   inputs?: PortDef[]
   outputs?: PortDef[]
   /**
-   * 这个节点「有没有内容 / 资源」—— 文本有正文、图片 / 视频有资源地址。
-   * 不给 = 永远没有（导演台、分组）。界面（底部输入框要不要出现）和连线规则问的都是它，
-   * 统一经 `hasNodeResource` 调，别在别处重写一遍判断。
+   * 这个节点「有没有内容 / 资源」—— 文本有正文、图片 / 视频有资源地址。只是「有没有素材」，
+   * **不决定形态、不决定能不能连**。不给 = 永远没有（导演台、分组）。统一经 `hasNodeResource` 调。
    */
   hasResource?: (data: Readonly<Record<string, unknown>>) => boolean
   /**
-   * 声明了的输入端口**此刻**开不开放。不给 = 一直开放。
-   * 关上时：画布上左边那个连接点不画，`resolveConnection` 拒绝**新**连线；
+   * 这个类型有没有「生成 / 素材」两种形态（{@link NodeForm}）。不给 = 没有（文本、导演台…）。
+   * 有的话：`asset` 形态的节点左边那个连接点不画、拖线连不进去（交互门，{@link interactionGate}）；
    * 已经连着的线照旧保留（读的一侧从不回写文档）。
    */
-  inputsOpen?: (data: Readonly<Record<string, unknown>>) => boolean
+  forms?: boolean
+  /**
+   * 没有实测尺寸时按多大估（服务端没有 DOM：agent 摆新节点、打组算外接矩形、自动布局都靠它）。
+   * 取自前端注册表 `view.class` 里的宽 / 最小高（`apps/web/src/components/flow/node-types.ts`），
+   * 是**近似值**：真实高度随内容（正文行数、底部输入框、报错行）变。布局里存了 `width` / `height`
+   * 的节点（分组、量过素材的图片 / 视频、拉伸过的）以存的为准，见 {@link nodeSizeOf}。
+   */
+  defaultSize?: NodeSize
+}
+
+export interface NodeSize {
+  width: number
+  height: number
 }
 
 /** 字符串字段有没有非空白内容 */
@@ -122,15 +150,16 @@ const mediaInputs = (): PortDef[] => [
  *
  * ## 连线关系表（起点 → 终点：选中的端口对；条件）
  *
- * | 起点 \ 终点 | text | image | video | director |
+ * | 起点 \ 终点 | text | image（generate） | video（generate） | director |
  * |---|---|---|---|---|
  * | **text**     | ✗ text 没有输入 | text → text | text → text | text → text |
  * | **image**    | ✗ | image → image | image → image | image → image |
  * | **video**    | ✗ | video → video | video → video | ✗ 导演台不收视频 |
  * | **director** | ✗ | image → image（截图）；连过再连落到 video → video（录制） | 同左 | image → image（只此一对） |
  *
- * - 终点是 image / video 时，**只在它没有资源（`data.src` 为空）时**能连进去；有了资源一律拒绝新连线。
- * - 起点有没有资源不影响能不能连。
+ * - 终点是 **asset 形态**的 image / video：**拖线（交互门 `interactionGate`）一律拒绝**；
+ *   逻辑上（`resolveConnection`，agent 的 `connect`）照上表选端口、能连，连上时 `flow-ops` 把它改回 generate。
+ * - 有没有资源（`data.src`）、起点是什么形态都不影响能不能连。
  * - 每个输入端口都能接多条；同一个上游、同一对端口已经连过时试下一对，没有下一对就拒绝。
  *
  * 这张表由 `packages/shared/test/flow-node-types.test.ts` 里的全矩阵测试逐格钉住 —— 改端口声明
@@ -142,16 +171,19 @@ export const FLOW_NODE_TYPE_DEFAULTS: Record<string, FlowNodeTypeDefaults> = {
     // 正文单独占一个 key（平铺在 data 上）：两个人一个改标题一个改正文才不会互相盖掉
     defaultData: () => ({ text: '' }),
     hasResource: (data) => filled(data.text),
+    // view.class：w-[320px] min-h-[120px]
+    defaultSize: { width: 320, height: 120 },
     // 文本是源头：只往外给，不接收
     outputs: [{ id: 'text', dataType: 'text', label: '文本' }],
   },
   image: {
     type: 'image',
-    // 资源地址平铺在 data 上：`src` 是图片本身
+    // 资源地址平铺在 data 上：`src` 是图片本身。形态 `form` 不写进默认值：没有 = generate
     defaultData: () => ({ src: '' }),
     hasResource: hasSrc,
-    // 已经有图了就不再接收输入 —— 输入是「怎么得到这张图」的素材，图有了就没有意义了
-    inputsOpen: (data) => !hasSrc(data),
+    forms: true,
+    // 宽 = 前端没量到素材时的 MEDIA_DEFAULT_WIDTH；高是空占位的估计。量过素材后布局里有真实宽高
+    defaultSize: { width: 320, height: 200 },
     inputs: mediaInputs(),
     outputs: [{ id: 'image', dataType: 'image', label: '图片' }],
   },
@@ -160,7 +192,9 @@ export const FLOW_NODE_TYPE_DEFAULTS: Record<string, FlowNodeTypeDefaults> = {
     // `src` 是视频本身，`poster` 是它的预览图（画布上只画这张，不放 <video>）
     defaultData: () => ({ src: '', poster: '' }),
     hasResource: hasSrc,
-    inputsOpen: (data) => !hasSrc(data),
+    forms: true,
+    // 同图片
+    defaultSize: { width: 320, height: 200 },
     inputs: mediaInputs(),
     outputs: [{ id: 'video', dataType: 'video', label: '视频' }],
   },
@@ -168,6 +202,8 @@ export const FLOW_NODE_TYPE_DEFAULTS: Record<string, FlowNodeTypeDefaults> = {
     type: 'director',
     // 场景、时间轴这类巨型对象不进默认值：它们按「平铺分键」由导演台自己写
     defaultData: () => ({}),
+    // 固定正方形：view.class 的 w-[240px] + body 的 aspect-square（底部输入框在框外，不算）
+    defaultSize: { width: 240, height: 240 },
     inputs: [
       { id: 'image', dataType: 'image', label: '全景 / 参考图', multiple: true },
       { id: 'text', dataType: 'text', label: '描述', multiple: true },
@@ -183,11 +219,14 @@ export const FLOW_NODE_TYPE_DEFAULTS: Record<string, FlowNodeTypeDefaults> = {
    */
   [FALLBACK_NODE_TYPE]: {
     type: FALLBACK_NODE_TYPE,
+    // view.class：w-[360px] min-h-[202.5px]
+    defaultSize: { width: 360, height: 203 },
   },
   [GROUP_NODE_TYPE]: {
     type: GROUP_NODE_TYPE,
     defaultData: () => ({ background: GROUP_DEFAULT_BACKGROUND }),
     defaultLayout: () => ({ ...GROUP_DEFAULT_SIZE, zIndex: GROUP_Z_INDEX }),
+    defaultSize: GROUP_DEFAULT_SIZE,
   },
 }
 
@@ -201,7 +240,8 @@ export type CreatableNodeType = (typeof CREATABLE_NODE_TYPES)[number]
 
 /**
  * 这个节点有没有内容 / 资源：text → 正文非空白；image / video → `data.src` 非空白；其余永远没有。
- * 「有没有内容」只问这一个函数（底部输入框收不收、连线规则）。
+ * 「有没有内容」只问这一个函数（文本的底部输入框收不收）。它**只表示有没有素材**：
+ * 图片 / 视频的输入框和能不能连看形态（`nodeFormOf`），不看它。
  */
 export function hasNodeResource(type: string, data: Readonly<Record<string, unknown>>): boolean {
   return FLOW_NODE_TYPE_DEFAULTS[type]?.hasResource?.(data) ?? false
@@ -210,6 +250,31 @@ export function hasNodeResource(type: string, data: Readonly<Record<string, unkn
 /** 认不认识这个 type；认不出来的按兜底类型（和 `fromYNode` 读缺失 type 时同一个） */
 export function nodeTypeDefaultsOf(type: string): FlowNodeTypeDefaults {
   return FLOW_NODE_TYPE_DEFAULTS[type] ?? FLOW_NODE_TYPE_DEFAULTS[FALLBACK_NODE_TYPE]!
+}
+
+/** 类型连 `defaultSize` 都没声明时的估计 */
+export const FALLBACK_NODE_SIZE: NodeSize = { width: 320, height: 160 }
+
+/** 这个类型没有实测、也没存尺寸时按多大估（认不出的类型按兜底类型） */
+export function defaultNodeSize(type: string): NodeSize {
+  const size = nodeTypeDefaultsOf(type).defaultSize ?? FALLBACK_NODE_SIZE
+  return { width: size.width, height: size.height }
+}
+
+function positiveSize(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+/**
+ * 不量 DOM 时一个节点的尺寸：布局里存的 `width` / `height`（分组、量过素材的图片 / 视频、拉伸过的节点都有），
+ * 没存（或不是正数）的那一边按类型的 `defaultSize` 估。**近似值** —— 编辑器有实测尺寸时用实测的。
+ */
+export function nodeSizeOf(node: { type: string; layout: { width?: number; height?: number } }): NodeSize {
+  const fallback = defaultNodeSize(node.type)
+  return {
+    width: positiveSize(node.layout.width) ? node.layout.width : fallback.width,
+    height: positiveSize(node.layout.height) ? node.layout.height : fallback.height,
+  }
 }
 
 export interface BuildNodeOptions {
@@ -266,23 +331,25 @@ export function declaresSide(type: string, side: PortSide): boolean {
 }
 
 /**
- * 声明了的输入此刻开不开放（`inputsOpen`，不给就一直开放）—— 图片 / 视频有了资源就关上。
- * 没声明输入的类型这里也返回 true：「没有」和「关上」是两回事，由 `declaresSide` 判前者。
+ * 节点的形态（{@link NodeForm}）。类型没有形态（`forms` 没声明）返回 null；
+ * 有形态但 `data.form` 缺失 / 不认识 → `generate`（老数据不迁移、不按 `src` 反推）。
+ * **形态只问这一个函数**，别在别处读 `data.form`。
  */
-export function inputsOpen(type: string, data: Readonly<Record<string, unknown>>): boolean {
-  return FLOW_NODE_TYPE_DEFAULTS[type]?.inputsOpen?.(data) ?? true
+export function nodeFormOf(type: string, data: Readonly<Record<string, unknown>>): NodeForm | null {
+  if (!FLOW_NODE_TYPE_DEFAULTS[type]?.forms) return null
+  return data[NODE_FORM_KEY] === 'asset' ? 'asset' : 'generate'
 }
 
 /**
  * 节点在这一侧**此刻**有没有连接点 —— 画布上左边（inputs）/ 右边（outputs）那一个圆画不画，
- * 也是 `resolveConnection` 判「这一侧能不能连」的同一个函数。
+ * 也是交互门（{@link interactionGate}）判「拖线能不能连进来」的同一个函数。
  *
- * `data` 是节点的业务数据，**必填**：输入开不开放看数据（图片 / 视频有资源就关），
- * 必填是为了每个调用方都没法漏掉这条 —— 漏掉了人和 agent 的规则就不一样了。
+ * `data` 是节点的业务数据，**必填**：输入开不开放看形态（asset 形态的图片 / 视频不画左边），
+ * 必填是为了每个调用方都没法漏掉这条。
  */
 export function hasSide(type: string, side: PortSide, data: Readonly<Record<string, unknown>>): boolean {
   if (!declaresSide(type, side)) return false
-  return side === 'outputs' || inputsOpen(type, data)
+  return side === 'outputs' || nodeFormOf(type, data) !== 'asset'
 }
 
 /** 按 id 找端口；`port` 为 null 返回 null */
@@ -315,8 +382,8 @@ export interface ConnectionContext {
   /** 按节点 id 取类型；节点不存在返回 undefined */
   typeOf: (nodeId: string) => string | undefined
   /**
-   * 按节点 id 取业务 `data`（输入开不开放要看它）；取不到按空对象算。
-   * **必填**：人（`useFlowCanvas`）和 agent（`tools.ts`）都得传，规则才是同一套。
+   * 按节点 id 取业务 `data`（交互门要看形态）；取不到按空对象算。
+   * **必填**：同一个上下文既喂交互门又喂 `resolveConnection`，谁都没法漏掉形态这条。
    */
   dataOf: (nodeId: string) => Readonly<Record<string, unknown>> | undefined
   /** 画布上已有的边（端口读的是 `data.sourcePort` / `data.targetPort`） */
@@ -340,14 +407,33 @@ function portOfEdge(edge: Pick<FlowEdge, 'data'>, key: 'sourcePort' | 'targetPor
 }
 
 /**
- * 这条线能不能连、连的是哪对端口 —— **唯一的连线规则**。前端拉线时的 `isValidConnection`、
+ * 交互门：**人拖线**能不能连进 `target`（拉线途中的 `is-valid-connection`、松手建边、落在节点身上、
+ * 候选菜单都先问它，再问 `resolveConnection`）。基于 {@link hasSide}：asset 形态的图片 / 视频不接受拖进来的线。
+ *
+ * **逻辑上不拦**：`resolveConnection`（agent 的 `connect`、`flow-ops`）不看形态，能连进 asset 节点，
+ * 连上时由 `flow-ops` 把它改回 generate —— 两道门不互斥。
+ */
+export function interactionGate(
+  candidate: Pick<ConnectionCandidate, 'target'>,
+  context: Pick<ConnectionContext, 'typeOf' | 'dataOf'>,
+): { ok: true } | { ok: false; reason: string } {
+  const type = context.typeOf(candidate.target)
+  if (type === undefined) return { ok: true }
+  if (declaresSide(type, 'inputs') && !hasSide(type, 'inputs', context.dataOf(candidate.target) ?? {})) {
+    return { ok: false, reason: `${type} 节点是素材，不接受连入` }
+  }
+  return { ok: true }
+}
+
+/**
+ * 这条线能不能连、连的是哪对端口 —— **唯一的连线规则（逻辑门）**。前端拉线时的 `isValidConnection`、
  * 拉线松手真正建边、点连接点长出新节点、agent 的 `connect` 全都调它，所以人连的和 agent 连的不会有差别。
+ * 它**只做端口匹配**，不看资源、不看形态；人拖线额外先过 {@link interactionGate}。
  *
  * 画布上每个节点最多左右各一个连接点（不带 id），端口不由用户点选，而是在这里**自动选**：
  *
  * 1. 两端都存在，且不是同一个节点；
  * 2. 声明过端口、但这一侧一个都没有的类型连不了（text 没有输入）；
- *    终点的输入此刻关着的（图片 / 视频已经有资源）连不了 —— 只拒绝新线，已有的线不动；
  *    显式给了端口的，必须是该侧真实存在的端口；给无端口类型指定端口拒绝；
  * 3. 候选 = 起点的输出端口 × 终点的输入端口，**都按注册表里声明的顺序**，起点在外层 ——
  *    没声明端口的一侧只有一个按 `any` 算的「虚端口」（null）；
@@ -369,9 +455,6 @@ export function resolveConnection(
 
   if (!declaresSide(sourceType, 'outputs')) return { ok: false, reason: `${sourceType} 没有输出端口` }
   if (!declaresSide(targetType, 'inputs')) return { ok: false, reason: `${targetType} 没有输入端口` }
-  if (!hasSide(targetType, 'inputs', context.dataOf(candidate.target) ?? {})) {
-    return { ok: false, reason: `${targetType} 节点已经有资源，不再接受新的连入` }
-  }
 
   const sources = candidatesOf(sourceType, 'outputs', candidate.sourcePort)
   if (!sources.ok) return sources
@@ -502,7 +585,8 @@ export function resolveGrowConnection(
  * 从 `sourceId` 的出口能长出哪些类型 —— 拉线到空白处 / 点出口加号时弹出的那个菜单列的就是它。
  *
  * 按 `types` 的顺序（默认 `CREATABLE_NODE_TYPES`），逐个按「全新的空节点」去试 `resolveConnection`，
- * 只留能连上的。一个都没有就是空数组（菜单里给一条置灰的「没有可连接的节点」）。
+ * 只留能连上的（新节点一律是 generate 形态，交互门必放行，所以只看 `resolveConnection`）。
+ * 一个都没有就是空数组（菜单里给一条置灰的「没有可连接的节点」）。
  */
 export function connectableNodeTypes(
   sourceId: string,
@@ -511,6 +595,7 @@ export function connectableNodeTypes(
 ): GrowCandidate[] {
   const candidates: GrowCandidate[] = []
   for (const type of types) {
+    // 长出来的是全新的空节点（generate 形态），交互门必然放行，不用再问
     const verdict = resolveGrowConnection(sourceId, type, CANDIDATE_NODE_ID, context)
     if (verdict.ok) candidates.push({ type, ports: { sourcePort: verdict.sourcePort, targetPort: verdict.targetPort } })
   }

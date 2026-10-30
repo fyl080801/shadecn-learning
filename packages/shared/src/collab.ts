@@ -18,6 +18,12 @@ export const FLOW_ROOM_PREFIX = 'flow:'
 export const STORE_STATE_MESSAGE = 'flow:store-state'
 
 /**
+ * 服务端广播「这张画布上此刻有哪些 agent 任务在跑」用的 stateless 消息类型（docs/20 §3.10.4）。
+ * 载荷的形状、序列化与防御式解析在 `@shadecn/shared/agent`（`AgentRunsMessage` / `parseAgentRunsMessage`）。
+ */
+export const AGENT_RUNS_MESSAGE = 'agent:runs'
+
+/**
  * 个人画布（REST 推拉）在 `GET /api/flows/:id/doc` 上用来带回服务端状态向量的响应头，
  * 值是 base64url。客户端以它为基线算差量（见 `apps/web/src/composables/flow/sync/solo.ts`）。
  */

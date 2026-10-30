@@ -42,8 +42,9 @@ COPY apps/server/package.json ./apps/server/
 RUN pnpm install --frozen-lockfile
 COPY . .
 # 前端 → output/public，后端 → output/server（index.js + db-sync.js），外加 package.json / Dockerfile：
-# output/ 本身就是一个完整可运行的 app 目录，SQLite / PostgreSQL 通用
-RUN pnpm build
+# output/ 本身就是一个完整可运行的 app 目录，SQLite / PostgreSQL 通用。
+# output/agent-sandbox/ 是 agent 沙箱镜像的构建上下文（pnpm build:sandbox-image 用），不进这个镜像（和 output/.dockerignore 一致）
+RUN pnpm build && rm -rf output/agent-sandbox
 
 # 运行时依赖只从 output/package.json 装（hono / @mikro-orm/* / yjs 那几个）。
 # 这个阶段不带 --platform，跑在目标平台上 —— better-sqlite3 的预编译二进制是按运行时的

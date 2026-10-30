@@ -1,29 +1,27 @@
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { StringEnum, Type, type Static, type TSchema } from '@mariozechner/pi-ai'
 import * as Y from 'yjs'
-import {
-  edgesMap,
-  fromYEdge,
-  nodeGroupMap,
-  nodesMap,
-  readNodes,
-  toYEdge,
-  toYNode,
-} from '@shadecn/shared/flow-doc'
+import { DIRECTOR_NODE_TYPE, msToSeconds, readDirectorScene } from '@shadecn/shared/director-doc'
+import { edgesMap, fromYEdge, nodeGroupMap, nodesMap, readNodes, type FlowNodeGroup } from '@shadecn/shared/flow-doc'
 import { type FlowEdge, type FlowNode } from '@shadecn/shared/flow-graph'
 import {
   buildNodeRecord,
   CREATABLE_NODE_TYPES,
-  DEFAULT_EDGE_TYPE,
+  defaultNodeSize,
+  GROUP_NODE_TYPE,
+  NODE_FORM_KEY,
+  nodeSizeOf,
+  nodeTypeDefaultsOf,
   portsOf,
-  connectionEdgeData,
   resolveConnection,
-  type ConnectionContext,
-  type ResolvedPorts,
   type PortDef,
 } from '@shadecn/shared/flow-node-types'
-import { createId, EDGE_ID_PREFIX, NODE_ID_PREFIX } from '@shadecn/shared/id'
+import * as ops from '@shadecn/shared/flow-ops'
+import { FlowOpError } from '@shadecn/shared/flow-ops'
+import { createId, NODE_ID_PREFIX } from '@shadecn/shared/id'
+import type { AgentCapability } from './authority.ts'
 import type { CanvasHandle } from './canvas.ts'
+import { MediaReadError, sniffImageType, VIEWABLE_IMAGE_TYPES, type MediaReader } from './media.ts'
 
 /**
  * 画布工具 —— agent 读写画布的**唯一**途径（REQ-AGENT §3.2 方案 C）。
@@ -34,11 +32,10 @@ import type { CanvasHandle } from './canvas.ts'
  *    在同一个事务里写完，在线的人看到的要么是节点和线一起出现，要么都没有。
  * 2. **先校验、后动手**：Yjs 事务不回滚（见 `canvas.ts`），所以每个写函数先把全部前提查完，
  *    出错只能在第一次改动之前抛。抛出去的错误由 pi 以 `isError` 回给模型，模型据此改正。
- * 3. **schema v3 的规则由这里守，不交给模型**：节点用 shared 的 `buildNodeRecord` + `toYNode` 建，
- *    写按组（metadata / data）、按 key 合并（改一个业务字段只 `set` 那一个 key，不整块换），
- *    连线走 shared 的 `resolveConnection`（自动选端口 + 校验）—— 和前端拉线时是同一个函数；
- *    选出来的端口写在边的 `data.sourcePort` / `data.targetPort` 上，handle 一律为 null。
- *    值一律是 plain JSON，不引入 Y 类型；已有 key 上是 Y 类型的拒绝改写（key 的类型首次写入即固定）。
+ * 3. **写一律走 `@shadecn/shared/flow-ops` 的原子操作，不直接碰 Y.Map** —— 和编辑器的 store 是同一份实现：
+ *    建节点、按组按 key 写字段、连线（`resolveConnection` 选端口）、删除（连带删边、删分组只解散）的规则都在那里。
+ *    原子操作自己先校验后动手，不满足抛 `FlowOpError`；这里转成给模型看的错误（{@link runOps}）。
+ *    这个文件只管参数校验（id、长度、体积、可建的类型、删除预算）和给模型看的读写结果。
  *
  * 参数先过 TypeBox 校验（pi 在调 `execute` 之前做），这里对 id 与长度再查一遍 ——
  * 模型的输出是不可信输入，而这几行比一次误写便宜得多。
@@ -71,7 +68,30 @@ export const TOOL_LIMITS = {
    * 靠规则而不是靠模型自觉（docs/20 §3.9 ②）：被注入的 agent 也删不掉整张画布。
    */
   deletePerRun: 20,
+  /** 一次 `move_nodes` 最多挪多少个 */
+  movePerCall: 50,
+  /** 一次 `group_nodes` 最多圈多少个 */
+  groupMembers: 50,
+  /** `resize_node` 的宽高范围（像素）：太小点不中、太大一屏装不下 */
+  sizeMin: 40,
+  sizeMax: 4000,
+  /** `auto_layout` 最多排多少个节点（dagre 在服务端同步跑，太大的画布让用户自己点「自动布局」） */
+  layoutNodes: 500,
+  /** `duplicate_node` 不给偏移时副本错开多少（和编辑器的复制同一个步长） */
+  duplicateOffset: 24,
+  /** `view_node_media` 一次最多看几个节点 */
+  mediaPerCall: 4,
+  /** 单张图片的字节上限（Anthropic 单图 5MB；更大的让用户换小图） */
+  mediaBytes: 5 * 1024 * 1024,
+  /**
+   * 一轮里累计交给模型的图片字节上限。看过的图留在这一轮的模型上下文里，**之后每次请求模型都整段重发**
+   * （base64 再大三分之一）；网关模型代理的请求体上限是 32MB，16MB 原始字节 ≈ 21MB base64，给文字留出余量。
+   */
+  mediaBytesPerRun: 16 * 1024 * 1024,
 } as const
+
+/** 多模态查看工具的名字：编排层只在模型支持图片输入、宿主接了素材读取时才把它交给模型 */
+export const VIEW_MEDIA_TOOL_NAME = 'view_node_media'
 
 /** 节点 / 连线 id 的格式 —— 和提及格式 `@{node:<id>}` 认的字符集一致 */
 const ID_PATTERN = '^[A-Za-z0-9_-]{1,64}$'
@@ -93,9 +113,10 @@ const COORD_LIMIT = 1_000_000
  */
 export const AGENT_NODE_TYPES: readonly string[] = CREATABLE_NODE_TYPES
 
-/** 一轮里工具之间共享的状态 —— 目前只有删除预算 */
+/** 一轮里工具之间共享的状态：删除预算、已经交给模型的图片字节数 */
 export interface ToolRunState {
   deleted: number
+  mediaBytes: number
 }
 
 export interface CanvasToolDetails {
@@ -103,6 +124,8 @@ export interface CanvasToolDetails {
   summary: string
   /** 这次调用新建 / 修改 / 删除了哪些元素（写进工具调用日志） */
   elementIds: string[]
+  /** 只有 `load_skill` 成功加载时有：新加载的技能 id（runner 据此把它的工具并进来，docs/23 §3.3） */
+  loadedSkill?: string
 }
 
 /**
@@ -111,6 +134,17 @@ export interface CanvasToolDetails {
  */
 export interface CanvasTool<TParameters extends TSchema = TSchema>
   extends AgentTool<TParameters, CanvasToolDetails> {
+  /**
+   * 执行之前要判的能力（docs/22 §3）。编排层在调 `execute` 之前统一 `authorize` 它（`session.ts`），
+   * 判权失败（Grant 失效）整轮停。必填：新加的工具不声明就过不了类型检查。
+   * 删除类（`delete_elements`、`ungroup`）是 `flow:delete`，它们那次写事务另外还过画布那道 `flow:write`。
+   */
+  readonly capability: AgentCapability
+  /**
+   * 在哪执行（docs/23 §3.1）：`gateway`（缺省）= runner 只转发，服务端在网关上执行（读写 Y.Doc 只走 `flow-ops`）；
+   * `runner` = 在 runner 的工作目录里起子进程执行（必须要求 `sandbox:exec`），服务端只留定义给 `describe`，网关拒绝代它执行。
+   */
+  readonly execution?: 'gateway' | 'runner'
   describe(args: Static<TParameters>): string
 }
 
@@ -146,6 +180,34 @@ function portView(port: PortDef) {
   }
 }
 
+/**
+ * 导演台的场景数据在 `data` 里的键都以它开头（`dc.obj.*` / `dc.track.*` / `dc.kf.*` / `dc.duration` …，`@shadecn/shared/director-doc`）。
+ * 这些键归导演台技能管：`read_canvas` / `get_node` 只给摘要（最多上千个键，逐个列出会淹没输出），
+ * `update_node` / `add_node` 不让写（绕开导演台 ops 的校验与上限）。
+ */
+const DIRECTOR_KEY_PREFIX = 'dc.'
+
+const isDirectorKey = (key: string) => key.startsWith(DIRECTOR_KEY_PREFIX)
+
+/**
+ * 导演台节点的 data：`dc.*` 换成一条摘要，其余业务字段照常。摘要挂在键 `dc.*` 下 ——
+ * 合法的 data 键里不会有 `*`（{@link DATA_KEY_PATTERN}），不会和真的业务字段撞名
+ */
+function directorDataView(data: Record<string, unknown>): Record<string, unknown> {
+  const rest = Object.fromEntries(Object.entries(data).filter(([key]) => !isDirectorKey(key)))
+  const scene = readDirectorScene(data)
+  return {
+    ...compactRecord(rest),
+    'dc.*': {
+      objects: scene.objects.size,
+      tracks: scene.tracks.size,
+      keyframes: scene.keyframes.size,
+      durationSeconds: msToSeconds(scene.duration),
+      note: '导演台的场景（dc.* 字段）不在这里展开：用 director 技能的 get_director_scene 读，用它的工具改',
+    },
+  }
+}
+
 /** 一个节点给模型看的样子：按组，加派生的 inputs */
 function nodeSnapshot(node: FlowNode) {
   const { position, parentNode, width, height } = node.layout
@@ -162,7 +224,7 @@ function nodeSnapshot(node: FlowNode) {
       label: node.metadata.label,
       ...(node.metadata.description !== undefined ? { description: node.metadata.description } : {}),
     },
-    data: compactRecord(node.data),
+    data: node.type === DIRECTOR_NODE_TYPE ? directorDataView(node.data) : compactRecord(node.data),
     runtime: {
       status: node.runtime.status,
       ...(node.runtime.error !== undefined ? { error: node.runtime.error } : {}),
@@ -242,15 +304,7 @@ export function canvasSnapshot(doc: Y.Doc) {
 
 // —— 摆放 ——
 
-/** 量不到渲染尺寸（服务端没有 DOM），按各类型组件的最小尺寸估 */
-const ESTIMATED_SIZE: Record<string, { width: number; height: number }> = {
-  text: { width: 320, height: 120 },
-  image: { width: 320, height: 200 },
-  video: { width: 320, height: 200 },
-  director: { width: 280, height: 120 },
-  process: { width: 360, height: 203 },
-}
-const FALLBACK_SIZE = { width: 320, height: 160 }
+/** 新节点和已有内容之间留的空 */
 const PLACEMENT_GAP = 80
 
 interface Rect {
@@ -263,19 +317,20 @@ interface Rect {
 /** 摆放只看这几样 */
 export type PlacedNode = Pick<FlowNode, 'id' | 'type' | 'layout'>
 
-/** 节点在画布坐标下的矩形。组里的子节点 position 是相对父节点的，要加回去 */
+/**
+ * 节点在画布坐标下的矩形。组里的子节点 position 是相对父节点的，要加回去。
+ * 量不到渲染尺寸（服务端没有 DOM）：尺寸用 shared 的 `nodeSizeOf`（存的宽高，没有按类型估，是近似值）
+ */
 function absoluteRects(nodes: readonly PlacedNode[]): Map<string, Rect> {
   const byId = new Map(nodes.map((node) => [node.id, node]))
   const rects = new Map<string, Rect>()
   for (const node of nodes) {
-    const size = ESTIMATED_SIZE[node.type] ?? FALLBACK_SIZE
-    const { position, parentNode, width, height } = node.layout
+    const { position, parentNode } = node.layout
     const parent = parentNode ? byId.get(parentNode) : undefined
     rects.set(node.id, {
       x: position.x + (parent?.layout.position.x ?? 0),
       y: position.y + (parent?.layout.position.y ?? 0),
-      width: width ?? size.width,
-      height: height ?? size.height,
+      ...nodeSizeOf(node),
     })
   }
   return rects
@@ -298,7 +353,7 @@ export function placeNewNode(nodes: readonly PlacedNode[], type: string, nearId?
   const rects = absoluteRects(nodes)
   if (rects.size === 0) return { x: 0, y: 0 }
 
-  const size = ESTIMATED_SIZE[type] ?? FALLBACK_SIZE
+  const size = defaultNodeSize(type)
   const near = nearId ? rects.get(nearId) : undefined
   const all = [...rects.values()]
   const start = near
@@ -329,6 +384,30 @@ function assertLength(value: string, max: number, what: string) {
   if (value.length > max) throw new Error(`${what} 超过 ${max} 字（实际 ${value.length} 字）`)
 }
 
+function assertCoord(value: number, what: string) {
+  if (!Number.isFinite(value) || Math.abs(value) > COORD_LIMIT) {
+    throw new Error(`${what} 超出范围（±${COORD_LIMIT}）`)
+  }
+}
+
+function assertSize(value: number, what: string) {
+  if (!Number.isFinite(value) || value < TOOL_LIMITS.sizeMin || value > TOOL_LIMITS.sizeMax) {
+    throw new Error(`${what} 必须在 ${TOOL_LIMITS.sizeMin}–${TOOL_LIMITS.sizeMax} 之间`)
+  }
+}
+
+/** 点名的一批 id：格式合法、不重复、不超过上限 */
+function assertIdList(ids: readonly string[], max: number, what: string) {
+  for (const id of ids) assertId(id, what)
+  if (ids.length > max) throw new Error(`一次最多 ${max} 个${what}`)
+  if (new Set(ids).size !== ids.length) throw new Error(`${what}里有重复的 id`)
+}
+
+/** 读的工具点名一个节点：不存在就报错，带上「先 read_canvas」的提示 */
+function notFound(id: string): Error {
+  return new Error(`节点 ${id} 不存在（可能已被删除），先 read_canvas 确认 id`)
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -348,11 +427,32 @@ function assertDataPatch(patch: Record<string, unknown>, removed: readonly strin
   if (bytes > TOOL_LIMITS.dataBytes) throw new Error(`data 补丁太大（${bytes} 字，上限 ${TOOL_LIMITS.dataBytes}）`)
 }
 
-/** 已有 key 上是 Y 类型（协同文本之类）的不许用 plain 值覆盖 —— 那会让写它的一方整棵子树消失 */
-function assertPlainKeys(map: Y.Map<unknown>, keys: Iterable<string>, what: string) {
+/**
+ * 素材地址和形态不让模型直接写：`data.form` 由画布按连线自己维护（`flow-ops`），`data.src` 只能在
+ * `add_node` 新建时给（同一步按「有没有连入」定形态，`ops.attachAsset`）。直接改 `src` 会绕过形态规则。
+ */
+const MANAGED_DATA_KEYS = ['src', NODE_FORM_KEY] as const
+
+function assertNotManaged(keys: Iterable<string>, allowed: readonly string[] = []) {
   for (const key of keys) {
-    if (map.get(key) instanceof Y.AbstractType) {
-      throw new Error(`${what}.${key} 是协同编辑的结构化字段，不能用工具整体改写`)
+    if ((MANAGED_DATA_KEYS as readonly string[]).includes(key) && !allowed.includes(key)) {
+      throw new Error(
+        key === NODE_FORM_KEY
+          ? `data.${NODE_FORM_KEY} 由画布按连线自动维护，不能直接写`
+          : `data.${key} 不能用 update_node 修改：素材地址只能在 add_node 新建时给`,
+      )
+    }
+  }
+}
+
+/** 导演台的场景键（`dc.*`）只能经导演台工具写：它们的校验、上限、单位换算都在导演台 ops 里 */
+function assertNotDirector(keys: Iterable<string>, tool: string) {
+  for (const key of keys) {
+    if (isDirectorKey(key)) {
+      throw new Error(
+        `data.${key} 是导演台的场景数据，不能用 ${tool} 写：请用 director 技能的工具（get_director_scene、add_objects、set_keyframes…；` +
+          "没加载就先单独调用 load_skill({ id: 'director' })）",
+      )
     }
   }
 }
@@ -372,64 +472,24 @@ function getNodeMap(doc: Y.Doc, id: string): Y.Map<unknown> | null {
   return value instanceof Y.Map ? (value as Y.Map<unknown>) : null
 }
 
-function typeOfNode(doc: Y.Doc, id: string): string | undefined {
-  const node = getNodeMap(doc, id)
-  if (!node) return undefined
-  const type = node.get('type')
-  return typeof type === 'string' && type ? type : 'process'
-}
-
-/** 节点的业务 data（连线规则要看：图片 / 视频有资源就不再接受连入）；节点不存在返回 undefined */
-function dataOfNode(doc: Y.Doc, id: string): Record<string, unknown> | undefined {
-  const data = nodeGroupMap(getNodeMap(doc, id) ?? undefined, 'data')
-  return data ? (data.toJSON() as Record<string, unknown>) : undefined
-}
-
-/** 按文档查类型和数据 —— 和前端 `useFlowCanvas` 喂给 `resolveConnection` 的是同样两样东西 */
-function docLookup(doc: Y.Doc) {
-  return {
-    typeOf: (id: string) => typeOfNode(doc, id),
-    dataOf: (id: string) => dataOfNode(doc, id),
-  }
-}
-
 function nodeLabel(doc: Y.Doc, id: string): string {
   const label = nodeGroupMap(getNodeMap(doc, id) ?? undefined, 'metadata')?.get('label')
   return typeof label === 'string' && label ? label : id
 }
 
 /**
- * 两端之间走哪对端口：交给 shared 的 `resolveConnection`（给了端口就只校验那一对，没给就按声明顺序
- * 自动选第一对类型兼容、目标端口没满、还没连过的）。不行就把原因原样抛给模型。
+ * 在一次 `canvas.write` 里跑原子操作，把 `FlowOpError` 转成给模型看的错误。
+ *
+ * 原子操作抛出时文档没被改动（它们先校验后动手），所以这里只改措辞：点名的节点不存在时提示模型
+ * 先 `read_canvas` 拿真实的 id —— 别的原因（端口不匹配、字段类型不能换…）原样转达。
  */
-function pickConnection(
-  request: { source: string; target: string; sourcePort?: string; targetPort?: string },
-  lookup: Pick<ConnectionContext, 'typeOf' | 'dataOf'>,
-  edges: readonly FlowEdge[],
-): ResolvedPorts {
-  const verdict = resolveConnection(request, { ...lookup, edges })
-  if (!verdict.ok) throw new Error(verdict.reason)
-  return { sourcePort: verdict.sourcePort, targetPort: verdict.targetPort }
-}
-
-function buildEdge(
-  source: string,
-  target: string,
-  ports: ResolvedPorts,
-  edges: readonly FlowEdge[],
-  label?: string,
-): FlowEdge {
-  return {
-    id: createId(EDGE_ID_PREFIX),
-    source,
-    target,
-    // 节点的连接点不带 id：端口只写在 data 上（和前端连线同一个函数）
-    sourceHandle: null,
-    targetHandle: null,
-    type: DEFAULT_EDGE_TYPE,
-    animated: false,
-    ...(label ? { label } : {}),
-    data: connectionEdgeData(ports, target, edges),
+function runOps<T>(run: () => T): T {
+  try {
+    return run()
+  } catch (error) {
+    if (!(error instanceof FlowOpError)) throw error
+    const hint = error.code === 'NODE_NOT_FOUND' ? '（可能已被删除），先 read_canvas 确认 id' : ''
+    throw new Error(`${error.message}${hint}`, { cause: error })
   }
 }
 
@@ -450,14 +510,14 @@ const metadataParams = (required: boolean) =>
 
 const dataParams = Type.Record(Type.String({ pattern: DATA_KEY_PATTERN }), Type.Unknown(), {
   description:
-    '业务字段，平铺的键值对（例如 text 节点的 text、image / video 节点的 src、video 的 poster、底部输入框的 prompt）。只写给出的键，其余保留。',
+    '业务字段，平铺的键值对（例如 text 节点的 text、video 的 poster、底部输入框的 prompt；image / video 的素材地址 src 只能在 add_node 新建时给，form 由画布自动维护、不能写；导演台的场景 dc.* 只能用 director 技能的工具写）。只写给出的键，其余保留。',
 })
 
 const addNodeParams = Type.Object(
   {
     type: StringEnum(AGENT_NODE_TYPES, {
       description:
-        'text = 文本（正文 data.text）；image = 图片（资源地址 data.src）；video = 视频（资源地址 data.src、预览图 data.poster）；director = 导演台。端口见 read_canvas 的 nodeTypes',
+        'text = 文本（正文 data.text）；image = 图片（资源地址 data.src）；video = 视频（资源地址 data.src、预览图 data.poster）；director = 导演台（场景内容用 director 技能的工具写）。端口见 read_canvas 的 nodeTypes',
     }),
     metadata: metadataParams(true),
     data: Type.Optional(dataParams),
@@ -514,23 +574,167 @@ const deleteParams = Type.Object(
   { additionalProperties: false },
 )
 
+const getNodeParams = Type.Object({ id: Id('要读取的节点 id') }, { additionalProperties: false })
+
+const checkConnectionParams = Type.Object(
+  {
+    source: Id('起点节点 id'),
+    target: Id('终点节点 id'),
+    sourcePort: Type.Optional(Port('起点的输出端口 id；不给则按声明顺序自动选')),
+    targetPort: Type.Optional(Port('终点的输入端口 id；不给则按声明顺序自动选')),
+  },
+  { additionalProperties: false },
+)
+
+const Coord = (description: string) => Type.Number({ minimum: -COORD_LIMIT, maximum: COORD_LIMIT, description })
+const Size = (description: string) =>
+  Type.Number({ minimum: TOOL_LIMITS.sizeMin, maximum: TOOL_LIMITS.sizeMax, description })
+
+const moveNodesParams = Type.Object(
+  {
+    moves: Type.Array(
+      Type.Object(
+        { id: Id('节点 id'), x: Coord('新的左上角 x'), y: Coord('新的左上角 y') },
+        { additionalProperties: false },
+      ),
+      {
+        minItems: 1,
+        maxItems: TOOL_LIMITS.movePerCall,
+        description: '每个节点的新位置（左上角）。组内节点的坐标相对它所在的分组框，顶层节点是画布坐标',
+      },
+    ),
+  },
+  { additionalProperties: false },
+)
+
+const resizeNodeParams = Type.Object(
+  { id: Id('节点 id'), width: Size('新宽度（像素）'), height: Size('新高度（像素）') },
+  { additionalProperties: false },
+)
+
+const duplicateNodeParams = Type.Object(
+  {
+    id: Id('要复制的节点 id'),
+    offset: Type.Optional(
+      Type.Object(
+        { x: Coord('副本相对原件的横向偏移'), y: Coord('副本相对原件的纵向偏移') },
+        { additionalProperties: false, description: `不给则错开 ${TOOL_LIMITS.duplicateOffset}px` },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+)
+
+const groupNodesParams = Type.Object(
+  {
+    ids: Type.Array(Id('节点 id'), {
+      minItems: 2,
+      maxItems: TOOL_LIMITS.groupMembers,
+      description: '要圈进分组的节点：至少两个，都得是顶层节点（不在别的分组里）、且不是分组本身',
+    }),
+    label: Type.Optional(Type.String({ minLength: 1, maxLength: TOOL_LIMITS.label, description: '分组名；不给则自动编号' })),
+  },
+  { additionalProperties: false },
+)
+
+const ungroupParams = Type.Object({ id: Id('要解散的分组 id') }, { additionalProperties: false })
+
+const autoLayoutParams = Type.Object({}, { additionalProperties: false })
+
+const viewMediaParams = Type.Object(
+  {
+    ids: Type.Array(Id('图片 / 视频节点的 id'), {
+      minItems: 1,
+      maxItems: TOOL_LIMITS.mediaPerCall,
+      description: `要查看的节点，一次最多 ${TOOL_LIMITS.mediaPerCall} 个：图片节点看它的图（data.src），视频节点只看预览图（data.poster）`,
+    }),
+  },
+  { additionalProperties: false },
+)
+
 export interface CanvasToolsOptions {
   canvas: CanvasHandle
   /** 一轮共享的状态；不给就每次 `createCanvasTools` 新建一份 */
   runState?: ToolRunState
+  /**
+   * 读素材字节（宿主注入，只读宿主自己的对象存储）。不给时 `view_node_media` 照样有定义（runner 要拿它的 schema），
+   * 但执行即报错 —— 给不给模型由技能 `media-view` 的可用条件定（模型支持图片输入 + 宿主接了它，`skills/media/`）。
+   */
+  media?: MediaReader
 }
 
-/** 一轮 agent 能用的画布工具 */
+const MB = 1024 * 1024
+const megabytes = (bytes: number) => `${(bytes / MB).toFixed(bytes < MB ? 2 : 1)} MB`
+
+/** 读素材失败 → 给模型看的原因（宿主的细节不进上下文） */
+function mediaFailure(err: unknown, what: string): string {
+  if (err instanceof MediaReadError) {
+    switch (err.kind) {
+      case 'foreign':
+        return `${what}不是本项目对象存储里的素材（外部链接不能查看），只能看用户上传到画布的图片`
+      case 'not_found':
+        return `${what}对应的文件不存在（可能已被删除）`
+      case 'too_large':
+        return `${what}超过 ${megabytes(TOOL_LIMITS.mediaBytes)}，不能查看`
+      case 'unavailable':
+        return `${what}暂时读不到（对象存储不可用），可以稍后再试，或据实告诉用户`
+    }
+  }
+  console.warn('[agent] 读取节点素材失败', err)
+  return `${what}暂时读不到，可以稍后再试，或据实告诉用户`
+}
+
+/** 只读的画布工具（技能 `canvas`） */
+export const CANVAS_READ_TOOL_NAMES = ['read_canvas', 'get_node', 'check_connection'] as const
+
+/** 写画布结构的工具（技能 `canvas-edit`） */
+export const CANVAS_EDIT_TOOL_NAMES = [
+  'add_node',
+  'update_node',
+  'duplicate_node',
+  'connect',
+  'delete_elements',
+  'move_nodes',
+  'resize_node',
+  'group_nodes',
+  'ungroup',
+  'auto_layout',
+] as const
+
+/**
+ * 画布工具按技能分三组取（docs/23 §4）：只读 / 写结构 / 看图。实现都在下面同一个闭包里 ——
+ * 它们共享这一轮的 `runState`（删除预算、图片字节预算），**同一轮里几组要传同一份 `runState`**。
+ */
+function pickTools(options: CanvasToolsOptions, names: readonly string[]): CanvasTool[] {
+  const all = new Map(buildCanvasTools(options).map((tool) => [tool.name, tool]))
+  return names.map((name) => {
+    const tool = all.get(name)
+    if (!tool) throw new Error(`没有画布工具 ${name}`)
+    return tool
+  })
+}
+
+export const createCanvasReadTools = (options: CanvasToolsOptions) => pickTools(options, CANVAS_READ_TOOL_NAMES)
+export const createCanvasEditTools = (options: CanvasToolsOptions) => pickTools(options, CANVAS_EDIT_TOOL_NAMES)
+export const createViewMediaTool = (options: CanvasToolsOptions) => pickTools(options, [VIEW_MEDIA_TOOL_NAME])[0]!
+
+/** 全部画布工具（三组之和）—— 工具单测用；编排层按技能取（`skills/`） */
 export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
+  return buildCanvasTools(options)
+}
+
+function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
   const { canvas } = options
-  const runState = options.runState ?? { deleted: 0 }
+  const runState = options.runState ?? { deleted: 0, mediaBytes: 0 }
 
   const readCanvas: CanvasTool<typeof readCanvasParams> = {
     name: 'read_canvas',
+    capability: 'flow:read',
     label: '读取画布',
     description:
       '读取当前画布：每个节点按组给出 —— layout（坐标 / 所属分组）、metadata（名字 / 说明）、data（业务字段，长文本截断）、' +
       'runtime（运行状态 / 各输出端口的产出）、inputs（连进来的线，按端口和序号排好）；以及全部连线和各节点类型的端口。' +
+      '导演台节点的场景只给摘要（data 里的 dc.*：对象 / 轨道 / 关键帧数量和时长），场景内容用 get_director_scene 读。' +
       '修改或连线之前先调它拿到真实的 id 和端口，不要猜。',
     parameters: readCanvasParams,
     executionMode: 'sequential',
@@ -546,6 +750,7 @@ export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
 
   const addNode: CanvasTool<typeof addNodeParams> = {
     name: 'add_node',
+    capability: 'flow:write',
     label: '新建节点',
     description:
       '在画布上新建一个节点（metadata 给名字，data 给业务字段）；可以顺带从一个已有节点连线过来。返回新节点的 id。',
@@ -561,49 +766,54 @@ export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
       const data = args.data ?? {}
       if (!isPlainRecord(data)) throw new Error('data 必须是对象')
       assertDataPatch(data)
+      // 新建时可以带素材地址（src），形态（form）一律不让给
+      assertNotManaged(Object.keys(data), ['src'])
+      assertNotDirector(Object.keys(data), 'add_node')
+      const withForms = nodeTypeDefaultsOf(args.type).forms === true
+      if (withForms && data.src !== undefined && typeof data.src !== 'string') throw new Error('data.src 必须是字符串')
       if (args.connectFrom !== undefined) assertId(args.connectFrom, 'connectFrom')
       if (args.connectFrom === undefined && (args.sourcePort !== undefined || args.targetPort !== undefined)) {
         throw new Error('只有给了 connectFrom 才能指定端口')
       }
 
-      const created = await canvas.write((doc) => {
-        const id = createId(NODE_ID_PREFIX)
-        const existing = readEdgeList(doc)
-        let ports: ResolvedPorts | null = null
-        if (args.connectFrom !== undefined) {
-          if (!getNodeMap(doc, args.connectFrom)) {
-            throw new Error(`connectFrom 指向的节点 ${args.connectFrom} 不存在，先 read_canvas 确认 id`)
+      const created = await canvas.write((doc) =>
+        runOps(() => {
+          const ctx = ops.opContext(doc)
+          const position = args.position ?? placeNewNode(readNodes(doc), args.type, args.connectFrom)
+          const node = buildNodeRecord({
+            id: createId(NODE_ID_PREFIX),
+            type: args.type,
+            label: args.metadata.label,
+            position: { x: position.x, y: position.y },
+          })
+          if (args.metadata.description !== undefined) node.metadata.description = args.metadata.description
+          // 图片 / 视频带着素材地址：先按没有素材建（和连线），再在同一个事务里 `attachAsset` ——
+          // 和人「先建节点、再上传」是同一条形态规则（有连入保持 generate，没有就成 asset）
+          const src = data.src
+          const asset =
+            withForms && typeof src === 'string' && src.trim() !== ''
+              ? { src, ...(typeof data.poster === 'string' ? { poster: data.poster } : {}) }
+              : null
+          const rest = { ...data }
+          if (asset) {
+            delete rest.src
+            if (asset.poster !== undefined) delete rest.poster
           }
-          // 新节点还没进文档：它的类型和 data（默认值 + 这次给的字段）由这里告诉校验 ——
-          // 带着 src 建一张图再连进去，和人往一张已有资源的图上连一样被拒
-          const lookup = docLookup(doc)
-          const newData = { ...(buildNodeRecord({ id, type: args.type, label: '', position: { x: 0, y: 0 } }).data), ...data }
-          ports = pickConnection(
-            { source: args.connectFrom, target: id, sourcePort: args.sourcePort, targetPort: args.targetPort },
-            {
-              typeOf: (nodeId) => (nodeId === id ? args.type : lookup.typeOf(nodeId)),
-              dataOf: (nodeId) => (nodeId === id ? newData : lookup.dataOf(nodeId)),
-            },
-            existing,
-          )
-        }
+          Object.assign(node.data, rest)
 
-        const position = args.position ?? placeNewNode(readNodes(doc), args.type, args.connectFrom)
-        const node = buildNodeRecord({
-          id,
-          type: args.type,
-          label: args.metadata.label,
-          position: { x: position.x, y: position.y },
-        })
-        if (args.metadata.description !== undefined) node.metadata.description = args.metadata.description
-        Object.assign(node.data, data)
-
-        // 节点和那条线同一个事务：在线的人看到的要么一起出现，要么都没有
-        nodesMap(doc).set(node.id, toYNode(node))
-        const edge = args.connectFrom !== undefined && ports ? buildEdge(args.connectFrom, node.id, ports, existing) : null
-        if (edge) edgesMap(doc).set(edge.id, toYEdge(edge))
-        return { node, edge }
-      })
+          // 节点和那条线同一个事务：在线的人看到的要么一起出现，要么都没有
+          const created =
+            args.connectFrom === undefined
+              ? { node: ops.createNode(ctx, node), edge: null }
+              : ops.createConnectedNode(ctx, node, {
+                  source: args.connectFrom,
+                  sourcePort: args.sourcePort,
+                  targetPort: args.targetPort,
+                })
+          if (asset) ops.attachAsset(ctx, node.id, asset)
+          return created
+        }),
+      )
 
       const ids = [created.node.id, ...(created.edge ? [created.edge.id] : [])]
       return result(
@@ -625,6 +835,7 @@ export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
 
   const updateNode: CanvasTool<typeof updateNodeParams> = {
     name: 'update_node',
+    capability: 'flow:write',
     label: '修改节点',
     description:
       '修改一个已有节点：metadata 改名字 / 说明，data 改业务字段（例如 text 节点的正文 data.text），removeData 删业务字段。' +
@@ -646,38 +857,24 @@ export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
         assertLength(metadata.description, TOOL_LIMITS.description, '节点说明')
       }
       assertDataPatch(data, removeData)
+      assertNotManaged([...Object.keys(data), ...removeData])
+      assertNotDirector([...Object.keys(data), ...removeData], 'update_node')
 
-      const label = await canvas.write((doc) => {
-        const node = getNodeMap(doc, args.id)
-        if (!node) throw new Error(`节点 ${args.id} 不存在（可能已被删除），先 read_canvas 确认`)
-        // 先把要碰的组都查一遍再动手：key 上是别的类型的组不覆盖（nodeGroupMap 返回 null）
-        const touchMetadata = Object.keys(metadata).length > 0
-        const touchData = Object.keys(data).length > 0 || removeData.length > 0
-        const existingData = node.get('data')
-        if (touchData && existingData !== undefined && !(existingData instanceof Y.Map)) {
-          throw new Error(`节点 ${args.id} 的 data 结构不对，不能修改`)
-        }
-        const existingMeta = node.get('metadata')
-        if (touchMetadata && existingMeta !== undefined && !(existingMeta instanceof Y.Map)) {
-          throw new Error(`节点 ${args.id} 的 metadata 结构不对，不能修改`)
-        }
-        if (existingData instanceof Y.Map) assertPlainKeys(existingData, [...Object.keys(data), ...removeData], 'data')
-
-        // 按 key 合并：只 set 给出的那几个，别人同时改的别的字段不受影响。
-        // 老节点（v1 / v2 写的）没有 metadata 这一组，这里现建
-        if (touchMetadata) {
-          const map = nodeGroupMap(node, 'metadata', { create: true })!
-          for (const [key, value] of Object.entries(metadata)) {
-            if (value !== undefined) map.set(key, value)
+      const label = await canvas.write((doc) =>
+        runOps(() => {
+          const ctx = ops.opContext(doc)
+          // 要碰的组先全部校验一遍再动手：事务不回滚，不能改完 metadata 才发现 data 改不了
+          const writes: [FlowNodeGroup, ops.NodeFieldChanges][] = []
+          if (Object.keys(metadata).length > 0) writes.push(['metadata', { set: metadata }])
+          if (Object.keys(data).length > 0 || removeData.length > 0) {
+            writes.push(['data', { set: data, remove: removeData }])
           }
-        }
-        if (touchData) {
-          const map = nodeGroupMap(node, 'data', { create: true })!
-          for (const key of removeData) map.delete(key)
-          for (const [key, value] of Object.entries(data)) map.set(key, value)
-        }
-        return nodeLabel(doc, args.id)
-      })
+          for (const [group, changes] of writes) ops.assertNodeFieldsWritable(ctx, args.id, group, changes)
+          // 按 key 合并：只 set 给出的那几个，别人同时改的别的字段不受影响
+          for (const [group, changes] of writes) ops.writeNodeFields(ctx, args.id, group, changes)
+          return nodeLabel(doc, args.id)
+        }),
+      )
 
       return result(`已修改节点 ${args.id}`, {
         summary: `修改节点${quote(label)}`,
@@ -688,6 +885,7 @@ export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
 
   const connect: CanvasTool<typeof connectParams> = {
     name: 'connect',
+    capability: 'flow:write',
     label: '连线',
     description:
       '从一个节点连一条线到另一个节点。连的是哪对端口：给了 sourcePort / targetPort 就只校验那一对；' +
@@ -701,19 +899,15 @@ export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
       if (args.label !== undefined) assertLength(args.label, TOOL_LIMITS.label, '连线标签')
       if (args.source === args.target) throw new Error('起点和终点不能是同一个节点')
 
-      const created = await canvas.write((doc) => {
-        for (const end of [args.source, args.target]) {
-          if (!getNodeMap(doc, end)) throw new Error(`节点 ${end} 不存在，先 read_canvas 确认 id`)
-        }
-        const existing = readEdgeList(doc)
-        const ports = pickConnection(args, docLookup(doc), existing)
-        const edge = buildEdge(args.source, args.target, ports, existing, args.label)
-        edgesMap(doc).set(edge.id, toYEdge(edge))
-        return {
-          edge,
-          summary: `连线${quote(nodeLabel(doc, args.source))} → ${quote(nodeLabel(doc, args.target))}`,
-        }
-      })
+      const created = await canvas.write((doc) =>
+        runOps(() => {
+          const edge = ops.connect(ops.opContext(doc), args)
+          return {
+            edge,
+            summary: `连线${quote(nodeLabel(doc, args.source))} → ${quote(nodeLabel(doc, args.target))}`,
+          }
+        }),
+      )
 
       return result(
         JSON.stringify({
@@ -729,6 +923,7 @@ export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
 
   const deleteElements: CanvasTool<typeof deleteParams> = {
     name: 'delete_elements',
+    capability: 'flow:delete',
     label: '删除',
     description:
       `删除节点或连线。删节点会连带删掉连着它的线；删分组只是解散，组里的节点留在原地。` +
@@ -750,57 +945,21 @@ export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
       }
 
       const removed = await canvas.write((doc) => {
-        const nodes = nodesMap(doc)
-        const edges = edgesMap(doc)
-        const doomedNodes = new Set<string>()
-        const doomedEdges = new Set<string>()
+        const ctx = ops.opContext(doc)
+        const doomedNodes: string[] = []
+        const doomedEdges: string[] = []
         const missing: string[] = []
         for (const id of ids) {
-          if (nodes.has(id)) doomedNodes.add(id)
-          else if (edges.has(id)) doomedEdges.add(id)
+          if (ctx.nodes.has(id)) doomedNodes.push(id)
+          else if (ctx.edges.has(id)) doomedEdges.push(id)
           else missing.push(id)
         }
+        // 有一个不存在就整个拒绝：模型多半是猜错了 id，不该删掉剩下那些
         if (missing.length > 0) {
           throw new Error(`这些 id 不存在：${missing.join(', ')}；先 read_canvas 确认`)
         }
-
-        // 连着被删节点的线一起删 —— 留着就是悬空的边
-        for (const [edgeId, edge] of edges.entries()) {
-          if (!(edge instanceof Y.Map)) continue
-          if (doomedNodes.has(edge.get('source') as string) || doomedNodes.has(edge.get('target') as string)) {
-            doomedEdges.add(edgeId)
-          }
-        }
-
-        /*
-         * 删分组 = 解散，和前端 `store.removeElements` 同一个语义：子节点清掉 parentNode / extent，
-         * 相对坐标换算回画布坐标。不这么做的话子节点指向一个不存在的父节点，整组跳到原点附近
-         * （`NODE_MISSING_PARENT`）。
-         */
-        const orphaned: { node: Y.Map<unknown>; position: { x: number; y: number } }[] = []
-        for (const [childId, child] of nodes.entries()) {
-          if (!(child instanceof Y.Map) || doomedNodes.has(childId)) continue
-          const parentId = child.get('parentNode')
-          if (typeof parentId !== 'string' || !doomedNodes.has(parentId)) continue
-          const parent = nodes.get(parentId)
-          const parentPos = parent instanceof Y.Map ? (parent.get('position') as { x: number; y: number }) : null
-          const childPos = child.get('position') as { x: number; y: number }
-          orphaned.push({
-            node: child,
-            position: parentPos
-              ? { x: parentPos.x + childPos.x, y: parentPos.y + childPos.y }
-              : { x: childPos.x, y: childPos.y },
-          })
-        }
-
-        for (const edgeId of doomedEdges) edges.delete(edgeId)
-        for (const { node, position } of orphaned) {
-          node.delete('parentNode')
-          node.delete('extent')
-          node.set('position', position)
-        }
-        for (const nodeId of doomedNodes) nodes.delete(nodeId)
-        return { nodes: [...doomedNodes], edges: [...doomedEdges], ungrouped: orphaned.length }
+        // 连着被删节点的线一起删；删分组 = 解散（子节点换算回画布坐标）—— 和编辑器的删除同一个操作
+        return ops.removeElements(ctx, doomedNodes, doomedEdges)
       })
 
       runState.deleted += ids.length
@@ -813,5 +972,364 @@ export function createCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
     },
   }
 
-  return [readCanvas, addNode, updateNode, connect, deleteElements] as unknown as CanvasTool[]
+  const getNode: CanvasTool<typeof getNodeParams> = {
+    name: 'get_node',
+    capability: 'flow:read',
+    label: '读取节点',
+    description:
+      '读取一个节点：形状和 read_canvas 里的节点条目一样（layout / metadata / data / runtime / inputs），' +
+      '另附它这个类型的端口（ports）。只关心一个节点（例如 @ 提及的那个、刚改过的那个）时用它，比 read_canvas 省。',
+    parameters: getNodeParams,
+    executionMode: 'sequential',
+    describe: (args) => `读取节点 ${args.id}`,
+    async execute(_id, args) {
+      assertId(args.id, 'id')
+      const node = await canvas.read((doc) => readNodeById(doc, args.id))
+      if (!node) throw notFound(args.id)
+      const inputs = portsOf(node.type, 'inputs')
+      const outputs = portsOf(node.type, 'outputs')
+      return result(
+        JSON.stringify({
+          ...nodeSnapshot(node),
+          ...(inputs.length + outputs.length > 0
+            ? { ports: { inputs: inputs.map(portView), outputs: outputs.map(portView) } }
+            : {}),
+        }),
+        { summary: `读取节点${quote(node.metadata.label || node.id)}`, elementIds: [] },
+      )
+    },
+  }
+
+  const checkConnection: CanvasTool<typeof checkConnectionParams> = {
+    name: 'check_connection',
+    capability: 'flow:read',
+    label: '检查连线',
+    description:
+      '只检查、不连：这两个节点之间现在能不能连线，能的话会连哪对端口（和 connect 同一套规则）。' +
+      '返回 { ok: true, sourcePort, targetPort } 或 { ok: false, reason }。拿不准时先问它，省得 connect 报错。',
+    parameters: checkConnectionParams,
+    executionMode: 'sequential',
+    describe: (args) => `检查连线 ${args.source} → ${args.target}`,
+    async execute(_id, args) {
+      assertId(args.source, 'source')
+      assertId(args.target, 'target')
+      const verdict = await canvas.read((doc) => {
+        const ctx = ops.opContext(doc)
+        for (const id of [args.source, args.target]) {
+          if (!ops.readNodeRecord(ctx, id)) throw notFound(id)
+        }
+        // 只走逻辑门（和 connect 一样）；不写任何东西
+        return resolveConnection(args, ops.docConnectionContext(ctx))
+      })
+      const text = verdict.ok
+        ? { ok: true, sourcePort: verdict.sourcePort, targetPort: verdict.targetPort }
+        : { ok: false, reason: verdict.reason }
+      return result(JSON.stringify(text), {
+        summary: `检查连线 ${args.source} → ${args.target}：${verdict.ok ? '可以连' : '不能连'}`,
+        elementIds: [],
+      })
+    },
+  }
+
+  const moveNodes: CanvasTool<typeof moveNodesParams> = {
+    name: 'move_nodes',
+    capability: 'flow:write',
+    label: '移动节点',
+    description:
+      `把一批节点挪到新位置（左上角坐标），一次最多 ${TOOL_LIMITS.movePerCall} 个。` +
+      '组内节点的坐标相对它所在的分组框（read_canvas 里带 parentNode 的那些）。整片重排请用 auto_layout。',
+    parameters: moveNodesParams,
+    executionMode: 'sequential',
+    describe: (args) => `移动 ${args.moves.length} 个节点`,
+    async execute(_id, args) {
+      const ids = args.moves.map((move) => move.id)
+      assertIdList(ids, TOOL_LIMITS.movePerCall, '要移动的节点')
+      for (const move of args.moves) {
+        assertCoord(move.x, `${move.id} 的 x`)
+        assertCoord(move.y, `${move.id} 的 y`)
+      }
+      const moved = await canvas.write((doc) => {
+        const ctx = ops.opContext(doc)
+        // 有一个不存在就整个拒绝：模型多半是猜错了 id，不该只挪一半
+        const missing = ids.filter((id) => !ops.readNodeRecord(ctx, id))
+        if (missing.length > 0) throw new Error(`这些节点不存在：${missing.join(', ')}；先 read_canvas 确认`)
+        return ops.moveNodes(
+          ctx,
+          args.moves.map((move): [string, ops.Point] => [move.id, { x: move.x, y: move.y }]),
+        )
+      })
+      return result(JSON.stringify({ moved }), { summary: `移动 ${moved.length} 个节点`, elementIds: moved })
+    },
+  }
+
+  const resizeNode: CanvasTool<typeof resizeNodeParams> = {
+    name: 'resize_node',
+    capability: 'flow:write',
+    label: '调整尺寸',
+    description:
+      `改一个节点的宽高（像素，${TOOL_LIMITS.sizeMin}–${TOOL_LIMITS.sizeMax}），左上角不动。` +
+      '主要用于分组框（放不下组员时拉大）；图片 / 视频的尺寸画布会按素材比例自己记，一般不用改。',
+    parameters: resizeNodeParams,
+    executionMode: 'sequential',
+    describe: (args) => `调整节点 ${args.id} 的尺寸`,
+    async execute(_id, args) {
+      assertId(args.id, 'id')
+      assertSize(args.width, 'width')
+      assertSize(args.height, 'height')
+      const label = await canvas.write((doc) =>
+        runOps(() => {
+          ops.resizeNode(ops.opContext(doc), args.id, { width: args.width, height: args.height })
+          return nodeLabel(doc, args.id)
+        }),
+      )
+      return result(`已把节点 ${args.id} 调整为 ${args.width}×${args.height}`, {
+        summary: `调整${quote(label)}的尺寸为 ${args.width}×${args.height}`,
+        elementIds: [args.id],
+      })
+    },
+  }
+
+  const duplicateNode: CanvasTool<typeof duplicateNodeParams> = {
+    name: 'duplicate_node',
+    capability: 'flow:write',
+    label: '复制节点',
+    description:
+      '复制一个节点：类型、名字、业务字段照抄，运行状态清空、不带产出，连线一条都不复制。' +
+      `副本默认错开 ${TOOL_LIMITS.duplicateOffset}px（组内节点的副本留在同一个分组里）。分组框不能复制。返回副本 id。`,
+    parameters: duplicateNodeParams,
+    executionMode: 'sequential',
+    describe: (args) => `复制节点 ${args.id}`,
+    async execute(_id, args) {
+      assertId(args.id, 'id')
+      const offset = args.offset ?? { x: TOOL_LIMITS.duplicateOffset, y: TOOL_LIMITS.duplicateOffset }
+      assertCoord(offset.x, 'offset.x')
+      assertCoord(offset.y, 'offset.y')
+      const copy = await canvas.write((doc) =>
+        runOps(() => {
+          const ctx = ops.opContext(doc)
+          // 和编辑器一致：分组没有「复制」（只复制框不带组员没有意义）
+          if (ops.readNodeRecord(ctx, args.id)?.type === GROUP_NODE_TYPE) throw new Error('分组框不能复制')
+          return ops.duplicateNode(ctx, args.id, { id: createId(NODE_ID_PREFIX), offset })
+        }),
+      )
+      return result(JSON.stringify({ id: copy.id, position: copy.layout.position }), {
+        summary: `复制节点${quote(copy.metadata.label || args.id)}`,
+        elementIds: [copy.id],
+      })
+    },
+  }
+
+  const groupNodes: CanvasTool<typeof groupNodesParams> = {
+    name: 'group_nodes',
+    capability: 'flow:write',
+    label: '打组',
+    description:
+      '把几个节点圈进一个新的分组框（至少两个、都得是顶层节点、不能是分组本身）。分组框按它们的位置和估计尺寸自动围出来；' +
+      '组员挂到分组下之后，它们的坐标改为相对分组框。返回分组 id。',
+    parameters: groupNodesParams,
+    executionMode: 'sequential',
+    describe: (args) => `把 ${args.ids.length} 个节点打组`,
+    async execute(_id, args) {
+      assertIdList(args.ids, TOOL_LIMITS.groupMembers, '要打组的节点')
+      if (args.label !== undefined) assertLength(args.label, TOOL_LIMITS.label, '分组名')
+      const created = await canvas.write((doc) =>
+        runOps(() => {
+          const ctx = ops.opContext(doc)
+          // 外框按存的位置 + 估计尺寸算（服务端量不到实测尺寸），先算好、校验完再建
+          const frame = ops.groupFrameFor(ctx, args.ids)
+          let groups = 0
+          for (const id of ctx.nodes.keys()) if (ops.readNodeRecord(ctx, id)?.type === GROUP_NODE_TYPE) groups += 1
+          const group = buildNodeRecord({
+            id: createId(NODE_ID_PREFIX),
+            type: GROUP_NODE_TYPE,
+            // 自动编号和编辑器的 groupSelection 同一个口径
+            label: args.label ?? `分组 ${groups + 1}`,
+            position: frame.position,
+          })
+          group.layout.width = frame.width
+          group.layout.height = frame.height
+          const attached = ops.groupNodes(ctx, group, frame.children)
+          return { group, attached }
+        }),
+      )
+      return result(
+        JSON.stringify({
+          id: created.group.id,
+          position: created.group.layout.position,
+          width: created.group.layout.width,
+          height: created.group.layout.height,
+          children: created.attached,
+        }),
+        {
+          summary: `把 ${created.attached.length} 个节点打组为${quote(created.group.metadata.label)}`,
+          elementIds: [created.group.id, ...created.attached],
+        },
+      )
+    },
+  }
+
+  const ungroup: CanvasTool<typeof ungroupParams> = {
+    name: 'ungroup',
+    capability: 'flow:delete',
+    label: '解组',
+    description:
+      '解散一个分组：拆掉分组框，组里的节点留在原地（坐标换回画布坐标）。只接受分组框的 id。' +
+      `拆掉的分组框算一次删除，计入每轮 ${TOOL_LIMITS.deletePerRun} 个的删除上限。`,
+    parameters: ungroupParams,
+    executionMode: 'sequential',
+    describe: (args) => `解散分组 ${args.id}`,
+    async execute(_id, args) {
+      assertId(args.id, 'id')
+      // 解组 = 删掉分组框（和 delete_elements 删分组效果相同），所以同一份预算：不能拿它绕开删除上限
+      if (runState.deleted + 1 > TOOL_LIMITS.deletePerRun) {
+        throw new Error(
+          `本轮已删除 ${runState.deleted} 个元素，解组要拆掉分组框，会超过每轮上限 ${TOOL_LIMITS.deletePerRun}，已拒绝。` +
+            '请告诉用户需要解散哪个分组，由用户自己操作。',
+        )
+      }
+      const done = await canvas.write((doc) =>
+        runOps(() => {
+          const label = nodeLabel(doc, args.id)
+          return { label, ...ops.ungroup(ops.opContext(doc), args.id) }
+        }),
+      )
+      runState.deleted += 1
+      return result(JSON.stringify({ children: done.children, edges: done.edges }), {
+        summary: `解散分组${quote(done.label)}（${done.children.length} 个节点留在原地）`,
+        elementIds: [args.id, ...done.children, ...done.edges],
+      })
+    },
+  }
+
+  const autoLayout: CanvasTool<typeof autoLayoutParams> = {
+    name: 'auto_layout',
+    capability: 'flow:write',
+    label: '自动布局',
+    description:
+      '把整张画布从左到右按连线分层重新排列（和画布上的「自动布局」按钮同一个算法）。只挪顶层节点，分组连同组员整体挪。' +
+      '尺寸是估计的，结果可能和用户点按钮排的略有出入。建完一批节点、连好线之后用它收拾版面，不要一个个 move_nodes。',
+    parameters: autoLayoutParams,
+    executionMode: 'sequential',
+    describe: () => '自动布局',
+    async execute() {
+      const moved = await canvas.write((doc) => {
+        const ctx = ops.opContext(doc)
+        if (ctx.nodes.size > TOOL_LIMITS.layoutNodes) {
+          throw new Error(`画布有 ${ctx.nodes.size} 个节点，超过 ${TOOL_LIMITS.layoutNodes} 个，请让用户在画布上点「自动布局」`)
+        }
+        return ops.autoLayout(ctx)
+      })
+      return result(JSON.stringify({ moved }), {
+        summary: moved.length > 0 ? `自动布局（移动 ${moved.length} 个节点）` : '自动布局（已经排好，无需移动）',
+        elementIds: moved,
+      })
+    },
+  }
+
+  const viewNodeMedia: CanvasTool<typeof viewMediaParams> = {
+    name: VIEW_MEDIA_TOOL_NAME,
+    capability: 'flow:read',
+    label: '查看素材',
+    description:
+      `用多模态直接看节点上的图：图片节点给出图片本身，视频节点只给预览图（data.poster，看不到视频内容）。` +
+      `一次最多 ${TOOL_LIMITS.mediaPerCall} 个节点，单张不超过 ${megabytes(TOOL_LIMITS.mediaBytes)}，` +
+      `一轮累计不超过 ${megabytes(TOOL_LIMITS.mediaBytesPerRun)}；只能看用户上传到画布的素材，外部链接看不了。` +
+      '用户问图里有什么、要按图的内容写文字 / 起名 / 判断时用它；只需要地址或名字时用 get_node 就够了。',
+    parameters: viewMediaParams,
+    executionMode: 'sequential',
+    describe: (args) => `查看 ${args.ids.length} 个节点的素材`,
+    async execute(_id, args, signal) {
+      assertIdList(args.ids, TOOL_LIMITS.mediaPerCall, '要查看的节点')
+      const reader = options.media
+      if (!reader) throw new Error('服务端没有接入素材读取，看不了节点上的图')
+      const nodes = await canvas.read((doc) => args.ids.map((id) => readNodeById(doc, id)))
+      // 有一个不存在就整个拒绝（和其余批量工具一样）：模型多半是猜错了 id
+      const missing = args.ids.filter((_, index) => !nodes[index])
+      if (missing.length > 0) throw new Error(`这些节点不存在：${missing.join(', ')}；先 read_canvas 确认`)
+
+      const content: AgentToolResult<CanvasToolDetails>['content'] = []
+      /** 每个节点一句话；全都是错误时整个调用报错 */
+      const lines: { text: string; error: boolean }[] = []
+      let images = 0
+      for (const node of nodes as FlowNode[]) {
+        const head = `节点 ${node.id}（${node.type}，名字${quote(node.metadata.label || node.id)}）`
+        const say = (text: string, error: boolean) => {
+          lines.push({ text: `${head}：${text}`, error })
+          content.push({ type: 'text', text: `${head}：${text}` })
+        }
+        const field = node.type === 'image' ? 'src' : node.type === 'video' ? 'poster' : null
+        if (!field) {
+          say(`是 ${node.type} 类型，只有图片和视频节点能查看`, true)
+          continue
+        }
+        const url = node.data[field]
+        if (typeof url !== 'string' || url.trim() === '') {
+          if (node.type === 'video') say('是视频，但没有预览图（data.poster），这一版看不到视频内容', false)
+          else say('还没有图片（data.src 为空）', true)
+          continue
+        }
+        const what = node.type === 'video' ? '它的预览图' : '它的图片'
+        if (signal?.aborted) throw new Error('已中止')
+        let asset
+        try {
+          asset = await reader.read(url, { maxBytes: TOOL_LIMITS.mediaBytes, ...(signal ? { signal } : {}) })
+        } catch (err) {
+          say(mediaFailure(err, what), true)
+          continue
+        }
+        const size = asset.data.byteLength
+        if (size > TOOL_LIMITS.mediaBytes) {
+          say(`${what}超过 ${megabytes(TOOL_LIMITS.mediaBytes)}，不能查看`, true)
+          continue
+        }
+        const mimeType = sniffImageType(asset.data)
+        if (!mimeType) {
+          say(`${what}不是能查看的图片格式（只支持 ${VIEWABLE_IMAGE_TYPES.join(' / ')}）`, true)
+          continue
+        }
+        if (runState.mediaBytes + size > TOOL_LIMITS.mediaBytesPerRun) {
+          say(
+            `本轮已查看 ${megabytes(runState.mediaBytes)} 的素材，再看这张会超过每轮上限 ${megabytes(TOOL_LIMITS.mediaBytesPerRun)}，已拒绝`,
+            true,
+          )
+          continue
+        }
+        runState.mediaBytes += size
+        images += 1
+        say(
+          node.type === 'video'
+            ? `视频本身看不到，下面是它的预览图（${mimeType}，${megabytes(size)}）`
+            : `下面是它的图片（${mimeType}，${megabytes(size)}）`,
+          false,
+        )
+        content.push({ type: 'image', data: Buffer.from(asset.data).toString('base64'), mimeType })
+      }
+
+      if (lines.every((line) => line.error)) throw new Error(lines.map((line) => line.text).join('\n'))
+      return {
+        content,
+        details: {
+          summary: images > 0 ? `查看 ${images} 张图片` : `查看素材（${nodes.length} 个节点，没有可看的图）`,
+          elementIds: [],
+        },
+      }
+    },
+  }
+
+  return [
+    readCanvas,
+    getNode,
+    viewNodeMedia,
+    addNode,
+    updateNode,
+    duplicateNode,
+    connect,
+    checkConnection,
+    deleteElements,
+    moveNodes,
+    resizeNode,
+    groupNodes,
+    ungroup,
+    autoLayout,
+  ] as unknown as CanvasTool[]
 }

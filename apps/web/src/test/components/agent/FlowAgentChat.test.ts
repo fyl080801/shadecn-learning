@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { flushPromises, mount } from "@vue/test-utils"
-import { defineComponent, h, ref } from "vue"
-import type {
-  AgentActiveRunView,
-  AgentConversationSummary,
-  AgentConversationView,
-  AgentSessionView,
-  AgentStreamEvent
+import { computed, defineComponent, h, ref } from "vue"
+import {
+  formatAgentRunsMessage,
+  type AgentActiveRunView,
+  type AgentConversationSummary,
+  type AgentConversationView,
+  type AgentRunEntry,
+  type AgentSessionView,
+  type AgentStreamEvent
 } from "@shadecn/shared/agent"
+import type { FlowMode, FlowSummary, ProjectSummary } from "@shadecn/shared/canvas"
 import type { FlowNode } from "@shadecn/shared/flow-graph"
 import PromptInput from "@/components/prompt-input/PromptInput.vue"
+import { TooltipProvider } from "@/components/ui/tooltip"
 
 /**
  * 画布 Agent 对话框。真的挂组件（shadcn-vue / PromptInput 都是真的），只把接口和编辑器上下文打桩：
@@ -35,6 +39,25 @@ vi.mock("@/composables/flow/editor-context", () => ({
   })
 }))
 
+/** 当前登录用户（null = 没开登录：自己的 id 从服务端给的 `mine` 里学） */
+const authUser = ref<{ id: string; name: string; avatarUrl: string | null } | null>({
+  id: "me",
+  name: "我",
+  avatarUrl: null
+})
+vi.mock("@/lib/auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/auth")>()
+  return {
+    ...actual,
+    useAuth: () => ({
+      ...actual.useAuth(),
+      user: computed(() =>
+        authUser.value ? { ...authUser.value, subject: authUser.value.id, username: null, email: null, roles: [] } : null
+      )
+    })
+  }
+})
+
 const toastError = vi.fn()
 vi.mock("vue-sonner", () => ({
   toast: { error: (...args: unknown[]) => toastError(...args), success: vi.fn(), warning: vi.fn() }
@@ -43,10 +66,11 @@ vi.mock("vue-sonner", () => ({
 const session = vi.fn<(id: string) => Promise<AgentSessionView>>()
 const send = vi.fn()
 const runEvents = vi.fn()
-const abort = vi.fn<(id: string) => Promise<void>>()
+const abort = vi.fn<(id: string, runId: string) => Promise<void>>()
 const conversations = vi.fn<(id: string) => Promise<AgentConversationSummary[]>>()
 const conversation = vi.fn<(id: string, cid: string) => Promise<AgentConversationView>>()
 const deleteConversation = vi.fn<(id: string, cid: string) => Promise<void>>()
+const projectGet = vi.fn<(id: string) => Promise<ProjectSummary>>()
 
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
@@ -54,11 +78,12 @@ vi.mock("@/lib/api", async (importOriginal) => ({
     session: (id: string) => session(id),
     send: (...args: unknown[]) => send(...args),
     runEvents: (...args: unknown[]) => runEvents(...args),
-    abort: (id: string) => abort(id),
+    abort: (id: string, runId: string) => abort(id, runId),
     conversations: (id: string) => conversations(id),
     conversation: (id: string, cid: string) => conversation(id, cid),
     deleteConversation: (id: string, cid: string) => deleteConversation(id, cid)
-  }
+  },
+  projectApi: { get: (id: string) => projectGet(id) }
 }))
 
 const { ApiError } = await import("@/lib/api")
@@ -66,11 +91,45 @@ const { formatDateTime } = await import("@/lib/format")
 const { default: FlowAgentChat } = await import("@/components/flow/agent/FlowAgentChat.vue")
 const { provideFlowAgentPanel } = await import("@/composables/flow/agent-panel")
 
+/** 画布是什么：项目画布才标发起人 */
+const mode = ref<FlowMode>("collab")
+const myRole = ref<"admin" | "member">("member")
+
+/**
+ * 同步层的假替身：记下 stateless 订阅，`pushRuns` 模拟服务端经协同连接推一份全量任务列表；
+ * `connected` 从断到通 = 重连。
+ */
+const statelessHandlers = new Map<string, Set<(payload: string) => void>>()
+const connected = ref(false)
+const fakeSync = {
+  onStateless: (type: string, handler: (payload: string) => void) => {
+    const set = statelessHandlers.get(type) ?? new Set()
+    set.add(handler)
+    statelessHandlers.set(type, set)
+    return () => set.delete(handler)
+  },
+  connected
+}
+function pushPayload(payload: string) {
+  for (const handler of statelessHandlers.get("agent:runs") ?? []) handler(payload)
+}
+async function pushRuns(runs: AgentRunEntry[], targetFlow = flowId.value) {
+  pushPayload(formatAgentRunsMessage(targetFlow, runs))
+  await flushPromises()
+}
+
+const fakeStore = {
+  get meta(): FlowSummary {
+    return { id: flowId.value, projectId: "p1", mode: mode.value } as FlowSummary
+  }
+}
+const host = { flowId, store: fakeStore, sync: fakeSync }
+
 /** 对话框的 agent 实例由编辑器根视图 provide（和工具栏快捷输入共用），这里垫一层同样的根 */
 const Host = defineComponent({
   setup() {
-    provideFlowAgentPanel(flowId)
-    return () => h(FlowAgentChat)
+    provideFlowAgentPanel(host)
+    return () => h(TooltipProvider, null, () => h(FlowAgentChat))
   }
 })
 const { default: FlowAgentQuickPrompt } = await import("@/components/flow/agent/FlowAgentQuickPrompt.vue")
@@ -78,28 +137,33 @@ const { default: FlowAgentQuickPrompt } = await import("@/components/flow/agent/
 /** 编辑器里两个入口同时在：右上角对话框 + 底部工具栏的快捷输入 */
 const HostWithQuick = defineComponent({
   setup() {
-    provideFlowAgentPanel(flowId)
-    return () => [h(FlowAgentChat), h(FlowAgentQuickPrompt)]
+    provideFlowAgentPanel(host)
+    return () => h(TooltipProvider, null, () => [h(FlowAgentChat), h(FlowAgentQuickPrompt)])
   }
 })
-const { AGENT_POLL_INTERVAL, AGENT_RESUME_RETRY_DELAY } = await import("@/composables/flow/useFlowAgent")
-
-function sessionView(overrides: Partial<AgentSessionView> = {}): AgentSessionView {
+/**
+ * `activeRun` 是单个在跑任务的简写（大多数用例只需要一轮），`activeRuns` 给多轮。
+ */
+function sessionView(
+  overrides: Partial<AgentSessionView> & { activeRun?: AgentActiveRunView | null } = {}
+): AgentSessionView {
+  const { activeRun: run = null, ...rest } = overrides
   const view: AgentSessionView = {
     enabled: true,
     running: false,
-    activeRun: null,
+    activeRuns: run ? [run] : [],
     latest: null,
-    ...overrides
+    ...rest
   }
-  return { ...view, running: view.activeRun !== null }
+  return { ...view, running: view.activeRuns.length > 0 }
 }
 
 function activeRun(overrides: Partial<AgentActiveRunView> = {}): AgentActiveRunView {
   return {
     runId: "r1",
     conversationId: "c1",
-    initiator: { id: "me", name: "我" },
+    conversationTitle: "会话 c1",
+    owner: { id: "me", name: "我", avatarUrl: null },
     mine: true,
     startedAt: 1,
     ...overrides
@@ -114,7 +178,11 @@ function summary(id: string, overrides: Partial<AgentConversationSummary> = {}):
     messageCount: 2,
     createdAt: Date.UTC(2026, 0, 2, 3, 4),
     updatedAt: Date.UTC(2026, 0, 2, 3, 4),
+    owner: { id: "me", name: "我", avatarUrl: null },
+    mine: true,
     running: false,
+    nodeId: null,
+    skills: [],
     ...overrides
   }
 }
@@ -236,7 +304,12 @@ beforeEach(() => {
   conversations.mockReset().mockResolvedValue([])
   conversation.mockReset()
   deleteConversation.mockReset().mockResolvedValue(undefined)
+  projectGet.mockReset().mockImplementation(async () => ({ myRole: myRole.value }) as ProjectSummary)
   toastError.mockReset()
+  authUser.value = { id: "me", name: "我", avatarUrl: null }
+  mode.value = "collab"
+  myRole.value = "member"
+  connected.value = false
 })
 
 describe("画布 Agent 对话框", () => {
@@ -311,9 +384,9 @@ describe("画布 Agent 对话框", () => {
     // 用户消息里的提及渲染成 badge，显示节点当前的名字
     expect(list.get('[data-role="user"] [data-mention-id="n1"]').text()).toBe("开场白")
     expect(list.get('[data-role="assistant"]').text()).toContain("好的，我来改")
-    // 运行中：发送换成停止，收起按钮上挂着运行中标记，输入框已经清空
+    // 运行中：发送换成停止，按钮上挂着任务数（不等推送，本窗口发起的先记上），输入框已经清空
     expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="agent-running-badge"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("1")
     expect(wrapper.findComponent(PromptInput).props("modelValue")).toBe("")
 
     finish()
@@ -322,7 +395,7 @@ describe("画布 Agent 对话框", () => {
     expect(list.get('[data-tool-status="done"]').text()).toContain("改写节点 开场白")
     expect(list.get('[data-role="assistant"]').text()).toContain("改完了")
     expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="agent-running-badge"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="agent-run-count"]').exists()).toBe(false)
   })
 
   it("运行中点停止 → 调 abort", async () => {
@@ -340,17 +413,17 @@ describe("画布 Agent 对话框", () => {
 
     await wrapper.get('[data-testid="agent-stop"]').trigger("click")
     await flushPromises()
-    expect(abort).toHaveBeenCalledWith("f1")
+    expect(abort).toHaveBeenCalledWith("f1", "r1")
   })
 
-  it("409 → toast 说明有人在跑；用户那条撤回，输入框里的字还回来", async () => {
+  it("409 → toast 说明这个会话在跑；用户那条撤回，输入框里的字还回来", async () => {
     send.mockRejectedValue(new ApiError("busy", 409, null))
     const wrapper = await mountOpened()
     await type(wrapper, "加一个节点")
     await wrapper.get('[data-testid="agent-send"]').trigger("click")
     await flushPromises()
 
-    expect(toastError).toHaveBeenCalledWith("这张画布上有一轮 agent 正在运行，等它结束再发")
+    expect(toastError).toHaveBeenCalledWith("这个会话已经有一轮 agent 正在运行，等它结束或先停止它")
     expect(wrapper.find('[data-role="user"]').exists()).toBe(false)
     expect(wrapper.findComponent(PromptInput).props("modelValue")).toBe("加一个节点")
   })
@@ -407,6 +480,137 @@ describe("画布 Agent 对话框", () => {
     expect(wrapper.get('[data-testid="agent-title"]').text()).toBe("新会话")
   })
 
+  it("画布改动通知：历史里的显示成灰色的一行系统提示，有条目时可展开；实时流里的同样追加", async () => {
+    session.mockResolvedValue(
+      sessionView({
+        latest: view("c1", {
+          messages: [
+            { id: "c1-u", role: "user", text: "问题 c1", createdAt: 1 },
+            {
+              id: "c1-chg",
+              role: "canvas-change",
+              scope: "since-last-run",
+              summary: "自你上次运行以来画布有 2 处变化",
+              items: ["删除节点 text「旧」（n9）", "移动了 1 个节点"],
+              actors: [],
+              omitted: 0,
+              createdAt: 2
+            },
+            { id: "c1-a", role: "assistant", text: "回答 c1", toolCalls: [], createdAt: 3 }
+          ]
+        })
+      })
+    )
+    send.mockImplementation(async (_id: string, _body: unknown, options: SendOptions) => {
+      options.onOpen?.()
+      options.onEvent({ type: "RUN_STARTED", threadId: "c1", runId: "r2" })
+      options.onEvent({ type: "CUSTOM", name: "agent.user-message", value: { id: "u2", role: "user", text: "继续", createdAt: 4 } })
+      options.onEvent({ type: "TEXT_MESSAGE_START", messageId: "a2", role: "assistant" })
+      options.onEvent({ type: "TEXT_MESSAGE_CONTENT", messageId: "a2", delta: "好" })
+      options.onEvent({
+        type: "CUSTOM",
+        name: "agent.canvas-change",
+        value: {
+          id: "chg-live",
+          role: "canvas-change",
+          scope: "live",
+          summary: "爱丽丝 改动了画布（1 处）",
+          items: [],
+          actors: ["爱丽丝"],
+          omitted: 0,
+          createdAt: 5
+        }
+      })
+      options.onEvent({
+        type: "RUN_FINISHED",
+        threadId: "c1",
+        runId: "r2",
+        outcome: { type: "success" },
+        result: { id: "a2", role: "assistant", text: "好", toolCalls: [], createdAt: 4 }
+      })
+    })
+
+    const wrapper = await mountOpened()
+    const list = wrapper.get('[data-testid="agent-messages"]')
+    const fromHistory = list.get('[data-role="canvas-change"][data-scope="since-last-run"]')
+    expect(fromHistory.get('[data-role="canvas-change-summary"]').text()).toBe("自你上次运行以来画布有 2 处变化")
+    // 默认折叠，条目在 <details> 里
+    expect(fromHistory.get("details").attributes("open")).toBeUndefined()
+    expect(fromHistory.findAll('[data-role="canvas-change-items"] li').map((item) => item.text())).toEqual([
+      "删除节点 text「旧」（n9）",
+      "移动了 1 个节点"
+    ])
+    // 不是气泡：不算 user / assistant
+    expect(list.findAll('[data-role="assistant"]')).toHaveLength(1)
+
+    await type(wrapper, "继续")
+    await wrapper.get('[data-testid="agent-send"]').trigger("click")
+    await flushPromises()
+
+    const lines = list.findAll('[data-role="canvas-change"]')
+    expect(lines).toHaveLength(2)
+    const live = lines[1]!
+    expect(live.attributes("data-scope")).toBe("live")
+    // 没有条目：只有一行概括，不能展开
+    expect(live.find("details").exists()).toBe(false)
+    expect(live.text()).toBe("爱丽丝 改动了画布（1 处）")
+    // 顺序：…assistant(好) → 通知
+    const roles = list.findAll("[data-role]").map((item) => item.attributes("data-role"))
+    expect(roles.filter((role) => role === "user" || role === "assistant" || role === "canvas-change")).toEqual([
+      "user",
+      "canvas-change",
+      "assistant",
+      "user",
+      "assistant",
+      "canvas-change"
+    ])
+  })
+
+  it("技能：头部列出会话已加载的技能；实时流里加载一次，对话里多一行「已加载：…」、头部跟着多一个", async () => {
+    session.mockResolvedValue(
+      sessionView({
+        latest: view("c1", {
+          skills: [
+            { id: "canvas", title: "画布（只读）" },
+            { id: "canvas-edit", title: "画布编辑" }
+          ]
+        })
+      })
+    )
+    send.mockImplementation(async (_id: string, _body: unknown, options: SendOptions) => {
+      options.onOpen?.()
+      options.onEvent({ type: "RUN_STARTED", threadId: "c1", runId: "r2" })
+      options.onEvent({ type: "CUSTOM", name: "agent.user-message", value: { id: "u2", role: "user", text: "看图", createdAt: 4 } })
+      options.onEvent({
+        type: "CUSTOM",
+        name: "agent.skill-loaded",
+        value: { id: "skl1", role: "skill-loaded", skill: { id: "media-view", title: "查看素材" }, createdAt: 5 }
+      })
+      options.onEvent({ type: "TEXT_MESSAGE_START", messageId: "a2", role: "assistant" })
+      options.onEvent({ type: "TEXT_MESSAGE_CONTENT", messageId: "a2", delta: "看过了" })
+      options.onEvent({
+        type: "RUN_FINISHED",
+        threadId: "c1",
+        runId: "r2",
+        outcome: { type: "success" },
+        result: { id: "a2", role: "assistant", text: "看过了", toolCalls: [], createdAt: 4 }
+      })
+    })
+
+    const wrapper = await mountOpened()
+    const badges = () => wrapper.findAll('[data-testid="agent-skills"] [data-skill]').map((item) => item.text())
+    expect(badges()).toEqual(["画布（只读）", "画布编辑"])
+
+    await type(wrapper, "看图")
+    await wrapper.get('[data-testid="agent-send"]').trigger("click")
+    await flushPromises()
+
+    const line = wrapper.get('[data-testid="agent-messages"] [data-role="skill-loaded"]')
+    expect(line.text()).toBe("已加载：查看素材")
+    expect(line.attributes("data-skill")).toBe("media-view")
+    expect(badges()).toEqual(["画布（只读）", "画布编辑", "查看素材"])
+  })
+
   it("有 latest → 默认显示它的消息和标题（含提及）", async () => {
     session.mockResolvedValue(
       sessionView({ latest: view("c1", { title: "改 @{node:n1}" }) })
@@ -450,14 +654,17 @@ describe("画布 Agent 对话框", () => {
     expect(send).toHaveBeenLastCalledWith("f1", { text: "第二条", conversationId: "c-new" }, expect.anything())
   })
 
-  it("运行中：新会话按钮禁用，历史列表里切到别的会话也禁用", async () => {
+  it("当前会话在跑也能新建 / 切走：只断本地的读、不调 abort；那一轮留在任务列表里，切回来接上", async () => {
     session.mockResolvedValue(sessionView({ latest: view("c1") }))
     conversations.mockResolvedValue([summary("c1"), summary("c2")])
+    let sendSignal: AbortSignal | undefined
     send.mockImplementation(
-      (_id: string, _body: unknown, options: SendOptions) =>
-        new Promise<void>(() => {
+      (_id: string, _body: unknown, options: SendOptions & { signal?: AbortSignal }) =>
+        new Promise<void>((_resolve, reject) => {
+          sendSignal = options.signal
           options.onOpen?.()
           options.onEvent({ type: "RUN_STARTED", threadId: "c1", runId: "r1" })
+          options.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))
         })
     )
     const wrapper = await mountOpened()
@@ -465,15 +672,36 @@ describe("画布 Agent 对话框", () => {
     await wrapper.get('[data-testid="agent-send"]').trigger("click")
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="agent-new"]').attributes("disabled")).toBeDefined()
-
+    // 新会话按钮不再禁用；历史列表里别的会话也能点
+    expect(wrapper.get('[data-testid="agent-new"]').attributes("disabled")).toBeUndefined()
     await wrapper.get('[data-testid="agent-history-toggle"]').trigger("click")
     await flushPromises()
-    expect(wrapper.find('[data-testid="agent-history-locked"]').exists()).toBe(true)
-    const other = wrapper.get('[data-conversation-id="c2"] [data-role="select"]')
-    expect(other.attributes("disabled")).toBeDefined()
-    expect(wrapper.get('[data-conversation-id="c1"] [data-role="select"]').attributes("disabled")).toBeUndefined()
-    expect(conversation).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-conversation-id="c2"] [data-role="select"]').attributes("disabled")).toBeUndefined()
+
+    conversation.mockResolvedValueOnce(view("c2"))
+    await wrapper.get('[data-conversation-id="c2"] [data-role="select"]').trigger("click")
+    await flushPromises()
+    expect(sendSignal?.aborted).toBe(true)
+    expect(abort).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain("回答 c2")
+    // c2 不在跑：能发；c1 那一轮还在角标里
+    expect(wrapper.find('[data-testid="agent-send"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("1")
+
+    // 从任务列表切回 c1：订阅它的事件流，补发把这一轮拼出来
+    const stream = controllableStream()
+    conversation.mockResolvedValueOnce(runningConversation())
+    await wrapper.get('[data-testid="agent-tasks-toggle"]').trigger("click")
+    await flushPromises()
+    await wrapper.get('[data-run-id="r1"] [data-role="select"]').trigger("click")
+    await flushPromises()
+    expect(runEvents).toHaveBeenCalledWith("f1", "r1", expect.anything())
+    stream.emit({ type: "RUN_STARTED", threadId: "c1", runId: "r1" })
+    stream.emit(finished)
+    stream.end()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="agent-messages"]').text()).toContain("改好了")
+    expect(wrapper.find('[data-testid="agent-run-count"]').exists()).toBe(false)
   })
 
   describe("历史会话", () => {
@@ -628,10 +856,9 @@ describe("接回进行中的一轮", () => {
     const wrapper = await mountOpened()
 
     expect(runEvents).toHaveBeenCalledWith("f1", "r1", expect.anything())
-    // 运行中：停止按钮可用，收起按钮挂着运行中标记，不能新建会话
+    // 运行中：停止按钮可用，按钮上挂着任务数
     expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="agent-running-badge"]').exists()).toBe(true)
-    expect(wrapper.get('[data-testid="agent-new"]').attributes("disabled")).toBeDefined()
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("1")
 
     // 补发：从 RUN_STARTED 起，和发起时那条流一模一样
     stream.emit({ type: "RUN_STARTED", threadId: "c1", runId: "r1" })
@@ -655,39 +882,23 @@ describe("接回进行中的一轮", () => {
     expect(lastAssistant(list).text()).toContain("改好了")
     expect(list.findAll('[data-role="user"]')).toHaveLength(2)
     expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="agent-running-badge"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="agent-run-count"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="agent-send"]').exists()).toBe(true)
   })
 
-  it("我的一轮刚发起、会话还没建好（conversationId 为 null）→ 不拿 latest 去接，稍等再问", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
-    // 这时的 latest 还是上一个会话 —— 接上去就会把这一轮折叠进错的会话
-    session.mockResolvedValueOnce(
-      sessionView({ activeRun: activeRun({ conversationId: null }), latest: view("c0") })
+  it("快照里的任务项没有会话 id（契约上不会出现）→ 当它不存在，不拿 latest 去接", async () => {
+    session.mockResolvedValue(
+      sessionView({ activeRun: activeRun({ conversationId: "" }), latest: view("c0") })
     )
-    session.mockResolvedValue(sessionView({ activeRun: activeRun(), latest: runningConversation() }))
-    const stream = controllableStream()
     const wrapper = await mountOpened()
 
     expect(runEvents).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(AGENT_RESUME_RETRY_DELAY)
-    await flushPromises()
-
-    expect(runEvents).toHaveBeenCalledTimes(1)
-    stream.emit({ type: "RUN_STARTED", threadId: "c1", runId: "r1" })
-    stream.emit(finished)
-    stream.end()
-    await flushPromises()
-    expect(wrapper.get('[data-testid="agent-messages"]').text()).toContain("改好了")
-    expect(wrapper.text()).not.toContain("回答 c0")
+    expect(wrapper.find('[data-testid="agent-run-count"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain("回答 c0")
   })
 
-  it("补发的 RUN_STARTED 说这一轮属于另一个会话 → 不折叠进当前会话，重新问一次再接", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
-    session.mockResolvedValueOnce(
-      sessionView({ activeRun: activeRun({ conversationId: "c0" }), latest: view("c0") })
-    )
-    session.mockResolvedValue(sessionView({ activeRun: activeRun(), latest: runningConversation() }))
+  it("补发的 RUN_STARTED 说这一轮属于另一个会话 → 不折叠进当前会话，掐掉流，不报错也不空转重连", async () => {
+    session.mockResolvedValue(sessionView({ activeRun: activeRun({ conversationId: "c0" }), latest: view("c0") }))
     const first = controllableStream()
     const wrapper = await mountOpened()
 
@@ -698,15 +909,10 @@ describe("接回进行中的一轮", () => {
     expect(first.signal!.aborted).toBe(true)
     expect(wrapper.text()).not.toContain("不该出现在 c0 里")
 
-    const second = controllableStream()
-    await vi.advanceTimersByTimeAsync(AGENT_RESUME_RETRY_DELAY)
-    await flushPromises()
-    expect(runEvents).toHaveBeenCalledTimes(2)
-    second.emit({ type: "RUN_STARTED", threadId: "c1", runId: "r1" })
-    second.emit(finished)
-    second.end()
-    await flushPromises()
-    expect(wrapper.get('[data-testid="agent-messages"]').text()).toContain("改好了")
+    // 同一份任务列表再推一次：这一轮已经记成「接不回来」，不再订阅
+    await pushRuns([activeRun({ conversationId: "c0" })])
+    expect(runEvents).toHaveBeenCalledTimes(1)
+    expect(toastError).not.toHaveBeenCalled()
   })
 
   it("接回的流以 RUN_ERROR 收尾（run_failed）→ 把原因摆出来，状态复位", async () => {
@@ -731,7 +937,7 @@ describe("接回进行中的一轮", () => {
 
     await wrapper.get('[data-testid="agent-stop"]').trigger("click")
     await flushPromises()
-    expect(abort).toHaveBeenCalledWith("f1")
+    expect(abort).toHaveBeenCalledWith("f1", "r1")
   })
 
   it("接回时 404（已经结束了）→ 不报错，改为重新拉会话", async () => {
@@ -756,70 +962,59 @@ describe("接回进行中的一轮", () => {
     expect(toastError).not.toHaveBeenCalled()
   })
 
-  it("接回时 410（补发缓冲溢出）→ 不报错，轮询到那一轮结束再拉会话", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+  it("接回时 410（补发缓冲溢出）→ 不报错、不轮询；等推送说那一轮结束了再拉会话", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] })
     session.mockResolvedValue(sessionView({ activeRun: activeRun(), latest: runningConversation() }))
     runEvents.mockRejectedValue(new ApiError("gone", 410, null))
     const wrapper = await mountOpened()
 
     // 还在跑：停止按钮照样在（服务端那一轮是真的在跑），只是看不到过程
     expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(true)
+    // 没有轮询：等多久都不会再问服务端
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(session).toHaveBeenCalledTimes(1)
 
-    await vi.advanceTimersByTimeAsync(AGENT_POLL_INTERVAL)
-    await flushPromises()
-    // 第二次还在跑：同一轮不再去订阅（否则「接回 → 410 → 接回」空转）
-    expect(session).toHaveBeenCalledTimes(2)
+    // 还在跑的推送：同一轮不再去订阅（否则「接回 → 410 → 接回」空转）
+    await pushRuns([activeRun()])
     expect(runEvents).toHaveBeenCalledTimes(1)
 
-    session.mockResolvedValue(
-      sessionView({
-        latest: view("c1", {
-          messages: [
-            ...runningConversation().messages,
-            { id: "a-run", role: "assistant", text: "终于改好了", toolCalls: [], createdAt: 4 }
-          ]
-        })
+    conversation.mockResolvedValue(
+      view("c1", {
+        messages: [
+          ...runningConversation().messages,
+          { id: "a-run", role: "assistant", text: "终于改好了", toolCalls: [], createdAt: 4 }
+        ]
       })
     )
-    await vi.advanceTimersByTimeAsync(AGENT_POLL_INTERVAL)
-    await flushPromises()
+    await pushRuns([])
 
+    expect(conversation).toHaveBeenCalledWith("f1", "c1")
     expect(wrapper.get('[data-testid="agent-messages"]').text()).toContain("终于改好了")
     expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(false)
     expect(toastError).not.toHaveBeenCalled()
-
-    // 结束了就不再轮询
-    await vi.advanceTimersByTimeAsync(AGENT_POLL_INTERVAL * 3)
-    expect(session).toHaveBeenCalledTimes(3)
+    expect(session).toHaveBeenCalledTimes(1)
   })
 
-  it("别人发起的一轮在跑 → 提示是谁、发送禁用；轮询到它结束后解除", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+  it("别人在别的会话里跑 → 角标计数，但不挡我在自己的会话里发送", async () => {
     session.mockResolvedValue(
       sessionView({
-        activeRun: activeRun({ mine: false, conversationId: null, initiator: { id: "u2", name: "乙" } }),
+        activeRun: activeRun({ runId: "r9", conversationId: "c9", mine: false, owner: { id: "u2", name: "乙", avatarUrl: null } }),
         latest: view("c1")
       })
     )
+    send.mockResolvedValue(undefined)
     const wrapper = await mountOpened()
 
     expect(runEvents).not.toHaveBeenCalled()
-    expect(wrapper.get('[data-testid="agent-foreign-run"]').text()).toContain("乙 发起的 agent 正在运行")
-    // 我自己的会话照常显示，但不能发、也没有可停的
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("1")
+    // 我自己的会话照常显示、照常能发，没有可停的
     expect(wrapper.text()).toContain("回答 c1")
     expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(false)
     await type(wrapper, "加一个节点")
-    expect(wrapper.get('[data-testid="agent-send"]').attributes("disabled")).toBeDefined()
-
-    session.mockResolvedValue(sessionView({ latest: view("c1") }))
-    await vi.advanceTimersByTimeAsync(AGENT_POLL_INTERVAL)
-    await flushPromises()
-
-    expect(wrapper.find('[data-testid="agent-foreign-run"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="agent-send"]').attributes("disabled")).toBeUndefined()
-    // 草稿还在：解除锁定不该顺手清掉用户打好的字
-    expect(wrapper.findComponent(PromptInput).props("modelValue")).toBe("加一个节点")
+    await wrapper.get('[data-testid="agent-send"]').trigger("click")
+    await flushPromises()
+    expect(send).toHaveBeenCalledWith("f1", { text: "加一个节点", conversationId: "c1" }, expect.anything())
   })
 
   it("换画布 → 断开接回的那条流，旧画布的事件不再写进对话", async () => {
@@ -836,7 +1031,7 @@ describe("接回进行中的一轮", () => {
     // 只掐本地的读，不替用户中止服务端那一轮
     expect(abort).not.toHaveBeenCalled()
     expect(session).toHaveBeenLastCalledWith("f2")
-    expect(wrapper.find('[data-testid="agent-running-badge"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="agent-run-count"]').exists()).toBe(false)
   })
 
   it("自己发起的一轮跑着时卸载组件 → 只断本地的读，不调 abort", async () => {
@@ -884,7 +1079,9 @@ describe("接回进行中的一轮", () => {
     expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(false)
   })
 
-  it("发送被 409 → 再问一次服务端：是我在另一个标签页发起的就接回", async () => {
+  it("在已有会话里发送被 409 → 再问一次服务端：是我在另一个标签页里对同一个会话发起的就接回", async () => {
+    // 409 只会发生在给了会话 id 的时候（新会话总能发起）
+    session.mockResolvedValueOnce(sessionView({ latest: view("c1") }))
     send.mockRejectedValue(new ApiError("busy", 409, null))
     const wrapper = await mountOpened()
     session.mockResolvedValue(sessionView({ activeRun: activeRun(), latest: runningConversation() }))
@@ -948,12 +1145,259 @@ describe("工具栏快捷输入", () => {
     expect(wrapper.get('[data-testid="agent-quick-toggle"]').attributes("disabled")).toBeDefined()
   })
 
-  it("别人的一轮在跑 → 提示并锁住发送", async () => {
-    session.mockResolvedValue(sessionView({ activeRun: activeRun({ mine: false, initiator: { id: "u2", name: "小王" } }) }))
+  it("别人的一轮在跑 → 快捷输入照常能发（新会话总能发起）", async () => {
+    session.mockResolvedValue(
+      sessionView({ activeRun: activeRun({ mine: false, owner: { id: "u2", name: "小王", avatarUrl: null } }) })
+    )
     const wrapper = await mountQuick()
-    expect(document.querySelector('[data-testid="agent-quick-busy"]')).not.toBeNull()
     quickInput(wrapper).vm.$emit("update:modelValue", "试试")
     await flushPromises()
-    expect(quickSend().disabled).toBe(true)
+    expect(quickSend().disabled).toBe(false)
+  })
+})
+
+/**
+ * 多人并行（docs/20 §3.10.3–§3.10.5）：任务列表只靠协同连接上的 `agent:runs` 推送更新（没有轮询），
+ * 右上角按钮的角标 / 动效跟着它走；项目画布上别人的会话只读可见、标出发起人；个人画布不显示用户标识。
+ */
+describe("任务列表与多人会话", () => {
+  const other = { id: "u2", name: "乙", avatarUrl: null }
+
+  function entry(overrides: Partial<AgentRunEntry> = {}): AgentRunEntry {
+    return {
+      runId: "r1",
+      conversationId: "c1",
+      conversationTitle: "会话 c1",
+      owner: { id: "me", name: "我", avatarUrl: null },
+      startedAt: Date.now(),
+      ...overrides
+    }
+  }
+
+  async function mountClosed() {
+    const wrapper = mount(Host, { attachTo: document.body })
+    await flushPromises()
+    return wrapper
+  }
+
+  it("推送：解析后替换任务列表；别的画布的、读不懂的都丢掉（不抛）", async () => {
+    const wrapper = await mountClosed()
+    expect(wrapper.find('[data-testid="agent-run-count"]').exists()).toBe(false)
+
+    await pushRuns([entry(), entry({ runId: "r2", conversationId: "c2", owner: other })])
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("2")
+
+    // 换画布时的残留：flowId 对不上
+    await pushRuns([], "f-other")
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("2")
+
+    expect(() => pushPayload("{not json")).not.toThrow()
+    expect(() => pushPayload(JSON.stringify({ type: "agent:runs", flowId: "f1", runs: "坏的" }))).not.toThrow()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("2")
+
+    // 全量替换：只剩一项
+    await pushRuns([entry({ runId: "r2", conversationId: "c2", owner: other })])
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("1")
+    expect(session).toHaveBeenCalledTimes(1)
+  })
+
+  it("推送里没有 mine：按当前用户的 id 算 —— 任务列表里只有自己的那行标「我的」", async () => {
+    const wrapper = await mountClosed()
+    await pushRuns([entry(), entry({ runId: "r2", conversationId: "c2", conversationTitle: "乙的活", owner: other })])
+    await wrapper.get('[data-testid="agent-toggle"]').trigger("click")
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="agent-tasks"]').exists()).toBe(true)
+    const mineRow = wrapper.get('[data-run-id="r1"]')
+    const otherRow = wrapper.get('[data-run-id="r2"]')
+    expect(mineRow.find('[data-role="mine"]').exists()).toBe(true)
+    expect(otherRow.find('[data-role="mine"]').exists()).toBe(false)
+    expect(otherRow.get('[data-role="owner-name"]').text()).toBe("乙")
+    expect(otherRow.get('[data-role="title"]').text()).toBe("乙的活")
+  })
+
+  it("没开登录（拿不到当前用户）→ 从快照的 mine 学到自己的 id，推送照样算得出「我的」", async () => {
+    authUser.value = null
+    session.mockResolvedValue(sessionView({ activeRun: activeRun({ runId: "r0", conversationId: "c0" }) }))
+    controllableStream()
+    const wrapper = await mountClosed()
+    await pushRuns([entry({ runId: "r5", conversationId: "c5" }), entry({ runId: "r6", conversationId: "c6", owner: other })])
+    await wrapper.get('[data-testid="agent-toggle"]').trigger("click")
+    await flushPromises()
+
+    expect(wrapper.get('[data-run-id="r5"]').find('[data-role="mine"]').exists()).toBe(true)
+    expect(wrapper.get('[data-run-id="r6"]').find('[data-role="mine"]').exists()).toBe(false)
+  })
+
+  it("没有轮询：别人一直在跑也不会定时问服务端；协同连接从断到通时补拉一次快照", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] })
+    session.mockResolvedValue(sessionView({ activeRun: activeRun({ mine: false, owner: other, conversationId: "c9" }) }))
+    await mountClosed()
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(session).toHaveBeenCalledTimes(1)
+
+    connected.value = true
+    await flushPromises()
+    expect(session).toHaveBeenCalledTimes(2)
+    // 一直连着：不再拉
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(session).toHaveBeenCalledTimes(2)
+
+    // 断了又连上：再补一次
+    connected.value = false
+    await flushPromises()
+    connected.value = true
+    await flushPromises()
+    expect(session).toHaveBeenCalledTimes(3)
+  })
+
+  it("快照在途时收到了推送 → 以推送为准（快照里的列表更旧）", async () => {
+    let resolve!: (view: AgentSessionView) => void
+    session.mockReturnValueOnce(new Promise((r) => (resolve = r)))
+    const wrapper = mount(Host, { attachTo: document.body })
+    await pushRuns([entry(), entry({ runId: "r2", conversationId: "c2", owner: other })])
+    resolve(sessionView())
+    await flushPromises()
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("2")
+  })
+
+  it("右上角按钮：0 个任务没有角标、没有动效；有任务时转圈（减少动态效果时隐藏）+ 角标，读屏标签带任务数", async () => {
+    const wrapper = await mountClosed()
+    const toggle = () => wrapper.get('[data-testid="agent-toggle"]')
+    expect(wrapper.find('[data-testid="agent-run-count"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="agent-run-ring"]').exists()).toBe(false)
+    expect(toggle().attributes("aria-label")).toBe("画布 Agent")
+
+    await pushRuns([entry(), entry({ runId: "r2", conversationId: "c2", owner: other })])
+    expect(wrapper.get('[data-testid="agent-run-count"]').text()).toBe("2")
+    const ring = wrapper.get('[data-testid="agent-run-ring"]')
+    expect(ring.classes()).toContain("motion-safe:animate-spin")
+    expect(ring.classes()).toContain("motion-reduce:hidden")
+    expect(toggle().attributes("aria-label")).toBe("画布 Agent（2 个任务运行中）")
+
+    await pushRuns([])
+    expect(wrapper.find('[data-testid="agent-run-count"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="agent-run-ring"]').exists()).toBe(false)
+  })
+
+  it("任务列表：已运行时长每秒走；点别人的那行 → 只读打开它的会话、旁观实时进度；成员没有停止按钮", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] })
+    vi.setSystemTime(Date.UTC(2026, 9, 1, 0, 0, 0))
+    const wrapper = await mountClosed()
+    await pushRuns([
+      entry({ startedAt: Date.now() - 5_000 }),
+      entry({ runId: "r2", conversationId: "c2", conversationTitle: "乙的活", owner: other, startedAt: Date.now() - 65_000 })
+    ])
+    await wrapper.get('[data-testid="agent-toggle"]').trigger("click")
+    await flushPromises()
+
+    const elapsed = () => wrapper.get('[data-run-id="r2"] [data-role="elapsed"]').text()
+    expect(elapsed()).toBe("已运行 1 分 05 秒")
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(elapsed()).toBe("已运行 1 分 07 秒")
+    vi.useRealTimers()
+
+    const stream = controllableStream()
+    conversation.mockResolvedValueOnce(
+      view("c2", {
+        title: "乙的活",
+        owner: other,
+        mine: false,
+        running: true,
+        messages: [{ id: "c2-u", role: "user", text: "乙的问题", createdAt: 1 }]
+      })
+    )
+    await wrapper.get('[data-run-id="r2"] [data-role="select"]').trigger("click")
+    await flushPromises()
+
+    expect(conversation).toHaveBeenCalledWith("f1", "c2")
+    expect(runEvents).toHaveBeenCalledWith("f1", "r2", expect.anything())
+    // 「乙 · 乙的活」（间距是 gap，不是空格）
+    expect(wrapper.get('[data-testid="agent-title"]').text()).toBe("乙·乙的活")
+    expect(wrapper.get('[data-testid="agent-title"] [data-role="title-owner"]').text()).toBe("乙")
+    expect(wrapper.get('[data-testid="agent-readonly"] [data-role="hint"]').text()).toBe("这是 乙 的会话，只能查看")
+    expect(wrapper.findComponent(PromptInput).exists()).toBe(false)
+    expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(false)
+
+    stream.emit({ type: "RUN_STARTED", threadId: "c2", runId: "r2" })
+    stream.emit({ type: "TEXT_MESSAGE_START", messageId: "a2", role: "assistant" })
+    stream.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "a2", delta: "乙的 agent 在改" })
+    await flushPromises()
+    expect(lastAssistant(wrapper.get('[data-testid="agent-messages"]')).text()).toContain("乙的 agent 在改")
+
+    // 「发起新会话」：回到自己的新会话，能发
+    await wrapper.get('[data-testid="agent-readonly-new"]').trigger("click")
+    await flushPromises()
+    expect(stream.signal!.aborted).toBe(true)
+    expect(abort).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="agent-title"]').text()).toBe("新会话")
+    expect(wrapper.findComponent(PromptInput).exists()).toBe(true)
+  })
+
+  it("项目管理员看别人在跑的会话 → 有停止按钮，点了调 abort", async () => {
+    myRole.value = "admin"
+    session.mockResolvedValue(
+      sessionView({ activeRun: activeRun({ runId: "r2", conversationId: "c2", owner: other, mine: false }) })
+    )
+    controllableStream()
+    conversation.mockResolvedValue(view("c2", { owner: other, mine: false, running: true }))
+    const wrapper = await mountOpened()
+
+    // 只有 1 个任务、我又在新会话里：直接进它
+    expect(conversation).toHaveBeenCalledWith("f1", "c2")
+    expect(projectGet).toHaveBeenCalledWith("p1")
+    await wrapper.get('[data-testid="agent-stop"]').trigger("click")
+    await flushPromises()
+    expect(abort).toHaveBeenCalledWith("f1", "r2")
+  })
+
+  it("只有 1 个任务、但我正在自己的会话里 → 打开面板不把我拽走（表头按钮能进任务列表）", async () => {
+    session.mockResolvedValue(
+      sessionView({ activeRun: activeRun({ runId: "r2", conversationId: "c2", owner: other, mine: false }), latest: view("c1") })
+    )
+    const wrapper = await mountOpened()
+
+    expect(conversation).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain("回答 c1")
+    expect(wrapper.find('[data-testid="agent-tasks"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="agent-tasks-toggle"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.find('[data-run-id="r2"]').exists()).toBe(true)
+  })
+
+  it("历史列表（项目画布）：每行有发起人和「我的」；别人的会话没有删除按钮", async () => {
+    conversations.mockResolvedValue([summary("c1"), summary("c2", { owner: other, mine: false })])
+    const wrapper = await mountOpened()
+    await wrapper.get('[data-testid="agent-history-toggle"]').trigger("click")
+    await flushPromises()
+
+    const mineRow = wrapper.get('[data-conversation-id="c1"]')
+    const otherRow = wrapper.get('[data-conversation-id="c2"]')
+    expect(mineRow.find('[data-role="mine"]').exists()).toBe(true)
+    expect(mineRow.find('[data-role="delete"]').exists()).toBe(true)
+    expect(otherRow.get('[data-role="owner-name"]').text()).toBe("乙")
+    expect(otherRow.find('[data-role="mine"]').exists()).toBe(false)
+    expect(otherRow.find('[data-role="delete"]').exists()).toBe(false)
+  })
+
+  it("个人画布：历史、任务列表、头部都不显示用户标识，也不问项目角色", async () => {
+    mode.value = "solo"
+    conversations.mockResolvedValue([summary("c1")])
+    const wrapper = await mountClosed()
+    await pushRuns([entry(), entry({ runId: "r2", conversationId: "c2" })])
+    await wrapper.get('[data-testid="agent-toggle"]').trigger("click")
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="agent-tasks"]').exists()).toBe(true)
+    expect(wrapper.find('[data-role="owner"]').exists()).toBe(false)
+    expect(wrapper.find('[data-role="mine"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="agent-history-toggle"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.find('[data-conversation-id="c1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-role="owner"]').exists()).toBe(false)
+    expect(projectGet).not.toHaveBeenCalled()
   })
 })

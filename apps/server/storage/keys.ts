@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { encodeS3Path } from './s3.ts'
 
 /**
  * 画布资源在桶里的目录分层 —— **键只在这里拼、只在这里认**：
@@ -55,4 +56,25 @@ const OWN_KEY_TAIL =
 export function isAssetKey(prefix: string, key: string): boolean {
   const dir = assetDir(prefix)
   return key.startsWith(dir) && OWN_KEY_TAIL.test(key.slice(dir.length))
+}
+
+/**
+ * 节点里存的素材地址 → 对象键；不是本服务桶里、素材目录下、我们拼出来的形状 → null。
+ *
+ * `base` 是对象存储的地址前缀（`storage.objectUrl('')` = `<endpoint>/<bucket>/`）。只做字符串比对和解码，
+ * **不发请求**：服务端拿到键之后按键去签名读，从不去请求节点里写的那个地址 —— 外部链接、`data:`、内网地址
+ * 一律在这里就是 null（防 SSRF）。解码后再按 `encodeS3Path` 编回去必须逐字等于原文，`%2F`、`?`、`#` 之类的花样都过不去；
+ * 键的形状另由 {@link isAssetKey} 把关（没有 `..`，只在素材目录里）。早先带 `projects/…` 几层的老键不认。
+ */
+export function assetKeyOfUrl(url: string, base: string, prefix: string): string | null {
+  if (!base.endsWith('/') || !url.startsWith(base)) return null
+  const encoded = url.slice(base.length)
+  let key: string
+  try {
+    key = encoded.split('/').map((segment) => decodeURIComponent(segment)).join('/')
+  } catch {
+    return null
+  }
+  if (encodeS3Path(key) !== encoded) return null
+  return isAssetKey(prefix, key) ? key : null
 }

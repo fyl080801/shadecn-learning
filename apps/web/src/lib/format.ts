@@ -110,3 +110,18 @@ export function formatDate(value: DateInput): string {
 export function formatTime(value: DateInput): string {
   return formatWith(value, { timeStyle: resolvedDisplayPreferences.value.timeStyle })
 }
+
+/**
+ * 一段时长（毫秒），比如 agent 任务「已运行 2 分 05 秒」。不是日期，不吃时区和日期偏好；
+ * 负数（两边时钟差，开始时刻是服务端打的）按 0 算，非有限数显示占位符。
+ */
+export function formatDuration(ms: number | null | undefined): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) return PLACEHOLDER
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const seconds = total % 60
+  if (hours > 0) return `${hours} 小时 ${minutes} 分`
+  if (minutes > 0) return `${minutes} 分 ${String(seconds).padStart(2, "0")} 秒`
+  return `${seconds} 秒`
+}

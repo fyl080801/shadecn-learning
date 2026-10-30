@@ -11,15 +11,22 @@
     "./collab": "./src/collab.ts",
     "./agent": "./src/agent.ts",
     "./flow-node-types": "./src/flow-node-types.ts",
-    "./id": "./src/id.ts"
+    "./flow-ops": "./src/flow-ops.ts",
+    "./flow-layout": "./src/flow-layout.ts",
+    "./id": "./src/id.ts",
+    "./flow-collection": "./src/flow-collection.ts",
+    "./director-doc": "./src/director-doc.ts",
+    "./director-eval": "./src/director-eval.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
   },
   "peerDependencies": {
+    "@dagrejs/dagre": "^3.1.3",
     "yjs": "^13.6.32"
   },
   "devDependencies": {
+    "@dagrejs/dagre": "^3.1.3",
     "typescript": "~5.9.3",
     "yjs": "^13.6.32"
   }

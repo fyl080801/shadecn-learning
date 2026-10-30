@@ -6,10 +6,16 @@ import type { Sandbox } from './types.ts'
 /**
  * 让模型在沙箱里跑 ffmpeg / ffprobe 的工具。
  *
- * **默认不暴露**：只有宿主显式给了沙箱（apps/server 里是 `AGENT_SANDBOX=local`）才进工具列表。
+ * **默认不暴露**：它属于技能 `media-exec`（`skills/media/`，按需加载），只有宿主开了它（apps/server 里是 `AGENT_SANDBOX_EXEC=1`）、
+ * 且 Grant 里有 `sandbox:exec` 时才提供这个技能。
+ * 二期起它在 **runner 里本地执行**（runner 就是沙箱，命令跑在这一轮自己的工作目录里，`openLocalSandbox`），
+ * 不经网关（docs/22 §3：沙箱内部动作）；服务端只拿它的定义给事件里的那句话（`describe`）。
  * 本期它只能处理工作目录里已有的文件（run 开始时写进去的 `canvas.json`、它自己产出的文件）——
  * 资源存储（`assetId`，docs/20 §3.6）还不存在，产物也还挂不到节点上。
  */
+
+/** 媒体工具的名字：它在 runner 里本地执行，网关不代它执行 */
+export const MEDIA_TOOL_NAME = 'run_media_command'
 
 export const MEDIA_TOOL_LIMITS = {
   timeoutMs: 60_000,
@@ -39,7 +45,9 @@ function tail(text: string): string {
 
 export function createMediaTool(sandbox: Sandbox): CanvasTool {
   const tool: CanvasTool<typeof mediaParams> = {
-    name: 'run_media_command',
+    name: MEDIA_TOOL_NAME,
+    capability: 'sandbox:exec',
+    execution: 'runner',
     label: '媒体处理',
     description:
       '在隔离的工作目录里运行 ffmpeg 或 ffprobe（不经 shell，没有网络访问权限的假设，不能读工作目录外的文件）。' +
@@ -49,10 +57,13 @@ export function createMediaTool(sandbox: Sandbox): CanvasTool {
     describe: (args) => `运行 ${args.command}`,
     async execute(_id, args, signal) {
       if (signal?.aborted) throw new Error('已中止')
+      // 一轮被中止（用户停止 / 失权 / 超时）时 pi 掐掉这个 signal：沙箱当场 SIGKILL 子进程，不等它跑完
       const run = await sandbox.exec(args.command, args.args, {
         timeoutMs: MEDIA_TOOL_LIMITS.timeoutMs,
         maxOutputBytes: MEDIA_TOOL_LIMITS.maxOutputBytes,
+        ...(signal ? { signal } : {}),
       })
+      if (run.aborted) throw new Error(`${args.command} 随这一轮中止，已强制结束`)
       if (run.timedOut) throw new Error(`${args.command} 超过 ${MEDIA_TOOL_LIMITS.timeoutMs / 1000} 秒，已强制结束`)
       const reply = {
         exitCode: run.exitCode,

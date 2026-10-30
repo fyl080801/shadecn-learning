@@ -59,9 +59,9 @@ const props = withDefaults(
     editor: EditorT
     modelValue?: string
     placeholder?: string
-    /** 覆盖根容器的类名。省略时应用默认的浅色主题工具类。 */
+    /** 覆盖编辑区的类名。省略时只有排版（内边距、行高、最小高度、placeholder），没有边框 / 背景 / 焦点环。 */
     containerClass?: string
-    /** 覆盖外层包裹容器的类名（边框、背景、圆角）。
+    /** 追加到外层包裹容器的类名：边框、背景、圆角、焦点环都由使用方在这里按场景套。
      *  当 footer 需要位于可视容器内部时有用。 */
     wrapperClass?: string
     /** When true, the editor is read-only (contenteditable="false"). */
@@ -1293,8 +1293,8 @@ defineExpose({
       :data-placeholder="placeholder"
       :class="[
         props.containerClass ?? [
-          'relative min-h-40 w-full rounded-md border border-input bg-background p-3 text-sm leading-7 cursor-text',
-          'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
+          'relative min-h-40 w-full p-3 text-sm leading-7 cursor-text',
+          'focus:outline-none',
           'whitespace-pre-wrap',
           isDocumentEmpty &&
             !isFocused &&
@@ -1478,14 +1478,10 @@ defineExpose({
 </template>
 
 <style scoped>
+/* 输入框本身不画边框 / 背景 / 焦点环：外观随场景不同，由使用方通过 wrapperClass 或外层容器套 */
 .prompt-input {
   font-size: 14px;
-  border: 1px solid hsl(var(--border));
   cursor: text;
-}
-
-.prompt-input-focused {
-  box-shadow: 0 0 0 1px hsl(var(--border));
 }
 
 /* 使文本叶与 inline-void 元素对齐（徽章使用 vertical-align: middle）。

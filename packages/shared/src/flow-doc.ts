@@ -38,7 +38,7 @@ import {
  * 文档里的位置没动 —— 老文档的位置因此原样读得出来。
  *
  * **运行态的产出按端口摊平**：`outputs.<portId>` 一个端口一个 key（和
- * `apps/web/src/lib/flow-collection.ts` 的平铺分键同一个思路），不存整块 `outputs` 对象 ——
+ * `flow-collection.ts` 的平铺分键同一个思路），不存整块 `outputs` 对象 ——
  * 一个端口出了新结果不该把另一个端口的结果整块盖掉。
  *
  * **key 的类型首次写入即固定**：metadata / runtime 是 v3 新加的 key，从第一次写入起就是

@@ -2,6 +2,11 @@
 import { computed, nextTick, ref, watch } from "vue"
 import { Sparkles } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 import { useFlowAgentPanel } from "@/composables/flow/agent-panel"
@@ -12,6 +17,7 @@ import FlowAgentComposer from "./FlowAgentComposer.vue"
  * 右上角的对话框随之展开、显示这一轮。
  *
  * 不在这里续聊 —— 续聊、看历史、停止都在对话框里；这里只负责「起一个头」。
+ * 别的任务在跑（别人的、我别的会话里的）不挡它：并发单位是会话，新会话总能发起（docs/20 §3.10.3）。
  * 输入框和对话框底部是同一个 `FlowAgentComposer`（含 @ 提及节点、引用选中）。
  */
 const { flowId } = useFlowEditor()
@@ -22,9 +28,6 @@ const draft = ref("")
 const composer = ref<InstanceType<typeof FlowAgentComposer> | null>(null)
 
 const enabled = computed(() => agent.session.value?.enabled === true)
-
-/** 已有一轮在跑（自己的或别人的）：不能新开，提示去对话框里看 */
-const busy = computed(() => agent.running.value || agent.foreignRun.value !== null)
 
 const title = computed(() => {
   if (agent.session.value && !enabled.value) return "画布 Agent（服务端未配置模型）"
@@ -43,7 +46,7 @@ watch(flowId, () => {
 
 async function send() {
   const text = draft.value
-  if (!text.trim() || busy.value) return
+  if (!text.trim()) return
   draft.value = ""
   open.value = false
   const accepted = await startConversation(text)
@@ -67,65 +70,66 @@ function isolateKeys(event: KeyboardEvent) {
 </script>
 
 <template>
-  <Popover v-model:open="open">
-    <!--
-      外圈流光：一层转动的锥形渐变（400 色阶，比纯色柔、比浅色显眼），模糊后垫在按钮下面，带一点朦胧感。
-      范围和工具栏胶囊同高 —— 胶囊 46px、按钮 32px，四周外扩 7px；模糊会再往外晕开一点，
-      所以实体只扩 6px，晕开后大致落在 46px 上。
-      不可用（没配模型）时不发光；系统开了「减少动态效果」就停转。
-    -->
-    <span class="relative inline-flex">
-      <span
-        v-if="enabled"
-        aria-hidden="true"
-        class="pointer-events-none absolute -inset-[6px] overflow-hidden rounded-full opacity-90 blur-[4px]"
-      >
+  <!--
+    Tooltip 在最外层，Popover 整个放进它触发器的 span 里：reka-ui 的触发器就近找外层浮层登记锚点，
+    Popover 套在 Tooltip 外面的话，PopoverTrigger 会登记到 Tooltip 上，弹层没锚点、被定位到屏幕外。
+    提示挂在 span 上还有一个好处：按钮禁用（没配模型）时收不到鼠标事件，提示照样能解释「为什么用不了」。
+  -->
+  <Tooltip>
+    <TooltipTrigger as-child>
+      <!--
+        外圈流光：一层转动的锥形渐变（400 色阶，比纯色柔、比浅色显眼），模糊后垫在按钮下面，带一点朦胧感。
+        范围和工具栏胶囊同高 —— 胶囊 46px、按钮 32px，四周外扩 7px；模糊会再往外晕开一点，
+        所以实体只扩 6px，晕开后大致落在 46px 上。
+        不可用（没配模型）时不发光；系统开了「减少动态效果」就停转。
+      -->
+      <span class="relative inline-flex">
         <span
-          class="absolute inset-[-50%] animate-[spin_3s_linear_infinite] bg-[conic-gradient(from_0deg,#c084fc,#60a5fa,#22d3ee,#f472b6,#c084fc)] motion-reduce:animate-none"
-        />
-      </span>
-      <PopoverTrigger as-child>
-        <!--
-          和胶囊里的按钮同尺寸（32px）。阴影加深到 black/30：默认的 black/10 压在深色按钮底下
-          和按钮同色，看不出投影；胶囊靠的是白底 + 边框才显得出来。
-        -->
-        <Button
-          size="icon"
-          class="relative size-8 rounded-full shadow-lg shadow-black/30"
-          :title="title"
-          :aria-label="title"
-          :disabled="!enabled"
-          data-testid="agent-quick-toggle"
+          v-if="enabled"
+          aria-hidden="true"
+          class="pointer-events-none absolute -inset-[6px] overflow-hidden rounded-full opacity-90 blur-[4px]"
         >
-          <Sparkles />
-        </Button>
-      </PopoverTrigger>
-    </span>
-    <PopoverContent
-      side="top"
-      align="center"
-      :side-offset="12"
-      class="nowheel w-[420px] max-w-[calc(100vw-2rem)] p-3"
-      data-testid="agent-quick-prompt"
-      @interact-outside="onInteractOutside"
-      @keydown="isolateKeys"
-    >
-      <p
-        v-if="busy"
-        class="mb-2 text-xs text-muted-foreground"
-        data-testid="agent-quick-busy"
-      >
-        已有一轮在运行，结束后才能开新会话（进度在右上角对话框里）
-      </p>
-      <!-- 有一轮在跑时锁住发送；停止在对话框里，这里不放 -->
-      <FlowAgentComposer
-        ref="composer"
-        v-model="draft"
-        :running="false"
-        :locked="busy"
-        :aborting="false"
-        @send="send()"
-      />
-    </PopoverContent>
-  </Popover>
+          <span
+            class="absolute inset-[-50%] animate-[spin_3s_linear_infinite] bg-[conic-gradient(from_0deg,#c084fc,#60a5fa,#22d3ee,#f472b6,#c084fc)] motion-reduce:animate-none"
+          />
+        </span>
+        <Popover v-model:open="open">
+          <PopoverTrigger as-child>
+            <!--
+              和胶囊里的按钮同尺寸（32px）。阴影加深到 black/30：默认的 black/10 压在深色按钮底下
+              和按钮同色，看不出投影；胶囊靠的是白底 + 边框才显得出来。
+            -->
+            <Button
+              size="icon"
+              class="relative size-8 rounded-full shadow-lg shadow-black/30"
+              :aria-label="title"
+              :disabled="!enabled"
+              data-testid="agent-quick-toggle"
+            >
+              <Sparkles />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            side="top"
+            align="center"
+            :side-offset="12"
+            class="nowheel w-[420px] max-w-[calc(100vw-2rem)] p-3"
+            data-testid="agent-quick-prompt"
+            @interact-outside="onInteractOutside"
+            @keydown="isolateKeys"
+          >
+            <!-- 停止在对话框里，这里不放 -->
+            <FlowAgentComposer
+              ref="composer"
+              v-model="draft"
+              :running="false"
+              :aborting="false"
+              @send="send()"
+            />
+          </PopoverContent>
+        </Popover>
+      </span>
+    </TooltipTrigger>
+    <TooltipContent>{{ title }}</TooltipContent>
+  </Tooltip>
 </template>

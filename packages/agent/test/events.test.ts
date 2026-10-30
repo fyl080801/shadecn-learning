@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
-import { AGENT_USER_MESSAGE_EVENT, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
+import { AGENT_CANVAS_CHANGE_EVENT, AGENT_USER_MESSAGE_EVENT, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { createRunEventMapper } from '../src/events.ts'
 
 /**
@@ -145,5 +145,34 @@ describe('一轮完整的事件顺序', () => {
     const m = mapper()
     m.handle(assistantEnd('error', '429 too many requests'))
     expect(m.modelError).toBe('429 too many requests')
+  })
+})
+
+describe('画布改动通知', () => {
+  it('CUSTOM agent.canvas-change：value 就是对话里那条消息（拷贝），先关掉没关的文字段', () => {
+    const m = mapper()
+    m.start({ id: 'msg-u', role: 'user', text: '一', createdAt: 1 })
+    const opened = m.handle(textDelta('先说一句'))
+    expect(opened.map((e) => e.type)).toEqual([AgentEventType.TEXT_MESSAGE_START, AgentEventType.TEXT_MESSAGE_CONTENT])
+
+    const change = {
+      id: 'chg-1',
+      role: 'canvas-change' as const,
+      scope: 'live' as const,
+      summary: '爱丽丝 改动了画布（1 处）',
+      items: ['新建节点 text「A」（a）'],
+      actors: ['爱丽丝'],
+      omitted: 0,
+      createdAt: 5,
+    }
+    const out = m.canvasChange(change)
+    expect(out).toEqual([
+      { type: AgentEventType.TEXT_MESSAGE_END, messageId: 'msg-a', timestamp: 1000 },
+      { type: AgentEventType.CUSTOM, name: AGENT_CANVAS_CHANGE_EVENT, value: change, timestamp: 1000 },
+    ])
+    const custom = out[1] as Extract<AgentStreamEvent, { name: typeof AGENT_CANVAS_CHANGE_EVENT }>
+    expect(custom.value).not.toBe(change)
+    // 不改 assistant 消息本身
+    expect(m.message.text).toBe('先说一句')
   })
 })

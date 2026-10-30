@@ -3,6 +3,9 @@ import { FALLBACK_NODE_TYPE, type FlowEdge } from '../src/flow-graph.ts'
 import {
   buildNodeRecord,
   connectableNodeTypes,
+  defaultNodeSize,
+  FALLBACK_NODE_SIZE,
+  nodeSizeOf,
   connectionEdgeData,
   CREATABLE_NODE_TYPES,
   FLOW_NODE_TYPE_DEFAULTS,
@@ -11,6 +14,8 @@ import {
   GROUP_Z_INDEX,
   hasNodeResource,
   hasSide,
+  interactionGate,
+  nodeFormOf,
   nodeTypeDefaultsOf,
   portsOf,
   resolveConnection,
@@ -120,51 +125,67 @@ function contextOf(nodes: Fixture, edges: FlowEdge[] = []): ConnectionContext {
   return { typeOf: (id) => nodes[id]?.[0], dataOf: (id) => nodes[id]?.[1], edges }
 }
 
-/** 七种「类型 × 有没有资源」的状态。导演台没有资源这回事，只有一种 */
+/**
+ * 「类型 × 资源 × 形态」的状态。导演台没有资源、没有形态，只有一种；
+ * 图片 / 视频：generate 没图、generate 有图（有连入时上传的）、asset（没有连入时上传的）。
+ */
 const STATES: Fixture = {
   文本空: ['text', { text: '' }],
   文本有: ['text', { text: '一只猫' }],
-  图片空: ['image', { src: '' }],
-  图片有: ['image', { src: 'https://x/a.png' }],
-  视频空: ['video', { src: '', poster: '' }],
-  视频有: ['video', { src: 'https://x/a.mp4', poster: 'https://x/p.png' }],
+  图片生成: ['image', { src: '' }],
+  图片生成有图: ['image', { src: 'https://x/a.png', form: 'generate' }],
+  图片素材: ['image', { src: 'https://x/a.png', form: 'asset' }],
+  视频生成: ['video', { src: '', poster: '' }],
+  视频生成有图: ['video', { src: 'https://x/a.mp4', poster: 'https://x/p.png' }],
+  视频素材: ['video', { src: 'https://x/a.mp4', poster: 'https://x/p.png', form: 'asset' }],
   导演台: ['director', {}],
 }
 
-describe('连线关系表：4 种类型 × 有 / 无资源的全矩阵', () => {
-  /**
-   * 每一格：能连就是选中的那对端口 `起点端口→终点端口`；不能连写拒绝原因的关键词。
-   * 和 `flow-node-types.ts` 里 `FLOW_NODE_TYPE_DEFAULTS` 上面那张关系表是同一份事实。
-   */
-  const NO_INPUT = '没有输入端口'
-  const HAS_RESOURCE = '已经有资源'
-  const MISMATCH = '数据类型不匹配'
-  const COLUMNS = ['文本空', '文本有', '图片空', '图片有', '视频空', '视频有', '导演台'] as const
-  const MATRIX: Record<string, readonly string[]> = {
-    //        文本空     文本有     图片空          图片有        视频空          视频有        导演台
-    文本空: [NO_INPUT, NO_INPUT, 'text→text', HAS_RESOURCE, 'text→text', HAS_RESOURCE, 'text→text'],
-    文本有: [NO_INPUT, NO_INPUT, 'text→text', HAS_RESOURCE, 'text→text', HAS_RESOURCE, 'text→text'],
-    图片空: [NO_INPUT, NO_INPUT, 'image→image', HAS_RESOURCE, 'image→image', HAS_RESOURCE, 'image→image'],
-    图片有: [NO_INPUT, NO_INPUT, 'image→image', HAS_RESOURCE, 'image→image', HAS_RESOURCE, 'image→image'],
-    视频空: [NO_INPUT, NO_INPUT, 'video→video', HAS_RESOURCE, 'video→video', HAS_RESOURCE, MISMATCH],
-    视频有: [NO_INPUT, NO_INPUT, 'video→video', HAS_RESOURCE, 'video→video', HAS_RESOURCE, MISMATCH],
-    导演台: [NO_INPUT, NO_INPUT, 'image→image', HAS_RESOURCE, 'image→image', HAS_RESOURCE, 'image→image'],
-  }
+const COLUMNS = Object.keys(STATES)
+const NO_INPUT = '没有输入端口'
+const MISMATCH = '数据类型不匹配'
+const ASSET = '素材'
 
-  for (const [from, row] of Object.entries(MATRIX)) {
+/**
+ * 逻辑门（`resolveConnection`，agent 的 `connect`、`flow-ops`）：**只做端口匹配**，资源、形态都不看。
+ * 每一格：能连就是选中的那对端口 `起点端口→终点端口`；不能连写拒绝原因的关键词。
+ * 和 `flow-node-types.ts` 里 `FLOW_NODE_TYPE_DEFAULTS` 上面那张关系表是同一份事实。
+ */
+const T = 'text→text'
+const I = 'image→image'
+const V = 'video→video'
+const LOGIC_ROW = {
+  //        文本空     文本有     图片生成 图片生成有图 图片素材 视频生成 视频生成有图 视频素材 导演台
+  text: [NO_INPUT, NO_INPUT, T, T, T, T, T, T, T],
+  image: [NO_INPUT, NO_INPUT, I, I, I, I, I, I, I],
+  video: [NO_INPUT, NO_INPUT, V, V, V, V, V, V, MISMATCH],
+  director: [NO_INPUT, NO_INPUT, I, I, I, I, I, I, I],
+} as const
+const rowOf = (state: string) => LOGIC_ROW[STATES[state]![0] as keyof typeof LOGIC_ROW]
+
+/** 人拖线 = 先过交互门、再过逻辑门（`useFlowCanvas` 的 `resolve`） */
+function interactive(context: ConnectionContext) {
+  const gate = interactionGate({ target: 'dst' }, context)
+  return gate.ok ? resolveConnection({ source: 'src', target: 'dst' }, context) : gate
+}
+
+function expectVerdict(verdict: ReturnType<typeof interactive>, expected: string) {
+  if (expected.includes('→')) {
+    const [sourcePort, targetPort] = expected.split('→')
+    expect(verdict).toEqual({ ok: true, sourcePort, targetPort })
+  } else {
+    expect(verdict.ok).toBe(false)
+    expect(!verdict.ok && verdict.reason).toContain(expected)
+  }
+}
+
+describe('连线关系表（逻辑门）：起点 × 终点的全矩阵，形态和资源都不影响', () => {
+  for (const from of COLUMNS) {
     COLUMNS.forEach((to, column) => {
-      const expected = row[column]!
+      const expected = rowOf(from)[column]!
       it(`${from} → ${to}：${expected}`, () => {
         // 起点、终点各是一个节点（同一状态也是两个不同的节点）
-        const context = contextOf({ src: STATES[from]!, dst: STATES[to]! })
-        const verdict = resolveConnection({ source: 'src', target: 'dst' }, context)
-        if (expected.includes('→')) {
-          const [sourcePort, targetPort] = expected.split('→')
-          expect(verdict).toEqual({ ok: true, sourcePort, targetPort })
-        } else {
-          expect(verdict.ok).toBe(false)
-          expect(!verdict.ok && verdict.reason).toContain(expected)
-        }
+        expectVerdict(resolveConnection({ source: 'src', target: 'dst' }, contextOf({ src: STATES[from]!, dst: STATES[to]! })), expected)
       })
     })
   }
@@ -172,6 +193,55 @@ describe('连线关系表：4 种类型 × 有 / 无资源的全矩阵', () => {
   it('矩阵覆盖了每一种可新建的类型（加了类型就得补这张表）', () => {
     const covered = new Set(Object.values(STATES).map(([type]) => type))
     expect([...covered].sort()).toEqual([...CREATABLE_NODE_TYPES].sort())
+  })
+})
+
+describe('连线关系表（交互门 + 逻辑门）：人拖线进 asset 形态的节点一律拒绝，其余同逻辑门', () => {
+  for (const from of COLUMNS) {
+    COLUMNS.forEach((to, column) => {
+      const expected = to.endsWith('素材') ? ASSET : rowOf(from)[column]!
+      it(`${from} ⇢ ${to}：${expected}`, () => {
+        expectVerdict(interactive(contextOf({ src: STATES[from]!, dst: STATES[to]! })), expected)
+      })
+    })
+  }
+})
+
+describe('形态：nodeFormOf / hasSide / interactionGate', () => {
+  it('只有图片 / 视频有形态；字段缺失或不认识一律 generate（不按 src 反推）', () => {
+    expect(nodeFormOf('image', {})).toBe('generate')
+    expect(nodeFormOf('image', { src: 'https://x/a.png' })).toBe('generate')
+    expect(nodeFormOf('image', { form: 'asset' })).toBe('asset')
+    expect(nodeFormOf('video', { form: 'asset' })).toBe('asset')
+    expect(nodeFormOf('video', { form: 'weird' })).toBe('generate')
+    expect(nodeFormOf('text', { form: 'asset' })).toBeNull()
+    expect(nodeFormOf('director', {})).toBeNull()
+    expect(nodeFormOf(FALLBACK_NODE_TYPE, {})).toBeNull()
+  })
+
+  it('hasSide 按形态：asset 的左边收起，右边照旧；有没有图不影响；text 只有右边；兜底类型两边都有', () => {
+    expect(hasSide('text', 'inputs', { text: '' })).toBe(false)
+    expect(hasSide('text', 'outputs', { text: '' })).toBe(true)
+    expect(hasSide('image', 'inputs', { src: '' })).toBe(true)
+    expect(hasSide('image', 'inputs', { src: 'https://x/a.png' })).toBe(true)
+    expect(hasSide('image', 'inputs', { src: 'https://x/a.png', form: 'asset' })).toBe(false)
+    expect(hasSide('image', 'outputs', { form: 'asset' })).toBe(true)
+    expect(hasSide('video', 'inputs', { form: 'asset' })).toBe(false)
+    expect(hasSide('director', 'inputs', {})).toBe(true)
+    expect(hasSide(FALLBACK_NODE_TYPE, 'inputs', {})).toBe(true)
+    expect(hasSide(FALLBACK_NODE_TYPE, 'outputs', {})).toBe(true)
+  })
+
+  it('交互门只看终点的形态：起点是 asset 照样能拖出去；终点不存在交给逻辑门去报', () => {
+    const context = contextOf({ a: ['image', { form: 'asset' }], b: ['image', {}] })
+    expect(interactionGate({ target: 'b' }, context)).toEqual({ ok: true })
+    expect(interactionGate({ target: 'ghost' }, context)).toEqual({ ok: true })
+    expect(interactionGate({ target: 'a' }, context).ok).toBe(false)
+  })
+
+  it('长出新节点的候选菜单：从 asset 节点照样能长（新节点是 generate）', () => {
+    const context = contextOf({ a: ['image', { src: 'https://x/a.png', form: 'asset' }] })
+    expect(connectableNodeTypes('a', context).map((item) => item.type)).toEqual(['image', 'video', 'director'])
   })
 })
 
@@ -221,23 +291,17 @@ describe('连线规则：resolveConnection 的其余规则', () => {
     expect(resolveConnection({ source: 'dc', target: 'vid' }, context(both)).ok).toBe(false)
   })
 
-  it('导演台 → 图片（没资源时）：先连截图 image → image，连过再连落到录制 video → video；图片 → 导演台走 image → image', () => {
+  it('导演台 → 图片：先连截图 image → image，连过再连落到录制 video → video；图片 → 导演台走 image → image', () => {
     expect(resolveConnection({ source: 'dc', target: 'img' }, context())).toEqual({ ok: true, sourcePort: 'image', targetPort: 'image' })
     const shot = [link('e1', 'dc', 'img', 'image', 'image')]
     expect(resolveConnection({ source: 'dc', target: 'img' }, context(shot))).toEqual({ ok: true, sourcePort: 'video', targetPort: 'video' })
-    expect(resolveConnection({ source: 'dc', target: 'full' }, context()).ok).toBe(false)
+    // 有没有图不影响逻辑门
+    expect(resolveConnection({ source: 'dc', target: 'full' }, context())).toMatchObject({ ok: true, targetPort: 'image' })
     expect(resolveConnection({ source: 'img', target: 'dc' }, context())).toEqual({ ok: true, sourcePort: 'image', targetPort: 'image' })
   })
 
-  it('有了资源只拒绝新线：已经连着的线不算违规（规则不回头删线）', () => {
-    const existing = [link('e1', 't1', 'full', 'text', 'text')]
-    const verdict = resolveConnection({ source: 't2', target: 'full' }, context(existing))
-    expect(!verdict.ok && verdict.reason).toContain('已经有资源')
-    // 重连那条已有的线（它自己被忽略）照样被拒：输入关着就是关着
-    expect(resolveConnection({ source: 't1', target: 'full' }, { ...context(existing), ignoreEdgeId: 'e1' }).ok).toBe(false)
-  })
-
-  it('取不到 data 的按空对象算（输入开着）', () => {
+  it('取不到 data 的按空对象算（generate，交互门也放行）', () => {
+    expect(interactionGate({ target: 'img' }, { typeOf: (id) => nodes[id]?.[0], dataOf: () => undefined })).toEqual({ ok: true })
     const verdict = resolveConnection(
       { source: 't1', target: 'img' },
       { typeOf: (id) => nodes[id]?.[0], dataOf: () => undefined, edges: [] },
@@ -267,18 +331,6 @@ describe('连线规则：resolveConnection 的其余规则', () => {
       sourcePort: 'video',
       targetPort: 'video',
     })
-  })
-
-  it('hasSide 带数据：text 只有右边；图片 / 视频有资源时左边收起；兜底类型两边都有', () => {
-    expect(hasSide('text', 'inputs', { text: '' })).toBe(false)
-    expect(hasSide('text', 'outputs', { text: '' })).toBe(true)
-    expect(hasSide('image', 'inputs', { src: '' })).toBe(true)
-    expect(hasSide('image', 'inputs', { src: 'https://x/a.png' })).toBe(false)
-    expect(hasSide('image', 'outputs', { src: 'https://x/a.png' })).toBe(true)
-    expect(hasSide('video', 'inputs', { src: 'https://x/a.mp4' })).toBe(false)
-    expect(hasSide('director', 'inputs', {})).toBe(true)
-    expect(hasSide(FALLBACK_NODE_TYPE, 'inputs', {})).toBe(true)
-    expect(hasSide(FALLBACK_NODE_TYPE, 'outputs', {})).toBe(true)
   })
 
   it('认不出的老类型按兜底算（无端口、和谁都能连）；无端口之间选出 null / null，同方向已有一条就不连第二条', () => {
@@ -314,8 +366,9 @@ describe('connectableNodeTypes：从一个出口能长出哪些类型', () => {
   it('列出肯收它的类型，按可新建顺序；新节点按全新的空节点算（起点有没有资源不影响）', () => {
     expect(types('文本空')).toEqual(['image', 'video', 'director'])
     expect(types('文本有')).toEqual(['image', 'video', 'director'])
-    expect(types('图片有')).toEqual(['image', 'video', 'director'])
-    expect(types('视频空')).toEqual(['image', 'video'])
+    expect(types('图片生成有图')).toEqual(['image', 'video', 'director'])
+    expect(types('图片素材')).toEqual(['image', 'video', 'director'])
+    expect(types('视频生成')).toEqual(['image', 'video'])
   })
 
   it('导演台的出口：图片、视频（还有导演台）都能长', () => {
@@ -337,5 +390,23 @@ describe('connectableNodeTypes：从一个出口能长出哪些类型', () => {
 
   it('节点不存在：一个都没有', () => {
     expect(types('ghost')).toEqual([])
+  })
+})
+
+describe('nodeSizeOf：不量 DOM 时的节点尺寸', () => {
+  it('布局里存了正数宽高就用存的，没存 / 不是正数的那一边按类型的 defaultSize 估', () => {
+    expect(nodeSizeOf({ type: 'image', layout: { width: 480, height: 240 } })).toEqual({ width: 480, height: 240 })
+    expect(nodeSizeOf({ type: 'text', layout: {} })).toEqual({ width: 320, height: 120 })
+    expect(nodeSizeOf({ type: 'text', layout: { width: 0, height: Number.NaN } })).toEqual({ width: 320, height: 120 })
+    expect(nodeSizeOf({ type: 'text', layout: { width: 500 } })).toEqual({ width: 500, height: 120 })
+  })
+
+  it('每种类型都声明了 defaultSize；认不出的类型按兜底类型估；分组的估计就是它的默认尺寸', () => {
+    for (const type of Object.keys(FLOW_NODE_TYPE_DEFAULTS)) {
+      expect(FLOW_NODE_TYPE_DEFAULTS[type]!.defaultSize, type).toBeDefined()
+    }
+    expect(defaultNodeSize('legacy-kind')).toEqual(defaultNodeSize(FALLBACK_NODE_TYPE))
+    expect(defaultNodeSize('group')).toEqual(GROUP_DEFAULT_SIZE)
+    expect(FALLBACK_NODE_SIZE.width).toBeGreaterThan(0)
   })
 })

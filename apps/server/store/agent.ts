@@ -1,27 +1,30 @@
 import type { AgentMessage } from '@mariozechner/pi-agent-core'
 import type { AgentChatMessage } from '@shadecn/shared/agent'
-import type {
-  AgentConversationStore,
-  AgentRunLog,
-  StoredConversation,
-  StoredConversationMeta,
-  StoredConversationWithContext,
+import {
+  parseCanvasDigest,
+  type AgentConversationStore,
+  type AgentRunLog,
+  type StoredConversation,
+  type StoredConversationMeta,
+  type StoredConversationWithContext,
 } from '@shadecn/agent/store'
 import { db } from '../db.ts'
-import { AgentConversation, AgentRun, AgentToolCall, newId } from '../db/entities/index.ts'
+import { AgentConversation, AgentGrant, AgentGrantScope, AgentRun, AgentToolCall, newId } from '../db/entities/index.ts'
 
 /**
  * 画布 Agent 的持久化：`@shadecn/agent/store` 两个接口的 MikroORM 实现（实体在 db/entities/agent.ts）。
  *
- * 会话的每一次读写都把 `flow` + `user` 放进 where —— 别人的会话和不存在的会话在这里就是同一个结果（查不到），
- * 调用方没有机会把它们区分开，也就不可能漏掉归属检查。
+ * 归属的口径见 `@shadecn/agent/store` 的「归属」：展示用的读（`list` / `get`）只按 `flow` 取 ——
+ * 项目画布上成员看得到别人的会话（只读），能不能进这张画布由路由的 `requireFlowMember` 判；
+ * 写和带模型上下文的读把 `flow` + `user` 都放进 where —— 对写来说，别人的会话和不存在的会话在这里是同一个结果
+ * （查不到 / 改了 0 行），路由先判的 403 漏了也写不进去。
  *
- * `messages` / `llmMessages` 是 lazy 列，要用的查询显式 `populate`；列表不取。
+ * `messages` / `llmMessages` / `canvasDigest` 是 lazy 列，要用的查询显式 `populate`；列表不取。
  */
 
 type ConversationRow = Pick<
   AgentConversation,
-  'id' | 'flow' | 'user' | 'title' | 'summary' | 'messageCount' | 'createdAt' | 'updatedAt'
+  'id' | 'flow' | 'user' | 'title' | 'summary' | 'messageCount' | 'createdAt' | 'updatedAt' | 'nodeId' | 'skills'
 >
 
 function toMeta(row: ConversationRow): StoredConversationMeta {
@@ -34,6 +37,8 @@ function toMeta(row: ConversationRow): StoredConversationMeta {
     messageCount: row.messageCount,
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
+    nodeId: row.nodeId ?? null,
+    skills: parseArray<unknown>(row.skills).filter((id): id is string => typeof id === 'string'),
   }
 }
 
@@ -52,7 +57,18 @@ function withMessages(row: ConversationRow & { messages?: string }): StoredConve
   return { ...toMeta(row), messages: parseArray<AgentChatMessage>(row.messages) }
 }
 
-const META_FIELDS = ['id', 'flow', 'user', 'title', 'summary', 'messageCount', 'createdAt', 'updatedAt'] as const
+const META_FIELDS = [
+  'id',
+  'flow',
+  'user',
+  'title',
+  'summary',
+  'messageCount',
+  'createdAt',
+  'updatedAt',
+  'nodeId',
+  'skills',
+] as const
 
 /** 同一毫秒里更新的两个会话按建立先后排，列表顺序才稳定 */
 const NEWEST_FIRST = { updatedAt: 'desc', createdAt: 'desc' } as const
@@ -67,17 +83,17 @@ export const agentConversations: AgentConversationStore = {
     return row ? withMessages(row) : null
   },
 
-  async list(flowId, userId) {
+  async list(flowId) {
     const rows = await db().find(
       AgentConversation,
-      { flow: flowId, user: userId },
+      { flow: flowId },
       { orderBy: NEWEST_FIRST, fields: [...META_FIELDS] },
     )
     return rows.map(toMeta)
   },
 
-  async get(flowId, userId, id) {
-    const row = await db().findOne(AgentConversation, { id, flow: flowId, user: userId }, { populate: ['messages'] })
+  async get(flowId, id) {
+    const row = await db().findOne(AgentConversation, { id, flow: flowId }, { populate: ['messages'] })
     return row ? withMessages(row) : null
   },
 
@@ -85,10 +101,15 @@ export const agentConversations: AgentConversationStore = {
     const row = await db().findOne(
       AgentConversation,
       { id, flow: flowId, user: userId },
-      { populate: ['messages', 'llmMessages'] },
+      { populate: ['messages', 'llmMessages', 'canvasDigest'] },
     )
     if (!row) return null
-    return { ...withMessages(row), llmMessages: parseArray<AgentMessage>(row.llmMessages) }
+    return {
+      ...withMessages(row),
+      llmMessages: parseArray<AgentMessage>(row.llmMessages),
+      // 坏数据兜成 null：下一轮少一份跨轮差异，不值得让它失败
+      canvasDigest: row.canvasDigest ? parseCanvasDigest(row.canvasDigest) : null,
+    }
   },
 
   async create(input) {
@@ -101,6 +122,10 @@ export const agentConversations: AgentConversationStore = {
       messageCount: input.messages.length,
       messages: JSON.stringify(input.messages),
       llmMessages: JSON.stringify(input.llmMessages),
+      // em.create 不会替没给的可空字段填 null（database.md）
+      canvasDigest: null,
+      nodeId: input.nodeId,
+      skills: '[]',
     })
     await em.flush()
     return toMeta(row)
@@ -116,6 +141,10 @@ export const agentConversations: AgentConversationStore = {
         messageCount: patch.messages.length,
         summary: patch.summary,
         ...(patch.llmMessages ? { llmMessages: JSON.stringify(patch.llmMessages) } : {}),
+        ...(patch.canvasDigest !== undefined
+          ? { canvasDigest: patch.canvasDigest ? JSON.stringify(patch.canvasDigest) : null }
+          : {}),
+        ...(patch.skills ? { skills: JSON.stringify(patch.skills) } : {}),
         updatedAt: new Date(),
       },
     )
@@ -138,6 +167,7 @@ export const agentRunLog: AgentRunLog = {
       conversationId: run.conversationId,
       flowId: run.flowId,
       userId: run.userId,
+      grantId: run.grantId,
       status: 'running',
       error: null,
       toolCallCount: 0,
@@ -152,6 +182,7 @@ export const agentRunLog: AgentRunLog = {
     await db().insert(AgentToolCall, {
       id: newId(),
       runId: call.runId,
+      grantId: call.grantId,
       toolCallId: call.toolCallId,
       name: call.name,
       ok: call.ok,
@@ -165,7 +196,7 @@ export const agentRunLog: AgentRunLog = {
 
   async finishRun(run) {
     // 按 runId upsert：startRun 那一笔没写进去，结尾这一笔照样留下完整的一行。
-    // 撞上已有行时只改收尾的四个字段 —— 开头那几个以 startRun 写的为准
+    // 撞上已有行时只改收尾的字段（grantId 也带上：两笔里写的是同一个值）—— 开头那几个以 startRun 写的为准
     await db().upsert(
       AgentRun,
       {
@@ -173,6 +204,7 @@ export const agentRunLog: AgentRunLog = {
         conversationId: run.conversationId,
         flowId: run.flowId,
         userId: run.userId,
+        grantId: run.grantId,
         status: run.status,
         error: run.error,
         toolCallCount: run.toolCallCount,
@@ -182,8 +214,91 @@ export const agentRunLog: AgentRunLog = {
       },
       {
         onConflictFields: ['id'],
-        onConflictMergeFields: ['status', 'error', 'toolCallCount', 'finishedAt'],
+        onConflictMergeFields: ['grantId', 'status', 'error', 'toolCallCount', 'finishedAt'],
       },
+    )
+  },
+}
+
+// —— 委托授权（Grant，docs/22 §3）——
+
+export interface NewGrantScope {
+  scope: string
+  resource: string
+  onRevoke: string
+  required: boolean
+}
+
+export interface NewGrant {
+  userId: string
+  runId: string
+  flowId: string
+  projectId: string
+  projectKind: string
+  personalOwnerId: string | null
+  expiresAt: Date
+  scopes: NewGrantScope[]
+}
+
+/** 判权要的那几列 */
+export interface GrantState {
+  id: string
+  expiresAt: Date
+  revokedAt: Date | null
+  revokeReason: string | null
+}
+
+/**
+ * Grant 的读写。只有 `apps/server/agent/authority.ts` 用（编排层只认 `@shadecn/agent/authority` 的接口）。
+ * 所有撤销都是「`revokedAt` 为空才写」：先写下的原因（失权）不会被后来的（本轮已结束）盖掉。
+ */
+export const agentGrants = {
+  /** 一个 Grant 和它的全部 scope，一个事务写下 */
+  async create(input: NewGrant): Promise<string> {
+    return db().transactional(async (em) => {
+      const grant = em.create(AgentGrant, {
+        userId: input.userId,
+        runId: input.runId,
+        flowId: input.flowId,
+        projectId: input.projectId,
+        projectKind: input.projectKind,
+        personalOwnerId: input.personalOwnerId,
+        expiresAt: input.expiresAt,
+        revokedAt: null,
+        revokeReason: null,
+      })
+      for (const scope of input.scopes) em.create(AgentGrantScope, { grantId: grant.id, ...scope })
+      await em.flush()
+      return grant.id
+    })
+  },
+
+  async state(grantId: string): Promise<GrantState | null> {
+    const row = await db().findOne(AgentGrant, grantId, {
+      fields: ['id', 'expiresAt', 'revokedAt', 'revokeReason'],
+    })
+    return row ? { id: row.id, expiresAt: row.expiresAt, revokedAt: row.revokedAt, revokeReason: row.revokeReason } : null
+  },
+
+  /** 撤销 / 关闭一份；返回 false = 已经撤销过（原因保持先写下的那个） */
+  async revoke(grantId: string, reason: string, at = new Date()): Promise<boolean> {
+    return (await db().nativeUpdate(AgentGrant, { id: grantId, revokedAt: null }, { revokedAt: at, revokeReason: reason })) > 0
+  },
+
+  /** 一个人全部还有效的 Grant（账号级撤销，docs/22 §5）；返回撤销了几份 */
+  async revokeAllForUser(userId: string, reason: string, at = new Date()): Promise<number> {
+    return db().nativeUpdate(AgentGrant, { userId, revokedAt: null }, { revokedAt: at, revokeReason: reason })
+  },
+
+  /**
+   * 过了 `expiresAt` 还没撤销的，标成到期。定时对账用：在跑的那一轮由对账另行叫停；
+   * 进程崩溃留下的孤儿 Grant（那一轮早就没了）也在这里收掉。返回标了几份
+   */
+  async expireDue(reason: string, now = new Date()): Promise<number> {
+    return db().nativeUpdate(
+      AgentGrant,
+      { revokedAt: null, expiresAt: { $lte: now } },
+      { revokedAt: now, revokeReason: reason },
     )
   },
 }

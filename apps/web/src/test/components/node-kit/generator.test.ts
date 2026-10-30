@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as ops from "@shadecn/shared/flow-ops"
 import { defineComponent, h, nextTick, ref } from "vue"
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils"
 import { createPinia, setActivePinia } from "pinia"
@@ -22,7 +23,8 @@ import PromptInput from "@/components/prompt-input/PromptInput.vue"
 import { useFlowStore } from "@/stores/flow"
 
 /**
- * 底部输入框（REQ-NODEKIT §6，按类型注册）：文本 / 图片 / 视频 / 导演台各有一个，前三者有了内容就收起；
+ * 底部输入框（REQ-NODEKIT §6，按类型注册）：文本 / 图片 / 视频 / 导演台各有一个；文本有了正文就收起，
+ * 图片 / 视频看形态（generate 有、asset 没有），导演台一直有；
  * 提交只写回 `data.prompt` 并发 `composer:submit`，眼下没有谁接它（四种类型都没启用 `runnable`）。
  *
  * `runnable`（把提交转成运行请求）和 `output-preview`（产出列表与侧边大图）仍是登记着的通用能力，
@@ -43,6 +45,7 @@ vi.mock("@/composables/flow/editor-context", () => ({
     },
     presence: { occupantsOf: () => [] },
     selection: { selectedNodeId },
+    flowId: ref("flow-1"),
     store: useFlowStore()
   })
 }))
@@ -288,20 +291,29 @@ describe("图片节点的底部输入框", () => {
   })
 })
 
-describe("各类型的底部输入框：有了内容就收起，导演台一直有", () => {
-  it("文本 / 图片 / 视频：没内容时选中有输入框，填上内容（正文 / data.src）就收起", async () => {
-    const filled: Record<string, Record<string, unknown>> = {
-      text: { text: "已经写了" },
-      image: { src: "https://x/a.png" },
-      video: { src: "https://x/a.mp4" }
-    }
-    for (const [type, data] of Object.entries(filled)) {
+describe("各类型的底部输入框：文本有了正文就收起，图片 / 视频看形态，导演台一直有", () => {
+  it("文本：没内容时选中有输入框，填上正文就收起", async () => {
+    const { store, w } = mountNode(nodeOf("text"))
+    await nextTick()
+    expect(w.find('[data-testid="prompt-composer"]').exists()).toBe(true)
+
+    store.writeNode("gen", "data", { set: { text: "已经写了" } })
+    await nextTick()
+    expect(w.find('[data-testid="prompt-composer"]').exists()).toBe(false)
+  })
+
+  it("图片 / 视频：generate 有了图输入框照旧在；成了素材（asset）就没有", async () => {
+    for (const type of ["image", "video"]) {
       setActivePinia(createPinia())
       const { store, w } = mountNode(nodeOf(type))
       await nextTick()
       expect(w.find('[data-testid="prompt-composer"]').exists(), type).toBe(true)
 
-      store.writeNode("gen", "data", { set: data })
+      store.mutate((ctx) => ops.writeNodeFields(ctx, "gen", "data", { set: { src: "https://x/a" } }))
+      await nextTick()
+      expect(w.find('[data-testid="prompt-composer"]').exists(), type).toBe(true)
+
+      store.attachAsset("gen", { src: "https://x/a" })
       await nextTick()
       expect(w.find('[data-testid="prompt-composer"]').exists(), type).toBe(false)
       w.unmount()

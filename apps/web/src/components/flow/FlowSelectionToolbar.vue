@@ -5,6 +5,11 @@ import { NodeToolbar } from "@vue-flow/node-toolbar"
 import { Group } from "@lucide/vue"
 
 import { Button } from "@/components/ui/button"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
@@ -47,16 +52,24 @@ const visible = computed(
         选中的节点里如果有已经在别的分组里的、或者分组框本身，它们不参与打组
         （见 useFlowCanvas.groupableNodes）—— 剩不下两个就没什么可圈的，按钮置灰。
       -->
-      <Button
-        variant="ghost"
-        size="icon"
-        class="size-8 rounded-full"
-        :disabled="!canvas.canGroupSelection.value"
-        title="打组（把选中的节点框在一起）"
-        @click.stop="canvas.groupSelection()"
-      >
-        <Group />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger as-child>
+          <!-- 禁用的按钮收不到鼠标事件，提示挂在外面这层 span 上 -->
+          <span class="inline-flex">
+            <Button
+              variant="ghost"
+              size="icon"
+              class="size-8 rounded-full"
+              :disabled="!canvas.canGroupSelection.value"
+              aria-label="打组"
+              @click.stop="canvas.groupSelection()"
+            >
+              <Group />
+            </Button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top">打组（把选中的节点框在一起）</TooltipContent>
+      </Tooltip>
     </div>
   </NodeToolbar>
 </template>

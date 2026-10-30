@@ -16,7 +16,7 @@ import { useFlowEditor } from "@/composables/flow/editor-context"
  * 画不画哪一侧由 shared 的 `hasSide(type, side, data)` 判 —— **带着节点数据**，和连线规则是同一个函数：
  * - 没声明端口的类型（兜底的 process）：左右各一个，和谁都能连；
  * - 没有输入的（text）：不画左边；
- * - 输入此刻关着的（图片 / 视频已经有了资源 `data.src`）：没有连线时左边收起；还连着线时**左边照旧画**，
+ * - 输入此刻关着的（asset 形态的图片 / 视频，`nodeFormOf`）：没有连线时左边收起；还连着线时**左边照旧画**，
  *   只是 `connectable-end=false` 落不了新线。不能直接去掉：Vue Flow 找不到边的目标连接点，
  *   会把线接到节点**顶部中点**（`Position.Top` 兜底）。
  *
@@ -34,9 +34,9 @@ import { useFlowEditor } from "@/composables/flow/editor-context"
  * 没接线的那一侧平时不显示，只在悬停 / 选中节点、或者画布上有人正在拉线时露出来
  * （规则在 vue-flow.css 的 `.flow-handle`）—— 满屏空心圆是噪音，但要拉线时得找得到。
  *
- * 能不能连由 `canvas.isValidConnection` 判（和 agent 的 connect 共用 shared 的 `resolveConnection`）。
+ * 能不能连由 `canvas.isValidConnection` 判（先过 shared 的交互门 `interactionGate`，再过和 agent 共用的 `resolveConnection`）。
  * 它挂在 **Handle 上**而不是 `<VueFlow>` 上：Vue Flow 每次同步边都会拿全局那个校验一遍，
- * 判不过的边直接不渲染 —— 而「已经有资源不再接受连入」「这对端口已经连过」这些规则拿已经存在的边去判，
+ * 判不过的边直接不渲染 —— 而「这对端口已经连过」这些规则拿已经存在的边去判，
  * 必然判自己不合法。挂在 Handle 上的只在拉线的那一刻用。
  */
 const props = defineProps<{

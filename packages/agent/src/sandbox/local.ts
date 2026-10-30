@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { ExecOptions, ExecResult, Sandbox, SandboxProvider } from './types.ts'
@@ -14,6 +14,9 @@ import type { ExecOptions, ExecResult, Sandbox, SandboxProvider } from './types.
  *    这是最容易犯、也最容易被注入利用的一条（「把环境变量打印到输出里」）。
  * 2. **误操作**：命令白名单（默认只有 `ffmpeg` / `ffprobe`）、不经 shell（参数里的 `;` `$()`
  *    没有意义）、超时强杀、输出截断、读写只限工作目录（路径穿越与符号链接逃逸都挡）。
+ *
+ * **中止即杀**：`exec` 的 `signal` 一掐就 SIGKILL 子进程；`dispose()` 先杀掉还在跑的全部子进程、
+ * 等它们真正退出，再删工作目录（docs/22 §10 验收 5：中止一轮，正在跑的 ffmpeg 立即被杀，目录清理）。
  *
  * **生产要换成 docker / k8s Job 的实现**（gVisor `runsc` 或 Kata，非 root、只读根文件系统、
  * 默认拒绝的 NetworkPolicy、资源限额），见 docs/20 §3.9 ④。接口（`types.ts`）就是为那一步留的。
@@ -42,8 +45,11 @@ const DEFAULT_PATH = '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin'
 const MAX_ARG_LENGTH = 2000
 const MAX_ARGS = 128
 
+/** dispose 杀子进程之后最多等它们退出多久 */
+const DISPOSE_KILL_WAIT_MS = 5000
+
 /** id 只允许做路径段的安全字符 —— flowId / runId 会直接拼进目录名 */
-const SAFE_SEGMENT = /^[A-Za-z0-9_-]{1,80}$/
+export const SAFE_SEGMENT = /^[A-Za-z0-9_-]{1,80}$/
 
 function within(root: string, target: string): boolean {
   const relative = path.relative(root, target)
@@ -74,6 +80,8 @@ class LocalSandbox implements Sandbox {
   private readonly allowed: ReadonlySet<string>
   private readonly pathEnv: string
   private disposed = false
+  /** 还在跑的子进程 → 它退出时兑现的 Promise；dispose 要先杀光、等光 */
+  private readonly running = new Map<ChildProcess, Promise<void>>()
 
   constructor(workdir: string, allowed: ReadonlySet<string>, pathEnv: string) {
     this.workdir = workdir
@@ -128,6 +136,8 @@ class LocalSandbox implements Sandbox {
       const problem = checkArg(arg)
       if (problem) return Promise.reject(new Error(problem))
     }
+    const { signal } = options
+    if (signal?.aborted) return Promise.reject(new Error('已中止'))
 
     return new Promise((resolve, reject) => {
       const child = spawn(command, [...args], {
@@ -157,23 +167,39 @@ class LocalSandbox implements Sandbox {
       child.stderr.on('data', collect('stderr'))
 
       let timedOut = false
+      let aborted = false
       const timer = setTimeout(() => {
         timedOut = true
         child.kill('SIGKILL')
       }, options.timeoutMs)
+      const onAbort = () => {
+        aborted = true
+        child.kill('SIGKILL')
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+
+      let exited!: () => void
+      this.running.set(child, new Promise<void>((done) => (exited = done)))
+      const settle = () => {
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+        this.running.delete(child)
+        exited()
+      }
 
       child.on('error', (err) => {
-        clearTimeout(timer)
+        settle()
         reject(new Error(`无法启动 ${command}：${err.message}`))
       })
-      child.on('close', (code, signal) => {
-        clearTimeout(timer)
+      child.on('close', (code, exitSignal) => {
+        settle()
         resolve({
           exitCode: code,
-          signal,
+          signal: exitSignal,
           stdout: Buffer.concat(out.stdout).toString('utf8'),
           stderr: Buffer.concat(out.stderr).toString('utf8'),
           timedOut,
+          aborted,
           truncated,
         })
       })
@@ -183,8 +209,36 @@ class LocalSandbox implements Sandbox {
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true
+    // 先杀、等它们真正退出（close 事件），再删目录：活着的子进程会把删掉的目录重新写出来
+    const exits = [...this.running.entries()].map(([child, exited]) => {
+      child.kill('SIGKILL')
+      return exited
+    })
+    if (exits.length > 0) {
+      // 有上限：close 要等 stdio 关掉，万一被孙进程占着管道也不能把收尾卡死
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const bound = new Promise<void>((resolve) => (timer = setTimeout(resolve, DISPOSE_KILL_WAIT_MS)))
+      await Promise.race([Promise.all(exits), bound])
+      clearTimeout(timer)
+    }
     await rm(this.workdir, { recursive: true, force: true })
   }
+}
+
+/**
+ * 在一个**已经存在**的目录上开沙箱（runner 用：驱动建好了这一轮的工作目录，runner 就是沙箱本身，
+ * ffmpeg 跑在它里面）。`dispose()` 同样先杀子进程、再删这个目录。
+ */
+export async function openLocalSandbox(
+  workdir: string,
+  options: Pick<LocalSandboxOptions, 'allowedCommands' | 'pathEnv'> = {},
+): Promise<Sandbox> {
+  await mkdir(path.join(workdir, 'tmp'), { recursive: true })
+  return new LocalSandbox(
+    await realpath(workdir),
+    new Set(options.allowedCommands ?? DEFAULT_SANDBOX_COMMANDS),
+    options.pathEnv ?? DEFAULT_PATH,
+  )
 }
 
 export class LocalSandboxProvider implements SandboxProvider {

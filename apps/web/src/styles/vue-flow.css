@@ -20,6 +20,22 @@
 }
 
 /*
+ * 节点（和多选时的选区框）平时是普通指针：Vue Flow 默认给可拖的节点 `cursor: grab`，
+ * 满画布的手型看着像「这里只能拖」。只有真在拖的时候（Vue Flow 挂 `.dragging`）才换成抓手，
+ * 松手类名摘掉就还原。拖动时连子元素一起盖掉 —— 标题的 `cursor-text` 之类不该在拖动中冒出来。
+ */
+.vue-flow__node.draggable,
+.vue-flow__nodesselection-rect {
+  cursor: default;
+}
+
+.vue-flow__node.draggable.dragging,
+.vue-flow__node.draggable.dragging *,
+.vue-flow__nodesselection-rect.dragging {
+  cursor: grabbing;
+}
+
+/*
  * 按住空格临时拖画布。此时节点已被设成不可拖，光标也得跟着改成抓手 ——
  * 否则停在节点上看着仍像「能拖节点」。范围只到 pane / node，
  * 免得连 MiniMap、控制按钮一起变。

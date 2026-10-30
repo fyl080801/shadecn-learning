@@ -1,12 +1,14 @@
 import type { Hocuspocus } from '@hocuspocus/server'
-import type * as Y from 'yjs'
-import { agentOrigin } from '@shadecn/agent/canvas'
+import * as Y from 'yjs'
+import { isAgentOrigin } from '@shadecn/shared/agent'
+import { nodesMap } from '@shadecn/shared/flow-doc'
+import { agentOrigin, observeDocTransactions, type CanvasActor } from '@shadecn/agent/canvas'
+import type { RunAuthority } from '@shadecn/agent/authority'
 import type { OpenedCanvas } from '@shadecn/agent/session'
-import { collabInstance } from '../collab/hocuspocus.ts'
+import { collabInstance, type CollabContext } from '../collab/hocuspocus.ts'
 import { roomOf } from '../collab/persistence.ts'
 import { quotaLocked } from '../collab/quota.ts'
-import { flows } from '../store/flows.ts'
-import { projects } from '../store/projects.ts'
+import { readFlowUpdate } from '../collab/flow-writer.ts'
 
 /**
  * agent 够得着画布的那一层：用 Hocuspocus 的 **direct connection** 打开活房间，
@@ -38,42 +40,65 @@ import { projects } from '../store/projects.ts'
  *
  * WebSocket 写入要过 `beforeSync` 上的写入闸门（权限）和 `beforeHandleMessage` 上的配额；
  * direct connection 两样都不经过。所以 **每一次读写之前**：
- * - **重查发起人的权限**（`canAccessFlow`，和 `requireFlowMember` 同口径）：画布被删、发起人被移出项目，
- *   下一次工具调用即被拒（docs/20 §3.9 ①）。不缓存 —— 一次工具调用两次查询，和一次 REST 请求同量级；
+ * - **用这一轮的 authority 判权**：读 `flow:read`、写 `flow:write`（`agent/authority.ts`：Grant 有效 ∩ 发起人此刻能进这张画布 ∩
+ *   画布仍在同一个项目）。失权时判权失败，**这一轮当场被叫停**（docs/22 §5 stop），这次读写也不执行。
+ *   权限检查只在 authority 里做一处（结论缓存数秒），工具层判的那一道和这里共用一次查询；
  * - **写之前查 `quotaLocked`**：房间顶到硬限就拒，一个字节都不写。写之后的字节计量不用另做：
  *   这次事务照样触发 `onChange` → `checkQuota`，超了照样 `lockRoom`。
  *
- * 不复查登录态：一轮的时长有上限（`@shadecn/agent` 的 `DEFAULT_RUN_LIMITS.timeoutMs`），而它是由一次
- * 带着有效会话的请求发起的；中途在别处登出，这一轮会跑到它自己结束为止。
+ * 不复查登录态：一轮凭的是 Grant，不是会话 —— 中途退出登录、会话过期，这一轮照常跑完（docs/22 §6）。
+ *
+ * ## 一轮一条连接（docs/20 §3.10.2）
+ *
+ * 编排层一轮只调一次 `openAgentCanvas`、收尾时 `close()`，所以这条 direct connection 在整轮里常驻：
+ * 工具调用之间不反复开关房间，常驻观察也挂在它的文档上。它算进 `getConnectionsCount()`，
+ * **房间在它关掉之前不会卸载** —— 人都走光了也一样（最多撑到一轮的时长上限）。
+ * 所以「中途掉线」只剩一种来路：进程退出时编排层还没收尾（`abortAgentRuns` 在断开协同连接之前就中止并等待各轮）。
+ * 万一真遇上（`connection.document` 已经是 null），**不偷偷重开**：重开等于换了一份文档，常驻观察的基线就断了，
+ * 这次读写直接以 {@link CONNECTION_CLOSED} 失败，工具把原因回给模型。
+ *
+ * ## 别人的改动是谁做的
+ *
+ * {@link classifyCollabOrigin} 按 Hocuspocus 4.6 的事务 origin 认人（实测见 docs/20 §3.10.2）：客户端连接上来的更新是
+ * `{ source: 'connection', connection }`，`connection.context` 就是 `onConnect` 返回的 {@link CollabContext}，
+ * 里面的 `identity` 是握手时服务端认定的用户；别的副本经 extension-redis 转发来的是 `{ source: 'redis' }`，认不出人。
  */
 
-/** 和 `requireFlowMember` 同口径：画布（及其项目）没被删，且这个人是项目成员（个人空间即所有者） */
-export async function canAccessFlow(flowId: string, userId: string): Promise<boolean> {
-  const target = await flows.locate(flowId)
-  if (!target) return false
-  return (await projects.membershipOf(target.projectId, userId)) !== null
-}
+/** 连接在这一轮收尾之前就没了（见文件头「一轮一条连接」） */
+export const CONNECTION_CLOSED = '画布连接已断开（服务正在停止，或这一轮已经结束），这次读写没有执行'
 
-/** 失权的统一说法 —— 和 404 同一个口径，不区分「画布没了」和「你不是成员了」 */
-export const ACCESS_LOST = '这张画布已不存在，或你已无权访问它'
+/**
+ * 事务 origin → 改动者。返回 null = 内务，不算谁的改动：`'gc'`（落库时清理悬空连线）、`'migrate'`（灌老数据）。
+ * 其余认不出的（redis 转发、persistence 合并回来的、别的扩展写的）一律「其他协作者」。
+ */
+export function classifyCollabOrigin(origin: unknown): CanvasActor | null {
+  if (origin === 'gc' || origin === 'migrate') return null
+  if (isAgentOrigin(origin)) return { kind: 'agent', runId: origin.runId }
+  if (typeof origin === 'object' && origin !== null && (origin as { source?: unknown }).source === 'connection') {
+    const context = (origin as { connection?: { context?: unknown } }).connection?.context as CollabContext | undefined
+    const identity = context?.identity
+    if (identity) return { kind: 'user', id: identity.id, name: identity.name }
+  }
+  return { kind: 'unknown' }
+}
 
 export interface OpenAgentCanvasOptions {
   flowId: string
+  /** 发起人（只用作连接上下文里的标签；权限由 `authority` 判） */
   userId: string
   runId: string
+  /** 这一轮的执行身份：每次读写之前判 `flow:read` / `flow:write`，打开之前判一次 `flow:read` */
+  authority: Pick<RunAuthority, 'authorize'>
   /** 测试注入；缺省取当前进程的协同实例 */
   hocuspocus?: Hocuspocus | null
 }
 
 export async function openAgentCanvas(options: OpenAgentCanvasOptions): Promise<OpenedCanvas> {
-  const { flowId, userId, runId } = options
+  const { flowId, userId, runId, authority } = options
   const room = roomOf(flowId)
 
-  const guard = async () => {
-    if (!(await canAccessFlow(flowId, userId))) throw new Error(ACCESS_LOST)
-  }
-
-  await guard()
+  // 进不了这张画布就不开房间（开 direct connection 会把库里的文档灌进内存）
+  await authority.authorize('flow:read')
   const hocuspocus = options.hocuspocus === undefined ? collabInstance() : options.hocuspocus
   if (!hocuspocus) throw new Error('协同服务没有启动，agent 无法打开画布')
 
@@ -82,18 +107,18 @@ export async function openAgentCanvas(options: OpenAgentCanvasOptions): Promise<
   const origin = agentOrigin(runId)
 
   const document = (): Y.Doc => {
-    if (!connection.document) throw new Error('画布连接已关闭')
+    if (!connection.document) throw new Error(CONNECTION_CLOSED)
     return connection.document
   }
 
   return {
     flowId,
     async read(fn) {
-      await guard()
+      await authority.authorize('flow:read')
       return fn(document())
     },
     async write(fn) {
-      await guard()
+      await authority.authorize('flow:write')
       const locked = quotaLocked(room)
       if (locked) throw new Error(`画布已达容量上限，不能再写入（${locked}）；请先删掉一些内容`)
       const doc = document()
@@ -103,6 +128,9 @@ export async function openAgentCanvas(options: OpenAgentCanvasOptions): Promise<
       }, origin)
       return result
     },
+    observe(listener) {
+      return observeDocTransactions(document(), classifyCollabOrigin, listener)
+    },
     async close() {
       /*
        * 断开时 Hocuspocus 会立刻跑一次 store（`storeDocumentHooks`，不等防抖），
@@ -110,5 +138,27 @@ export async function openAgentCanvas(options: OpenAgentCanvasOptions): Promise<
        */
       await connection.disconnect()
     },
+  }
+}
+
+/**
+ * 节点范围会话发起之前：这个节点在不在这张画布上（docs/07 §7.4，路由的 404 只能在开流之前定）。
+ *
+ * 房间在本进程里活着就读内存里的文档（刚建的节点可能还没落库：落库有 2–10 秒的防抖）；
+ * 不在就读库 —— 没人连着的房间，卸载时已经落了库。多副本时房间可能活在别的副本上，库里最多慢一个防抖窗口，
+ * 这时刚建的节点会被误判成不存在（再点一次就好），不会放过一个真不存在的节点。
+ * 只判存在，不判权限：能不能进这张画布是路由前面的 `requireFlowMember`。
+ */
+export async function flowHasNode(flowId: string, nodeId: string, hocuspocus: Hocuspocus | null = collabInstance()): Promise<boolean> {
+  const live = hocuspocus?.documents.get(roomOf(flowId))
+  if (live) return nodesMap(live).get(nodeId) instanceof Y.Map
+  const stored = await readFlowUpdate(flowId)
+  if (!stored) return false
+  const doc = new Y.Doc()
+  try {
+    Y.applyUpdate(doc, stored.update)
+    return nodesMap(doc).get(nodeId) instanceof Y.Map
+  } finally {
+    doc.destroy()
   }
 }

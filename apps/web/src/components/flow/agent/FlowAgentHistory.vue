@@ -1,8 +1,24 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
-import { ArrowLeft, LoaderCircle, MessageSquareText, Trash2 } from "@lucide/vue"
+import { ArrowLeft, MessageSquareText, Trash2 } from "@lucide/vue"
 import type { AgentConversationSummary } from "@shadecn/shared/agent"
 import { Button } from "@/components/ui/button"
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemSeparator,
+  ItemTitle
+} from "@/components/ui/item"
+import { Spinner } from "@/components/ui/spinner"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,20 +34,27 @@ import { ApiError, agentApi } from "@/lib/api"
 import { formatDateTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { useAsyncAction } from "@/composables/useAsyncAction"
+import FlowAgentOwner from "./FlowAgentOwner.vue"
 import FlowAgentTitle from "./FlowAgentTitle.vue"
 
 /**
- * 历史会话列表 —— 和对话视图在同一个面板里二选一。
+ * 历史会话列表 —— 和对话视图在同一个面板里切换。
  *
  * 由父级用 `v-if` 挂载，所以**每次打开都重新 GET 一次**，不维护本地缓存。
- * 选中某一行只 emit `select`，加载那个会话是父级（useFlowAgent）的事。
+ * 选中某一行只 emit `select`，加载那个会话是父级（useFlowAgent）的事；当前会话在跑也能切走
+ * （只断本地的读，那一轮照跑）。
+ *
+ * 项目画布上列的是这张画布上**所有人**的会话：每行带发起人和「我的」；别人的只读，没有删除按钮
+ * （服务端也会 403，docs/20 §3.9）。个人画布上只有自己的，不显示用户标识。
  */
 const props = defineProps<{
   flowId: string
   /** 当前对话视图里的会话 id；新会话为 null */
   currentId: string | null
-  /** 这个窗口有一轮在跑：不能切到别的会话（流式事件只折叠进发起它的那个） */
-  locked: boolean
+  /** 当前会话正在跑（列表里的 `running` 快照可能还没更新）：它不能删 */
+  currentRunning: boolean
+  /** 项目画布：每行显示发起人 */
+  showOwners: boolean
 }>()
 
 const emit = defineEmits<{
@@ -86,6 +109,8 @@ const { run: remove, isPending: isDeleting } = useAsyncAction(
       if (e instanceof ApiError && e.status === 409) {
         toast.error("这个会话正在运行，等它结束再删除")
         void load()
+      } else if (e instanceof ApiError && e.status === 403) {
+        toast.error("这是别人的会话，只有发起人能删除")
       } else if (e instanceof ApiError && e.status === 404) {
         toast.error("这个会话已经不存在了")
         void load()
@@ -100,43 +125,38 @@ function confirmDelete() {
   if (target.value) void remove(target.value)
 }
 
-/** 当前会话正在跑的那一轮在本窗口，列表里的 `running` 快照可能还没更新 */
 function deleteDisabled(item: AgentConversationSummary) {
-  return item.running || (props.locked && item.id === props.currentId)
+  return item.running || (props.currentRunning && item.id === props.currentId)
 }
 </script>
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col" data-testid="agent-history">
     <div class="flex items-center gap-1 border-b px-2 py-1.5">
-      <Button
-        variant="ghost"
-        size="xs"
-        aria-label="返回对话"
-        title="返回对话"
-        data-testid="agent-history-back"
-        @click="emit('back')"
-      >
-        <ArrowLeft />
-        返回
-      </Button>
+      <Tooltip>
+        <TooltipTrigger as-child>
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label="返回对话"
+            data-testid="agent-history-back"
+            @click="emit('back')"
+          >
+            <ArrowLeft />
+            返回
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>返回对话</TooltipContent>
+      </Tooltip>
       <span class="text-xs text-muted-foreground">历史会话</span>
     </div>
-
-    <p
-      v-if="props.locked"
-      class="border-b bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground"
-      data-testid="agent-history-locked"
-    >
-      这一轮结束后再切换到别的会话
-    </p>
 
     <div
       v-if="loading"
       class="flex flex-1 items-center justify-center text-sm text-muted-foreground"
       data-testid="agent-history-loading"
     >
-      <LoaderCircle class="mr-2 size-4 animate-spin" />
+      <Spinner class="mr-2" />
       正在加载…
     </div>
 
@@ -149,72 +169,84 @@ function deleteDisabled(item: AgentConversationSummary) {
       <Button variant="outline" size="sm" @click="load()">重试</Button>
     </div>
 
-    <div
-      v-else-if="items.length === 0"
-      class="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-sm text-muted-foreground"
-      data-testid="agent-history-empty"
-    >
-      <MessageSquareText class="size-6" />
-      <p>还没有历史会话</p>
-    </div>
+    <Empty v-else-if="items.length === 0" class="gap-2 p-6 md:p-6" data-testid="agent-history-empty">
+      <EmptyHeader>
+        <EmptyMedia class="mb-0 text-muted-foreground">
+          <MessageSquareText class="size-6" />
+        </EmptyMedia>
+        <EmptyTitle class="text-sm font-normal text-muted-foreground">还没有历史会话</EmptyTitle>
+      </EmptyHeader>
+    </Empty>
 
-    <ul v-else class="flex-1 divide-y overflow-y-auto" data-testid="agent-history-list">
-      <li
-        v-for="item in items"
-        :key="item.id"
-        :class="
-          cn(
-            'group relative flex items-start gap-1 px-3 py-2',
-            item.id === props.currentId ? 'bg-primary/10' : 'hover:bg-muted/50'
-          )
-        "
-        :data-conversation-id="item.id"
-        :data-current="item.id === props.currentId ? 'true' : undefined"
-      >
-        <button
-          type="button"
-          class="min-w-0 flex-1 space-y-0.5 text-left disabled:cursor-not-allowed disabled:opacity-60"
-          :disabled="props.locked && item.id !== props.currentId"
-          :title="props.locked && item.id !== props.currentId ? '这一轮结束后再切换' : undefined"
-          data-role="select"
-          @click="emit('select', item.id)"
+    <!--
+      标准的 Item 列表：ItemGroup（role=list）→ Item（role=listitem）→ ItemContent / ItemActions，行间 ItemSeparator。
+      整行可点用「拉伸按钮」：标题里的 button 靠 after:absolute after:inset-0 盖满整行（button 里放不下
+      ItemContent 这些 div，所以不把整行做成 button）；删除按钮在 ItemActions 里、z-10 压在它上面，点得到。
+    -->
+    <ItemGroup v-else class="flex-1 overflow-y-auto" data-testid="agent-history-list">
+      <template v-for="(item, index) in items" :key="item.id">
+        <ItemSeparator v-if="index > 0" />
+        <Item
+          role="listitem"
+          size="sm"
+          :class="
+            cn(
+              'group relative flex-nowrap items-start rounded-none border-0 px-3 py-2',
+              item.id === props.currentId ? 'bg-primary/10' : 'hover:bg-muted/50'
+            )
+          "
+          :data-conversation-id="item.id"
+          :data-current="item.id === props.currentId ? 'true' : undefined"
         >
-          <FlowAgentTitle :text="item.title" class="text-sm font-medium" data-role="title" />
-          <span
-            v-if="item.summary"
-            class="line-clamp-2 break-words text-xs text-muted-foreground"
-            data-role="summary"
-          >
-            {{ item.summary }}
-          </span>
-          <span class="flex items-center gap-2 text-[11px] text-muted-foreground">
-            <span data-role="time">{{ formatDateTime(item.updatedAt) }}</span>
-            <span data-role="count">{{ item.messageCount }} 条消息</span>
-            <span
-              v-if="item.running"
-              class="inline-flex items-center gap-1 text-primary"
-              data-role="running"
-            >
-              <LoaderCircle class="size-3 animate-spin" />
-              运行中
-            </span>
-          </span>
-        </button>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          class="shrink-0 opacity-0 focus-visible:opacity-100 group-hover:opacity-100"
-          :aria-label="`删除会话`"
-          :title="deleteDisabled(item) ? '运行中的会话不能删除' : '删除会话'"
-          :disabled="deleteDisabled(item)"
-          :loading="isDeleting(item.id)"
-          data-role="delete"
-          @click="askDelete(item)"
-        >
-          <Trash2 />
-        </Button>
-      </li>
-    </ul>
+          <ItemContent class="min-w-0 gap-0.5">
+            <ItemTitle class="w-full">
+              <button
+                type="button"
+                class="min-w-0 flex-1 text-left outline-none after:absolute after:inset-0 focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-ring/50"
+                data-role="select"
+                @click="emit('select', item.id)"
+              >
+                <FlowAgentTitle :text="item.title" data-role="title" />
+              </button>
+            </ItemTitle>
+            <ItemDescription v-if="item.summary" class="break-words text-xs" data-role="summary">
+              {{ item.summary }}
+            </ItemDescription>
+            <div class="flex items-center gap-2 text-[11px] text-muted-foreground">
+              <FlowAgentOwner v-if="props.showOwners" :owner="item.owner" :mine="item.mine" class="max-w-32" />
+              <span data-role="time">{{ formatDateTime(item.updatedAt) }}</span>
+              <span data-role="count">{{ item.messageCount }} 条消息</span>
+              <span v-if="item.running" class="inline-flex items-center gap-1 text-primary" data-role="running">
+                <Spinner class="size-3" />
+                运行中
+              </span>
+            </div>
+          </ItemContent>
+          <ItemActions v-if="item.mine" class="relative z-10">
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <!-- 禁用的按钮收不到鼠标事件，提示挂在外面这层 span 上，才能解释「为什么删不了」 -->
+                <span class="inline-flex">
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    class="opacity-0 focus-visible:opacity-100 group-hover:opacity-100"
+                    aria-label="删除会话"
+                    :disabled="deleteDisabled(item)"
+                    :loading="isDeleting(item.id)"
+                    data-role="delete"
+                    @click="askDelete(item)"
+                  >
+                    <Trash2 />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{{ deleteDisabled(item) ? "运行中的会话不能删除" : "删除会话" }}</TooltipContent>
+            </Tooltip>
+          </ItemActions>
+        </Item>
+      </template>
+    </ItemGroup>
 
     <AlertDialog v-model:open="confirming">
       <AlertDialogContent>

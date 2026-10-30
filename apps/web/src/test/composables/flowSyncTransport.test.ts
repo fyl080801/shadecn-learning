@@ -137,4 +137,39 @@ describe("同步层的传输", () => {
     last().context.onFatal("superseded")
     expect(sync.fatal.value).toBe("superseded")
   })
+
+  it("stateless 消息按 type 分发给订阅方；读不懂的、出错的订阅方都不会抛回连接里；换传输后订阅还在", async () => {
+    const { sync, mode } = setup("collab")
+    await flushPromises()
+    const runs = vi.fn()
+    const other = vi.fn()
+    const broken = vi.fn(() => {
+      throw new Error("订阅方自己坏了")
+    })
+    sync.onStateless("agent:runs", broken)
+    sync.onStateless("agent:runs", runs)
+    const stop = sync.onStateless("something-else", other)
+    vi.spyOn(console, "warn").mockImplementation(() => undefined)
+
+    const payload = JSON.stringify({ type: "agent:runs", flowId: "f1", runs: [] })
+    expect(() => last().context.onStateless(payload)).not.toThrow()
+    expect(runs).toHaveBeenCalledWith(payload)
+    expect(other).not.toHaveBeenCalled()
+
+    expect(() => last().context.onStateless("{坏的")).not.toThrow()
+    expect(() => last().context.onStateless(JSON.stringify([1, 2]))).not.toThrow()
+    expect(runs).toHaveBeenCalledTimes(1)
+
+    stop()
+    last().context.onStateless(JSON.stringify({ type: "something-else" }))
+    expect(other).not.toHaveBeenCalled()
+
+    // 元信息丢了又回来 = 重建传输：订阅表跟着 useFlowSync，不跟传输
+    mode.value = null
+    await flushPromises()
+    mode.value = "collab"
+    await flushPromises()
+    last().context.onStateless(payload)
+    expect(runs).toHaveBeenCalledTimes(2)
+  })
 })

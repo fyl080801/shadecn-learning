@@ -14,6 +14,7 @@ import type {
   ProjectMemberView,
   ProjectSummary
 } from "@shadecn/shared/canvas"
+import { withTooltipProvider } from "../components/with-tooltip"
 
 /**
  * 项目主页的二次确认对话框。
@@ -142,7 +143,7 @@ async function mountPage() {
   await router.push(`/projects/${PROJECT_ID}`)
   await router.isReady()
 
-  const wrapper = mount(ProjectHome, {
+  const wrapper = mount(withTooltipProvider(ProjectHome), {
     props: { projectId: PROJECT_ID },
     global: { plugins: [router] },
     attachTo: document.body
@@ -223,7 +224,7 @@ describe("项目主页的删除确认", () => {
   it("头部没有删除项目的入口 —— 删除统一在页内侧栏的 hover 图标", async () => {
     const wrapper = await mountPage()
 
-    expect(wrapper.find('button[title="删除项目"]').exists()).toBe(false)
+    expect(wrapper.find('button[aria-label="删除项目"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain("全部项目")
   })
 
@@ -256,7 +257,7 @@ describe("项目主页的删除确认", () => {
     await mountPage()
     await switchTab("成员")
 
-    const removeBtn = document.querySelector('button[title="移出项目"]') as HTMLElement
+    const removeBtn = document.querySelector('button[aria-label="移出项目"]') as HTMLElement
     removeBtn.click()
     await flushPromises()
 

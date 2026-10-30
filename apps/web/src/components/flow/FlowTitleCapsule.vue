@@ -5,6 +5,11 @@ import { Copy, Menu, Plus, Trash2, UserRoundPen, Workflow } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip"
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -58,74 +63,84 @@ const backIcon = computed(() => (store.meta?.mode === "solo" ? UserRoundPen : Wo
   <div
     class="flex h-10 items-center gap-1 rounded-full border bg-card/95 pl-1 pr-1.5 shadow-lg backdrop-blur"
   >
-    <Button
-      variant="ghost"
-      size="icon"
-      class="size-8 rounded-full"
-      :title="doc.backLabel.value"
-      @click="doc.goBack()"
-    >
-      <component :is="backIcon" class="text-primary" />
-    </Button>
+  <Tooltip>
+    <TooltipTrigger as-child>
+      <Button
+        variant="ghost"
+        size="icon"
+        class="size-8 rounded-full"
+        :aria-label="doc.backLabel.value"
+        @click="doc.goBack()"
+      >
+        <component :is="backIcon" class="text-primary" />
+      </Button>
+    </TooltipTrigger>
+    <TooltipContent side="bottom">{{ doc.backLabel.value }}</TooltipContent>
+  </Tooltip>
 
-    <Input
-      v-if="editingName"
-      v-model="nameDraft"
-      class="h-7 w-40 border-0 bg-transparent px-1 text-sm shadow-none focus-visible:ring-0"
-      autofocus
-      @blur="submitRename"
-      @keydown.enter="submitRename"
-      @keydown.esc="editingName = false"
-    />
-    <button
-      v-else
-      class="max-w-40 truncate px-1 text-sm font-medium hover:text-primary"
-      title="点击重命名"
-      @click="startRename"
-    >
-      {{ store.meta?.name ?? "无标题" }}
-    </button>
+  <Input
+    v-if="editingName"
+    v-model="nameDraft"
+    class="h-7 w-40 border-0 bg-transparent px-1 text-sm shadow-none focus-visible:ring-0"
+    autofocus
+    @blur="submitRename"
+    @keydown.enter="submitRename"
+    @keydown.esc="editingName = false"
+  />
+  <Tooltip v-else>
+    <TooltipTrigger as-child>
+      <Button
+        variant="ghost"
+        size="sm"
+        class="h-auto min-w-0 max-w-40 shrink justify-start px-1 py-0.5 text-sm font-medium hover:bg-transparent hover:text-primary dark:hover:bg-transparent"
+        @click="startRename"
+      >
+        <span class="truncate">{{ store.meta?.name ?? "无标题" }}</span>
+      </Button>
+    </TooltipTrigger>
+    <TooltipContent side="bottom">点击重命名</TooltipContent>
+  </Tooltip>
 
-    <!--
-      同步状态。没有「保存」按钮也没有「未保存」——改动进 Y.Doc 就已经同步出去了。
-      断线时才需要提醒一句，而且不是可点的：重连是自动的，用户没什么能做的。
-    -->
-    <span
-      class="whitespace-nowrap px-1 text-xs text-muted-foreground"
-      :class="doc.syncWarning.value ? 'text-destructive' : ''"
-    >
-      {{ doc.syncText.value }}
-    </span>
+  <!--
+    同步状态。没有「保存」按钮也没有「未保存」——改动进 Y.Doc 就已经同步出去了。
+    断线时才需要提醒一句，而且不是可点的：重连是自动的，用户没什么能做的。
+  -->
+  <span
+    class="whitespace-nowrap px-1 text-xs text-muted-foreground"
+    :class="doc.syncWarning.value ? 'text-destructive' : ''"
+  >
+    {{ doc.syncText.value }}
+  </span>
 
-    <DropdownMenu>
-      <DropdownMenuTrigger as-child>
-        <Button variant="ghost" size="icon" class="size-8 rounded-full">
-          <Menu />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" class="w-40">
-        <!-- 复制 / 新建都要先把未保存的落库，慢，进行中就把入口按住 -->
-        <DropdownMenuItem :disabled="doc.creatingSibling.value" @select="doc.createSibling()">
-          <Plus />
-          新建画布
-        </DropdownMenuItem>
-        <DropdownMenuItem :disabled="doc.duplicating.value" @select="doc.duplicate()">
-          <Copy />
-          复制
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          variant="destructive"
-          @select="confirmingDelete = true"
-        >
-          <Trash2 />
-          删除
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem @select="doc.goBack()">
-          {{ doc.backLabel.value }}
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+  <DropdownMenu>
+    <DropdownMenuTrigger as-child>
+      <Button variant="ghost" size="icon" class="size-8 rounded-full">
+        <Menu />
+      </Button>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent align="start" class="w-40">
+      <!-- 复制 / 新建都要先把未保存的落库，慢，进行中就把入口按住 -->
+      <DropdownMenuItem :disabled="doc.creatingSibling.value" @select="doc.createSibling()">
+        <Plus />
+        新建画布
+      </DropdownMenuItem>
+      <DropdownMenuItem :disabled="doc.duplicating.value" @select="doc.duplicate()">
+        <Copy />
+        复制
+      </DropdownMenuItem>
+      <DropdownMenuItem
+        variant="destructive"
+        @select="confirmingDelete = true"
+      >
+        <Trash2 />
+        删除
+      </DropdownMenuItem>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem @select="doc.goBack()">
+        {{ doc.backLabel.value }}
+      </DropdownMenuItem>
+    </DropdownMenuContent>
+  </DropdownMenu>
   </div>
 
   <AlertDialog v-model:open="confirmingDelete">

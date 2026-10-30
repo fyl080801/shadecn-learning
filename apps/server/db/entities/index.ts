@@ -1,8 +1,8 @@
-import { AgentConversation, AgentRun, AgentToolCall } from './agent.ts'
+import { AgentConversation, AgentGrant, AgentGrantScope, AgentRun, AgentToolCall } from './agent.ts'
 import { AuthRequest, PendingLink, Session, User, UserIdentity } from './auth.ts'
 import { Flow, FlowUserState, Project, ProjectInvite, ProjectMember } from './canvas.ts'
 
-export { AgentConversation, AgentRun, AgentToolCall } from './agent.ts'
+export { AgentConversation, AgentGrant, AgentGrantScope, AgentRun, AgentToolCall } from './agent.ts'
 export { AuthRequest, PendingLink, Session, User, UserIdentity } from './auth.ts'
 export { Flow, FlowUserState, Project, ProjectInvite, ProjectMember } from './canvas.ts'
 export { newId } from './columns.ts'
@@ -22,4 +22,6 @@ export const entities = [
   AgentConversation,
   AgentRun,
   AgentToolCall,
+  AgentGrant,
+  AgentGrantScope,
 ]

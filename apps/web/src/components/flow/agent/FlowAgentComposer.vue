@@ -20,11 +20,13 @@ import { NODE_MENTION, appendMentions, nodeMentionIdOf, useNodeMentionMenu } fro
  *   只有用户点它、或者打开面板时才聚焦。
  */
 const props = defineProps<{
-  /** 我的一轮正在跑（这个窗口发起的或接回的）：不能再发，按钮换成「停止」 */
+  /** 当前会话正在跑：不能再发，按钮换成「停止」（别的会话在跑不挡这里，docs/20 §3.10.3） */
   running: boolean
-  /** 别人发起的一轮正在跑：不能发，但也没有可停的（停不了别人的） */
-  locked?: boolean
   aborting: boolean
+  /** 不给就是画布对话框的那句 */
+  placeholder?: string
+  /** 不显示「引用选中的节点」（导演台的对话面板里画布被盖住了）。布尔 prop 缺省就是 false，所以写成反的 */
+  hideQuote?: boolean
 }>()
 
 const draft = defineModel<string>({ required: true })
@@ -52,7 +54,7 @@ function quoteSelection() {
   input.value?.focus()
 }
 
-const canSend = computed(() => !props.running && !props.locked && draft.value.trim().length > 0)
+const canSend = computed(() => !props.running && draft.value.trim().length > 0)
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key !== "Enter" || event.shiftKey) return
@@ -80,7 +82,7 @@ defineExpose({
       还会变，按钮能跟着变，自动插入只能插一次。
     -->
     <Button
-      v-if="unmentionedSelection.length > 0"
+      v-if="!props.hideQuote && unmentionedSelection.length > 0"
       variant="outline"
       size="xs"
       class="max-w-full"
@@ -91,14 +93,15 @@ defineExpose({
       引用选中的 {{ unmentionedSelection.length }} 个节点
     </Button>
 
-    <div class="rounded-md border bg-background focus-within:ring-2 focus-within:ring-ring/50">
+    <!-- 画布里的输入区不带边框也不留内边距，文字占满：外面的弹层 / 面板已经框住了它 -->
+    <div>
       <PromptInput
         ref="input"
         v-model="draft"
         :editor="editor"
         :defer-focus-on-click="true"
-        placeholder="让 agent 改画布… 输入 @ 提及节点"
-        wrapper-class="border-0 [&_[data-slate-editor]]:min-h-16 [&_[data-slate-editor]]:max-h-40 [&_[data-slate-editor]]:overflow-y-auto [&_[data-slate-editor]]:border-0 [&_[data-slate-editor]]:px-3 [&_[data-slate-editor]]:py-2 [&_[data-slate-editor]]:leading-6 [&_[data-slate-editor]]:focus:ring-0 [&_[data-slate-editor]]:focus:ring-offset-0 [&_[data-slate-editor]]:before:left-3 [&_[data-slate-editor]]:before:top-2 [&_[data-slate-editor]]:before:leading-6"
+        :placeholder="props.placeholder ?? '让 agent 改画布… 输入 @ 提及节点'"
+        wrapper-class="[&_[data-slate-editor]]:min-h-16 [&_[data-slate-editor]]:max-h-40 [&_[data-slate-editor]]:overflow-y-auto [&_[data-slate-editor]]:p-0 [&_[data-slate-editor]]:leading-6 [&_[data-slate-editor]]:before:left-0 [&_[data-slate-editor]]:before:top-0 [&_[data-slate-editor]]:before:leading-6"
         @keydown="onKeydown"
         @trigger-open="menu.onOpen"
         @trigger-search="menu.onSearch"
@@ -149,7 +152,7 @@ defineExpose({
         </template>
       </PromptInput>
 
-      <div class="flex items-center justify-between gap-2 px-2 pb-2">
+      <div class="flex items-center justify-between gap-2 pt-2">
         <span class="text-[11px] text-muted-foreground">Enter 发送 · Shift+Enter 换行</span>
         <Button
           v-if="props.running"

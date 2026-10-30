@@ -7,7 +7,7 @@ import { useFlowStore } from "@/stores/flow"
 import { useFlowCanvas } from "@/composables/flow/useFlowCanvas"
 import type { FlowPresence } from "@/composables/flow/useFlowPresence"
 import type { FlowSelection } from "@/composables/flow/useFlowSelection"
-import { collectionKey, readCollection, spreadCollection } from "@/lib/flow-collection"
+import { collectionKey, readCollection, spreadCollection } from "@shadecn/shared/flow-collection"
 import type { FlowDetail } from "@shadecn/shared/canvas"
 import { outputKey } from "@shadecn/shared/flow-doc"
 import { GRAPH_SCHEMA_VERSION, type FlowNodeRecord } from "@shadecn/shared/flow-graph"
@@ -19,7 +19,7 @@ import { buildNodeRecord } from "@shadecn/shared/flow-node-types"
  * 1. **复制什么**：type / layout / metadata / data 照抄，runtime 重置为空闲且不带产出，连线不复制；
  * 2. **「平铺分键」经得起复制**。
  *
- * `duplicateNode` 走的是「投影 → structuredClone → toYNode」，也就是说副本是从
+ * `duplicateNode`（`@shadecn/shared/flow-ops`）走的是「fromYNode → 深拷贝 → toYNode」，也就是说副本是从
  * *读出来的* 数据重建的，而不是把 Y 结构拷一份。平铺分键的值全是普通 JSON，
  * 所以这条路无损；换成嵌套 Y 类型（或 `Y.Text`）就会在这里被悄悄压扁成
  * 普通对象/字符串 —— 副本从此失去逐键合并的能力，而且没有任何报错。

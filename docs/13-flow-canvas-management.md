@@ -256,65 +256,81 @@ layout 不嵌套：拖动是最热的写路径，`position` 一直是顶层的�
 | type | 业务字段（`data`，平铺） | 「有内容 / 资源」（`hasNodeResource`） | body（内容区） | 底部输入框 |
 |---|---|---|---|---|
 | `text` 文本 | `text` 正文 | 正文非空白 | 输入框样子的正文区，双击编辑、失焦提交一次 | 没内容时有，有了就收起 |
-| `image` 图片 | `src` 图片地址 | `src` 非空白 | `<img :src>`；没有是「暂无图片」占位 + 「上传图片」按钮 | 同上 |
-| `video` 视频 | `src` 视频地址、`poster` 预览图地址 | `src` 非空白 | **当前只显示 `poster`**（不放 `<video>`，hover 播放与播放控制见 §6）；没有是占位，没有视频时带「上传视频」按钮 | 同上 |
-| `director` 导演台 | 无必填字段 | 永远没有 | 「打开导演台」按钮（先空着，不接点击） | 一直有 |
+| `image` 图片 | `src` 图片地址、`form` 形态 | `src` 非空白 | `<img :src>`；没有是「暂无图片」占位 + 「上传图片」按钮 | 看形态：generate 一直有（有了图也有），asset 没有 |
+| `video` 视频 | `src` 视频地址、`poster` 预览图地址、`form` 形态 | `src` 非空白 | 平时只显示 `poster`（不常驻 `<video>`）；鼠标移上来，播放区换成 `<video>` 盖满整块（裁法同预览图）循环播放，移出就卸掉、换回预览图（同一时刻最多一个播放器）。播放时底部浮一条控制栏：播放 / 暂停、可拖的进度、`当前 / 总时长`、声音开关；默认静音，在某个节点上打开过声音，再移上来接着有声，浏览器不让有声自动播放就退回静音。画面本身不接鼠标（按住照样拖节点），只有控制栏不拖节点。每次移上来从头播。没有预览图时占位上移上来一样能播；没有是占位，没有视频时带「上传视频」按钮 | 同上 |
+| `director` 导演台 | 无必填字段 | 永远没有 | 固定 240 × 240 正方形，中间一个「打开导演台」按钮，点了全屏打开导演台（[REQ-DIRECTOR](07-director-console.md) §2.1）；报错行接在方块下面，方块不变形；场景存在 `data` 的 `dc.*` 键里（REQ-DIRECTOR §7.2） | 一直有：回车打开导演台，并在绑定这个节点的会话里发给 agent（REQ-DIRECTOR §7.5） |
 
 **图片 / 视频节点按资源的高宽比定尺寸**（视频看预览图，它就是视频的一帧）：竖图（高 > 宽）宽固定 240、高按比例；横图（宽 > 高）高固定 240、宽按比例；方图 240 × 240。长边最多是短边的 3 倍，更长的图按 3 倍裁掉两头（`object-cover`）。节点报错时，报错行接在图片下面，图片的大小和比例不变。资源加载完量一次，结果记进节点布局的 `width` / `height` —— 下次打开（包括别的协作者）直接按这个尺寸画，不等资源加载；还没量过的节点先按宽 320、高度随内容画。这次记录**不进撤销栈**，也不算一次编辑（不续会话）；值没变不重复写。
+
+**图片 / 视频的两种形态**（`data.form`，平铺的字符串；文本、导演台没有形态）：
+
+- **generate（生成）**：有底部输入框，接受连入 —— 「这张图 / 这段视频按连进来的素材生成」。新建的节点、没有这个字段的老节点都是它。
+- **asset（素材）**：一份独立的资源，没有底部输入框，**人拖线连不进去**（左边连接点不画，落在节点身上也拒绝）。
+- **形态是存的，不是推导的**：只经 shared 的 `nodeFormOf(type, data)` 读，字段缺失一律算 generate；老数据不迁移、不按 `src` 反推。body 只按 `src` / `poster` 画，和形态无关；`hasNodeResource` 只表示「有没有素材」。
+- **只有两处会改形态，都在 `@shadecn/shared/flow-ops` 里、和引起它的改动同一个事务（一步撤销）**：
+  1. **挂上素材**（`attachAsset`：上传完成，或 agent 带着 `src` 新建）：此刻**没有连入的线**（`target` 是它的边；连出去的不算）→ 成 asset；有连入 → 保持 generate。
+  2. **被连入**（任何一条新边落到它身上，`insertEdge`）：asset → 改回 generate。人拖线连不进 asset，所以这一条在交互上只会由 agent、或下面的竞态触发。
+  - 其余都不改：删掉连入的线不会变回 asset；复制节点连形态一起抄。
+- **已知竞态（不修）**：本地上传时判定「没有连入」，同一时刻别人连了一条线进来 —— 两边合并后是「asset + 有连入」。读的一侧不回写文档；下一次连入或上传会把它纠正过来。
 
 另外两条不可新建：`process` 是认不出的 `type`（老画布、已经下线的 `image-config` / `text-input` 等旧业务类型）的兜底外观，`group` 由打组围出来。底部输入框写 `data.prompt`、回车发 `composer:submit`，眼下**没有谁消费它**（四种类型都没启用 `runnable`）。**`src` / `poster` 只是地址字符串，值是对象存储（S3）的原始地址**，见下面「资源上传」。
 
 **资源上传**。图片 / 视频节点**没有资源时**，占位上有一个上传按钮（点开文件选择，`image/*` / `video/*`）：
 
-- 文件经后端转存到 S3（见 4.7），浏览器不接触存储的 AK/SK；回包里的 `url` 原样写进节点 `data`（经 `store.mutate`，一步撤销）。
+- 文件经后端转存到 S3（见 4.7），浏览器不接触存储的 AK/SK；回包里的 `url` 原样写进节点 `data`（`store.attachAsset` → `ops.attachAsset`，一步撤销），**同一步按「有没有连入的线」定形态**（见上面「两种形态」）：没有连入的上传完就是素材，有连入的仍是生成节点。
 - **大文件分片上传**：分片大小 8 MiB（`ASSET_PART_SIZE`，前后端同一个常量）。不超过一片的一次传完；超过的切片上传 —— 浏览器最多 3 片并发，每片遇到网络错误或 5xx 重试 2 次（4xx 不重试），全部传完再拼成一个对象。中途彻底失败就放弃这次上传（S3 删掉已传的片），提示上传失败。后端同样按 S3 原生的分片上传往存储写，单个请求和后端内存都不超过一片。
 - **桶里分目录**：对象键为 `<S3_KEY_PREFIX>/assets/<uuid 前 2 位>/<uuid 第 3–4 位>/<uuid><ext>`。前缀默认 `canvas`；所有素材进同一个 `assets/` 目录，**不按项目、画布、类别分**；按 uuid 拆两级目录，文件均匀散开，不会堆在同一层。早先的键是 `projects/<projectId>/flows/<flowId>/<images|videos>/…`，那些已上传的对象和画布里存的地址原样保留、不迁移；只有新上传的进新目录。
 - **显示直接用 S3 原始地址**（`<endpoint>/<bucket>/<key>`，path-style），不经后端转发 —— 所以桶要对匿名开放读。
 - 视频：上传前先在浏览器里从本地文件截一帧（约 0.1s 处）当预览图，和视频一起传，`src` / `poster` 一次写入；截不出来（格式不认、超时）就只写 `src`，body 显示「暂无预览图」。
-- 只在空占位上有入口：已有资源的节点不提供替换 / 删除；也没有拖放上传、粘贴上传、上传进度条（按钮转圈）。
+- **上传中**：占位上不再显示「暂无…」和上传按钮，换成进度 —— 分片上传是进度条 + 百分比（按传完的片累计，拼对象前才到 100%；视频只算视频本身，预览图不计），一次传完的没有中间进度，只转圈；节点的角标区挂「上传中」。两种都有「取消」：断开正在发的请求，分片的顺带放弃这次上传（S3 删掉已传的片），节点什么都不写，不提示失败，占位回到原样。**「上传中」是本地状态，不进文档**：别的协作者看不到，刷新页面就没了（写进文档的话，上传的人中途关掉页面，节点就永远卡在上传中）。
+- 只在空占位上有入口：已有资源的节点不提供替换 / 删除；也没有拖放上传、粘贴上传。
 - 没配齐对象存储（见 `.env.example` 的 S3 段）时上传回 503、toast 提示，不影响别的功能。删节点不删 S3 上的对象。
 
-**端口与 inputs**。端口声明在注册表里：`inputs?: PortDef[]`、`outputs?: PortDef[]`，`PortDef = { id, dataType: 'text' | 'image' | 'video' | 'audio' | 'any', label?, multiple?, max? }`，另有两个看数据的钩子：`hasResource(data)`（上表第三列）和 `inputsOpen(data)`（声明了的输入此刻开不开放）。四种类型的端口：
+**端口与 inputs**。端口声明在注册表里：`inputs?: PortDef[]`、`outputs?: PortDef[]`，`PortDef = { id, dataType: 'text' | 'image' | 'video' | 'audio' | 'any', label?, multiple?, max? }`，另有一个看数据的钩子 `hasResource(data)`（上表第三列），和一个声明 `forms`（这个类型有没有 generate / asset 两种形态，只有图片 / 视频有）。四种类型的端口：
 
 | type | 输入（都可接多条、不限条数） | 输出 | 输入开放条件 |
 |---|---|---|---|
 | `text` | 无 | `text` | — |
-| `image` | `text`、`image`、`video` | `image` | 没有资源（`data.src` 为空） |
+| `image` | `text`、`image`、`video` | `image` | generate 形态；asset 形态只对**人拖线**关闭（逻辑上照样能连，连上即改回 generate） |
 | `video` | `text`、`image`、`video` | `video` | 同上 |
 | `director` | `image`、`text` | `image`（截图）、`video`（录制） | 一直开放 |
 
-**端口不画成多个连接点**：画布上每个节点最多左边一个进、右边一个出，**都不带 id**。端口只决定这一侧有没有连接点、能连什么、连上之后是哪对：**一个端口都没声明的类型**（兜底的 process、group）左右各一个，和谁都能连；**没有输入的**（text）不画左边；**输入此刻关着的**（有了资源的图片 / 视频）左边也收起（`hasSide(type, side, data)`，带着节点数据判）。已经连着的线不受影响 —— 读的一侧从不回写文档，只是新线连不进去。
+**端口不画成多个连接点**：画布上每个节点最多左边一个进、右边一个出，**都不带 id**。端口只决定这一侧有没有连接点、能连什么、连上之后是哪对：**一个端口都没声明的类型**（兜底的 process、group）左右各一个，和谁都能连；**没有输入的**（text）不画左边；**输入此刻关着的**（asset 形态的图片 / 视频）左边也收起（`hasSide(type, side, data)`，带着节点数据判形态）。已经连着的线不受影响 —— 读的一侧从不回写文档，只是新线连不进去。
 
 **连线只有一个方向：从出口（右）拉到入口（左）。** 入口 `connectable-start=false`（Vue Flow 的官方开关），从它拉不出线，也没有加号；出口 `connectable-end=false`，别的线落不到出口上。
 
-连线关系表（起点 → 终点，选中的端口对；完整的「4 种类型 × 有 / 无资源」矩阵钉在 `packages/shared/test/flow-node-types.test.ts`，shared 的 `FLOW_NODE_TYPE_DEFAULTS` 上有同一张表）：
+连线关系表（起点 → 终点，选中的端口对；完整的「4 种类型 × 资源 × 形态」矩阵 —— 逻辑门、交互门各一张 —— 钉在 `packages/shared/test/flow-node-types.test.ts`，shared 的 `FLOW_NODE_TYPE_DEFAULTS` 上有同一张表）：
 
-| 起点 \ 终点 | text | image（无资源） | video（无资源） | director |
+| 起点 \ 终点 | text | image（generate） | video（generate） | director |
 |---|---|---|---|---|
 | text | ✗ 没有输入 | text → text | text → text | text → text |
 | image | ✗ | image → image | image → image | image → image |
 | video | ✗ | video → video | video → video | ✗ 导演台不收视频 |
 | director | ✗ | image → image（截图）；连过再连落到 video → video（录制） | 同左 | image → image |
 
-终点是有资源的 image / video 一律拒绝（「已经有资源，不再接受新的连入」）；起点有没有资源不影响。
+连线有两道门，**不互斥**：
+
+- **逻辑门**（`resolveConnection`）：只按上表配端口，**资源、形态都不看**。agent 的 `connect` / `add_node(connectFrom)` 和 `flow-ops` 只过这一道，所以 agent 能连进 asset 节点，连上时它改回 generate。
+- **交互门**（shared 的 `interactionGate`，基于 `hasSide`）：人拖线时先问它 —— 终点是 asset 形态的 image / video 一律拒绝（「是素材，不接受连入」），再过逻辑门。拉线途中的 `is-valid-connection`、松手建边（含落在节点身上）、出口候选菜单都先问它。
+- 起点是什么形态、有没有资源都不影响。
 
 - **连线是唯一的事实源，端口存在边的 data 上**：`edge.sourceHandle` / `targetHandle` 一律为 `null`，`edge.data.sourcePort` / `targetPort` 存端口 id，多输入端口里的序号存 `edge.data.index`（`connectionEdgeData` 写这三项；两端都没声明端口的连线一项都不写，一侧没声明就只写有的那一侧）。序号取该端口现有最大 index + 1（`nextInputIndex`），**删线不重排** —— prompt 里写的「图片2」指的就是 index 为 2 的那条，删掉 1 号之后它不能漂成 1。两个人同时往同一个端口连线可能拿到同一个序号，排序时按边 id 兜底，结果仍然确定。
 - **`inputs` 是派生的，不存**：所有 `target === 该节点` 的可见边，按 (端口, 序号) 排序，`port` 取 `data.targetPort`，`value` 取上游 `runtime.outputs[data.sourcePort]`。服务端 / agent 一次性派生（`readNodes` → `withInputs`）；编辑器**增量**派生（`createNodeProjector`，见 3.7.3）。
-- **连哪对端口是自动选的，由 shared 的 `resolveConnection` 一个纯函数说了算**：前端拉线时的 `isValidConnection`（挂在 `Handle` 的 `is-valid-connection` 上）、拉线松手真正建边、从出口长出新节点、agent 的 `connect` / `add_node(connectFrom)` 全部调它。它的上下文除了 `typeOf` 和已有的边，还**必须**给 `dataOf(nodeId)`（节点的业务 data）—— 必填，免得哪个调用方漏掉「有资源不再接受连入」这条，人和 agent 的规则就不一样了。规则：两端存在且不是同一个节点；起点要有输出、终点要有输入（`declaresSide`），且终点的输入此刻开着（`hasSide` 带数据）；在 **(源节点的输出端口 × 目标节点的输入端口)** 里按注册表声明顺序（源在外层）找**第一对**数据类型兼容（没声明端口的一侧算一个 `any`）、目标端口没满（`multiple` 不限条数，`max` 限条数；眼下的类型都是不限条数的多输入）、且这对之间还没有线的；找不到就拒绝这条线，原因按「类型不兼容 / 端口已满 / 都连过了」报最接近能连上的那条。agent 可以用 `sourcePort` / `targetPort` 显式指定，指定了就只校验那一对。例：导演台 → 图片先落 image → image，那对连过之后再连一条就落 video → video；同一个文本连同一张图第二次被拒（这对已经有线），另一个文本照样能连进来。**它不能挂在 `<VueFlow>` 的全局 `isValidConnection` 上**：Vue Flow 每次同步边都会拿全局那个把所有边校验一遍，判不过的直接不渲染，而「端口已满」拿已有的边去判必然判自己不合法。
-- **从出口「长出」新节点**（点出口上的加号 / 从出口拉线到空白处松手）：**不自动建**，先弹一个候选类型菜单（`FlowGrowMenu.vue`，reka-ui 的 `DropdownMenuContent :reference` 锚在那个连接点 / 松手那一点，位置由它算）。菜单只列 shared 的 `connectableNodeTypes(sourceId, context)` 认可的类型 —— 按 `CREATABLE_NODE_TYPES` 的顺序、把每种当作**全新的空节点**去试 `resolveConnection`（`resolveGrowConnection`）；一种都没有时给一条置灰的「没有可连接的节点」。选一种才建：节点和线进同一个事务（`addElements`），摆位并进同一条撤销，一次撤销两样都拿掉；Esc / 点别处关掉，什么都不建。入口没有加号、拉不出线，所以没有「往回长」。
-- **拉线松手落在另一个节点身上**（没对准它左边的入口）也算连到它：和落在入口上同一条路（`connectNodes` → `resolveConnection` 选端口），连不上就提示原因、不建边，也不弹菜单；落回起点自己身上什么都不做。
+- **连哪对端口是自动选的，由 shared 的 `resolveConnection` 一个纯函数说了算**：前端拉线时的 `isValidConnection`（挂在 `Handle` 的 `is-valid-connection` 上）、拉线松手真正建边、从出口长出新节点、agent 的 `connect` / `add_node(connectFrom)` 全部调它。它的上下文除了 `typeOf` 和已有的边，还**必须**给 `dataOf(nodeId)`（节点的业务 data）—— 同一个上下文也喂交互门，必填免得哪个调用方漏掉形态这条。规则：两端存在且不是同一个节点；起点要有输出、终点要有输入（`declaresSide`）；在 **(源节点的输出端口 × 目标节点的输入端口)** 里按注册表声明顺序（源在外层）找**第一对**数据类型兼容（没声明端口的一侧算一个 `any`）、目标端口没满（`multiple` 不限条数，`max` 限条数；眼下的类型都是不限条数的多输入）、且这对之间还没有线的；找不到就拒绝这条线，原因按「类型不兼容 / 端口已满 / 都连过了」报最接近能连上的那条。agent 可以用 `sourcePort` / `targetPort` 显式指定，指定了就只校验那一对。例：导演台 → 图片先落 image → image，那对连过之后再连一条就落 video → video；同一个文本连同一张图第二次被拒（这对已经有线），另一个文本照样能连进来。**它不能挂在 `<VueFlow>` 的全局 `isValidConnection` 上**：Vue Flow 每次同步边都会拿全局那个把所有边校验一遍，判不过的直接不渲染，而「端口已满」拿已有的边去判必然判自己不合法。
+- **从出口「长出」新节点**（点出口上的加号 / 从出口拉线到空白处松手）：**不自动建**，先弹一个候选类型菜单（`FlowGrowMenu.vue`，reka-ui 的 `DropdownMenuContent :reference` 锚在那个连接点 / 松手那一点，位置由它算）。菜单只列 shared 的 `connectableNodeTypes(sourceId, context)` 认可的类型 —— 按 `CREATABLE_NODE_TYPES` 的顺序、把每种当作**全新的空节点**去试 `resolveConnection`（`resolveGrowConnection`）；一种都没有时给一条置灰的「没有可连接的节点」。选一种才建：节点和线进同一个事务（`ops.createConnectedNode`），摆位并进同一条撤销，一次撤销两样都拿掉；Esc / 点别处关掉，什么都不建。入口没有加号、拉不出线，所以没有「往回长」。
+- **拉线松手落在另一个节点身上**（没对准它左边的入口）也算连到它：和落在入口上同一条路（`connectNodes`：先过交互门 —— 落在素材身上照样拒绝 —— 再由 `resolveConnection` 选端口），连不上就提示原因、不建边，也不弹菜单；落回起点自己身上什么都不做。
 
 底部工具栏**不按这张表铺一排按钮**：类型会越加越多，一整排图标既认不出来也放不下。新增节点收成**一枚加号**，点开是一个**类型菜单**（`ADDABLE_NODE_TYPES` = `CREATABLE_NODE_TYPES`：文本 / 图片 / 视频 / 导演台，名字和图标取自注册表；分组只能从选区打组，兜底类型不可新建）。没指定类型时建哪种由 `NEW_NODE_TYPE` 说了算（`addNode()` 的默认值）—— 当前是**文本节点**（正文存在 `data.text`，名字在 `metadata.label`，所以一个人改标题、另一个人改正文不会互相盖掉）。注意它和 `FALLBACK_NODE_TYPE`（`process`，认不出的 `type` 按它渲染）是两件事，后者必须和 `fromYNode` 的兜底值一致，否则老画布会换一副样子。
 
 **业务字段为什么平铺、不再包一层 `config`**：Y.Map 的合并粒度是 key。`config` 整块存成一个 key 时，甲改 `config.prompt`、乙同时改 `config.model`，后到的那次会把整块盖掉 —— 明明改的是不同字段。平铺之后每个业务字段各占一个 key，逐键合并才真正成立（[REQ-COLLAB](04-realtime-collab.md) 4.0 那条「该不该活过刷新」的划分不变）。代价是索引签名让拼错的字段名不再报类型错，这是弱 schema 的固有代价，换来的是加一种节点不用改类型定义。
 
-**运行态是每个节点都有的一组，不是某一类节点的私有配置**：画布不只是画出来的图，节点将来要真的跑起来（生成、上传、转换），运行态属于框架层。`duplicateNode` 复制 type / layout / metadata / data，**runtime 重置为 idle 且不带产出**（复本还没跑过），**连线一条都不复制**。
+**运行态是每个节点都有的一组，不是某一类节点的私有配置**：画布不只是画出来的图，节点将来要真的跑起来（生成、上传、转换），运行态属于框架层。`duplicateNode` 复制 type / layout / metadata / data（含形态 `data.form`），**runtime 重置为 idle 且不带产出**（复本还没跑过），**连线一条都不复制**。
 
 #### 3.7.1 一批会被各改各的元素：平铺分键，而不是往 Y.Doc 里加结构
 
 功能越加越复杂，迟早有节点要装**一批元素**而不是几个标量 —— 3D 场景里的一串角色和机位、时间轴上的一堆轨道和关键帧、一个资源列表。把它们塞进 `data` 的**一个**键（`data.scene = { objects: [...] }`）会让这批元素共用一个合并单位：甲摆角色 A、乙同时摆角色 B，后到的那次整块盖掉。这和 v1 把业务字段裹在 `config` 里是同一个 bug，只是下沉了一层。
 
-**做法：`data` 仍然是一层 Y.Map、值仍然全是普通 JSON，把这批元素摊成 `<前缀>.<id>` 这样一串平级的键。** 工具在 `apps/web/src/lib/flow-collection.ts`（`collectionKey` / `readCollection` / `spreadCollection` / `collectionKeys`），写和删同笔落库走 `store.writeNode(id, 'data', { set, remove })`。
+**做法：`data` 仍然是一层 Y.Map、值仍然全是普通 JSON，把这批元素摊成 `<前缀>.<id>` 这样一串平级的键。** 工具在 `@shadecn/shared/flow-collection`（`packages/shared/src/flow-collection.ts`，前端和 agent 共用；`collectionKey` / `readCollection` / `spreadCollection` / `collectionKeys`），写和删同笔落库走 `store.writeNode(id, 'data', { set, remove })`。
 
 **为什么不是把 `scene` 变成嵌套的 `Y.Map`**（那样合并粒度最细，一次改动的 update 只有几十字节）：因为它把**结构**搬进了 CRDT 层。Y.Doc 没有版本号，新老客户端会同时往同一个 key 上写**不同的类型**——实测两个方向都跑过：赢家由 clientID 决定（等于随机），输家的整棵子树直接消失，而且输的那一方的代码当场 `TypeError`。这不是「读不懂就透传」能兜住的：读时兼容只对**形状**有效，对**类型**无效。平铺分键则对 CRDT 层完全不可见——`toYNode` / `fromYNode`（含服务端那份）一行不用改，`duplicateNode` 照跑，服务端连知道都不用知道，老客户端读到一堆不认识的键原样透传。所谓 schema 退化成一个**命名约定**，而命名约定的版本兼容就是普通的读时兼容（换前缀就两个都认一段时间）。
 
@@ -384,7 +400,7 @@ const title = useDraftField<string>({
 
 1. **短文本、原子语义**（标题 / 名字 / 标签）—— 现状就够，blur 提交。编辑窗口通常几秒。
 2. **长文本、编辑时长以分钟计**（prompt / 说明）—— 加**停手防抖提交**（如 800ms），把崩溃损失从「整段」压到「最后一句」。代价要认：防抖间隔 > `captureTimeout` 的 400ms，所以每次提交都新起一条撤销，两分钟输入 ≈ 150 条。**持久化频率和撤销粒度此消彼长**，选哪头是产品判断，没有两全的写法。
-3. **真要字符级合并**（两人同时写同一段）—— 平铺分键做不到，它只能整段覆盖，那是 `Y.Text` 的活。按 3.7.1 那条硬规则，它必须是**一个全新的、从来没 plain 过的 key**。**而且 `duplicateNode` 必须一起改**：它走「投影 → `structuredClone` → `toYNode`」（`useFlowCanvas.ts` 的 `duplicateNode`），投影里 `Y.Text` 已经 `toJSON()` 成字符串了，写回去就是个 plain string —— **复制出来的副本会悄无声息地失去字符级合并**。
+3. **真要字符级合并**（两人同时写同一段）—— 平铺分键做不到，它只能整段覆盖，那是 `Y.Text` 的活。按 3.7.1 那条硬规则，它必须是**一个全新的、从来没 plain 过的 key**。**而且 `duplicateNode` 必须一起改**：它走「读出来（`fromYNode`）→ 深拷贝 → `toYNode`」（`@shadecn/shared/flow-ops` 的 `duplicateNode`），读出来的 `Y.Text` 已经 `toJSON()` 成字符串了，写回去就是个 plain string —— **复制出来的副本会悄无声息地失去字符级合并**。
 
 ##### 有些东西连 awareness 都不用进
 
@@ -400,7 +416,7 @@ const title = useDraftField<string>({
 
 **交给 Vue Flow 的形状**（`apps/web/src/components/flow/node-view.ts` 的 `toVueFlowNode`）：layout 摊到顶层，其余四组装进 Vue Flow 的 `data`（`{ metadata, data, runtime, inputs }`）。映射按投影对象 WeakMap 缓存，所以投影保住的引用到 Vue Flow 这一层也还在；布局键一律显式写出（没有就是 `undefined`），因为 Vue Flow 合并节点用 `Object.assign`，缺键会留着旧值。`useFlowCanvas` 的 `localDragging` 冻结照旧：本地拖动期间整个数组原样交回上一轮的（`computed` 的 `previous`）。
 
-**节点 = 一个宿主 + 一份类型声明 + 若干能力**（详见 [REQ-NODEKIT](21-node-kit.md)）。Vue Flow 收到的每个 type 都是同一个组件 `node-kit/NodeHost.vue`；「这种节点长什么样」写在 `node-types.ts` 的类型声明里（`view`：body 组件、卡片还是框、尺寸、选中样式、底色、兜底名），「这种节点能做什么」是它按名字启用的能力（`features`）：框外名字 + 双击改名（`rename`）、复制 / 删除（`duplicate` / `delete`，单选时浮在上方的工具条）、连接点（`connectable`，挂 `FlowNodeHandles`：最多左右各一个、不带 id，按端口声明决定画不画哪一侧）、`runtime.status` 的展示（`status`：processing 一圈高亮 + 「运行中」角标；error 红框 + `runtime.error`）。宿主只管区域的几何与露出规则和选中态，**不认识任何具体类型或能力**，没有 `if (type === 'group')` —— 分组的差异全在它的声明里（`frame` 外壳、不启用连线 / 复制 / 删除、启用解组 / 拉伸 / 顶部把手）。公共逻辑在 `useFlowNode(id)`（`apps/web/src/composables/flow/useFlowNode.ts`，部件里经 `useNodePart().node` 拿到）：**直接读 store**（`store.nodeById`）而不是 Vue Flow 塞进来的 `data` prop —— 后者在本地拖动时是冻结的；按组写走 `store.writeNode`，草稿走 `useDraftField`。四种可新建的类型各自往 `body` 区登记自己的内容展示（`TextBody` / `ImageBody` / `VideoBody` / `DirectorBody`），往 `composer` 区按类型登记底部输入框（`definePromptComposerPart`，文本 / 图片 / 视频有了内容就收起，导演台一直有），编辑模式来自能力 `edit-prompt`。`output-preview` / `runnable` 仍是登记着的通用能力，眼下没有类型启用。
+**节点 = 一个宿主 + 一份类型声明 + 若干能力**（详见 [REQ-NODEKIT](21-node-kit.md)）。Vue Flow 收到的每个 type 都是同一个组件 `node-kit/NodeHost.vue`；「这种节点长什么样」写在 `node-types.ts` 的类型声明里（`view`：body 组件、卡片还是框、尺寸、选中样式、底色、兜底名），「这种节点能做什么」是它按名字启用的能力（`features`）：框外名字 + 双击改名（`rename`）、复制 / 删除（`duplicate` / `delete`，单选时浮在上方的工具条）、连接点（`connectable`，挂 `FlowNodeHandles`：最多左右各一个、不带 id，按端口声明决定画不画哪一侧）、`runtime.status` 的展示（`status`：processing 一圈高亮 + 「运行中」角标；error 红框 + `runtime.error`）。宿主只管区域的几何与露出规则和选中态，**不认识任何具体类型或能力**，没有 `if (type === 'group')` —— 分组的差异全在它的声明里（`frame` 外壳、不启用连线 / 复制 / 删除、启用解组 / 拉伸 / 顶部把手）。公共逻辑在 `useFlowNode(id)`（`apps/web/src/composables/flow/useFlowNode.ts`，部件里经 `useNodePart().node` 拿到）：**直接读 store**（`store.nodeById`）而不是 Vue Flow 塞进来的 `data` prop —— 后者在本地拖动时是冻结的；按组写走 `store.writeNode`，草稿走 `useDraftField`。四种可新建的类型各自往 `body` 区登记自己的内容展示（`TextBody` / `ImageBody` / `VideoBody` / `DirectorBody`），往 `composer` 区按类型登记底部输入框（`definePromptComposerPart`，文本有了正文就收起，图片 / 视频看形态 —— generate 有、asset 没有 —— 导演台一直有），编辑模式来自能力 `edit-prompt`。`output-preview` / `runnable` 仍是登记着的通用能力，眼下没有类型启用。
 
 ### 3.8 边（`FlowEdge`）
 
@@ -632,6 +648,7 @@ model FlowUserState {
 - 进入时 `GET /api/flows/:id` 取的是**文档元信息 + 我自己的 `userState`**；画布内容随即由 `flow:<id>` 房间的首次同步送达（见 [REQ-COLLAB §4](04-realtime-collab.md)）。视口优先用 `userState.viewport`，没有才退到 `graph.viewport` 兜底，再没有就 `fitView`。
 - 沿用 [REQ-FLOW](09-flow-chart.md) 的全部交互（滚轮平移、Ctrl+滚轮以光标为锚点缩放、自定义节点、连线）。
 - 空白处左键的行为由底部工具栏的**指针模式**决定（框选 / 拖动画布），中键任何时候都能拖画布。此外**按住空格键**是临时的拖动手势：按住期间左键在哪按下（含节点上）都是平移画布、光标变抓手、节点暂时不可拖，松开立刻回到原来的模式 —— 模式按钮的高亮不跟着变，因为它是手势不是模式。
+- 节点（以及多选后的选区框）平时是普通指针，不是手型；按住拖动的过程中才变抓手，松手还原。
 #### 4.4.1 悬浮胶囊工具条（左上角）
 
 页面没有应用菜单，编辑器自己的入口收在**左上角一枚悬浮胶囊**里，浮在画布之上（圆角、半透明背景 + 模糊、与画布内容有明显层次）。从左到右三段：
@@ -651,7 +668,7 @@ model FlowUserState {
 
 - 四个角的分工：左上标题胶囊 + 在场头像；左下视图控件；右上画布 Agent 对话框（对话气泡按钮，面板往下展开；左边一枚分享按钮，目前只是占位、没有动作）；底部正中工具栏。
 - 视图控件和底部工具栏同一种圆角胶囊：只有缩放（`−` 百分比 `+`，百分比可直接输入，回车 / 失焦生效、Esc 放弃）、全览、自动布局、小地图显隐四样；小地图**默认不显示**，打开后是挂在开关按钮正上方的浮层（Popover），点外面 / Esc 不收起，只有再点按钮才关。**撤销 / 重做没有按钮**，只走快捷键。视图控件除自动布局外只管「怎么看」，胶囊只放「这张画布是什么、拿它怎么办」，画布内的编辑动作归底部工具栏。
-- **自动布局**（视图控件里的按钮，`canvas.autoLayout()`）：dagre 横向分层（`LR`，纯函数 `apps/web/src/lib/flow-layout.ts`），**只排顶层节点** —— 分组整体当一个框，连到组内节点的线按它所在的分组计。它是一次内容修改：所有新位置一笔 `moveNodes` 写进文档，**一次布局 = 一条撤销**，照常同步给协作者；排完 `fitAll` 全览。本地正拖着节点时不排。
+- **自动布局**（视图控件里的按钮，`canvas.autoLayout()`）：dagre 横向分层（`LR`，纯函数在 `@shadecn/shared/flow-layout`，agent 的 `auto_layout` 用同一个），**只排顶层节点** —— 分组整体当一个框，连到组内节点的线按它所在的分组计。它是一次内容修改：所有新位置一笔 `moveNodes` 写进文档，**一次布局 = 一条撤销**，照常同步给协作者；排完 `fitAll` 全览。本地正拖着节点时不排。
 - 底部工具栏右侧、胶囊外面单独一枚深色圆钮是 agent 快捷输入（✨ 图标；右上角对话框的按钮是浅色的对话气泡，两者一深一浅好区分）：弹出一个和对话框同款的输入框（含 @ 提及），发出去就**开一个新会话**执行，右上角对话框随之展开显示这一轮；已有一轮在跑时锁住发送。两个入口共用同一份 agent 状态（`composables/flow/agent-panel.ts`，由 `FlowEditor.vue` provide）。
 - **没有属性面板**：点节点不弹出任何侧栏，选中只是选中。节点的编辑入口都长在节点自己身上 —— 双击名字改名，选中时节点上方浮出工具栏（复制 / 删除）。原来那块右侧面板（label / description / config 的表单）连同「面板展开时右上角控件组左移让位」的布局一起去掉了：画布本身才是主角，为一个表单常驻挤掉三分之一画面不划算；真要编辑 `data.config` 这类结构化字段，将来按 `kind` 出**就地**的编辑形态，而不是把画布推到一边。
 - **选中是「单独选中」**：点一个、拖一个、框选一片、点空白清空，全由 Vue Flow 那一份选中态说了算，我们只投影出「现在轮到哪个节点」（恰好选中一个时才有值）。所以节点工具栏同时**最多只出现一个** —— 上面的复制 / 删除都是对单个节点说的，框选一片时不出现。自己再维护一份选中态是不行的：拖动一个节点也会换选中态，而拖动之后那次 click 被 d3-drag 吞掉，于是「先点 A 再拖 B」会让两个节点头上同时挂着工具栏。
@@ -908,8 +925,8 @@ store 的职责边界：
 - 各节点类型的定制表单与字段合法性校验（服务端只透传，不解释业务字段）。
 - **把节点拖进（拖出）已有分组时自动归属**（reparent）：数据上 `parentNode` / `extent` 已经通了，分组也能由框选打组产生、能拉伸、能改名、删框留节点，缺的只是拖动时的命中判定。
 - 导入导出、导出图片。
-- 视频节点 hover 播放与播放控制（当前 body 只显示 `poster`，见 §3.7）。
-- 资源的替换 / 删除、拖放与粘贴上传、上传进度条与断点续传（刷新页面后接着传）、S3 上孤儿对象的清理（删节点、撤销上传都不删对象；客户端半路消失留下的残片靠桶的生命周期规则清）、私有桶 + 签名读地址、浏览器直传 S3（预签名地址）。
+- 视频节点的全屏 / 倍速 / 音量大小，以及移出后记住播放位置（当前 hover 播放与控制栏见 §3.7）。
+- 资源的替换 / 删除、拖放与粘贴上传、断点续传（刷新页面后接着传）、协作者看到别人的上传进度、S3 上孤儿对象的清理（删节点、撤销上传都不删对象；客户端半路消失留下的残片靠桶的生命周期规则清）、私有桶 + 签名读地址、浏览器直传 S3（预签名地址）。
 - 跨画布、跨项目的节点复制粘贴；画布在项目间移动。
 
 ## 7. 待确认事项

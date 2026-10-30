@@ -8,9 +8,11 @@ import { nodesMap } from "@shadecn/shared/flow-doc"
 import { useAuth } from "@/lib/auth"
 import type { FlowMode } from "@shadecn/shared/canvas"
 import { createCollabTransport } from "./collab"
+import { createStatelessRouter } from "./stateless"
 import type { FatalClose, FlowTransport } from "./types"
 
 export { classifyClose, parseStoreState } from "./collab"
+export { statelessTypeOf, type StatelessHandler } from "./stateless"
 export type { FatalClose, FlowTransport } from "./types"
 
 /**
@@ -100,6 +102,12 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
 
   const connected = computed(() => linked.value && online.value)
   const session = shallowRef<FlowSyncSession | null>(null)
+
+  /**
+   * 服务端 stateless 旁路消息的订阅表，整个 `useFlowSync` 一份 —— 跨传输重建、跨换画布都不变，
+   * 订阅方只订一次。同步层只按 `type` 分发，不认识载荷（agent 的任务列表等由订阅方自己解析、自己比对 flowId）。
+   */
+  const stateless = createStatelessRouter()
 
   /**
    * 本地缓存（IndexedDB）用不了。
@@ -233,7 +241,8 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
         // 自己把这张画布删了，之后被服务端掐掉是预期之内的，不是新闻
         if (leaving) return
         fatal.value = reason
-      }
+      },
+      onStateless: stateless.dispatch
     }
 
     transport = createCollabTransport(context)
@@ -298,6 +307,11 @@ export function useFlowSync(flowId: Ref<string>, mode: Ref<FlowMode | null>) {
     connected,
     session,
     fatal,
+    /**
+     * 订阅某一类 stateless 消息（按载荷的 `type`），返回退订函数。
+     * 回调收到原文、自己防御着解析；抛出的异常被分发层兜住，不会打断连接的消息循环。
+     */
+    onStateless: stateless.on,
     /**
      * 服务端收到了但**存不进库**。
      *

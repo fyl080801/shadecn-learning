@@ -1,12 +1,14 @@
 import type { HttpBindings } from '@hono/node-server'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { AGENT_GATEWAY_PATH } from '@shadecn/agent/protocol'
 import type { AuthVariables } from './auth/middleware.ts'
 import { requireAuth, withSession } from './auth/middleware.ts'
 import type { ProjectVariables } from './auth/project.ts'
 import { appOrigin, isAllowedOrigin, isApiPath } from './config.ts'
 import { attachPageGuard } from './frontend/guard.ts'
 import { httpLogger } from './logger/index.ts'
+import { agentGateway } from './routes/agent-gateway.ts'
 import { auth } from './routes/auth.ts'
 import { avatars } from './routes/avatars.ts'
 import { collab } from './routes/collab.ts'
@@ -40,8 +42,11 @@ app.use(
 // 先解析会话，再决定拦不拦。页面也要判登录，所以挂在 '*' 上而不只是 /api/*
 app.use('*', withSession)
 
-/** 不需要登录的接口：健康检查和登录流程自己 */
-const PUBLIC_API = ['/api/health', '/api/auth']
+/**
+ * 不需要登录的接口：健康检查、登录流程自己，以及 agent 网关 ——
+ * 它不认会话、只认 run 短令牌（沙箱里的 runner 没有、也不该有 cookie），鉴权在网关里做（`routes/agent-gateway.ts`）
+ */
+const PUBLIC_API = ['/api/health', '/api/auth', AGENT_GATEWAY_PATH]
 
 app.use('/api/*', (c, next) => {
   const path = c.req.path
@@ -58,6 +63,7 @@ const routes = app
   .route('/api/invites', invites)
   .route('/api/flows', flows)
   .route('/api/collab', collab)
+  .route(AGENT_GATEWAY_PATH, agentGateway)
 
 // 页面侧的闸门：/login 由服务端渲染，其余非 /api 的请求未登录一律不下发
 attachPageGuard(app)

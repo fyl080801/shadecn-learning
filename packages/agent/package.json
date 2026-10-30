@@ -5,12 +5,21 @@
   "type": "module",
   "exports": {
     "./canvas": "./src/canvas.ts",
+    "./authority": "./src/authority.ts",
     "./tools": "./src/tools.ts",
     "./events": "./src/events.ts",
     "./model": "./src/model.ts",
+    "./media": "./src/media.ts",
     "./session": "./src/session.ts",
     "./store": "./src/store.ts",
-    "./sandbox": "./src/sandbox/index.ts"
+    "./protocol": "./src/protocol.ts",
+    "./token": "./src/token.ts",
+    "./gateway": "./src/gateway.ts",
+    "./runner": "./src/runner/index.ts",
+    "./runner/main": "./src/runner/main.ts",
+    "./sandbox": "./src/sandbox/index.ts",
+    "./sandbox/drivers": "./src/sandbox/drivers/index.ts",
+    "./testing": "./src/testing.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

@@ -10,6 +10,11 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
 import { Separator } from "@/components/ui/separator"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip"
 import { ADDABLE_NODE_TYPES } from "@/components/flow/node-types"
 import FlowAgentQuickPrompt from "@/components/flow/agent/FlowAgentQuickPrompt.vue"
 import { useFlowEditor } from "@/composables/flow/editor-context"
@@ -37,24 +42,34 @@ const { canvas } = useFlowEditor()
 <template>
   <div class="absolute bottom-6 left-1/2 z-10 -translate-x-1/2">
     <div class="flex items-center gap-1 rounded-full border bg-card/95 p-1.5 shadow-lg backdrop-blur">
-      <Button
-        :variant="canvas.interactionMode.value === 'select' ? 'secondary' : 'ghost'"
-        size="icon"
-        class="size-8 rounded-full"
-        title="框选（左键拖拽拉框；按住空格可临时拖动画布）"
-        @click="canvas.setInteractionMode('select')"
-      >
-        <MousePointer2 />
-      </Button>
-      <Button
-        :variant="canvas.interactionMode.value === 'pan' ? 'secondary' : 'ghost'"
-        size="icon"
-        class="size-8 rounded-full"
-        title="拖动画布（左键拖拽平移）"
-        @click="canvas.setInteractionMode('pan')"
-      >
-        <Hand />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger as-child>
+          <Button
+            :variant="canvas.interactionMode.value === 'select' ? 'secondary' : 'ghost'"
+            size="icon"
+            class="size-8 rounded-full"
+            aria-label="框选"
+            @click="canvas.setInteractionMode('select')"
+          >
+            <MousePointer2 />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">框选（左键拖拽拉框；按住空格可临时拖动画布）</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger as-child>
+          <Button
+            :variant="canvas.interactionMode.value === 'pan' ? 'secondary' : 'ghost'"
+            size="icon"
+            class="size-8 rounded-full"
+            aria-label="拖动画布"
+            @click="canvas.setInteractionMode('pan')"
+          >
+            <Hand />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">拖动画布（左键拖拽平移）</TooltipContent>
+      </Tooltip>
 
       <Separator
         orientation="vertical"
@@ -62,35 +77,46 @@ const { canvas } = useFlowEditor()
       />
 
       <!-- 吸附（网格 + 辅助线）没有开关：始终生效，见 useFlowSnapping -->
-      <DropdownMenu>
-        <DropdownMenuTrigger as-child>
-          <Button
-            variant="ghost"
-            size="icon"
-            class="size-8 rounded-full data-[state=open]:bg-accent"
-            title="添加节点"
-          >
-            <Plus />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          side="top"
-          align="center"
-          :side-offset="12"
-          class="w-44"
-        >
-          <DropdownMenuLabel class="text-xs text-muted-foreground">添加节点</DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            v-for="def in ADDABLE_NODE_TYPES"
-            :key="def.type"
-            @select="canvas.addNode(def.type)"
-          >
-            <component :is="def.icon" />
-            {{ def.label }}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <!--
+        Tooltip 必须在最外层、菜单整个放进它触发器的 span 里：reka-ui 的触发器就近找外层浮层登记锚点，
+        要是 DropdownMenu 套在 Tooltip 外面，菜单触发器会登记到 Tooltip 上，菜单没锚点、被定位到屏幕外。
+      -->
+      <Tooltip>
+        <TooltipTrigger as-child>
+          <span class="inline-flex">
+            <DropdownMenu>
+              <DropdownMenuTrigger as-child>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-8 rounded-full data-[state=open]:bg-accent"
+                  aria-label="添加节点"
+                >
+                  <Plus />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                side="top"
+                align="center"
+                :side-offset="12"
+                class="w-44"
+              >
+                <DropdownMenuLabel class="text-xs text-muted-foreground">添加节点</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  v-for="def in ADDABLE_NODE_TYPES"
+                  :key="def.type"
+                  @select="canvas.addNode(def.type)"
+                >
+                  <component :is="def.icon" />
+                  {{ def.label }}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top">添加节点</TooltipContent>
+      </Tooltip>
     </div>
 
     <div class="absolute left-full top-1/2 ml-3 -translate-y-1/2">

@@ -1,4 +1,4 @@
-import { computed, nextTick, ref, shallowRef, toRaw, watch, watchEffect } from "vue"
+import { computed, nextTick, ref, shallowRef, watch, watchEffect } from "vue"
 import { until, useEventListener } from "@vueuse/core"
 import { toast } from "vue-sonner"
 import {
@@ -14,30 +14,26 @@ import {
   type XYPosition
 } from "@vue-flow/core"
 import { createId } from "@/lib/id"
-import { layoutHorizontal } from "@/lib/flow-layout"
 import { elementKey, type PresencePoint } from "@/lib/presence"
 import { buildFlowNode, flowNodeTypeOf, GROUP_NODE_TYPE, NEW_NODE_TYPE } from "@/components/flow/node-types"
 import { toVueFlowNode } from "@/components/flow/node-view"
 import {
   connectableNodeTypes,
-  connectionEdgeData,
+  DEFAULT_EDGE_TYPE,
+  interactionGate,
   resolveConnection,
-  resolveGrowConnection,
   type ConnectionCandidate,
   type ConnectionContext,
-  type GrowCandidate,
-  type ResolvedPorts
+  type GrowCandidate
 } from "@shadecn/shared/flow-node-types"
+import { groupFrameAround, planAutoLayout } from "@shadecn/shared/flow-layout"
+import { FlowOpError } from "@shadecn/shared/flow-ops"
 import { isEditableTarget } from "./editable"
 import type { FlowPresence } from "./useFlowPresence"
 import type { FlowSelection } from "./useFlowSelection"
 import { useFlowSnapping } from "./useFlowSnapping"
 import type { useFlowStore } from "@/stores/flow"
-import {
-  type FlowEdge,
-  type FlowNode,
-  type FlowNodeRecord
-} from "@shadecn/shared/flow-graph"
+import { type FlowNode } from "@shadecn/shared/flow-graph"
 
 type FlowStore = ReturnType<typeof useFlowStore>
 
@@ -50,7 +46,7 @@ export type FlowInteractionMode = "select" | "pan"
  * `smoothstep` / `step` 那种折线会带直角，这里不用；新连的线存这个值，
  * 老数据里存着折线类型的边在渲染时也按这个覆盖（见 `edges`）。
  */
-export const FLOW_EDGE_TYPE = "default"
+export const FLOW_EDGE_TYPE = DEFAULT_EDGE_TYPE
 
 /** 连续新增时的层叠偏移，避免节点完全重叠（第一个仍然正好在中心） */
 const CASCADE_STEP = 24
@@ -482,31 +478,15 @@ export function useFlowCanvas(
     return { kind: "pane" }
   }
 
-  /**
-   * 建一条边：handle 一律为空（节点的连接点不带 id），端口和序号写进 `data`
-   * （`connectionEdgeData`：有目标端口才有序号，取该端口现有最大 + 1，删线不重排）。
-   */
-  function buildEdge(source: string, target: string, ports: ResolvedPorts): FlowEdge {
-    return {
-      id: createId("e"),
-      source,
-      target,
-      sourceHandle: null,
-      targetHandle: null,
-      type: FLOW_EDGE_TYPE,
-      animated: false,
-      data: connectionEdgeData(ports, target, store.edges)
-    }
-  }
-
   /** 校验时节点的类型从 store 查（文档的投影），不从 Vue Flow 那份查 */
   function typeOfNode(id: string): string | undefined {
     return store.nodeById.get(id)?.type
   }
 
   /**
-   * 喂给 shared 连线规则的画布：类型、业务 data（图片 / 视频有资源就不再接受连入）、已有的边。
-   * agent 的 `connect` 喂的是同样三样（`packages/agent/src/tools.ts` 的 `docLookup`）。
+   * 喂给 shared 连线规则的画布：类型、业务 data（交互门看形态：asset 的图片 / 视频不接受拖线）、已有的边。
+   * 拉线途中的校验和候选菜单从投影读；真正建边时 `@shadecn/shared/flow-ops` 从文档拼同样三样
+   * （`docConnectionContext`，agent 也用它），口径一致。
    */
   function connectionContext(): ConnectionContext {
     return {
@@ -516,9 +496,15 @@ export function useFlowCanvas(
     }
   }
 
-  /** 这两个节点之间连的是哪对端口；不能连给出原因。规则全在 shared 的 `resolveConnection` */
+  /**
+   * 人拖的这条线能不能连、连哪对端口；不能连给出原因。先过交互门（asset 形态的图片 / 视频不接受拖进来的线，
+   * shared 的 `interactionGate`），再按 shared 的 `resolveConnection` 选端口。
+   */
   function resolve(candidate: ConnectionCandidate) {
-    return resolveConnection(candidate, connectionContext())
+    const context = connectionContext()
+    const gate = interactionGate(candidate, context)
+    if (!gate.ok) return gate
+    return resolveConnection(candidate, context)
   }
 
   /**
@@ -536,14 +522,23 @@ export function useFlowCanvas(
     connectNodes(connection.source, connection.target)
   })
 
-  /** 松手真正建边（落在入口上、或落在节点身上）。这一刻再选一次端口：拉线期间别人可能已经占掉了那个端口 */
+  /**
+   * 松手真正建边（落在入口上、或落在节点身上）。这一刻再选一次端口：拉线期间别人可能已经占掉了那个端口。
+   * 先问交互门（落在 asset 节点身上也一样被拒）；选端口、建边在 `store.connect`（→ `ops.connect`，逻辑门）里，
+   * 连不上它抛 `FlowOpError`，这里提示原因。
+   */
   function connectNodes(source: string, target: string) {
-    const verdict = resolve({ source, target })
-    if (!verdict.ok) {
-      toast.error(verdict.reason)
+    const gate = interactionGate({ target }, connectionContext())
+    if (!gate.ok) {
+      toast.error(gate.reason)
       return
     }
-    store.addEdge(buildEdge(source, target, verdict))
+    try {
+      store.connect(source, target)
+    } catch (error) {
+      if (!(error instanceof FlowOpError)) throw error
+      toast.error(error.message)
+    }
   }
 
   // —— 视口 ——
@@ -652,7 +647,8 @@ export function useFlowCanvas(
    * 横向自动布局（从左到右，dagre），排完全览一次。
    *
    * 只排**顶层**节点：分组框连同里面的节点当成一个盒子整体挪（子节点的坐标相对分组，不用动）；
-   * 连到组内节点的线按它所在的顶层分组计。尺寸用 Vue Flow 实测的 `dimensions`。
+   * 连到组内节点的线按它所在的顶层分组计 —— 这些规则在 shared 的 `planAutoLayout`（agent 的
+   * `ops.autoLayout` 也走它）；这里只把尺寸换成 Vue Flow 实测的 `dimensions`。
    *
    * 是一次内容修改：所有位置一笔 `moveNodes` 写进文档 = 一条撤销，照常广播给协作者。
    * 本地正拖着节点时不排（拖完那次提交会把位置覆盖回去）。
@@ -660,34 +656,18 @@ export function useFlowCanvas(
   async function autoLayout() {
     if (localDragging.value) return
 
-    const topLevel = getNodes.value.filter((node) => !node.parentNode)
-    if (topLevel.length === 0) return
+    if (!getNodes.value.some((node) => !node.parentNode)) return
 
-    /** 节点所在的顶层祖先（自己就是顶层时返回自己） */
-    const rootOf = (id: string): string => {
-      let node = findNode(id)
-      while (node?.parentNode) {
-        const parent = findNode(node.parentNode)
-        if (!parent) break
-        node = parent
-      }
-      return node?.id ?? id
-    }
-
-    const positions = layoutHorizontal(
-      topLevel.map((node) => ({
+    const moved = planAutoLayout(
+      getNodes.value.map((node) => ({
         id: node.id,
+        parentNode: node.parentNode,
+        position: node.position,
         width: node.dimensions.width,
         height: node.dimensions.height
       })),
-      getEdges.value.map((edge) => ({ source: rootOf(edge.source), target: rootOf(edge.target) }))
+      getEdges.value.map((edge) => ({ source: edge.source, target: edge.target }))
     )
-
-    const moved = new Map<string, { x: number; y: number }>()
-    for (const node of topLevel) {
-      const next = positions.get(node.id)
-      if (next && (next.x !== node.position.x || next.y !== node.position.y)) moved.set(node.id, next)
-    }
 
     if (moved.size > 0) {
       store.separateUndo()
@@ -743,35 +723,16 @@ export function useFlowCanvas(
   // —— 复制节点 ——
 
   /**
-   * 复制一个节点：类型、布局（错开一点）、metadata、业务 data 照抄；**运行态重置为空闲、不带产出**
-   * （复本还没跑过，带着原件的产出会让下游以为它已经有结果了）；**连线一条都不复制**。
-   *
-   * 深拷贝 metadata / data：里面可能有嵌套对象（UI 状态、平铺分键的元素），
-   * 浅拷贝会让两个节点在投影里共用同一份，改一个看着两个都变了。
+   * 复制一个节点，错开一点放。复制什么（运行态重置为空闲、不带产出，连线一条都不复制，深拷贝）
+   * 由 `ops.duplicateNode` 定；这里只管撤销分段和选中。
    */
   async function duplicateNode(nodeId: string): Promise<string | null> {
-    const source = store.nodeById.get(nodeId)
-    if (!source) return null
+    if (!store.nodeById.has(nodeId)) return null
 
     const id = createId("n")
-    const clone: FlowNodeRecord = {
-      id,
-      type: source.type,
-      layout: {
-        ...structuredClone(toRaw(source.layout)),
-        position: {
-          x: source.layout.position.x + CASCADE_STEP,
-          y: source.layout.position.y + CASCADE_STEP
-        }
-      },
-      metadata: { ...structuredClone(toRaw(source.metadata)), createdAt: Date.now() },
-      data: structuredClone(toRaw(source.data)),
-      runtime: { status: "idle" }
-    }
-
     // 「复制」是一个独立的动作，别和刚才那次编辑并成同一条撤销
     store.separateUndo()
-    store.addNode(clone)
+    store.duplicateNode(nodeId, { id, offset: { x: CASCADE_STEP, y: CASCADE_STEP } })
     store.separateUndo()
 
     // 选中复本：接着就能拖走或改名，符合复制完的下一步意图。
@@ -871,7 +832,7 @@ export function useFlowCanvas(
 
   const growMenu = shallowRef<GrowMenuState | null>(null)
 
-  /** 菜单里此刻该列哪些类型：随画布变（别人在这期间往这里连了线、填了资源）而变 */
+  /** 菜单里此刻该列哪些类型：随画布变（别人在这期间往这里连了线、改了形态）而变 */
   const growCandidates = computed<GrowCandidate[]>(() => {
     const menu = growMenu.value
     return menu ? connectableNodeTypes(menu.sourceId, connectionContext()) : []
@@ -921,34 +882,33 @@ export function useFlowCanvas(
   /**
    * 从 `sourceId` 的出口长出一个 `type` 节点并连上，新节点的入口（左边中点）落在 `at`。
    *
-   * 连哪对端口由 shared 的 `resolveGrowConnection` 定（新节点按全新的空节点算，规则就是 `resolveConnection`）；
-   * 菜单弹出之后画布可能变了，连不上就提示原因、不建节点 —— 不该凭空多出一个没连上的节点。
+   * 连哪对端口由 `store.addConnectedNode`（→ `ops.createConnectedNode`）按新节点的数据定（全新的空节点，
+   * 规则就是 `resolveConnection`）；菜单弹出之后画布可能变了，连不上就提示原因、不建节点 ——
+   * 不该凭空多出一个没连上的节点。
    *
-   * 节点和线进**同一个事务**（`addElements`）：一条撤销把两者一起拿掉，
-   * 别人也不会先看到一条指向不存在节点的线。摆正位置要等量出尺寸，和 `addNode` 一样
-   * 并进同一条撤销（中间不 `separateUndo`）。
+   * 节点和线进**同一个事务**：一条撤销把两者一起拿掉，别人也不会先看到一条指向不存在节点的线。
+   * 摆正位置要等量出尺寸，和 `addNode` 一样并进同一条撤销（中间不 `separateUndo`）。
    */
   async function addConnectedNode(sourceId: string, type: string, at: XYPosition): Promise<string | null> {
     if (typeOfNode(sourceId) === undefined) return null
     const place = (height: number) => ({ x: at.x, y: at.y - height / 2 })
 
     const id = createId("n")
-    const verdict = resolveGrowConnection(sourceId, type, id, connectionContext())
-    if (!verdict.ok) {
-      toast.error(verdict.reason)
-      return null
-    }
-
     const node = buildFlowNode({
       id,
       type,
       position: place(0),
       label: `${flowNodeTypeOf(type).label} ${store.nodes.length + 1}`
     })
-    const edge = buildEdge(sourceId, id, verdict)
 
     store.separateUndo()
-    store.addElements([node], [edge], "新增相连节点")
+    try {
+      store.addConnectedNode(node, { source: sourceId })
+    } catch (error) {
+      if (!(error instanceof FlowOpError)) throw error
+      toast.error(error.message)
+      return null
+    }
 
     const rendered = findNode(id)
     if (rendered) {
@@ -962,12 +922,6 @@ export function useFlowCanvas(
   }
 
   // —— 打组 ——
-
-  /** 分组框在被圈住的节点之外留的余量 */
-  const GROUP_PADDING = 32
-
-  /** 顶上再多留一条，给分组自己的标题栏腾地方，免得压在第一个节点的名字上 */
-  const GROUP_HEADER = 20
 
   /** 当前选中的节点 id（顺序同 Vue Flow 那份选中态），选区工具栏靠它定位 */
   const selectedNodeIds = computed(() => getSelectedNodes.value.map((node) => node.id))
@@ -1002,12 +956,10 @@ export function useFlowCanvas(
     if (members.length < 2) return null
 
     // 外接矩形按 computedPosition + 实测尺寸算（Vue Flow 自己的工具函数），
-    // 拿 store 里的 position 手算的话，没写过 width/height 的节点量不出高矮
-    const rect = getRectOfNodes(members)
-    const position = {
-      x: rect.x - GROUP_PADDING,
-      y: rect.y - GROUP_PADDING - GROUP_HEADER
-    }
+    // 拿 store 里的 position 手算的话，没写过 width/height 的节点量不出高矮。
+    // 留白（GROUP_PADDING / GROUP_HEADER）是 shared 的同一套，agent 打组也用它
+    const frame = groupFrameAround(getRectOfNodes(members))
+    const position = { x: frame.x, y: frame.y }
 
     const id = createId("n")
     const group = buildFlowNode({
@@ -1017,8 +969,8 @@ export function useFlowCanvas(
       label: `分组 ${store.nodes.filter((node) => node.type === GROUP_NODE_TYPE).length + 1}`
     })
     // 注册表给的是默认尺寸和层级，这里只把尺寸换成刚好罩住这片节点的大小
-    group.layout.width = rect.width + GROUP_PADDING * 2
-    group.layout.height = rect.height + GROUP_PADDING * 2 + GROUP_HEADER
+    group.layout.width = frame.width
+    group.layout.height = frame.height
 
     const children = new Map(
       members.map((node) => [

@@ -5,7 +5,6 @@ import FlowPresenceAvatar from "@/components/flow/FlowPresenceAvatar.vue"
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { useFlowEditor } from "@/composables/flow/editor-context"
@@ -39,44 +38,42 @@ const overflowNames = computed(() =>
 </script>
 
 <template>
-  <TooltipProvider :delay-duration="150">
-    <!-- 一个人都还没解析出来时整枚不显示，免得画布左上角挂个空壳 -->
-    <!-- h-10 + size-8 圆形内容：跟标题胶囊、底部工具栏同一套尺寸 -->
-    <div
-      v-if="shown.length > 0"
-      class="flex h-10 items-center rounded-full border bg-card/95 px-1 shadow-lg backdrop-blur"
-    >
-      <!--
-        堆叠的遮挡关系：靠左的压在靠右的上面（z-index 递减）。
-        DOM 顺序天然是后来者盖前者，正好相反，所以这里显式给 z-index ——
-        「我」永远排在第一个，也就永远是完整露出来的那个。
-        ring 用卡片色，是堆叠时把相邻两个头像分开的那道缝。
-      -->
-      <div class="flex -space-x-2">
-        <Tooltip v-for="(peer, index) in shown" :key="peer.clientId">
-          <TooltipTrigger as-child>
-            <FlowPresenceAvatar
-              :user="peer.user"
-              class="relative size-8 ring-2 ring-card"
-              :style="{ zIndex: shown.length - index }"
-            />
-          </TooltipTrigger>
-          <TooltipContent>
-            {{ peer.user.name }}<template v-if="peer.isSelf">（我）</template>
-          </TooltipContent>
-        </Tooltip>
+  <!-- 一个人都还没解析出来时整枚不显示，免得画布左上角挂个空壳 -->
+  <!-- h-10 + size-8 圆形内容：跟标题胶囊、底部工具栏同一套尺寸 -->
+  <div
+    v-if="shown.length > 0"
+    class="flex h-10 items-center rounded-full border bg-card/95 px-1 shadow-lg backdrop-blur"
+  >
+    <!--
+      堆叠的遮挡关系：靠左的压在靠右的上面（z-index 递减）。
+      DOM 顺序天然是后来者盖前者，正好相反，所以这里显式给 z-index ——
+      「我」永远排在第一个，也就永远是完整露出来的那个。
+      ring 用卡片色，是堆叠时把相邻两个头像分开的那道缝。
+    -->
+    <div class="flex -space-x-2">
+      <Tooltip v-for="(peer, index) in shown" :key="peer.clientId" :delay-duration="150">
+        <TooltipTrigger as-child>
+          <FlowPresenceAvatar
+            :user="peer.user"
+            class="relative size-8 ring-2 ring-card"
+            :style="{ zIndex: shown.length - index }"
+          />
+        </TooltipTrigger>
+        <TooltipContent>
+          {{ peer.user.name }}<template v-if="peer.isSelf">（我）</template>
+        </TooltipContent>
+      </Tooltip>
 
-        <Tooltip v-if="overflow > 0">
-          <TooltipTrigger as-child>
-            <span
-              class="relative z-0 flex size-8 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-muted-foreground ring-2 ring-card"
-            >
-              +{{ overflow }}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>{{ overflowNames }}</TooltipContent>
-        </Tooltip>
-      </div>
+      <Tooltip v-if="overflow > 0" :delay-duration="150">
+        <TooltipTrigger as-child>
+          <span
+            class="relative z-0 flex size-8 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-muted-foreground ring-2 ring-card"
+          >
+            +{{ overflow }}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{{ overflowNames }}</TooltipContent>
+      </Tooltip>
     </div>
-  </TooltipProvider>
+  </div>
 </template>

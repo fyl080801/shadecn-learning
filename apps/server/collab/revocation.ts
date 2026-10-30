@@ -95,3 +95,30 @@ export function createRevocationWatcher(): RevocationWatcher {
     },
   }
 }
+
+/**
+ * 「权限可能被收回了」的订阅点 —— 给协同层以外、同样要按当前权限对账的东西用（画布 agent 的 Grant 对账，
+ * `agent/authority.ts`）。协同层不认识订阅者是谁，只在两个时刻通知：
+ * - 本实例的 `revokeCollabAccess()`（改权限的路由 await 的那个）—— 当场；
+ * - 巡检发现别的实例广播了撤销 —— 最迟一个 {@link REVOCATION_POLL_INTERVAL}。
+ *
+ * 不带「谁的什么权限」：广播本来就只有一个世代号（理由见文件头），订阅者自己按当前权限全量复核。
+ * 订阅者抛错只记日志，不影响别的订阅者，也不影响踢协同连接那条路。
+ */
+type RevocationListener = () => void | Promise<void>
+
+const listeners = new Set<RevocationListener>()
+
+/** 订阅；返回取消函数 */
+export function onAccessRevoked(listener: RevocationListener): () => void {
+  listeners.add(listener)
+  return () => listeners.delete(listener)
+}
+
+/** 通知全部订阅者并等它们做完（`revokeCollabAccess` 返回时，订阅者也已经对完账） */
+export async function notifyAccessRevoked(): Promise<void> {
+  const results = await Promise.allSettled([...listeners].map(async (listener) => listener()))
+  for (const result of results) {
+    if (result.status === 'rejected') console.error('[collab] 权限撤销订阅者处理失败', result.reason)
+  }
+}

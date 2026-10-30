@@ -15,7 +15,7 @@ import {
   type FlowNodeRecord
 } from "@shadecn/shared/flow-graph"
 import { buildNodeRecord } from "@shadecn/shared/flow-node-types"
-import { collectionKey, readCollection, spreadCollection } from "@/lib/flow-collection"
+import { collectionKey, readCollection, spreadCollection } from "@shadecn/shared/flow-collection"
 
 /**
  * store 是 Y.Doc 的响应式投影 —— 这一组用例盯的就是这层契约：
@@ -164,6 +164,41 @@ describe("内容读写", () => {
 
     expect(() => store.writeNode("ghost", "data", { set: { x: 1 } })).not.toThrow()
     expect(nodesMap(doc).has("ghost")).toBe(false)
+  })
+
+  it("有形态的节点（图片 / 视频）：writeNode 写 form / src / poster（set 或 remove）整笔拒绝并告警；attachAsset 照常能写", () => {
+    const { store } = setup()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    store.addNode(typed("img", "image"))
+    const dataOf = () => ({ ...store.nodeById.get("img")!.data })
+    const before = dataOf()
+
+    store.writeNode("img", "data", { set: { src: "https://x/a.png" } })
+    store.writeNode("img", "data", { set: { form: "asset" } })
+    store.writeNode("img", "data", { set: { poster: "https://x/p.png", prompt: "夹带的字段" } })
+    store.writeNode("img", "data", { remove: ["src"] })
+    expect(dataOf()).toEqual(before)
+    expect(warn).toHaveBeenCalledTimes(4)
+    expect(String(warn.mock.calls[0]![0])).toContain("[flow]")
+
+    // 不碰受保护键的写入不受影响
+    store.writeNode("img", "data", { set: { prompt: "一只狗" } })
+    expect(dataOf().prompt).toBe("一只狗")
+    expect(warn).toHaveBeenCalledTimes(4)
+
+    store.attachAsset("img", { src: "https://x/a.png" })
+    expect(dataOf()).toMatchObject({ src: "https://x/a.png", form: "asset" })
+    warn.mockRestore()
+  })
+
+  it("没有形态的类型（文本）：writeNode 照常能写 src / form 这样的键", () => {
+    const { store } = setup()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    store.addNode(typed("t", "text"))
+    store.writeNode("t", "data", { set: { src: "x", form: "y" } })
+    expect(store.nodeById.get("t")!.data).toMatchObject({ src: "x", form: "y" })
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
   })
 
   it("写和删在同一个事务里，撤销一次两边都回来", () => {

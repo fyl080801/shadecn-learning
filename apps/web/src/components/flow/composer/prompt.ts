@@ -16,7 +16,8 @@ declare module "@/components/flow/node-kit/protocol" {
     /**
      * 在底部输入框里按了回车。`text` 是提交时框里的内容（已经写回文档）。
      * 发的一方不知道谁在听：启用了 `runnable` 的类型由它接住、转成运行请求；
-     * 眼下的 text / image / video / director 都没启用，提交只是写回 `data.prompt`。
+     * 眼下 text / image / video 都没启用，提交只是写回 `data.prompt`；director 启用了 `director-chat`：
+     * 转成带 `prompt` 的 `director:open`，在绑定这个节点的会话里发出去（docs/07 §7.4）。
      */
     "composer:submit": { text: string }
   }

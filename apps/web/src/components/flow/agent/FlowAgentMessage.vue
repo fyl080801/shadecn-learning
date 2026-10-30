@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue"
-import { CircleAlert, CircleCheck, LoaderCircle } from "@lucide/vue"
+import { ChevronRight, CircleAlert, CircleCheck, Eye, Puzzle } from "@lucide/vue"
 import type { AgentChatMessage } from "@shadecn/shared/agent"
+import { Message, MessageContent } from "@/components/ui/message"
+import { Spinner } from "@/components/ui/spinner"
+import FlowAgentMarkdown from "./FlowAgentMarkdown.vue"
 import FlowAgentMention from "./FlowAgentMention.vue"
 import { splitMentions } from "./nodeMention"
 
@@ -9,8 +12,10 @@ import { splitMentions } from "./nodeMention"
  * 对话里的一条消息。
  *
  * 用户消息：文字 + 提及 badge（和输入框里同一个组件，名字现查，删了的节点灰掉）。
- * assistant 消息：流式文字 + 工具调用条目（名字 / 一句话 / 运行中·完成·出错），
- * 一轮以失败或中止收尾时在最后挂一行原因。
+ * assistant 消息：工具调用条目（名字 / 一句话 / 运行中·完成·出错）+ 流式的 Markdown 正文（docs/20 F16），
+ * 一轮以失败或中止收尾时在最后挂一行原因。用户消息和 assistant 消息用 shadcn 的 `Message` 排版。
+ * 画布改动通知（docs/20 §3.10.2）：灰色的一行系统提示（图标 + 概括），有条目时可以展开看每一处。
+ * 技能加载（docs/23 §3.6）：同样灰色的一行「已加载：<技能标题>」。
  */
 const props = defineProps<{
   message: AgentChatMessage
@@ -23,59 +28,95 @@ const segments = computed(() =>
 )
 
 const assistant = computed(() => (props.message.role === "assistant" ? props.message : null))
+
+const change = computed(() => (props.message.role === "canvas-change" ? props.message : null))
+
+const skillLoaded = computed(() => (props.message.role === "skill-loaded" ? props.message : null))
 </script>
 
 <template>
+  <Message v-if="props.message.role === 'user'" align="end" data-role="user">
+    <MessageContent>
+      <div class="ml-8 self-end rounded-lg bg-primary/10 px-3 py-2 whitespace-pre-wrap break-words">
+        <template v-for="(segment, index) in segments" :key="index">
+          <FlowAgentMention v-if="segment.kind === 'mention'" :node-id="segment.id" class="mx-0.5" />
+          <template v-else>{{ segment.text }}</template>
+        </template>
+      </div>
+    </MessageContent>
+  </Message>
+
   <div
-    v-if="props.message.role === 'user'"
-    class="ml-8 self-end rounded-lg bg-primary/10 px-3 py-2 text-sm whitespace-pre-wrap break-words"
-    data-role="user"
+    v-else-if="change"
+    class="flex items-start gap-1.5 text-xs text-muted-foreground"
+    data-role="canvas-change"
+    :data-scope="change.scope"
   >
-    <template v-for="(segment, index) in segments" :key="index">
-      <FlowAgentMention v-if="segment.kind === 'mention'" :node-id="segment.id" class="mx-0.5" />
-      <template v-else>{{ segment.text }}</template>
-    </template>
+    <Eye class="mt-0.5 size-3.5 shrink-0" />
+    <details v-if="change.items.length > 0" class="group min-w-0 flex-1">
+      <summary class="flex cursor-pointer list-none items-start gap-1 break-words [&::-webkit-details-marker]:hidden">
+        <span class="min-w-0 flex-1" data-role="canvas-change-summary">{{ change.summary }}</span>
+        <ChevronRight class="mt-0.5 size-3.5 shrink-0 transition-transform group-open:rotate-90" />
+      </summary>
+      <ul class="mt-1 space-y-0.5 border-l pl-2" data-role="canvas-change-items">
+        <li v-for="(item, index) in change.items" :key="index" class="break-words">{{ item }}</li>
+        <li v-if="change.omitted > 0">…另有 {{ change.omitted }} 处改动</li>
+      </ul>
+    </details>
+    <span v-else class="min-w-0 flex-1 break-words" data-role="canvas-change-summary">{{ change.summary }}</span>
   </div>
 
-  <div v-else-if="assistant" class="mr-4 space-y-2 text-sm" data-role="assistant">
-    <ul v-if="assistant.toolCalls.length > 0" class="space-y-1">
-      <li
-        v-for="call in assistant.toolCalls"
-        :key="call.id"
-        class="flex items-start gap-2 rounded-md border bg-muted/40 px-2 py-1.5 text-xs"
-        :data-tool-status="call.status"
-      >
-        <LoaderCircle
-          v-if="call.status === 'running'"
-          class="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground"
-        />
-        <CircleCheck v-else-if="call.status === 'done'" class="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
-        <CircleAlert v-else class="mt-0.5 size-3.5 shrink-0 text-destructive" />
-        <span class="min-w-0 flex-1">
-          <span class="block break-words">{{ call.summary || call.name }}</span>
-          <span class="block font-mono text-[10px] text-muted-foreground">{{ call.name }}</span>
-          <span v-if="call.status === 'error' && call.error" class="block text-destructive">
-            {{ call.error }}
+  <div
+    v-else-if="skillLoaded"
+    class="flex items-start gap-1.5 text-xs text-muted-foreground"
+    data-role="skill-loaded"
+    :data-skill="skillLoaded.skill.id"
+  >
+    <Puzzle class="mt-0.5 size-3.5 shrink-0" />
+    <span class="min-w-0 flex-1 break-words">已加载：{{ skillLoaded.skill.title }}</span>
+  </div>
+
+  <Message v-else-if="assistant" class="pr-4" data-role="assistant">
+    <MessageContent class="gap-2">
+      <ul v-if="assistant.toolCalls.length > 0" class="space-y-1">
+        <li
+          v-for="call in assistant.toolCalls"
+          :key="call.id"
+          class="flex items-start gap-2 rounded-md border bg-muted/40 px-2 py-1.5 text-xs"
+          :data-tool-status="call.status"
+        >
+          <Spinner
+            v-if="call.status === 'running'"
+            class="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+          />
+          <CircleCheck v-else-if="call.status === 'done'" class="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
+          <CircleAlert v-else class="mt-0.5 size-3.5 shrink-0 text-destructive" />
+          <span class="min-w-0 flex-1">
+            <span class="block break-words">{{ call.summary || call.name }}</span>
+            <span class="block font-mono text-[10px] text-muted-foreground">{{ call.name }}</span>
+            <span v-if="call.status === 'error' && call.error" class="block text-destructive">
+              {{ call.error }}
+            </span>
           </span>
-        </span>
-      </li>
-    </ul>
+        </li>
+      </ul>
 
-    <p v-if="assistant.text" class="whitespace-pre-wrap break-words">{{ assistant.text }}</p>
-    <p
-      v-else-if="props.streaming && assistant.toolCalls.length === 0 && !assistant.error"
-      class="text-muted-foreground"
-    >
-      思考中…
-    </p>
+      <FlowAgentMarkdown v-if="assistant.text" :text="assistant.text" />
+      <p
+        v-else-if="props.streaming && assistant.toolCalls.length === 0 && !assistant.error"
+        class="text-muted-foreground"
+      >
+        思考中…
+      </p>
 
-    <p
-      v-if="assistant.error"
-      class="flex items-start gap-1.5 text-xs text-destructive"
-      data-role="assistant-error"
-    >
-      <CircleAlert class="mt-0.5 size-3.5 shrink-0" />
-      <span class="break-words">{{ assistant.error }}</span>
-    </p>
-  </div>
+      <p
+        v-if="assistant.error"
+        class="flex items-start gap-1.5 text-xs text-destructive"
+        data-role="assistant-error"
+      >
+        <CircleAlert class="mt-0.5 size-3.5 shrink-0" />
+        <span class="break-words">{{ assistant.error }}</span>
+      </p>
+    </MessageContent>
+  </Message>
 </template>

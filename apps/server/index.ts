@@ -4,7 +4,8 @@ import './env.ts'
 // 而写成副作用 import 而不是函数调用的理由见该文件
 import './logger/install.ts'
 import { createAdaptorServer } from '@hono/node-server'
-import { abortAgentRuns } from './agent/index.ts'
+import { startAgentReconciler } from './agent/authority.ts'
+import { abortAgentRuns, startAgentSandboxReaper } from './agent/index.ts'
 import { app } from './app.ts'
 import { enabledProviders } from './auth/providers/index.ts'
 import { sweepExpired } from './auth/session.ts'
@@ -63,6 +64,11 @@ sweep()
 const sweepTimer = setInterval(sweep, 60 * 60 * 1000)
 sweepTimer.unref()
 
+// agent 的委托授权：每 10 分钟全量对账一次（过期的标掉、失权的叫停；权限变化事件那条路是当场的，见 agent/authority.ts）
+const stopAgentReconciler = startAgentReconciler()
+// agent 的沙箱：oci 驱动先自检（引擎 / 镜像 / 网络，沙箱能出网就告警），再清上一个进程留下的孤儿容器，之后定时清
+const stopAgentSandboxReaper = startAgentSandboxReaper()
+
 server.listen(port, host, () => {
   const mode = isDev ? 'dev（Vite 中间件）' : `prod（静态资源 ${staticDir}）`
   console.log(`${mode} 服务已启动  http://${host}:${port}`)
@@ -120,6 +126,8 @@ async function shutdown() {
   shuttingDown = true
 
   clearInterval(sweepTimer)
+  stopAgentReconciler()
+  stopAgentSandboxReaper()
   if (orphanTimer) clearInterval(orphanTimer)
 
   // 退出前把还开着的房间落库：内容的事实源是内存里的 Y.Doc，直接退等于丢掉

@@ -22,8 +22,8 @@ pnpm workspace. Every root command is a `pnpm --filter <pkg>` delegation.
 
 - **`apps/web` (`@shadecn/web`)** — frontend (`src/` = `@/`, `vite.config.ts`, `index.html`, `login.html`, `components.json`). `devDependencies` only: it is bundled into `output/public`.
 - **`apps/server` (`@shadecn/server`)** — backend, data layer (`db.ts`, `db/`) and `scripts/`. Its `dependencies` is the production runtime set.
-- **`packages/shared` (`@shadecn/shared`)** — source-only TS both sides import: `flow-graph`, `flow-node-types`, `flow-doc`, `canvas`, `auth`, `collab`, `agent`, `id`. Change a contract here, once.
-- **`packages/agent` (`@shadecn/agent`)** — the canvas agent, source-only, server-only (`.claude/rules/agent.md`).
+- **`packages/shared` (`@shadecn/shared`)** — source-only TS both sides import: `flow-graph`, `flow-node-types`, `flow-doc`, `flow-ops`, `canvas`, `auth`, `collab`, `agent`, `id`. Change a contract here, once.
+- **`packages/agent` (`@shadecn/agent`)** — the canvas agent, source-only, never in the browser: server-side orchestration + gateway, and the sandboxed runner each run spawns (bundled as `output/server/agent-runner.js`; `.claude/rules/agent.md`).
 - **Root**: `docs/`, `k8s/`, `ci/`, `.gitea/`, `Dockerfile`, `.env`, `data/`, `output/`, `eslint.config.ts`, a `vitest.config.ts` that only aggregates `projects`, and repo-wide tooling devDependencies.
 - **Two base directories.** `rootDir` / `appRoot` (`apps/server/config.ts`, `runtime.ts`) is the **repo root** — home of `.env`, `data/`, `output/`. `webRoot` and `serverDir` are each package's own dir. From source, `runtime.ts` derives the app root as `apps/server/`'s **grandparent**; in the bundle it is `process.cwd()`. Mixing them reads the wrong `.env` or puts the DB in `apps/server/data`.
 
@@ -34,15 +34,16 @@ pnpm workspace. Every root command is a `pnpm --filter <pkg>` delegation.
 - **Local `pnpm start` goes through `node --import ./apps/server/scripts/local-start.mjs`.** Runtime deps are declared only in `apps/server`, so the hook re-resolves "bare package not found" from `apps/server/package.json`. In a container the artifact has its own `node_modules`.
 - **Root `Dockerfile`: copy each package's `package.json` one by one → `pnpm install --frozen-lockfile` → `COPY . .`** (cacheable install layer; a new workspace package needs one more `COPY` line). `.dockerignore` says `**/node_modules` — a leaked symlink dir would overwrite installed deps.
 - **Tailwind's source scan is rooted at `apps/web`**; class names outside it are not detected.
-- **esbuild uses the `externalizePackages` plugin, not `packages: 'external'`**: bare imports stay external except `@shadecn/*`, which is inlined (it's installed nowhere in the artifact). Shared's own third-party imports (yjs) stay external and enter the runtime dependency list.
-- **`@shadecn/shared` is a `workspace:*` devDependency of web and server, and peer-depends on `yjs`.** Exactly one yjs copy per bundle, or `instanceof Y.Map` is always `false` and canvases go blank. Guaranteed by pnpm linking + the frontend's `resolve.dedupe`; pinned by `apps/server/test/collab/shared-yjs.test.ts` and `apps/web/src/test/lib/sharedYjs.test.ts`.
+- **esbuild uses the `externalizePackages` plugin, not `packages: 'external'`**: bare imports stay external except `@shadecn/*`, which is inlined (it's installed nowhere in the artifact). Shared's own third-party imports (yjs, `@dagrejs/dagre`) stay external and enter the runtime dependency list.
+- **`@shadecn/shared` is a `workspace:*` devDependency of web and server, and peer-depends on `yjs` and `@dagrejs/dagre`** (the layout in `flow-layout` runs in the browser and, for the agent's `auto_layout`, on the server — so the server lists dagre in `dependencies`). Exactly one yjs copy per bundle, or `instanceof Y.Map` is always `false` and canvases go blank. Guaranteed by pnpm linking + the frontend's `resolve.dedupe`; pinned by `apps/server/test/collab/shared-yjs.test.ts` and `apps/web/src/test/lib/sharedYjs.test.ts`.
 - **Writing `packages/shared`**: relative imports carry `.ts`; no DOM or Node API (`lib: ["ES2020"]`, `types: []` — both consumers recompile it under their own config). Tests use `tsconfig.test.json` so vitest's Node types don't switch the guard-rail off.
 - **Lockfile ranges were kept identical to the pre-monorepo ones** (a fresh resolve drifts `reka-ui` to 2.10.1). Don't `pnpm update` casually; read the lockfile diff of any install.
 
 ## Commands
 
 - `pnpm dev` — whole app (Hono + Vite middleware, watch) on http://127.0.0.1:3000. One process, one port, no proxy, in dev and prod.
-- `pnpm build` — `build:client` (`vue-tsc -b` + `vite build` → `output/public`) then `build:server` (`typecheck` + esbuild → `output/server`).
+- `pnpm build` — `build:client` (`vue-tsc -b` + `vite build` → `output/public`) then `build:server` (`typecheck` + esbuild → `output/server`, plus the agent sandbox image context `output/agent-sandbox/`).
+- `pnpm build:sandbox-image` — `build:server`, then build the agent's oci sandbox image with podman / docker; extra args go to the build (`--build-arg NODE_IMAGE=…`). Rebuild it whenever the runner or the gateway protocol changes.
 - `pnpm start` — run `output/` locally; `pnpm preview` = build + start.
 - `pnpm typecheck:server` / `typecheck:shared` / `typecheck:agent` (frontend is checked by `vue-tsc -b` in `build:client`).
 - `pnpm test` (`test:watch`, `test:coverage`) and `pnpm test:server` / `test:client` / `test:shared` / `test:agent`.

@@ -2,6 +2,8 @@ import type { EntityName } from '@mikro-orm/core'
 import { db, orm } from '../../db.ts'
 import {
   AgentConversation,
+  AgentGrant,
+  AgentGrantScope,
   AgentRun,
   AgentToolCall,
   AuthRequest,
@@ -28,6 +30,8 @@ export async function resetDb() {
   const em = db()
   // 实体各自的类型推断不能互相赋值，作为「一张表」这里只关心名字
   const tables = [
+    AgentGrantScope,
+    AgentGrant,
     AgentToolCall,
     AgentRun,
     AgentConversation,

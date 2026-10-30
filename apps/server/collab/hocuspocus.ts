@@ -33,6 +33,7 @@ import {
   REVOCATION_POLL_INTERVAL,
   announceRevocation,
   createRevocationWatcher,
+  notifyAccessRevoked,
 } from './revocation.ts'
 import { collabLogging } from '../logger/collab.ts'
 import {
@@ -293,7 +294,8 @@ async function revalidateConnections(hocuspocus: Hocuspocus): Promise<void> {
  *
  * 两件事的顺序无所谓，但两件都要做：
  * - `announceRevocation()` —— 广播给别的实例，它们最迟一个巡检周期（3s）后跟上；
- * - 本地跑一轮完整复验 —— 本实例上的连接当场断掉。
+ * - 本地跑一轮完整复验 —— 本实例上的连接当场断掉；同时通知 `onAccessRevoked` 的订阅者
+ *   （画布 agent 按当前权限对账在跑的轮次，失权的当场叫停 —— 协同层不知道订阅者是谁）。
  *
  * **是 await 而不是即发即忘**：这样 `DELETE …/members/:userId` 返回 204 的时候，
  * 「这个人已经不在画布上了」是成立的。权限变更本来就罕见，管理员那一个请求多等几毫秒
@@ -301,7 +303,7 @@ async function revalidateConnections(hocuspocus: Hocuspocus): Promise<void> {
  */
 export async function revokeCollabAccess(): Promise<void> {
   await announceRevocation()
-  if (instance) await revalidateConnections(instance)
+  await Promise.all([instance ? revalidateConnections(instance) : undefined, notifyAccessRevoked()])
 }
 
 /**
@@ -729,7 +731,9 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
   const revocationTimer = setInterval(() => {
     void watcher
       .changed()
-      .then((changed) => (changed ? revalidateConnections(hocuspocus) : undefined))
+      .then((changed) =>
+        changed ? Promise.all([revalidateConnections(hocuspocus), notifyAccessRevoked()]) : undefined,
+      )
       .catch((err: unknown) => console.error('[collab] 权限撤销广播处理失败', err))
   }, REVOCATION_POLL_INTERVAL)
   revocationTimer.unref()

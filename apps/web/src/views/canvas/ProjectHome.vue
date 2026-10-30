@@ -8,6 +8,11 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -350,15 +355,19 @@ function displayName(member: ProjectMemberView) {
                     </TableCell>
                     <TableCell>
                       <!-- 管理员不能移除自己 -->
-                      <Button
-                        v-if="isAdmin && member.userId !== currentUserId"
-                        variant="ghost"
-                        size="icon"
-                        title="移出项目"
-                        @click="startRemoveMember(member)"
-                      >
-                        <UserMinus class="text-destructive" />
-                      </Button>
+                      <Tooltip v-if="isAdmin && member.userId !== currentUserId">
+                        <TooltipTrigger as-child>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="移出项目"
+                            @click="startRemoveMember(member)"
+                          >
+                            <UserMinus class="text-destructive" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>移出项目</TooltipContent>
+                      </Tooltip>
                     </TableCell>
                   </TableRow>
                 </TableBody>

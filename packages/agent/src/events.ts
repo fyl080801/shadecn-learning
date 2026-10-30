@@ -1,19 +1,30 @@
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import {
+  AGENT_CANVAS_CHANGE_EVENT,
+  AGENT_SKILL_LOADED_EVENT,
   AGENT_USER_MESSAGE_EVENT,
   AgentEventType,
+  type AgentCanvasChangeMessage,
+  type AgentSkillLoadedMessage,
   type AgentChatMessage,
   type AgentStreamEvent,
   type AgentToolCallMetadata,
   type AgentToolCallView,
 } from '@shadecn/shared/agent'
 import { createId } from '@shadecn/shared/id'
+import type { RunnerEvent } from './protocol.ts'
+import { LOAD_SKILL_TOOL_NAME } from './skills/registry.ts'
 
 /**
  * pi 的 `AgentEvent` → 线上事件（AG-UI 子集，形状见 `@shadecn/shared/agent`）。
  *
  * **整个映射只在这一个文件里**：路由只管把这里吐出来的对象逐帧写成 `data: <JSON>\n\n`，
  * 不认识任何一种事件。将来换协议（或者 AG-UI 加字段）只改这里。
+ *
+ * 二期起 pi 跑在沙箱里的 runner 中（docs/22 §4），**映射仍在服务端这里做**：runner 只把 pi 事件裁成
+ * `protocol.ts` 的 `RunnerEvent`（同名同形、去掉用不着的字段）上报，编排层把它们原样喂给 {@link RunEventMapper.handle}。
+ * 映射放在服务端，是因为 runner 随时可能被杀（中止 / 失权 / 超时）：收尾帧、落库的 assistant 消息
+ * 都得由服务端按已经收到的事件补齐，映射状态必须在服务端。
  *
  * 顺便它也是「这一轮落定的 assistant 消息长什么样」的唯一来源 —— 对话记录里存的那条
  * （`message`）和线上发出去的事件是同一份状态一起推出来的，两边不会对不上：
@@ -26,12 +37,19 @@ import { createId } from '@shadecn/shared/id'
  * - 工具：START（metadata 带给人看的那句话，status=running）→ ARGS（参数 JSON 一次发完）
  *   → END → RESULT（messageId 是结果自己的新 id；content 是回给模型的文本）。
  * - 思考内容（thinking）不外发：那是模型的草稿，不是给人看的回复。
+ * - 画布改动通知（docs/20 §3.10.2）：CUSTOM `agent.canvas-change`，`value` 就是对话里存的那条
+ *   `canvas-change` 消息。什么时候发由编排层定（跨轮差异紧跟用户消息回显；运行中的那种在它真正进入
+ *   模型上下文时 —— pi 把 steer 的消息放进上下文的那一刻），这里只管形状。
+ * - 技能加载（docs/23 §3.6）：`load_skill` **不作为工具调用条目出现**（不发 TOOL_CALL_*，也不进 assistant 消息的
+ *   `toolCalls`）；网关加载成功时发 CUSTOM `agent.skill-loaded`，`value` 就是对话里存的那条 `skill-loaded` 消息。
  */
 
 /** 一轮怎么收的尾 */
 export type RunOutcome =
   | { type: 'success' }
   | { type: 'cancelled'; reason?: string }
+  /** Grant 到期（docs/22）。线上仍是 RUN_FINISHED + `cancelled`：前端契约不变，原因在 `result.error` */
+  | { type: 'expired'; reason: string }
   | { type: 'error'; message: string; code?: string }
 
 export interface RunEventMapperOptions {
@@ -71,8 +89,12 @@ function clip(text: string, max: number): string {
 export interface RunEventMapper {
   /** RUN_STARTED + 回显用户消息 */
   start(userMessage: UserChatMessage): AgentStreamEvent[]
-  /** 吃一个 pi 事件，吐出零到多个线上事件 */
-  handle(event: AgentEvent): AgentStreamEvent[]
+  /** 吃一个 pi 事件（或 runner 上报的裁剪版），吐出零到多个线上事件 */
+  handle(event: AgentEvent | RunnerEvent): AgentStreamEvent[]
+  /** 一条画布改动通知（先关掉没关的文字段：通知插在两段文字之间） */
+  canvasChange(message: AgentCanvasChangeMessage): AgentStreamEvent[]
+  /** 一次技能加载（同上，先关文字段） */
+  skillLoaded(message: AgentSkillLoadedMessage): AgentStreamEvent[]
   /** 收尾：关掉没关的文字段，再发 RUN_FINISHED / RUN_ERROR */
   finish(outcome: RunOutcome): AgentStreamEvent[]
   /** 这一轮的 assistant 消息（随事件推进；`finish` 之后是最终态） */
@@ -143,8 +165,37 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
       ]
     },
 
+    canvasChange(change) {
+      const out: AgentStreamEvent[] = []
+      closeText(out)
+      out.push({
+        type: AgentEventType.CUSTOM,
+        name: AGENT_CANVAS_CHANGE_EVENT,
+        // 拷一份：同 RUN_FINISHED 的 result
+        value: structuredClone(change),
+        timestamp: now(),
+      })
+      return out
+    },
+
+    skillLoaded(loaded) {
+      const out: AgentStreamEvent[] = []
+      closeText(out)
+      out.push({
+        type: AgentEventType.CUSTOM,
+        name: AGENT_SKILL_LOADED_EVENT,
+        value: structuredClone(loaded),
+        timestamp: now(),
+      })
+      return out
+    },
+
     handle(event) {
       const out: AgentStreamEvent[] = []
+      // load_skill 只显示成「已加载：…」那一行（skillLoaded），不是普通的工具调用条目
+      if ((event.type === 'tool_execution_start' || event.type === 'tool_execution_end') && event.toolName === LOAD_SKILL_TOOL_NAME) {
+        return out
+      }
       switch (event.type) {
         case 'message_update': {
           const inner = event.assistantMessageEvent
@@ -235,7 +286,7 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
       for (const call of message.toolCalls) {
         if (call.status === 'running') {
           call.status = 'error'
-          call.error = outcome.type === 'cancelled' ? '已中止' : '未完成'
+          call.error = outcome.type === 'cancelled' || outcome.type === 'expired' ? '已中止' : '未完成'
         }
       }
 
@@ -251,11 +302,12 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
       }
 
       if (outcome.type === 'cancelled') message.error = outcome.reason ?? '已中止'
+      if (outcome.type === 'expired') message.error = outcome.reason
       out.push({
         type: AgentEventType.RUN_FINISHED,
         threadId,
         runId,
-        outcome: { type: outcome.type },
+        outcome: { type: outcome.type === 'success' ? 'success' : 'cancelled' },
         // 拷一份：事件可能被异步序列化，别让它和之后对 message 的改动共享引用
         result: structuredClone(message),
         timestamp: now(),

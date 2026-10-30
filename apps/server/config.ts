@@ -1,5 +1,5 @@
 import './env.ts'
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import path from 'node:path'
@@ -65,9 +65,31 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  *   （本机 `/v1`、不要 key），模型名照 `ollama list`；
  * - `AGENT_BASE_URL` + `AGENT_API`：自建 / 代理端点（`openai-completions` | `anthropic-messages`），
  *   此时按这两项构造一个自定义模型，`AGENT_PROVIDER` 只当名字用；
- * - `AGENT_API_KEY`：显式的 key，优先于 pi 的环境变量约定；
- * - `AGENT_SANDBOX=local`：给模型暴露本机子进程沙箱里的 `run_media_command`（ffmpeg / ffprobe）。
- *   **默认不开**：本地实现不是强隔离（见 `@shadecn/agent/sandbox` 的 local.ts）。
+ * - `AGENT_IMAGE_INPUT`：模型吃不吃图片（`1` / `0`）。不配按 pi 注册表的元数据，自建端点和 ollama 默认只吃文字；
+ *   吃图片的模型才拿得到 `view_node_media`（看节点上的图，docs/20 §3.10.7），所以自建的多模态端点要显式配 `1`；
+ * - `AGENT_API_KEY`：显式的 key，优先于 pi 的环境变量约定。**只在服务端**：沙箱里的 runner 拿到的是 run 短令牌，
+ *   真实 key 由网关的模型代理注入（docs/22 §4.1）；
+ * - `AGENT_SANDBOX`：沙箱驱动（docs/22 §7）—— pi 的推理循环跑在每轮一个的沙箱里：
+ *   `process`（默认：本机 `node` 子进程，**不是强隔离**，`NODE_ENV=production` 时拒绝，除非 `AGENT_SANDBOX_ALLOW_PROCESS=1`）；
+ *   `oci`（每轮一个 Docker / Podman 容器，经 Engine API 的 unix socket；生产可用）；
+ *   `k8s` 是后续分期（现在配了 = agent 未启用并写明原因）。一期的取值 `local` 当作 `process` + 开媒体工具，打一行提示；
+ * - `AGENT_SANDBOX_EXEC=1`：给模型 `run_media_command`（ffmpeg / ffprobe，在 runner 自己的工作目录里跑）。默认不开；
+ * - `AGENT_SANDBOX_IMAGE`：`oci` 的沙箱镜像（`pnpm build:sandbox-image` 构建），默认 `shadecn-agent-sandbox:latest`；
+ * - `AGENT_SANDBOX_OCI_SOCKET`：容器引擎的 unix socket（`unix://` 前缀可有可无）。不配按常见位置找
+ *   （`DOCKER_HOST`、`/var/run/docker.sock`、Linux 的 podman、macOS 的 podman machine、Docker Desktop，见 `@shadecn/agent/sandbox/drivers` 的 `engineSocketCandidates`）；
+ * - `AGENT_SANDBOX_OCI_NETWORK`：容器进哪个网络，默认引擎的 `bridge`（**可以出网**，启动时告警）；
+ *   只有 `--internal` 网络（服务端也接在里面）才真的「只能到网关」，见 docs/22 §7.2；
+ * - `AGENT_SANDBOX_RUNTIME`：OCI 运行时（Linux 上装了 gVisor 时 `runsc`），不配用引擎默认；
+ * - `AGENT_SANDBOX_CPUS` / `AGENT_SANDBOX_MEMORY_MIB` / `AGENT_SANDBOX_PIDS` / `AGENT_SANDBOX_DISK_MIB`：每个沙箱的资源上限
+ *   （默认 1 核 / 512 MiB / 128 / 512 MiB；`process` 驱动不执行这几项）。PIDs 含线程：runner 自己约 13 个，ffmpeg（x264）
+ *   按 CPU 核数开线程，实测 7 核的机器上峰值约 40 个。`DISK_MIB` 是工作目录 tmpfs 的大小，tmpfs 计入内存上限；
+ * - `AGENT_GATEWAY_URL`：沙箱里看到的服务端地址（网关挂在它的 `/api/agent-gateway` 下）。默认：
+ *   `process` → `http://127.0.0.1:<PORT>`（runner 和服务端在同一台机器上）；
+ *   `oci` → `http://host.docker.internal:<PORT>`（Podman 5 与 Docker Desktop 都给容器加了这个名字；Linux 上的 Docker 没有，要显式配）；
+ * - `AGENT_TOKEN_SECRET`：签 run 短令牌的 HMAC 密钥。不配时由 `SESSION_SECRET` 派生（加了域分隔，和会话的 HMAC 不是同一把）；
+ *   两个都没有（只可能在开发环境，生产缺 `SESSION_SECRET` 起不来）就每次启动随机一把 —— 令牌本来就只在发起它的进程里有效；
+ * - `AGENT_GRANT_MARGIN_MS`：委托授权（Grant，docs/22）的绝对过期时间 = 签发时刻 + 这一轮的时长上限 + 这个余量（默认 60 秒）。
+ *   正常情况下一轮先撞上自己的时长上限（cancelled）；Grant 到期（expired）是兜底。
  */
 export const agentConfig = {
   provider: process.env.AGENT_PROVIDER?.trim() || 'anthropic',
@@ -75,8 +97,84 @@ export const agentConfig = {
   baseUrl: process.env.AGENT_BASE_URL?.trim() ?? '',
   api: process.env.AGENT_API?.trim() ?? '',
   apiKey: process.env.AGENT_API_KEY?.trim() ?? '',
-  sandbox: process.env.AGENT_SANDBOX?.trim() === 'local' ? 'local' : 'none',
+  imageInput: flag(process.env.AGENT_IMAGE_INPUT),
+  sandbox: resolveSandboxDriver(process.env.AGENT_SANDBOX),
+  sandboxExec: isOn(process.env.AGENT_SANDBOX_EXEC) || process.env.AGENT_SANDBOX?.trim() === 'local',
+  allowProcessInProduction: isOn(process.env.AGENT_SANDBOX_ALLOW_PROCESS),
+  sandboxImage: process.env.AGENT_SANDBOX_IMAGE?.trim() || 'shadecn-agent-sandbox:latest',
+  ociSocket: process.env.AGENT_SANDBOX_OCI_SOCKET?.trim() ?? '',
+  ociNetwork: process.env.AGENT_SANDBOX_OCI_NETWORK?.trim() || 'bridge',
+  sandboxRuntime: process.env.AGENT_SANDBOX_RUNTIME?.trim() ?? '',
+  sandboxResources: {
+    cpu: positive(Number(process.env.AGENT_SANDBOX_CPUS ?? 1), 1),
+    memoryMiB: Math.floor(positive(Number(process.env.AGENT_SANDBOX_MEMORY_MIB ?? 512), 512)),
+    pids: Math.floor(positive(Number(process.env.AGENT_SANDBOX_PIDS ?? 128), 128)),
+    diskMiB: Math.floor(positive(Number(process.env.AGENT_SANDBOX_DISK_MIB ?? 512), 512)),
+  },
+  gatewayUrl: (process.env.AGENT_GATEWAY_URL?.trim() || defaultGatewayUrl(process.env.AGENT_SANDBOX)).replace(/\/+$/, ''),
+  tokenSecret: resolveAgentTokenSecret(),
+  grantMarginMs: nonNegative(Number(process.env.AGENT_GRANT_MARGIN_MS ?? 60_000), 60_000),
 } as const
+
+/** 沙箱驱动的取值；认不出的原样带着，由 agent 装配点写成「未启用」的原因 */
+export type AgentSandboxDriver = 'process' | 'oci' | 'k8s' | { unknown: string }
+
+function resolveSandboxDriver(raw: string | undefined): AgentSandboxDriver {
+  const value = raw?.trim() || 'process'
+  if (value === 'process' || value === 'oci' || value === 'k8s') return value
+  // 一期的取值：那时 local = 「开本机沙箱的 ffmpeg 工具」；现在 runner 本身就在沙箱里
+  if (value === 'local') {
+    console.warn('[agent] AGENT_SANDBOX=local 已改名：现在按 process 驱动 + AGENT_SANDBOX_EXEC=1 处理（docs/22 §7）')
+    return 'process'
+  }
+  return { unknown: value }
+}
+
+function isOn(raw: string | undefined): boolean {
+  return ['1', 'true', 'on', 'yes'].includes(raw?.trim().toLowerCase() ?? '')
+}
+
+/** 三态开关：没配 / 认不出 = undefined（按默认），其余按开 / 关 */
+function flag(raw: string | undefined): boolean | undefined {
+  const value = raw?.trim().toLowerCase() ?? ''
+  if (['1', 'true', 'on', 'yes'].includes(value)) return true
+  if (['0', 'false', 'off', 'no'].includes(value)) return false
+  return undefined
+}
+
+/** 监听全部地址时，同机的沙箱从回环地址进来 */
+function loopbackOf(listen: string): string {
+  return listen === '0.0.0.0' || listen === '::' || listen === '' ? '127.0.0.1' : listen
+}
+
+/**
+ * 沙箱看到的网关地址的默认值：`process` 同机走回环；`oci` 的容器里回环是容器自己，要走引擎给的宿主名。
+ * podman machine（macOS）上这个名字落到宿主的回环地址，所以服务端照常只听 127.0.0.1 就够；
+ * Linux 上它是宿主网卡的地址，服务端要监听在那上面（或配 `AGENT_GATEWAY_URL`），见 docs/22 §7.2。
+ */
+function defaultGatewayUrl(sandbox: string | undefined): string {
+  if (sandbox?.trim() === 'oci') return `http://host.docker.internal:${port}`
+  return `http://${loopbackOf(host)}:${port}`
+}
+
+/** 不是正的有限数（没配好）就用默认值 */
+function positive(value: number, fallback: number): number {
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+function resolveAgentTokenSecret(): string {
+  const explicit = process.env.AGENT_TOKEN_SECRET?.trim()
+  if (explicit) return explicit
+  const session = process.env.SESSION_SECRET?.trim()
+  // 域分隔：同一把 SESSION_SECRET 派生出另一把，会话 cookie 的 HMAC 和 run 令牌的签名互不通用
+  if (session) return createHmac('sha256', session).update('shadecn-agent-sts').digest('hex')
+  return randomBytes(32).toString('hex')
+}
+
+/** 不是非负有限数（没配好）就用默认值 */
+function nonNegative(value: number, fallback: number): number {
+  return Number.isFinite(value) && value >= 0 ? value : fallback
+}
 
 /** 沙箱工作目录的根：`<dataDir>/agent-workspaces/<flowId>/<runId>`，一张画布一个项目目录 */
 export const agentWorkspaceDir = path.join(dataDir, 'agent-workspaces')

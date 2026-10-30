@@ -26,6 +26,10 @@ function fakeS3() {
     async headObject(key) {
       return objects.get(key) ?? null
     },
+    // 上传接口不读对象
+    async getObject() {
+      return { status: 'not_found' }
+    },
     async createMultipartUpload(key, contentType) {
       seq += 1
       const uploadId = `up+${seq}/=`

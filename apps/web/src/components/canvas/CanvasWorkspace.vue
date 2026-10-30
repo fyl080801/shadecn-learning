@@ -8,6 +8,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip"
 import { Textarea } from "@/components/ui/textarea"
 import {
   AlertDialog,
@@ -128,9 +133,14 @@ const rowClass =
 
       <div class="mt-2 flex items-center justify-between pl-2 pr-1">
         <span class="text-xs font-medium text-muted-foreground">项目</span>
-        <Button variant="ghost" size="icon-xs" title="新建项目" aria-label="新建项目" @click="openCreate">
-          <Plus />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <Button variant="ghost" size="icon-xs" aria-label="新建项目" @click="openCreate">
+              <Plus />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="right">新建项目</TooltipContent>
+        </Tooltip>
       </div>
 
       <div v-if="loading && projects.length === 0" class="space-y-1 px-1">
@@ -162,17 +172,20 @@ const rowClass =
           </RouterLink>
 
           <!-- 非管理员删除服务端会 403，所以连图标都不给 -->
-          <Button
-            v-if="project.myRole === 'admin'"
-            variant="ghost"
-            size="icon-xs"
-            class="absolute right-1 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-            :title="`删除项目「${project.name}」`"
-            :aria-label="`删除项目「${project.name}」`"
-            @click.stop.prevent="startDelete(project)"
-          >
-            <Trash2 class="text-destructive" />
-          </Button>
+          <Tooltip v-if="project.myRole === 'admin'">
+            <TooltipTrigger as-child>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                class="absolute right-1 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                :aria-label="`删除项目「${project.name}」`"
+                @click.stop.prevent="startDelete(project)"
+              >
+                <Trash2 class="text-destructive" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right">{{ `删除项目「${project.name}」` }}</TooltipContent>
+          </Tooltip>
         </div>
 
         <p v-if="total > projects.length" class="px-2 py-1 text-xs text-muted-foreground">

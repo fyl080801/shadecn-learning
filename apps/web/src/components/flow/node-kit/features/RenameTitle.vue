@@ -6,6 +6,7 @@ export const RENAME_MODE = "rename"
 <script setup lang="ts">
 import { ref, watch } from "vue"
 
+import { Input } from "@/components/ui/input"
 import { useNodePart } from "../context"
 
 /**
@@ -21,7 +22,12 @@ import { useNodePart } from "../context"
  */
 const ctx = useNodePart()
 
-const inputRef = ref<HTMLInputElement | null>(null)
+// `<Input>` 是组件，ref 拿到的是实例：原生 input 在它的 `$el`
+const inputRef = ref<InstanceType<typeof Input> | null>(null)
+
+function inputEl(): HTMLInputElement | null {
+  return (inputRef.value?.$el as HTMLInputElement | undefined) ?? null
+}
 
 const title = ctx.node.draft<string>("metadata", "label", {
   read: () => ctx.label.value,
@@ -29,8 +35,8 @@ const title = ctx.node.draft<string>("metadata", "label", {
   label: "修改节点标题",
   normalize: (raw) => raw.trim() || null,
   focus: () => {
-    inputRef.value?.focus()
-    inputRef.value?.select()
+    inputEl()?.focus()
+    inputEl()?.select()
   }
 })
 
@@ -64,11 +70,11 @@ watch(ctx.mode.current, (mode) => {
 
 <template>
   <!-- nodrag / nopan：在输入框里拖选文字不该变成拖节点或拖画布 -->
-  <input
+  <Input
     v-if="title.editing.value"
     ref="inputRef"
     v-model="title.draft.value"
-    class="nodrag nopan h-5 w-32 rounded border border-primary bg-card px-1 text-xs outline-none"
+    class="nodrag nopan h-5 w-32 rounded border-primary bg-card px-1 py-0 text-xs shadow-none focus-visible:border-primary focus-visible:ring-0 md:text-xs dark:bg-card"
     @blur="commit()"
     @keydown.enter.prevent="commit()"
     @keydown.esc.prevent="cancel()"

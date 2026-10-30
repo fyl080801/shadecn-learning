@@ -6,6 +6,7 @@ import CanvasWorkspace from "@/components/canvas/CanvasWorkspace.vue"
 import { projectApi } from "@/lib/api"
 import { resetProjectNav } from "@/composables/useProjectNav"
 import type { Paged, ProjectSummary } from "@shadecn/shared/canvas"
+import { withTooltipProvider } from "./with-tooltip"
 
 /**
  * 画布工作区的页内侧栏：个人画布 + 项目分组。
@@ -58,7 +59,7 @@ async function mountAt(path: string) {
   await router.push(path)
   await router.isReady()
 
-  const wrapper = mount(CanvasWorkspace, {
+  const wrapper = mount(withTooltipProvider(CanvasWorkspace), {
     global: { plugins: [router] },
     slots: { default: '<div id="content">内容</div>' },
     attachTo: document.body
@@ -68,7 +69,7 @@ async function mountAt(path: string) {
 }
 
 function deleteIcon(name: string) {
-  return document.querySelector(`button[title="删除项目「${name}」"]`) as HTMLElement | null
+  return document.querySelector(`button[aria-label="删除项目「${name}」"]`) as HTMLElement | null
 }
 
 function dialogButton(selector: string, text: string) {
@@ -156,7 +157,7 @@ describe("画布工作区的页内侧栏", () => {
     vi.mocked(projectApi.create).mockResolvedValue(project("p3", "新项目"))
     vi.mocked(projectApi.list).mockClear()
 
-    await wrapper.find('button[title="新建项目"]').trigger("click")
+    await wrapper.find('button[aria-label="新建项目"]').trigger("click")
     await flushPromises()
     const input = document.querySelector("#project-name") as HTMLInputElement
     expect(input).not.toBeNull()
@@ -175,7 +176,7 @@ describe("画布工作区的页内侧栏", () => {
   it("名称为空 → 不发请求", async () => {
     const wrapper = await mountAt("/canvas")
 
-    await wrapper.find('button[title="新建项目"]').trigger("click")
+    await wrapper.find('button[aria-label="新建项目"]').trigger("click")
     await flushPromises()
     dialogButton("[data-slot=dialog-content]", "创建")!.click()
     await flushPromises()

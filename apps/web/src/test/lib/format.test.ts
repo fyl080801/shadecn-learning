@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { formatDate, formatDateTime, formatTime, formatWith } from "@/lib/format"
+import { formatDate, formatDateTime, formatDuration, formatTime, formatWith } from "@/lib/format"
 import { displayPreferences, resetDisplayPreferences } from "@/lib/preferences"
 
 /** 后端出口一律是这种 UTC ISO（带 Z） */
@@ -154,5 +154,20 @@ describe("跟着设置页的显示偏好走", () => {
     displayPreferences.value.locale = "这不是语言标签"
     expect(() => formatDate(UTC_ISO)).not.toThrow()
     expect(formatDate(UTC_ISO)).not.toBe("-")
+  })
+})
+
+describe("formatDuration()", () => {
+  it("秒 / 分秒 / 时分三档", () => {
+    expect(formatDuration(0)).toBe("0 秒")
+    expect(formatDuration(42_900)).toBe("42 秒")
+    expect(formatDuration(125_000)).toBe("2 分 05 秒")
+    expect(formatDuration(3_725_000)).toBe("1 小时 2 分")
+  })
+
+  it("负数（两边时钟差）按 0 算；非有限数显示占位符", () => {
+    expect(formatDuration(-5_000)).toBe("0 秒")
+    expect(formatDuration(Number.NaN)).toBe("-")
+    expect(formatDuration(null)).toBe("-")
   })
 })

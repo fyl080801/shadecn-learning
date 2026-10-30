@@ -69,6 +69,14 @@ export function useFlowNode(id: MaybeRefOrGetter<string>) {
     write("data", { set: patch }, actionLabel)
   }
 
+  /**
+   * 挂上素材（图片 / 视频上传完成）：写 `src` / `poster` 并按「有没有连入」定形态，见 `store.attachAsset`。
+   * 不要用 `setData` 写 `src` —— 形态只能经这一步变。
+   */
+  function attachAsset(asset: { src: string; poster?: string }, actionLabel?: string) {
+    store.attachAsset(toValue(id), asset, actionLabel)
+  }
+
   /** 读某一组的当前值（原样，可能是 undefined） */
   function readGroup(group: FlowNodeGroup, key: string): unknown {
     const source =
@@ -104,6 +112,7 @@ export function useFlowNode(id: MaybeRefOrGetter<string>) {
     write,
     rename,
     setData,
+    attachAsset,
     draft
   }
 }

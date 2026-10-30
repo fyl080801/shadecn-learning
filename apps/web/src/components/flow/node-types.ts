@@ -6,7 +6,15 @@ import DirectorBody from "@/components/flow/DirectorBody.vue"
 import ImageBody from "@/components/flow/ImageBody.vue"
 import { mediaNodeStyle } from "@/components/flow/media-fit"
 import NodeHost from "@/components/flow/node-kit/NodeHost.vue"
-import type { NodeModeDef, NodePartDef, NodeTypeView } from "@/components/flow/node-kit/protocol"
+import {
+  defineNodePart,
+  ORDER_TYPE,
+  type NodeModeDef,
+  type NodePartDef,
+  type NodeTypeView
+} from "@/components/flow/node-kit/protocol"
+import NodeUploadBadge from "@/components/flow/NodeUploadBadge.vue"
+import { nodeUploadOf } from "@/components/flow/node-upload"
 import TextBody from "@/components/flow/TextBody.vue"
 import VideoBody from "@/components/flow/VideoBody.vue"
 import type { FlowNodeRecord } from "@shadecn/shared/flow-graph"
@@ -15,6 +23,7 @@ import {
   CREATABLE_NODE_TYPES,
   FLOW_NODE_TYPE_DEFAULTS,
   hasNodeResource,
+  nodeFormOf,
   type BuildNodeOptions,
   type FlowNodeTypeDefaults
 } from "@shadecn/shared/flow-node-types"
@@ -99,13 +108,29 @@ export function defineNodeType(
 }
 
 /**
- * 底部输入框（按类型注册）。文本 / 图片 / 视频**有了内容就收起**（`hasNodeResource`）：
- * 输入框是「还没有内容时描述想要什么」用的。导演台一直有。
+ * 底部输入框（按类型注册）。文本**有了正文就收起**（`hasNodeResource`）：输入框是「还没有内容时描述想要什么」用的。
+ * 图片 / 视频看**形态**（`nodeFormOf`）：generate 一直有（哪怕已经放了一张图），asset（独立素材）没有。导演台一直有。
  *
  * 眼下只到「写进 `data.prompt`、回车发 `composer:submit`」为止 —— 没有谁接这个事件，提交不会触发任何运行。
  */
 const whenEmpty = (part: Parameters<typeof definePromptComposerPart>[0]) =>
   definePromptComposerPart({ ...part, when: (ctx) => !hasNodeResource(ctx.type, ctx.node.data.value) })
+
+const whenGenerate = (part: Parameters<typeof definePromptComposerPart>[0]) =>
+  definePromptComposerPart({ ...part, when: (ctx) => nodeFormOf(ctx.type, ctx.node.data.value) === "generate" })
+
+/**
+ * 图片 / 视频上传中的「上传中」角标。上传状态是本地的（`node-upload.ts`），不是 `runtime.status`，
+ * 所以不归 `status` 能力管，按类型登记。
+ */
+const uploadingBadge = (type: string) =>
+  defineNodePart({
+    id: `${type}.uploading`,
+    slot: "badge",
+    order: ORDER_TYPE,
+    component: NodeUploadBadge,
+    when: (ctx) => nodeUploadOf(ctx) !== undefined
+  })
 
 /**
  * 带底部输入框的类型多启用 `edit-prompt`（写字时露出输入框、整张画布只有一个节点在编辑）。
@@ -126,14 +151,17 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     parts: [whenEmpty({ id: "text.composer", placeholder: "描述想写的内容（Shift+回车换行）" })]
   }),
   /**
-   * 图片 —— body 画 `data.src` 那张图，没有就是空占位。没有资源时接受文本 / 图片 / 视频连入。
+   * 图片 —— body 画 `data.src` 那张图，没有就是空占位。generate 形态接受文本 / 图片 / 视频拖线连入，asset 形态不接受。
    * 尺寸按图的高宽比（竖图定宽、横图定高），量过一次就记在布局里（`media-fit.ts`）
    */
   image: defineNodeType("image", {
     label: "图片",
     icon: Image,
     view: { body: ImageBody, class: "flex flex-col", style: mediaNodeStyle, fallbackLabel: "图片" },
-    parts: [whenEmpty({ id: "image.composer", placeholder: "描述想要的画面（Shift+回车换行）" })],
+    parts: [
+      whenGenerate({ id: "image.composer", placeholder: "描述想要的画面（Shift+回车换行）" }),
+      uploadingBadge("image")
+    ],
     features: COMPOSER_FEATURES
   }),
   /** 视频 —— body 只画预览图 `data.poster`（不放 `<video>`），没有就是空占位。连入规则、尺寸规则同图片 */
@@ -141,16 +169,24 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     label: "视频",
     icon: Film,
     view: { body: VideoBody, class: "flex flex-col", style: mediaNodeStyle, fallbackLabel: "视频" },
-    parts: [whenEmpty({ id: "video.composer", placeholder: "描述想要的视频（Shift+回车换行）" })],
+    parts: [
+      whenGenerate({ id: "video.composer", placeholder: "描述想要的视频（Shift+回车换行）" }),
+      uploadingBadge("video")
+    ],
     features: COMPOSER_FEATURES
   }),
-  /** 导演台 —— body 是一个「打开导演台」按钮（目的地还没做，按钮先空着）。底部输入框一直在 */
+  /**
+   * 导演台 —— body 是一个「打开导演台」按钮，点了全屏打开导演台（`FlowDirectorOverlay`）。底部输入框一直在，
+   * 回车把这段话交给绑定这个节点的会话（能力 `director-chat`）。
+   * 固定 240 × 240 的正方形（与方图同尺寸）：方块是 body（`aspect-square`），报错行接在它下面，方块不变形
+   */
   director: defineNodeType("director", {
     label: "导演台",
     icon: Clapperboard,
-    view: { body: DirectorBody, class: "flex w-[280px] flex-col", fallbackLabel: "导演台" },
-    parts: [definePromptComposerPart({ id: "director.composer", placeholder: "描述想要的镜头（Shift+回车换行）" })],
-    features: COMPOSER_FEATURES
+    view: { body: DirectorBody, class: "flex w-[240px] flex-col", fallbackLabel: "导演台" },
+    parts: [definePromptComposerPart({ id: "director.composer", placeholder: "让助手搭场景、编排镜头（回车发送）" })],
+    // director-chat：输入框回车 = 打开导演台、在绑定这个节点的会话里发出去（docs/07 §7.4）
+    features: [...COMPOSER_FEATURES, "director-chat"]
   }),
   /**
    * 兜底 —— 认不出的 `type`（老画布里的 `process`、已经下线的旧业务类型）都按它画：一张空卡片，只有名字，

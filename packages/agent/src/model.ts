@@ -34,6 +34,11 @@ export interface AgentModelOptions {
   /** 自定义端点的线协议；不给时取注册表里同名模型的，没有则 `openai-completions` */
   api?: string
   apiKey?: string
+  /**
+   * 模型吃不吃图片输入（`view_node_media` 只给吃图片的模型）。不给 = 按注册表的元数据，自定义端点 / 预设默认只吃文字；
+   * 给了就覆盖：自建的多模态端点声明 `true`，注册表里的模型也可以用 `false` 关掉。
+   */
+  imageInput?: boolean
 }
 
 export interface ResolvedAgentModel {
@@ -139,6 +144,11 @@ export function resolveAgentModel(options: AgentModelOptions): ModelResolution {
   }
 
   if (!apiKey) return { ok: false, reason: `没有 ${provider} 的 API key` }
+
+  // 声明了就覆盖（注册表里的对象是共享的，复制一份再改）
+  if (options.imageInput !== undefined) {
+    model = { ...model, input: options.imageInput ? ['text', 'image'] : ['text'] }
+  }
 
   return { ok: true, value: { model, apiKey, label: model.name || modelId } }
 }

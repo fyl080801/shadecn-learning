@@ -121,12 +121,30 @@ describe('add_node', () => {
     expect(nodesMap(doc).size).toBe(1)
   })
 
-  it('新节点带着资源（data.src）再连进去 → 和人往有资源的图上连一样被拒，节点也不建', async () => {
+  it('新节点带着素材（data.src）：没有连入 → asset 形态；同时 connectFrom 连进来 → 保持 generate', async () => {
     const { doc, call } = setup([textNode('a', 'A')])
-    await expect(
-      call('add_node', { type: 'image', metadata: { label: 'X' }, data: { src: 'https://x/a.png' }, connectFrom: 'a' }),
-    ).rejects.toThrow('已经有资源')
-    expect(nodesMap(doc).size).toBe(1)
+    const idOf = (res: Awaited<ReturnType<typeof call>>) =>
+      (JSON.parse((res.content[0] as { text: string }).text) as { id: string }).id
+
+    const alone = idOf(await call('add_node', { type: 'image', metadata: { label: '素材' }, data: { src: 'https://x/a.png' } }))
+    expect(node(doc, alone)!.data).toEqual({ src: 'https://x/a.png', form: 'asset' })
+
+    const wired = idOf(
+      await call('add_node', {
+        type: 'video',
+        metadata: { label: '生成' },
+        data: { src: 'https://x/v.mp4', poster: 'https://x/p.jpg' },
+        connectFrom: 'a',
+      }),
+    )
+    expect(node(doc, wired)!.data).toEqual({ src: 'https://x/v.mp4', poster: 'https://x/p.jpg', form: 'generate' })
+    expect(edges(doc)).toHaveLength(1)
+  })
+
+  it('data.form 不让给：形态由画布按连线自己维护', async () => {
+    const { doc, call } = setup()
+    await expect(call('add_node', { type: 'image', metadata: { label: 'X' }, data: { form: 'asset' } })).rejects.toThrow('form')
+    expect(nodesMap(doc).size).toBe(0)
   })
 
   it('只能新建 text / image / video / director：兜底的 process、分组都不行', async () => {
@@ -182,6 +200,14 @@ describe('update_node', () => {
     await expect(call('update_node', { id: 'a', data: { rich: 'x' } })).rejects.toThrow('协同')
   })
 
+  it('src / form 不能用 update_node 改（写和删都不行），画布不动', async () => {
+    const { doc, call } = setup([typedNode('img', 'image')])
+    await expect(call('update_node', { id: 'img', data: { src: 'https://x/a.png' } })).rejects.toThrow('add_node')
+    await expect(call('update_node', { id: 'img', data: { form: 'asset' } })).rejects.toThrow('自动维护')
+    await expect(call('update_node', { id: 'img', removeData: ['src'] })).rejects.toThrow('src')
+    expect(node(doc, 'img')!.data).toEqual({ src: '' })
+  })
+
   it('节点不存在 → 报错；什么都不给 → 报错', async () => {
     const { call } = setup([textNode('a', 'A')])
     await expect(call('update_node', { id: 'nope', metadata: { label: 'x' } })).rejects.toThrow('不存在')
@@ -228,12 +254,13 @@ describe('connect', () => {
     expect(edges(doc)).toHaveLength(2)
   })
 
-  it('目标图片已有资源（data.src）→ 拒绝新线，已有的线不动', async () => {
-    const { doc, call } = setup([textNode('txt', 'txt'), textNode('txt2', 'txt2'), typedNode('img', 'image')])
-    await call('connect', { source: 'txt', target: 'img' })
+  it('agent 只过逻辑门：能连进 asset 形态的图片，连上时它改回 generate', async () => {
+    const { doc, call } = setup([textNode('txt', 'txt'), typedNode('img', 'image')])
     nodeGroup(doc, 'img', 'data')!.set('src', 'https://x/a.png')
-    await expect(call('connect', { source: 'txt2', target: 'img' })).rejects.toThrow('已经有资源')
+    nodeGroup(doc, 'img', 'data')!.set('form', 'asset')
+    await call('connect', { source: 'txt', target: 'img' })
     expect(edges(doc)).toHaveLength(1)
+    expect(node(doc, 'img')!.data).toEqual({ src: 'https://x/a.png', form: 'generate' })
   })
 
   it('导演台 → 图片：先连截图 image → image，再连落到录制 video → video', async () => {
@@ -361,5 +388,214 @@ describe('placeNewNode', () => {
     expect(placeNewNode([], 'text')).toEqual({ x: 0, y: 0 })
     const spot = placeNewNode([{ id: 'a', type: 'text', layout: { position: { x: 0, y: 0 } } }], 'text')
     expect(spot.x).toBeGreaterThanOrEqual(320)
+  })
+})
+
+/** 工具结果的 JSON 正文 */
+function body<T = Record<string, unknown>>(res: { content: unknown[] }): T {
+  return JSON.parse((res.content[0] as { text: string }).text) as T
+}
+
+function linkEdge(doc: Y.Doc, id: string, source: string, target: string) {
+  doc.transact(() => {
+    edgesMap(doc).set(id, toYEdge({ id, source, target, sourceHandle: null, targetHandle: null, data: defaultEdgeData() }))
+  })
+}
+
+describe('get_node', () => {
+  it('形状同 read_canvas 的节点条目，另附该类型的端口；只读不写', async () => {
+    const { doc, origins, call } = setup([textNode('a', 'A', '正文'), typedNode('img', 'image')])
+    const fromCanvas = body<{ nodes: { id: string }[] }>(await call('read_canvas', {})).nodes.find((item) => item.id === 'img')
+    const res = await call('get_node', { id: 'img' })
+    const { ports, ...entry } = body<{ ports: { inputs: { id: string }[] } }>(res)
+    expect(entry).toEqual(fromCanvas)
+    expect(ports.inputs.map((port) => port.id)).toEqual(['text', 'image', 'video'])
+    expect(res.details.elementIds).toEqual([])
+    expect(origins).toHaveLength(0)
+    expect(nodesMap(doc).size).toBe(2)
+  })
+
+  it('不存在 → 报错并提示先 read_canvas；id 不合法 → 报错', async () => {
+    const { call } = setup()
+    await expect(call('get_node', { id: 'ghost' })).rejects.toThrow('read_canvas')
+    await expect(call('get_node', { id: 'bad id!' })).rejects.toThrow('不是合法的 id')
+  })
+})
+
+describe('check_connection', () => {
+  it('只给裁决不写：能连返回会连的端口对，不能连返回原因', async () => {
+    const { doc, origins, call } = setup([textNode('t', 'T'), typedNode('img', 'image')])
+    expect(body(await call('check_connection', { source: 't', target: 'img' }))).toEqual({
+      ok: true,
+      sourcePort: 'text',
+      targetPort: 'text',
+    })
+    const rejected = body<{ ok: boolean; reason: string }>(await call('check_connection', { source: 'img', target: 't' }))
+    expect(rejected.ok).toBe(false)
+    expect(rejected.reason).toBeTruthy()
+    expect(edgesMap(doc).size).toBe(0)
+    expect(origins).toHaveLength(0)
+  })
+
+  it('一端不存在 → 报错', async () => {
+    const { call } = setup([textNode('t', 'T')])
+    await expect(call('check_connection', { source: 't', target: 'ghost' })).rejects.toThrow('ghost')
+  })
+})
+
+describe('move_nodes', () => {
+  it('一笔挪一批，一个事务', async () => {
+    const { doc, origins, call } = setup([textNode('a', 'A'), textNode('b', 'B')])
+    const res = await call('move_nodes', { moves: [{ id: 'a', x: 10, y: 20 }, { id: 'b', x: -30, y: 40 }] })
+    expect(node(doc, 'a')!.layout.position).toEqual({ x: 10, y: 20 })
+    expect(node(doc, 'b')!.layout.position).toEqual({ x: -30, y: 40 })
+    expect(res.details.elementIds).toEqual(['a', 'b'])
+    expect(origins).toHaveLength(1)
+  })
+
+  it('有一个不存在就整个拒绝；重复 id、超出数量、坐标越界 → 拒绝，都不写', async () => {
+    const { doc, origins, call } = setup([textNode('a', 'A')])
+    await expect(call('move_nodes', { moves: [{ id: 'a', x: 1, y: 1 }, { id: 'ghost', x: 1, y: 1 }] })).rejects.toThrow('ghost')
+    await expect(call('move_nodes', { moves: [{ id: 'a', x: 1, y: 1 }, { id: 'a', x: 2, y: 2 }] })).rejects.toThrow('重复')
+    const many = Array.from({ length: TOOL_LIMITS.movePerCall + 1 }, (_, i) => ({ id: `n${i}`, x: 0, y: 0 }))
+    await expect(call('move_nodes', { moves: many })).rejects.toThrow(`最多 ${TOOL_LIMITS.movePerCall}`)
+    await expect(call('move_nodes', { moves: [{ id: 'a', x: 1e9, y: 0 }] })).rejects.toThrow('超出范围')
+    expect(node(doc, 'a')!.layout.position).toEqual({ x: 0, y: 0 })
+    expect(origins).toHaveLength(0)
+  })
+})
+
+describe('resize_node', () => {
+  it('写宽高，位置不动', async () => {
+    const { doc, call } = setup([{ ...typedNode('g', 'group'), layout: { position: { x: 5, y: 6 }, width: 520, height: 360 } }])
+    const res = await call('resize_node', { id: 'g', width: 800, height: 600 })
+    expect(node(doc, 'g')!.layout).toMatchObject({ position: { x: 5, y: 6 }, width: 800, height: 600 })
+    expect(res.details.elementIds).toEqual(['g'])
+  })
+
+  it('尺寸越界 → 拒绝；节点不存在 → 报错并提示 read_canvas', async () => {
+    const { doc, origins, call } = setup([textNode('a', 'A')])
+    await expect(call('resize_node', { id: 'a', width: TOOL_LIMITS.sizeMin - 1, height: 100 })).rejects.toThrow('之间')
+    await expect(call('resize_node', { id: 'a', width: 100, height: TOOL_LIMITS.sizeMax + 1 })).rejects.toThrow('之间')
+    await expect(call('resize_node', { id: 'ghost', width: 100, height: 100 })).rejects.toThrow('read_canvas')
+    expect(node(doc, 'a')!.layout.width).toBeUndefined()
+    expect(origins).toHaveLength(0)
+  })
+})
+
+describe('duplicate_node', () => {
+  it('副本错开默认步长，照抄 data、运行态清空、不复制连线', async () => {
+    const { doc, call } = setup([
+      { ...textNode('a', 'A', '正文', { x: 100, y: 100 }), runtime: { status: 'completed', outputs: { text: '产出' } } },
+      textNode('b', 'B'),
+    ])
+    linkEdge(doc, 'e1', 'a', 'b')
+    const res = await call('duplicate_node', { id: 'a' })
+    const { id } = body<{ id: string }>(res)
+    const copy = node(doc, id)!
+    expect(copy.layout.position).toEqual({ x: 100 + TOOL_LIMITS.duplicateOffset, y: 100 + TOOL_LIMITS.duplicateOffset })
+    expect(copy.data).toEqual({ text: '正文' })
+    expect(copy.runtime).toEqual({ status: 'idle' })
+    expect(edges(doc)).toHaveLength(1)
+    expect(res.details.elementIds).toEqual([id])
+
+    const shifted = body<{ id: string }>(await call('duplicate_node', { id: 'a', offset: { x: 0, y: 300 } }))
+    expect(node(doc, shifted.id)!.layout.position).toEqual({ x: 100, y: 400 })
+  })
+
+  it('分组框不能复制；不存在 → 报错', async () => {
+    const { doc, call } = setup([typedNode('g', 'group')])
+    await expect(call('duplicate_node', { id: 'g' })).rejects.toThrow('分组框不能复制')
+    await expect(call('duplicate_node', { id: 'ghost' })).rejects.toThrow('read_canvas')
+    expect(nodesMap(doc).size).toBe(1)
+  })
+})
+
+describe('group_nodes / ungroup', () => {
+  it('打组：分组框按位置 + 估计尺寸围出来，组员挂上去、坐标改为相对分组框，一个事务；默认名自动编号', async () => {
+    const { doc, origins, call } = setup([textNode('a', 'A', '', { x: 100, y: 100 }), textNode('b', 'B', '', { x: 600, y: 100 })])
+    const res = await call('group_nodes', { ids: ['a', 'b'] })
+    const created = body<{ id: string; position: { x: number; y: number }; width: number; height: number; children: string[] }>(res)
+    expect(origins).toHaveLength(1)
+    expect(created.children).toEqual(['a', 'b'])
+    const group = node(doc, created.id)!
+    expect(group.type).toBe('group')
+    expect(group.metadata.label).toBe('分组 1')
+    // 外接矩形 (100,100)–(920,220)：text 估 320×120
+    expect(group.layout).toMatchObject({ position: { x: 68, y: 48 }, width: 884, height: 204, zIndex: -1 })
+    expect(node(doc, 'a')!.layout).toEqual({ position: { x: 32, y: 52 }, parentNode: created.id, extent: 'parent' })
+    expect(res.details.elementIds).toEqual([created.id, 'a', 'b'])
+  })
+
+  it('打组资格同编辑器：已在分组里的、分组本身、不够两个 → 拒绝；成员不存在 → 报错；都不写', async () => {
+    const { doc, origins, call } = setup([
+      textNode('a', 'A'),
+      textNode('b', 'B'),
+      typedNode('g', 'group'),
+      { ...textNode('inner', 'I'), layout: { position: { x: 0, y: 0 }, parentNode: 'g', extent: 'parent' } },
+    ])
+    await expect(call('group_nodes', { ids: ['a', 'inner'] })).rejects.toThrow('先解组')
+    await expect(call('group_nodes', { ids: ['a', 'g'] })).rejects.toThrow('分组不能再被圈进分组')
+    await expect(call('group_nodes', { ids: ['a', 'ghost'] })).rejects.toThrow('read_canvas')
+    await expect(call('group_nodes', { ids: ['a', 'a'] })).rejects.toThrow('重复')
+    expect(nodesMap(doc).size).toBe(4)
+    expect(origins).toHaveLength(0)
+  })
+
+  it('解组：拆掉分组框，组员留在原地（换回画布坐标）；不是分组 → 拒绝', async () => {
+    const { doc, call } = setup([
+      { ...typedNode('g', 'group', '组'), layout: { position: { x: 100, y: 200 }, width: 500, height: 300 } },
+      { ...textNode('child', '子'), layout: { position: { x: 10, y: 20 }, parentNode: 'g', extent: 'parent' } },
+      textNode('a', 'A'),
+    ])
+    await expect(call('ungroup', { id: 'a' })).rejects.toThrow('不是分组')
+    expect(nodesMap(doc).has('a')).toBe(true)
+
+    const res = await call('ungroup', { id: 'g' })
+    expect(nodesMap(doc).has('g')).toBe(false)
+    expect(node(doc, 'child')!.layout).toEqual({ position: { x: 110, y: 220 } })
+    expect(body(res)).toEqual({ children: ['child'], edges: [] })
+    expect(res.details.elementIds).toEqual(['g', 'child'])
+  })
+
+  it('解组拆掉的分组框计入每轮删除预算：预算用完就拒绝解组；拒绝过的、失败的不扣', async () => {
+    const nodes = Array.from({ length: TOOL_LIMITS.deletePerRun }, (_, i) => textNode(`n${i}`, `N${i}`))
+    const { doc, call } = setup([...nodes, typedNode('g1', 'group'), typedNode('g2', 'group'), textNode('plain', 'P')])
+    await expect(call('ungroup', { id: 'plain' })).rejects.toThrow('不是分组')
+    await call('delete_elements', { ids: nodes.slice(0, TOOL_LIMITS.deletePerRun - 1).map((n) => n.id) })
+    await call('ungroup', { id: 'g1' })
+    await expect(call('ungroup', { id: 'g2' })).rejects.toThrow('每轮上限')
+    await expect(call('delete_elements', { ids: ['plain'] })).rejects.toThrow('每轮上限')
+    expect(nodesMap(doc).has('g2')).toBe(true)
+  })
+})
+
+describe('auto_layout', () => {
+  it('整张画布横向分层：只挪顶层，组员不动，连到组内的线按分组计；一个事务', async () => {
+    const { doc, origins, call } = setup([
+      textNode('a', 'A', '', { x: 900, y: 900 }),
+      { ...typedNode('g', 'group'), layout: { position: { x: 0, y: 0 }, width: 400, height: 300 } },
+      { ...typedNode('child', 'image'), layout: { position: { x: 10, y: 10 }, parentNode: 'g', extent: 'parent' } },
+    ])
+    linkEdge(doc, 'e1', 'a', 'child')
+    const agentWrites = () => origins.filter(isAgentOrigin).length
+    const res = await call('auto_layout', {})
+    expect(agentWrites()).toBe(1)
+    expect(node(doc, 'child')!.layout.position).toEqual({ x: 10, y: 10 })
+    // a 在左一列，分组在它右边（text 估宽 320）
+    expect(node(doc, 'g')!.layout.position.x).toBeGreaterThan(node(doc, 'a')!.layout.position.x + 320)
+    expect(res.details.elementIds).not.toContain('child')
+
+    // 再排一次：已经排好，什么都不写
+    const again = await call('auto_layout', {})
+    expect(body(again)).toEqual({ moved: [] })
+    expect(agentWrites()).toBe(1)
+  })
+
+  it(`节点超过上限 → 拒绝，不写`, async () => {
+    const nodes = Array.from({ length: TOOL_LIMITS.layoutNodes + 1 }, (_, i) => textNode(`n${i}`, `N${i}`, '', { x: i, y: i }))
+    const { origins, call } = setup(nodes)
+    await expect(call('auto_layout', {})).rejects.toThrow(String(TOOL_LIMITS.layoutNodes))
+    expect(origins).toHaveLength(0)
   })
 })

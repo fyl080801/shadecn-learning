@@ -41,6 +41,8 @@ export interface TransportContext {
   doc: Y.Doc
   /** 这条通道再也好不了了，原因是这个 */
   onFatal: (reason: FatalClose) => void
+  /** 服务端发来的 stateless 旁路消息（原文），交给同步层按 `type` 分发；**不得抛异常** */
+  onStateless: (payload: string) => void
 }
 
 /**

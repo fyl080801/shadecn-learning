@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
-import { Loader2, MailX, Users } from "@lucide/vue"
+import { MailX, Users } from "@lucide/vue"
 
 import { Button } from "@/components/ui/button"
+import { Spinner } from "@/components/ui/spinner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { inviteApi } from "@/lib/api"
 import { usePageTitle } from "@/composables/usePageTitle"
@@ -69,7 +70,7 @@ const { run: join, pending: joining } = useAsyncAction(
     <Card class="w-full max-w-md">
       <template v-if="loading">
         <CardContent class="flex items-center justify-center gap-2 py-12 text-muted-foreground">
-          <Loader2 class="size-4 animate-spin" />
+          <Spinner />
           正在校验邀请链接…
         </CardContent>
       </template>

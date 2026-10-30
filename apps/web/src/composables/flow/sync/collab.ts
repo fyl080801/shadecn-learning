@@ -142,7 +142,8 @@ export function createCollabTransport(context: TransportContext): FlowTransport 
       synced.value = true
     },
     /**
-     * 服务端的旁路通知。目前只有一种：**它到底存没存进库**。
+     * 服务端的旁路通知。传输自己只认一种：**它到底存没存进库**；
+     * 其余的（比如 agent 的任务列表）原样交给同步层按 `type` 分发（`./stateless.ts`）。
      *
      * 这条消息补上的正是「同步」和「保存」之间那个缺口 —— 内容进了服务端内存、
      * 也广播给了同房间的人，连接层面毫无异常，但字节可能只是悬在那儿
@@ -153,7 +154,11 @@ export function createCollabTransport(context: TransportContext): FlowTransport 
      */
     onStateless: ({ payload }) => {
       const ok = parseStoreState(payload)
-      if (ok !== null) saveFailed.value = !ok
+      if (ok !== null) {
+        saveFailed.value = !ok
+        return
+      }
+      context.onStateless(payload)
     },
     /** 连接建起来之后被服务端关掉：顶下线、复验没过。普通断线在这里被 `classifyClose` 滤掉 */
     onClose: ({ event }) => {

@@ -15,7 +15,7 @@
 | REQ-COLLAB | Yjs 实时协同 | [04-realtime-collab.md](04-realtime-collab.md) | 已实现 |
 | REQ-DATA | 数据存储与业务 API | [05-data-persistence.md](05-data-persistence.md) | 部分实现 |
 | REQ-3DEDITOR | Three.js 编辑器渲染核心（原场景编辑器页面已下线） | [06-three-editor.md](06-three-editor.md) | 已实现 |
-| REQ-DIRECTOR | 3D 导演台（现仅保留 `/3d-viewport` 视口） | [07-director-console.md](07-director-console.md) | 部分实现 |
+| REQ-DIRECTOR | 3D 导演台（现仅保留视口：`/3d-viewport` 与画布导演台节点全屏打开；§7 规划场景与时间轴进节点、agent 编排） | [07-director-console.md](07-director-console.md) | 部分实现 |
 | REQ-PROMPT | 插件式富文本输入组件 | [08-prompt-input.md](08-prompt-input.md) | 已实现 |
 | REQ-FLOW | 流程图画布 | [09-flow-chart.md](09-flow-chart.md) | 已实现 |
 | REQ-DEMO | 演示页与小游戏 | [10-demo-pages.md](10-demo-pages.md) | 已实现 |
@@ -27,8 +27,11 @@
 | REQ-SOLO | 个人画布（不走协同的画布） | [16-personal-flow.md](16-personal-flow.md) | 已实现 |
 | REQ-BACKEND | 数据访问下沉：Node 不再直连数据库与存储 | [17-backend-extraction.md](17-backend-extraction.md) | 规划中 |
 | REQ-RESILIENCE | 协同服务端容灾 | [19-collab-resilience.md](19-collab-resilience.md) | 部分实现 |
-| REQ-AGENT | 画布 Agent：服务端 agent 编辑画布，客户端实时可见 | [20-agent-canvas.md](20-agent-canvas.md) | 规划中 |
+| REQ-AGENT | 画布 Agent：服务端 agent 编辑画布，客户端实时可见 | [20-agent-canvas.md](20-agent-canvas.md) | 部分实现 |
 | REQ-NODEKIT | 节点扩展协议：部件 / 动作 / 模式 / 事件注册表 | [21-node-kit.md](21-node-kit.md) | 已实现 |
+| REQ-AGENT-SANDBOX | Agent 沙箱：身份、委托授权与执行运行时 | [22-agent-sandbox.md](22-agent-sandbox.md) | 一～三期已实现 |
+| REQ-AGENT-SKILL | Agent 内置技能：按能力集组织工具、按需加载 | [23-agent-skills.md](23-agent-skills.md) | 规划中 |
+| REQ-AGENT-HITL | Agent 人机交互：提问、审批、挂起等待与定向推送 | [24-agent-interaction.md](24-agent-interaction.md) | 规划中 |
 
 ## 状态口径
 

@@ -1,4 +1,6 @@
 import {
+  AGENT_CANVAS_CHANGE_EVENT,
+  AGENT_SKILL_LOADED_EVENT,
   AGENT_USER_MESSAGE_EVENT,
   AgentEventType,
   type AgentChatMessage,
@@ -154,7 +156,18 @@ export function applyAgentEvent(conversation: AgentConversation, event: AgentStr
       return
 
     case AgentEventType.CUSTOM: {
-      if (event.name !== AGENT_USER_MESSAGE_EVENT || !event.value) return
+      if (!event.value) return
+      if (event.name === AGENT_CANVAS_CHANGE_EVENT || event.name === AGENT_SKILL_LOADED_EVENT) {
+        // 画布改动通知（docs/20 §3.10.2）/ 技能加载（docs/23 §3.6）：追加到末尾，和服务端落库的顺序一致；
+        // 按 id 去重（补发 / 重复帧）。名字和 role 对不上的不收
+        const role = event.name === AGENT_CANVAS_CHANGE_EVENT ? "canvas-change" : "skill-loaded"
+        if (event.value.role !== role) return
+        if (!conversation.messages.some((message) => message.id === event.value.id)) {
+          conversation.messages.push(event.value)
+        }
+        return
+      }
+      if (event.name !== AGENT_USER_MESSAGE_EVENT) return
       replaceMessage(conversation, conversation.userMessageId, event.value)
       conversation.userMessageId = event.value.id
       return

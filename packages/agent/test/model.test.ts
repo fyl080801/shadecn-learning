@@ -30,6 +30,21 @@ describe('resolveAgentModel', () => {
     })
   })
 
+  it('吃不吃图片：自定义端点默认只吃文字，imageInput 声明了就覆盖（注册表里的模型也能关掉，且不改注册表本身）', () => {
+    const custom = { provider: 'my-proxy', model: 'qwen-vl', baseUrl: 'http://llm.internal/v1', api: 'openai-completions', apiKey: 'k' }
+    const plain = resolveAgentModel(custom)
+    const vision = resolveAgentModel({ ...custom, imageInput: true })
+    expect(plain.ok && plain.value.model.input).toEqual(['text'])
+    expect(vision.ok && vision.value.model.input).toEqual(['text', 'image'])
+
+    const registered = resolveAgentModel({ provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    expect(registered.ok && registered.value.model.input).toContain('image')
+    const off = resolveAgentModel({ provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'k', imageInput: false })
+    expect(off.ok && off.value.model.input).toEqual(['text'])
+    const again = resolveAgentModel({ provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    expect(again.ok && again.value.model.input).toContain('image')
+  })
+
   it('没有 key → 未启用', () => {
     const resolved = resolveAgentModel({ provider: 'anthropic', model: 'claude-sonnet-4-6' })
     expect(resolved).toMatchObject({ ok: false })

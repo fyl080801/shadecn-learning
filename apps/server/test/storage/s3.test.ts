@@ -125,3 +125,53 @@ describe('createS3Client 分片上传', () => {
     expect(await client.headObject('k')).toEqual({ size: 42, contentType: 'video/mp4' })
   })
 })
+
+describe('createS3Client GetObject（服务端自己读字节，带上限）', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const client = createS3Client({
+    endpoint: 'https://s3.example.test',
+    region: 'us-east-1',
+    bucket: 'canvas',
+    accessKeyId: 'ak',
+    secretAccessKey: 'sk',
+  })
+
+  it('签名 GET 本桶里的键；回正文与类型', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('fetch', async (url: URL, init: RequestInit) => {
+      calls.push(`${init.method} ${String(url)} ${(init.headers as Record<string, string>).authorization ? 'signed' : 'unsigned'}`)
+      return new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/png', 'content-length': '3' } })
+    })
+    const got = await client.getObject('a/b.png', { maxBytes: 10 })
+    expect(got).toEqual({ status: 'ok', body: new Uint8Array([1, 2, 3]), contentType: 'image/png' })
+    expect(calls).toEqual(['GET https://s3.example.test/canvas/a/b.png signed'])
+  })
+
+  it('404 → not_found；content-length 超上限 → too_large（不读正文）', async () => {
+    const responses = [new Response(null, { status: 404 }), new Response('x'.repeat(20), { headers: { 'content-length': '20' } })]
+    vi.stubGlobal('fetch', async () => responses.shift()!)
+    expect(await client.getObject('missing', { maxBytes: 10 })).toEqual({ status: 'not_found' })
+    expect(await client.getObject('big', { maxBytes: 10 })).toEqual({ status: 'too_large' })
+  })
+
+  it('没有 content-length 的流：边读边数，超过上限就掐断', async () => {
+    let cancelled = false
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.enqueue(new Uint8Array(8))
+            },
+            cancel() {
+              cancelled = true
+            },
+          }),
+        ),
+    )
+    expect(await client.getObject('endless', { maxBytes: 20 })).toEqual({ status: 'too_large' })
+    expect(cancelled).toBe(true)
+  })
+})

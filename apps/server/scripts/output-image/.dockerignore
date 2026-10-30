@@ -3,3 +3,5 @@ node_modules
 data
 .env
 *.log
+# oci 沙箱镜像的构建上下文（pnpm build:sandbox-image 用），不进主镜像
+agent-sandbox

@@ -265,6 +265,7 @@ const modelMentions = computed(() => {
         <CardContent>
           <PromptInput
             v-model="text"
+            wrapper-class="rounded-md border border-input shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50 dark:bg-input/30"
             :editor="editor"
             @trigger-open="onTriggerOpen"
             @trigger-search="onTriggerSearch"

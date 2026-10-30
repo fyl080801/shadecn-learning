@@ -1,4 +1,4 @@
-import { computed, ref, shallowRef } from "vue"
+import { computed, ref, shallowRef, type Ref } from "vue"
 import { defineStore } from "pinia"
 import { useDebounceFn } from "@vueuse/core"
 import * as Y from "yjs"
@@ -8,13 +8,13 @@ import {
   fromYEdge,
   fromYNode,
   metaMap,
-  nodeGroupMap,
   nodesMap,
-  toYEdge,
-  toYNode,
   VIEWPORT_KEY,
   type FlowNodeGroup
 } from "@shadecn/shared/flow-doc"
+import { NODE_FORM_KEY, nodeFormOf } from "@shadecn/shared/flow-node-types"
+import * as ops from "@shadecn/shared/flow-ops"
+import { FlowOpError, type ConnectFrom, type FlowOpContext, type NodeFieldChanges } from "@shadecn/shared/flow-ops"
 import type { FlowDetail, FlowSummary } from "@shadecn/shared/canvas"
 import type {
   FlowEdge,
@@ -80,8 +80,38 @@ export const LOCAL_ORIGIN = Symbol("flow-local")
  */
 export const DERIVED_ORIGIN = Symbol("flow-derived")
 
+/**
+ * 导演台里的改动的事务 origin（docs/07 §7.6）。
+ *
+ * 照样广播、落库（协同层和服务端不看 origin），也照样算一次编辑（`noteLocalEdit()`，会话心跳），
+ * 但**画布的撤销栈不跟踪它**：画布的 `Y.UndoManager` 只认 {@link LOCAL_ORIGIN}。导演台打开时为那个节点另建一个
+ * 只跟踪这个 origin 的撤销栈（{@link createNodeHistory}），关掉就销毁 —— 所以导演台里的 Ctrl+Z 撤不到画布上的操作，
+ * 关掉导演台后画布上的 Ctrl+Z 也撤不到导演台里的改动。
+ */
+export const DIRECTOR_ORIGIN = Symbol("flow-director")
+
 /** 连续多久内的改动并成一次撤销（Y.UndoManager 的 captureTimeout） */
 export const UNDO_CAPTURE_TIMEOUT = 400
+
+/** 某个节点的 `data` 变了（{@link useFlowStore} 的 `onNodeDataChange`） */
+export interface NodeDataChange {
+  /** 变了哪些 `data` 键；`null` = 说不清（节点整个换了 / 被删了 / `data` 这一组被整块替换） */
+  keys: ReadonlySet<string> | null
+  /** 这次改动是不是从别处同步来的（协同的同伴、agent、离线缓存回放）—— `transaction.local === false` */
+  remote: boolean
+}
+
+/** 一个节点自己的撤销栈（{@link useFlowStore} 的 `createNodeHistory`） */
+export interface NodeHistory {
+  readonly canUndo: Readonly<Ref<boolean>>
+  readonly canRedo: Readonly<Ref<boolean>>
+  undo(): void
+  redo(): void
+  /** 让下一次改动另起一条撤销记录（同 `separateUndo`） */
+  separate(): void
+  /** 用完必须调：销毁这份 UndoManager；之后 undo / redo 什么都不做 */
+  destroy(): void
+}
 
 export const useFlowStore = defineStore("flow", () => {
   // —— 状态 ——
@@ -112,6 +142,10 @@ export const useFlowStore = defineStore("flow", () => {
   let doc: Y.Doc | null = null
   let undoManager: Y.UndoManager | null = null
   let detachDoc: (() => void) | null = null
+  /** 当前文档上活着的节点撤销栈；换文档 / 卸下文档时一并销毁 */
+  const nodeHistories = new Set<NodeHistory>()
+  /** 节点 id → 订了这个节点 `data` 变化的回调 */
+  const nodeDataListeners = new Map<string, Set<(change: NodeDataChange) => void>>()
 
   // —— 投影 ——
 
@@ -197,7 +231,10 @@ export const useFlowStore = defineStore("flow", () => {
     // observeDeep：节点位置、data 里的字段都藏在嵌套的 Y.Map 里，
     // 只观察顶层的话拖动和改标题都收不到通知
     /* eslint-disable @typescript-eslint/no-explicit-any -- Yjs 的 observeDeep 回调签名 */
-    const onNodesChanged = (events: Y.YEvent<any>[]) => syncNodes(changedTopLevelKeys(events))
+    const onNodesChanged = (events: Y.YEvent<any>[], transaction: Y.Transaction) => {
+      syncNodes(changedTopLevelKeys(events))
+      if (nodeDataListeners.size > 0) notifyNodeData(events, transaction)
+    }
     const onEdgesChanged = (events: Y.YEvent<any>[]) => syncEdges(changedTopLevelKeys(events))
     /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -214,6 +251,7 @@ export const useFlowStore = defineStore("flow", () => {
     undoManager.on("stack-item-popped", syncHistory)
 
     detachDoc = () => {
+      for (const history of [...nodeHistories]) history.destroy()
       yNodes.unobserveDeep(onNodesChanged)
       yEdges.unobserveDeep(onEdgesChanged)
       yMeta.unobserve(syncMeta)
@@ -226,6 +264,116 @@ export const useFlowStore = defineStore("flow", () => {
     syncNodes(null)
     syncMeta()
     syncHistory()
+  }
+
+  /**
+   * 把这一批节点事件按「哪个节点的 data 变了哪些键」分好，交给订了那个节点的回调。
+   *
+   * `observeDeep` 的事件路径相对 `nodes` 这张表：`[]` = 节点增删，`[id]` = 节点自己那一层（布局、整组替换），
+   * `[id, 'data']` = `data` 里的键。只读、不写，回调抛错不影响投影。
+   */
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any -- Yjs 的 observeDeep 事件类型 */
+  function notifyNodeData(events: Y.YEvent<any>[], transaction: Y.Transaction) {
+    const changed = new Map<string, Set<string> | null>()
+    const everything = (id: string) => changed.set(id, null)
+    for (const event of events) {
+      const path = event.path
+      // 只在观察回调里取 changes（Yjs 的要求）；键级的变化在 changes.keys 上
+      const keysChanged = event.changes.keys
+      if (path.length === 0) {
+        for (const id of keysChanged.keys()) if (nodeDataListeners.has(id)) everything(id)
+        continue
+      }
+      const id = String(path[0])
+      if (!nodeDataListeners.has(id) || changed.get(id) === null) continue
+      if (path.length === 1) {
+        if (keysChanged.has("data")) everything(id)
+        continue
+      }
+      if (path[1] !== "data") continue
+      if (path.length > 2) {
+        everything(id)
+        continue
+      }
+      const keys = changed.get(id) ?? new Set<string>()
+      for (const key of keysChanged.keys()) keys.add(key)
+      changed.set(id, keys)
+    }
+    const remote = !transaction.local
+    for (const [id, keys] of changed) {
+      if (keys && keys.size === 0) continue
+      for (const listener of nodeDataListeners.get(id) ?? []) {
+        try {
+          listener({ keys, remote })
+        } catch (error) {
+          console.error(`[flow] 节点 ${id} 的 data 变化回调出错`, error)
+        }
+      }
+    }
+  }
+
+  /**
+   * 订一个节点 `data` 的变化（含是不是远端来的）。**只用来给界面反馈**（比如导演台高亮被远端改过的对象），
+   * 不是读数据的通道 —— 数据照旧从 `nodes` / `nodeById` 读。返回退订函数；换文档不用重订。
+   */
+  function onNodeDataChange(nodeId: string, listener: (change: NodeDataChange) => void): () => void {
+    let set = nodeDataListeners.get(nodeId)
+    if (!set) nodeDataListeners.set(nodeId, (set = new Set()))
+    set.add(listener)
+    return () => {
+      set.delete(listener)
+      if (set.size === 0 && nodeDataListeners.get(nodeId) === set) nodeDataListeners.delete(nodeId)
+    }
+  }
+
+  /**
+   * 给一个节点建它自己的撤销栈：作用域是这个节点的 Y.Map，只跟踪 {@link DIRECTOR_ORIGIN}（{@link mutateDirector} 写的）。
+   *
+   * 和画布那份互不相干：画布的只跟踪 `LOCAL_ORIGIN`，这一份不跟踪它；两边的撤销事务 origin 是各自的 UndoManager，
+   * 对方也不跟踪。没有文档或节点不在时返回 null。用完调 `destroy()`；换文档时由 store 一并销毁。
+   */
+  function createNodeHistory(nodeId: string): NodeHistory | null {
+    if (!doc) return null
+    const target = nodesMap(doc).get(nodeId)
+    if (!(target instanceof Y.Map)) return null
+    let manager: Y.UndoManager | null = new Y.UndoManager(target, {
+      trackedOrigins: new Set([DIRECTOR_ORIGIN]),
+      captureTimeout: UNDO_CAPTURE_TIMEOUT
+    })
+    const canUndo = ref(false)
+    const canRedo = ref(false)
+    const sync = () => {
+      canUndo.value = (manager?.undoStack.length ?? 0) > 0
+      canRedo.value = (manager?.redoStack.length ?? 0) > 0
+    }
+    manager.on("stack-item-added", sync)
+    manager.on("stack-item-popped", sync)
+    const history: NodeHistory = {
+      canUndo,
+      canRedo,
+      undo() {
+        if (!manager) return
+        manager.undo()
+        noteLocalEdit()
+      },
+      redo() {
+        if (!manager) return
+        manager.redo()
+        noteLocalEdit()
+      },
+      separate() {
+        manager?.stopCapturing()
+      },
+      destroy() {
+        if (!manager) return
+        manager.destroy()
+        manager = null
+        nodeHistories.delete(history)
+        sync()
+      }
+    }
+    nodeHistories.add(history)
+    return history
   }
 
   /**
@@ -264,19 +412,30 @@ export const useFlowStore = defineStore("flow", () => {
    * `label` 只是给调试和日志用的，CRDT 不需要它 —— 撤销的粒度由
    * `Y.UndoManager` 按时间窗口（`UNDO_CAPTURE_TIMEOUT`）自己合并。
    */
-  function mutate(change: (context: FlowMutationContext) => void, label?: string) {
-    if (!doc) return
+  function mutate<T>(change: (context: FlowMutationContext) => T, label?: string): T | undefined {
+    return transactAs(LOCAL_ORIGIN, change, label)
+  }
+
+  /**
+   * 导演台里的改动 —— 和 {@link mutate} 一样是一个事务、一样广播落库、一样算一次编辑，
+   * 区别只在 origin 是 {@link DIRECTOR_ORIGIN}：画布的撤销栈不收它，导演台自己的（`createNodeHistory`）收。
+   *
+   * 操作抛出的异常原样抛给调用方（导演台 ops 先校验后动手，抛出时文档没被改动），由界面决定怎么提示。
+   */
+  function mutateDirector<T>(change: (context: FlowMutationContext) => T, label?: string): T | undefined {
+    return transactAs(DIRECTOR_ORIGIN, change, label)
+  }
+
+  function transactAs<T>(origin: symbol, change: (context: FlowMutationContext) => T, label?: string): T | undefined {
+    if (!doc) return undefined
     const target = doc
+    let result: T | undefined
     target.transact(() => {
-      change({
-        doc: target,
-        nodes: nodesMap(target),
-        edges: edgesMap(target),
-        meta: metaMap(target)
-      })
-    }, LOCAL_ORIGIN)
+      result = change(ops.opContext(target))
+    }, origin)
     if (label) lastLabel.value = label
     noteLocalEdit()
+    return result
   }
 
   /** 最近一次改动的名字，只用来在界面上给个反馈 */
@@ -303,90 +462,108 @@ export const useFlowStore = defineStore("flow", () => {
   }
 
   // —— 内容操作（都建立在 mutate 之上）——
+  //
+  // 每个方法 = `mutate(ctx => ops.xxx(ctx, …))`：规则（连线怎么选端口、删分组怎么解散、key 的类型不能换…）
+  // 全在 `@shadecn/shared/flow-ops`，agent 的画布工具调的是同一份。这里只管事务的 origin 和撤销栈。
+  //
+  // **目标不存在时**：这一层原来一律静默不做（拖着的节点被别人删了、写一个刚被删的节点），所以
+  // 原子操作抛出的 `FlowOpError` 在这里吞掉（`lenient`）—— 抛出时操作还没写任何东西，吞掉 = 什么都没发生。
+  // 例外是 `connect` / `addConnectedNode`：连不上的原因要提示给人，它们把 `FlowOpError` 原样抛给调用方。
 
-  function addNode(node: FlowNodeRecord) {
-    mutate(({ nodes: map }) => map.set(node.id, toYNode(node)), "新增节点")
+  /** 吞掉原子操作的前提错误（此时文档没被改动）；别的异常照抛 */
+  function lenient<T>(run: () => T): T | undefined {
+    try {
+      return run()
+    } catch (error) {
+      if (error instanceof FlowOpError) return undefined
+      throw error
+    }
   }
 
+  function addNode(node: FlowNodeRecord) {
+    mutate((ctx) => ops.createNode(ctx, node), "新增节点")
+  }
+
+  /** 原样放进一条已经定好端口的边（不选端口、不校验）；新连一条线用 {@link connect} */
   function addEdge(edge: FlowEdge) {
-    mutate(({ edges: map }) => map.set(edge.id, toYEdge(edge)), "连线")
+    mutate((ctx) => ops.insertEdge(ctx, edge), "连线")
   }
 
   /**
-   * 一次性加一批节点和边（复制节点这类「节点 + 它的连线一起进来」的动作）。
+   * 一次性加一批节点和边。
    *
    * 和分别调 `addNode` / `addEdge` 的区别在于它只有**一个** Y 事务：
    * 一条撤销、一条操作日志、一次广播 —— 不会出现「节点到了、线还没到」的中间态。
    */
   function addElements(newNodes: FlowNodeRecord[], newEdges: FlowEdge[], label = "新增元素") {
     if (newNodes.length === 0 && newEdges.length === 0) return
-    mutate(({ nodes: nodeMap, edges: edgeMap }) => {
-      for (const node of newNodes) nodeMap.set(node.id, toYNode(node))
-      for (const edge of newEdges) edgeMap.set(edge.id, toYEdge(edge))
+    mutate((ctx) => {
+      for (const node of newNodes) ops.createNode(ctx, node)
+      for (const edge of newEdges) ops.insertEdge(ctx, edge)
     }, label)
   }
 
   /**
-   * 打组：新建一个分组框，并把一批节点挂到它下面。
+   * 从 `source` 连一条线到 `target`，端口由 shared 的 `resolveConnection` 选。
+   * 连不上抛 `FlowOpError`（`message` 是给人看的原因），文档不动。
+   */
+  function connect(source: string, target: string, label = "连线"): FlowEdge | undefined {
+    return mutate((ctx) => ops.connect(ctx, { source, target }), label)
+  }
+
+  /**
+   * 新建一个节点并从 `from.source` 连一条线过来，**一个事务**（一条撤销两样都拿掉）。
+   * 连线规则按新节点的 data 判；连不上抛 `FlowOpError`，节点也不建。
+   */
+  function addConnectedNode(node: FlowNodeRecord, from: ConnectFrom, label = "新增相连节点") {
+    return mutate((ctx) => ops.createConnectedNode(ctx, node, from), label)
+  }
+
+  /**
+   * 复制一个节点（运行态重置、不带连线，见 `ops.duplicateNode`），返回副本；原件不存在返回 null。
+   * 新 id 和错开多少由调用方给。
+   */
+  function duplicateNode(
+    sourceId: string,
+    options: { id: string; offset: { x: number; y: number } },
+    label = "新增节点"
+  ): FlowNodeRecord | null {
+    return mutate((ctx) => lenient(() => ops.duplicateNode(ctx, sourceId, options)), label) ?? null
+  }
+
+  /**
+   * 给图片 / 视频节点挂上素材（上传完成）：写 `src`（/ `poster`），没有连入的线就成 asset 形态，
+   * 有就保持 generate —— 一个事务、一步撤销（`ops.attachAsset`）。节点在上传途中被删了就什么都不做。
+   */
+  function attachAsset(nodeId: string, asset: { src: string; poster?: string }, label = "上传素材") {
+    mutate((ctx) => lenient(() => ops.attachAsset(ctx, nodeId, asset)), label)
+  }
+
+  /**
+   * 打组：新建一个分组框，并把一批节点挂到它下面 —— 同一个事务（理由见 `ops.groupNodes`）。
    *
-   * 必须是**同一个事务**：分开写的话，别人（和本地的投影）会先看到一批
-   * `parentNode` 指着还不存在的节点的孤儿 —— Vue Flow 当场报 `NODE_MISSING_PARENT`，
-   * 这些节点的位置会被当成相对一个不存在的父节点，整片跳到画布原点附近。
-   * 撤销也一样：一次打组要一步撤干净，不能撤出个只剩半拉的中间态。
-   *
-   * `children` 里的位置是**相对分组框左上角**的 —— 挂上 `parentNode` 之后，
-   * Vue Flow 就按父子坐标系解释 `position`，调用方负责换算（见 `groupSelection`）。
-   *
-   * `extent: 'parent'`（不许拖出框）也在同一笔里写。它在渲染层有个时机问题
-   * （分组框还没量出尺寸时会把子节点夹飞），但那要在**交给 Vue Flow 之前**挡，
-   * 不能靠晚一点再写文档 —— 收到同步的人是直接从文档里读的，晚写只保得住自己。
-   * 见 `useFlowCanvas` 的 `extentReady`。
+   * `children` 里的位置是**相对分组框左上角**的，调用方负责换算（见 `groupSelection`）。
+   * `extent: 'parent'` 渲染层的时机问题在 `useFlowCanvas` 的 `extentReady` 挡，不靠晚写文档。
    */
   function groupNodes(
     group: FlowNodeRecord,
     children: Map<string, { x: number; y: number }>,
     label = "打组"
   ) {
-    mutate(({ nodes: map }) => {
-      map.set(group.id, toYNode(group))
-      for (const [id, position] of children) {
-        const target = map.get(id)
-        if (!target) continue
-        target.set("parentNode", group.id)
-        target.set("extent", "parent")
-        target.set("position", { ...position })
-      }
-    }, label)
+    mutate((ctx) => ops.groupNodes(ctx, group, children), label)
   }
 
   function moveNodes(positions: Map<string, { x: number; y: number }>, label = "移动节点") {
-    mutate(({ nodes: map }) => {
-      for (const [id, position] of positions) {
-        map.get(id)?.set("position", { ...position })
-      }
-    }, label)
+    mutate((ctx) => ops.moveNodes(ctx, positions), label)
   }
 
-  /**
-   * 改一个节点的尺寸，顺带改位置。
-   *
-   * 从左上角往外拉时 Vue Flow 给的 `x`/`y` 会变（锚点在对角），所以位置得跟着一起写，
-   * 而且必须在**同一个事务**里 —— 分两次写，别人会先看到一个位置变了但尺寸没变的中间态。
-   */
+  /** 改一个节点的尺寸，顺带改位置（同一个事务，见 `ops.resizeNode`）；节点不在就什么都不做 */
   function resizeNode(
     nodeId: string,
     size: { width: number; height: number; x?: number; y?: number },
     label = "调整大小"
   ) {
-    mutate(({ nodes: map }) => {
-      const target = map.get(nodeId)
-      if (!target) return
-      target.set("width", size.width)
-      target.set("height", size.height)
-      if (size.x !== undefined && size.y !== undefined) {
-        target.set("position", { x: size.x, y: size.y })
-      }
-    }, label)
+    mutate((ctx) => lenient(() => ops.resizeNode(ctx, nodeId, size)), label)
   }
 
   /**
@@ -408,75 +585,55 @@ export const useFlowStore = defineStore("flow", () => {
   }
 
   /**
-   * 改一个节点**某一组**（metadata / data / runtime）上的若干键 —— **写和删在同一个事务里**。
+   * 改一个节点**某一组**（metadata / data / runtime）上的若干键 —— **写和删在同一个事务里**（`ops.writeNodeFields`）。
    *
-   * 逐个 key 写，不整块替换：Y.Map 的合并粒度就是 key，整块替换会把别人同时改的字段盖掉。
-   * 甲改 `metadata.label`、乙同时改 `data.prompt`，两边都留。
-   *
-   * layout 不走这里：位置、尺寸、分组归属各有自己的写路径（`moveNodes` / `resizeNode` /
-   * `groupNodes` / `removeElements`），语义不同（拖动的提交时机、打组的同笔事务）。
-   *
-   * `remove` 是「平铺分键」（`apps/web/src/lib/flow-collection.ts`）用得上的那一半：一批元素摊成
-   * `<前缀>.<id>` 之后，删掉其中一个元素就是删掉一个键，而不是改写某个数组。
+   * `remove` 是「平铺分键」（`@shadecn/shared/flow-collection`）用得上的那一半：删掉集合里一个元素就是删掉一个键。
    * 删和写必须同笔 —— 「删掉角色 A、同时删掉它名下的轨」要一步撤干净。
    *
-   * 老节点（v1 / v2 写的）没有 metadata / runtime 这一组，第一次写时现建（`nodeGroupMap`）；
-   * 这一组的 key 上已经是别的类型时什么都不写 —— key 的类型首次写入即固定，不能换。
+   * 节点不存在、这一组的 key 上是别的类型、要碰的字段类型对不上：什么都不写（key 的类型首次写入即固定）。
+   *
+   * **素材字段不走这里**：有形态的类型（图片 / 视频）上，`data.form` / `src` / `poster` 只能经
+   * `attachAsset`（挂素材）和连线（asset → generate）变；这里碰它们的写入整笔拒绝并告警，
+   * 否则形态规则（docs/13 §3.7）能被绕过。
    */
   function writeNode(
     nodeId: string,
     group: FlowNodeGroup,
-    changes: { set?: Record<string, unknown>; remove?: Iterable<string> },
+    changes: NodeFieldChanges,
     label = "修改节点"
   ) {
-    mutate(({ nodes: map }) => {
-      const target = nodeGroupMap(map.get(nodeId), group, { create: true })
-      if (!target) return
-      for (const key of changes.remove ?? []) target.delete(key)
-      for (const [key, value] of Object.entries(changes.set ?? {})) {
-        if (value !== undefined) target.set(key, value)
+    mutate((ctx) => {
+      if (group === "data") {
+        const guarded = guardedAssetKeys(changes)
+        const node = guarded.length > 0 ? ops.readNodeRecord(ctx, nodeId) : null
+        if (node && nodeFormOf(node.type, node.data) !== null) {
+          console.warn(`[flow] 拒绝直接写 ${node.type} 节点 ${nodeId} 的 ${guarded.join(" / ")}：请用 attachAsset 或连线`)
+          return undefined
+        }
       }
+      return lenient(() => ops.writeNodeFields(ctx, nodeId, group, changes))
     }, label)
   }
 
+  /** 有形态的节点上只能经 `attachAsset` / 连线改的 data 键 */
+  const ASSET_GUARDED_KEYS = [NODE_FORM_KEY, "src", "poster"]
+
+  /** 这笔改动里碰了哪些受保护的键（写和删都算；值为 undefined 的 set 不会真写，不算） */
+  function guardedAssetKeys(changes: NodeFieldChanges): string[] {
+    const touched = new Set<string>(changes.remove ?? [])
+    for (const [key, value] of Object.entries(changes.set ?? {})) if (value !== undefined) touched.add(key)
+    return ASSET_GUARDED_KEYS.filter((key) => touched.has(key))
+  }
+
   /**
-   * 删元素。连着的边一起删 —— 留下悬空的边会让投影层直接把它过滤掉，
-   * 那样界面上没了、数据里还在。
+   * 删元素：连着的边一起删，删分组只解散（子节点换算回画布坐标），见 `ops.removeElements`。
    */
   function removeElements(nodeIds: Iterable<string>, edgeIds: Iterable<string>) {
-    const doomedNodes = new Set(nodeIds)
-    const doomedEdges = new Set(edgeIds)
-    for (const edge of edges.value) {
-      if (doomedNodes.has(edge.source) || doomedNodes.has(edge.target)) doomedEdges.add(edge.id)
-    }
-    if (doomedNodes.size === 0 && doomedEdges.size === 0) return
-
-    // 删掉一个分组，组里的节点要**留在原地**而不是跟着陪葬 —— 所以只解除归属。
-    // 不解除的话它们的 parentNode 指向一个不存在的节点，位置会被当成相对坐标
-    // 去加一个不存在的父节点，整组节点瞬间跳到画布原点附近。
-    const orphaned = nodes.value.filter(
-      (node) => node.layout.parentNode !== undefined && doomedNodes.has(node.layout.parentNode)
-    )
-
-    mutate(({ nodes: nodeMap, edges: edgeMap }) => {
-      for (const id of doomedEdges) edgeMap.delete(id)
-      for (const node of orphaned) {
-        const target = nodeMap.get(node.id)
-        if (!target) continue
-        target.delete("parentNode")
-        target.delete("extent")
-        // parentNode 下的 position 是相对父节点的，脱离分组之后得换算回画布坐标，
-        // 否则节点会跳到画布原点那一带
-        const parent = nodeById.value.get(node.layout.parentNode!)
-        if (parent) {
-          target.set("position", {
-            x: parent.layout.position.x + node.layout.position.x,
-            y: parent.layout.position.y + node.layout.position.y
-          })
-        }
-      }
-      for (const id of doomedNodes) nodeMap.delete(id)
-    }, "删除")
+    const doomedNodes = [...nodeIds]
+    const doomedEdges = [...edgeIds]
+    // 什么都没点名就不开事务（不算一次编辑，不发心跳）
+    if (doomedNodes.length === 0 && doomedEdges.length === 0) return
+    mutate((ctx) => ops.removeElements(ctx, doomedNodes, doomedEdges), "删除")
   }
 
   // —— 按用户存的状态 ——
@@ -640,12 +797,19 @@ export const useFlowStore = defineStore("flow", () => {
     applyFallbackViewport,
     detach,
     mutate,
+    mutateDirector,
+    createNodeHistory,
+    onNodeDataChange,
     separateUndo,
     undo,
     redo,
     addNode,
     addEdge,
     addElements,
+    connect,
+    addConnectedNode,
+    duplicateNode,
+    attachAsset,
     groupNodes,
     moveNodes,
     resizeNode,
@@ -664,10 +828,5 @@ export const useFlowStore = defineStore("flow", () => {
   }
 })
 
-/** `mutate()` 回调拿到的东西 —— 想干什么都得通过它们 */
-export interface FlowMutationContext {
-  doc: Y.Doc
-  nodes: Y.Map<Y.Map<unknown>>
-  edges: Y.Map<Y.Map<unknown>>
-  meta: Y.Map<unknown>
-}
+/** `mutate()` 回调拿到的东西 —— 想干什么都得通过它们；也是 `@shadecn/shared/flow-ops` 每个操作的第一个参数 */
+export type FlowMutationContext = FlowOpContext

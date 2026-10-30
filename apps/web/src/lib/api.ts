@@ -20,6 +20,7 @@ import type {
 import {
   agentApiPath,
   agentConversationPath,
+  agentRunAbortPath,
   agentRunEventsPath,
   type AgentConversationSummary,
   type AgentConversationView,
@@ -310,13 +311,14 @@ export const flowApi = {
    * 不走 `request()`：那条路会给有 body 的请求补 `content-type: application/json`，
    * 而 multipart 的边界得由浏览器自己写进 content-type。
    */
-  async uploadAsset(flowId: string, file: Blob, filename?: string) {
+  async uploadAsset(flowId: string, file: Blob, filename?: string, signal?: AbortSignal) {
     const body = new FormData()
     body.set("file", file, filename ?? (file instanceof File ? file.name : "file"))
     const res = await apiFetch(`/api/flows/${flowId}/assets`, {
       method: "POST",
       headers: { accept: "application/json" },
-      body
+      body,
+      signal
     })
     return readAssetResponse<UploadedAsset>(res)
   },
@@ -327,39 +329,57 @@ export const flowApi = {
    * 错误走 `readAssetResponse` 而不是 `request()`：文件超过总上限时后端回 413，
    * 要提示的是 `message`（「文件不能超过 100MB」），不是 `error` 那句 "Payload Too Large"。
    */
-  async startAssetUpload(flowId: string, body: { filename: string; contentType: string; size: number }) {
+  async startAssetUpload(
+    flowId: string,
+    body: { filename: string; contentType: string; size: number },
+    signal?: AbortSignal
+  ) {
     const res = await apiFetch(`/api/flows/${flowId}/assets/multipart`, {
       method: "POST",
       headers: ASSET_JSON_HEADERS,
-      body: json(body)
+      body: json(body),
+      signal
     })
     return readAssetResponse<AssetUploadSession>(res)
   },
 
   /** 分片上传第 2 步：传一片（原始字节），回这片的 ETag */
-  async uploadAssetPart(flowId: string, session: AssetUploadSession, partNumber: number, chunk: Blob) {
+  async uploadAssetPart(
+    flowId: string,
+    session: AssetUploadSession,
+    partNumber: number,
+    chunk: Blob,
+    signal?: AbortSignal
+  ) {
     const res = await apiFetch(
       `${multipartPath(flowId, session.uploadId)}/parts/${partNumber}?key=${encodeURIComponent(session.key)}`,
       {
         method: "PUT",
         headers: { accept: "application/json", "content-type": "application/octet-stream" },
-        body: chunk
+        body: chunk,
+        signal
       }
     )
     return readAssetResponse<AssetUploadPart>(res)
   },
 
   /** 分片上传第 3 步：按片号升序交回全部回执，拼成对象 */
-  async completeAssetUpload(flowId: string, session: AssetUploadSession, parts: AssetUploadPart[]) {
+  async completeAssetUpload(
+    flowId: string,
+    session: AssetUploadSession,
+    parts: AssetUploadPart[],
+    signal?: AbortSignal
+  ) {
     const res = await apiFetch(`${multipartPath(flowId, session.uploadId)}/complete`, {
       method: "POST",
       headers: ASSET_JSON_HEADERS,
-      body: json({ key: session.key, parts })
+      body: json({ key: session.key, parts }),
+      signal
     })
     return readAssetResponse<UploadedAsset>(res)
   },
 
-  /** 中途失败：放弃这次上传，S3 删掉已传的片 */
+  /** 中途失败或取消：放弃这次上传，S3 删掉已传的片。**不收 signal** —— 取消之后还得靠它收尾 */
   abortAssetUpload(flowId: string, session: AssetUploadSession) {
     return request<void>(`${multipartPath(flowId, session.uploadId)}?key=${encodeURIComponent(session.key)}`, {
       method: "DELETE"
@@ -421,7 +441,7 @@ async function readAgentStream(
 }
 
 export const agentApi = {
-  /** 服务端有没有配模型 + 此刻有没有一轮在跑（`activeRun`）+ 默认打开的会话（含消息） */
+  /** 服务端有没有配模型 + 此刻在跑的任务（`activeRuns`）+ 默认打开的会话（含消息） */
   session(flowId: string) {
     return request<AgentSessionView>(agentApiPath(flowId))
   },
@@ -472,9 +492,9 @@ export const agentApi = {
     await readAgentStream(res, options)
   },
 
-  /** 停掉这张画布上正在跑的那一轮；已经提交到画布上的改动保留 */
-  abort(flowId: string) {
-    return request<void>(`${agentApiPath(flowId)}/abort`, { method: "POST" })
+  /** 停掉这张画布上的某一轮（发起人或项目管理员）；已经提交到画布上的改动保留 */
+  abort(flowId: string, runId: string) {
+    return request<void>(agentRunAbortPath(flowId, runId), { method: "POST" })
   },
 
   /** 「我」在这张画布上的会话列表（已按更新时间倒序） */

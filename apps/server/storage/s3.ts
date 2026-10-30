@@ -1,7 +1,7 @@
 import { createHash, createHmac } from 'node:crypto'
 
 /**
- * 最小的 S3 客户端：`PutObject`、`HeadObject` 和分片上传那四个动作，签名是手写的 AWS SigV4。
+ * 最小的 S3 客户端：`PutObject`、`HeadObject`、`GetObject` 和分片上传那四个动作，签名是手写的 AWS SigV4。
  *
  * 不引 `@aws-sdk/client-s3`：我们只往一个桶里写，SDK 那一大包（和它进运行时依赖的一串子包）
  * 换来的只是这一个文件。
@@ -23,6 +23,11 @@ export interface S3Client {
   putObject(key: string, body: Uint8Array, contentType: string): Promise<string>
   /** 对象的实际大小与类型；不存在回 null */
   headObject(key: string): Promise<{ size: number; contentType: string } | null>
+  /**
+   * 读一个对象（服务端自己要看字节时用，例如 agent 看图）。**超过 `maxBytes` 不读完**：
+   * 先看 content-length，再边读边数，超了就掐断连接、回 `too_large`。
+   */
+  getObject(key: string, options: { maxBytes: number; signal?: AbortSignal }): Promise<S3GetResult>
   /** 开一次分片上传，回 `uploadId`。对象的 content-type 在这一步定 */
   createMultipartUpload(key: string, contentType: string): Promise<string>
   /** 传一片（`partNumber` 从 1 起），回这片的 ETag（原样，带引号） */
@@ -37,6 +42,36 @@ export interface S3Client {
   abortMultipartUpload(key: string, uploadId: string): Promise<void>
   /** 对象的原始地址：读资源直接用它，不经后端 */
   objectUrl(key: string): string
+}
+
+export type S3GetResult =
+  | { status: 'ok'; body: Uint8Array; contentType: string }
+  | { status: 'not_found' }
+  | { status: 'too_large' }
+
+/** 边读边数，超过上限就掐断；没超回整个正文 */
+async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array | null> {
+  if (!res.body) return new Uint8Array()
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > maxBytes) {
+      await reader.cancel().catch(() => undefined)
+      return null
+    }
+    chunks.push(value)
+  }
+  const body = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return body
 }
 
 const sha256Hex = (data: string | Uint8Array) => createHash('sha256').update(data).digest('hex')
@@ -142,6 +177,7 @@ export function createS3Client(options: S3Options): S3Client {
       body?: Uint8Array
       contentType?: string
       allow?: readonly number[]
+      signal?: AbortSignal
     },
   ): Promise<Response> {
     const url = new URL(objectUrl(init.key))
@@ -164,6 +200,7 @@ export function createS3Client(options: S3Options): S3Client {
       method: init.method,
       headers,
       body: init.method === 'GET' || init.method === 'HEAD' ? undefined : body,
+      ...(init.signal ? { signal: init.signal } : {}),
     })
     if (!res.ok && !init.allow?.includes(res.status)) {
       const code = errorCode(await res.text().catch(() => ''))
@@ -187,6 +224,22 @@ export function createS3Client(options: S3Options): S3Client {
         size: Number(res.headers.get('content-length') ?? 0),
         contentType: res.headers.get('content-type') ?? '',
       }
+    },
+
+    async getObject(key, { maxBytes, signal }) {
+      const res = await send('GetObject', { method: 'GET', key, allow: [404], ...(signal ? { signal } : {}) })
+      if (res.status === 404) {
+        await res.body?.cancel().catch(() => undefined)
+        return { status: 'not_found' }
+      }
+      const declared = Number(res.headers.get('content-length') ?? NaN)
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        await res.body?.cancel().catch(() => undefined)
+        return { status: 'too_large' }
+      }
+      const body = await readCapped(res, maxBytes)
+      if (!body) return { status: 'too_large' }
+      return { status: 'ok', body, contentType: res.headers.get('content-type') ?? '' }
     },
 
     async createMultipartUpload(key, contentType) {

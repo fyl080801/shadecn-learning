@@ -109,8 +109,8 @@ type ParsedSegment =
 | `editor`            | `Editor`         | —                                 | ✅   | 由 `createEditor()` 创建的实例                                     |
 | `modelValue`        | `string`         | `""`                              | ❌   | v-model 双向绑定的**纯字符串**；插件决定如何 round-trip            |
 | `placeholder`       | `string`         | `"输入触发字符（如 @）打开菜单…"` | ❌   | 文档为空时显示                                                     |
-| `containerClass`    | `string`         | `undefined`                       | ❌   | 覆盖编辑区容器类名；缺省应用默认浅色主题样式                       |
-| `wrapperClass`      | `string`         | `undefined`                       | ❌   | 覆盖外层 wrapper 类名（边框、背景、圆角）                          |
+| `containerClass`    | `string`         | `undefined`                       | ❌   | 覆盖编辑区容器类名；缺省只有排版，无边框 / 背景 / 焦点环           |
+| `wrapperClass`      | `string`         | `undefined`                       | ❌   | 外层 wrapper 类名；组件本身无边框，边框 / 背景 / 焦点环由使用方套  |
 | `disabled`          | `boolean`        | `false`                           | ❌   | 只读模式（contenteditable="false"）                                |
 | `maxLength`         | `number \| null` | `null`                            | ❌   | 最大可见字符数（剔除 \n 和零宽空格）；null = 不限制、不渲染 footer |
 | `showCounter`       | `boolean`        | `false`                           | ❌   | 在 footer 显示字符计数器（需设置 maxLength）                       |

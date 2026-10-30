@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as ops from "@shadecn/shared/flow-ops"
 import { defineComponent, h, nextTick, ref } from "vue"
-import { mount, type VueWrapper } from "@vue/test-utils"
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils"
 import { createPinia, setActivePinia } from "pinia"
 import * as Y from "yjs"
 import { nodeGroup } from "@shadecn/shared/flow-doc"
@@ -9,6 +10,8 @@ import { buildNodeRecord } from "@shadecn/shared/flow-node-types"
 import type { FlowDetail } from "@shadecn/shared/canvas"
 import { useFlowStore } from "@/stores/flow"
 import NodeHost from "@/components/flow/node-kit/NodeHost.vue"
+import { createNodeKitRuntime, NODE_KIT_KEY } from "@/components/flow/node-kit/context"
+import { createDefaultNodeKit } from "@/components/flow/node-kit/install"
 import { nodeKitGlobal } from "./node-kit/with-kit"
 
 /**
@@ -28,7 +31,10 @@ const selectedNodeId = ref<string | null>(null)
 const uploadAsset = vi.fn()
 const captureVideoPoster = vi.fn()
 
-vi.mock("@/lib/asset-upload", () => ({ uploadFlowAsset: (...args: unknown[]) => uploadAsset(...args) }))
+vi.mock("@/lib/asset-upload", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/asset-upload")>()),
+  uploadFlowAsset: (...args: unknown[]) => uploadAsset(...args)
+}))
 vi.mock("@/lib/video-poster", () => ({ captureVideoPoster: (...args: unknown[]) => captureVideoPoster(...args) }))
 
 vi.mock("@/composables/flow/editor-context", () => ({
@@ -208,14 +214,18 @@ describe("画布节点", () => {
     ])
   })
 
-  it("图片 / 视频：没有资源时左右都有；填上 data.src 后左边收起（不再接受连入），右边照旧", async () => {
+  it("图片 / 视频：generate 形态左右都有（有了图也一样）；成了素材（asset）左边收起（不再接受拖线），右边照旧", async () => {
     for (const type of ["image", "video"]) {
       const { store } = setup(record(`${type}1`, type))
       wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps(`${type}1`, type) })
       const sides = () => wrapper!.findAll('[data-stub="handle"]').map((item) => item.attributes("data-handle-type"))
       expect(sides(), type).toEqual(["target", "source"])
 
-      store.writeNode(`${type}1`, "data", { set: { src: "https://x/a" } })
+      store.mutate((ctx) => ops.writeNodeFields(ctx, `${type}1`, "data", { set: { src: "https://x/a" } }))
+      await nextTick()
+      expect(sides(), type).toEqual(["target", "source"])
+
+      store.attachAsset(`${type}1`, { src: "https://x/a" })
       await nextTick()
       expect(sides(), type).toEqual(["source"])
       wrapper.unmount()
@@ -359,27 +369,110 @@ describe("各类型的 body", () => {
     expect(empty.find('[data-testid="node-upload-input"]').attributes("accept")).toBe("image/*")
     expect(wrapper.find('[data-testid="image-body"] img').exists()).toBe(false)
 
-    store.writeNode("img", "data", { set: { src: "https://x/a.png" } })
+    store.attachAsset("img", { src: "https://x/a.png" })
     await nextTick()
     expect(wrapper.find('[data-testid="image-body"] img').attributes("src")).toBe("https://x/a.png")
     expect(wrapper.find('[data-testid="image-body-empty"]').exists()).toBe(false)
   })
 
-  it("视频：只画预览图 data.poster，不放 <video>；没有预览图是空占位", async () => {
+  it("视频：平时只画预览图 data.poster，不放 <video>；没有预览图是空占位", async () => {
     const { store } = setup(record("vid", "video"))
     wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("vid", "video") })
     expect(wrapper.find('[data-testid="video-body-empty"]').text()).toContain("暂无视频")
     expect(wrapper.find('[data-testid="node-upload-button"]').text()).toBe("上传视频")
 
-    store.writeNode("vid", "data", { set: { src: "https://x/a.mp4" } })
+    store.attachAsset("vid", { src: "https://x/a.mp4" })
     await nextTick()
     expect(wrapper.find('[data-testid="video-body-empty"]').text()).toBe("暂无预览图")
     // 已经有视频了，不再给上传入口
     expect(wrapper.find('[data-testid="node-upload-button"]').exists()).toBe(false)
 
-    store.writeNode("vid", "data", { set: { poster: "https://x/p.png" } })
+    store.attachAsset("vid", { src: "https://x/a.mp4", poster: "https://x/p.png" })
     await nextTick()
     expect(wrapper.find('[data-testid="video-body"] img').attributes("src")).toBe("https://x/p.png")
+    expect(wrapper.find("video").exists()).toBe(false)
+  })
+
+  it("视频：鼠标移上来挂 <video> 盖满播放区静音循环播放，移出就卸掉换回预览图", async () => {
+    setup(record("vid", "video", { data: { src: "https://x/v.mp4", poster: "https://x/p.jpg" } }))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("vid", "video") })
+    const body = wrapper.find('[data-testid="video-body"]')
+
+    await body.trigger("mouseenter")
+    const video = body.find('[data-testid="hover-video"]')
+    expect(video.attributes("src")).toBe("https://x/v.mp4")
+    expect(video.classes()).toEqual(expect.arrayContaining(["absolute", "inset-0", "h-full", "w-full", "object-cover"]))
+    expect((video.element as HTMLVideoElement).muted).toBe(true)
+    expect(video.attributes()).toHaveProperty("loop")
+    // 预览图还在下面垫着，尺寸不跟着变
+    expect(body.find("img").attributes("src")).toBe("https://x/p.jpg")
+
+    await body.trigger("mouseleave")
+    expect(wrapper.find("video").exists()).toBe(false)
+  })
+
+  it("视频：悬停播放带控制栏 —— 播放 / 暂停、拖进度、开关声音；有声自动播放被拦就退回静音", async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(function (this: HTMLMediaElement) {
+      this.dispatchEvent(new Event("play"))
+      return Promise.resolve()
+    })
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function (this: HTMLMediaElement) {
+      this.dispatchEvent(new Event("pause"))
+    })
+    try {
+      setup(record("vid", "video", { data: { src: "https://x/v.mp4", poster: "https://x/p.jpg" } }))
+      wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("vid", "video") })
+      const body = wrapper.find('[data-testid="video-body"]')
+      expect(body.find('[data-testid="hover-video-controls"]').exists()).toBe(false)
+
+      await body.trigger("mouseenter")
+      await nextTick()
+      expect(play).toHaveBeenCalledTimes(1)
+      const controls = body.find('[data-testid="hover-video-controls"]')
+      // 控制栏按下去不该拖节点 / 拖画布
+      expect(controls.classes()).toEqual(expect.arrayContaining(["nodrag", "nopan"]))
+      expect(controls.find('[data-testid="hover-video-play"]').attributes("aria-label")).toBe("暂停")
+
+      await controls.find('[data-testid="hover-video-play"]').trigger("click")
+      expect(pause).toHaveBeenCalledTimes(1)
+      expect(controls.find('[data-testid="hover-video-play"]').attributes("aria-label")).toBe("播放")
+
+      const video = body.find("video").element as HTMLVideoElement
+      Object.defineProperty(video, "duration", { configurable: true, value: 75 })
+      await body.find("video").trigger("loadedmetadata")
+      expect(controls.find('[data-testid="hover-video-time"]').text()).toBe("0:00 / 1:15")
+
+      await controls.find('[data-testid="hover-video-mute"]').trigger("click")
+      expect(video.muted).toBe(false)
+      expect(controls.find('[data-testid="hover-video-mute"]').attributes("aria-label")).toBe("静音")
+
+      // 再移上来：接着有声音；浏览器拦下有声自动播放 → 退回静音再播
+      await body.trigger("mouseleave")
+      play.mockImplementationOnce(() => Promise.reject(new DOMException("blocked", "NotAllowedError")))
+      await body.trigger("mouseenter")
+      await nextTick()
+      await flushPromises()
+      expect(play).toHaveBeenCalledTimes(3)
+      expect((body.find("video").element as HTMLVideoElement).muted).toBe(true)
+      expect(body.find('[data-testid="hover-video-mute"]').attributes("aria-label")).toBe("打开声音")
+    } finally {
+      play.mockRestore()
+      pause.mockRestore()
+    }
+  })
+
+  it("视频：没有视频地址时移上来不播放；视频加载失败就收起", async () => {
+    const { store } = setup(record("vid", "video"))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("vid", "video") })
+    const body = wrapper.find('[data-testid="video-body"]')
+    await body.trigger("mouseenter")
+    expect(wrapper.find("video").exists()).toBe(false)
+
+    store.attachAsset("vid", { src: "https://x/v.mp4" })
+    await nextTick()
+    await body.trigger("mouseleave")
+    await body.trigger("mouseenter")
+    await body.find("video").trigger("error")
     expect(wrapper.find("video").exists()).toBe(false)
   })
 
@@ -441,7 +534,9 @@ describe("各类型的 body", () => {
     Object.defineProperty(input.element, "files", { value: [file], configurable: true })
     await input.trigger("change")
     await vi.waitFor(() => expect(store.nodeById.get("img")?.data.src).toBe("https://s3.test/b/flows/flow-1/a.png"))
-    expect(uploadAsset).toHaveBeenCalledWith("flow-1", file)
+    expect(uploadAsset).toHaveBeenCalledWith("flow-1", file, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    // 没有连入的线：上传之后就是素材（attachAsset 同一步定的形态）
+    expect(store.nodeById.get("img")?.data.form).toBe("asset")
   })
 
   it("视频上传：本地截一帧当预览图，视频和预览图一起传，一次写进 src / poster", async () => {
@@ -462,21 +557,91 @@ describe("各类型的 body", () => {
     await vi.waitFor(() =>
       expect(store.nodeById.get("vid")?.data).toMatchObject({
         src: "https://s3.test/b/v.mp4",
-        poster: "https://s3.test/b/p.jpg"
+        poster: "https://s3.test/b/p.jpg",
+        form: "asset"
       })
     )
-    expect(uploadAsset).toHaveBeenCalledWith("flow-1", frame, "poster.jpg")
+    expect(uploadAsset).toHaveBeenCalledWith(
+      "flow-1",
+      frame,
+      expect.objectContaining({ filename: "poster.jpg", signal: expect.any(AbortSignal) })
+    )
   })
 
-  it("导演台：body 是一个「打开导演台」按钮，先空着（点了不写文档、不选别的）", async () => {
+  it("上传中：占位换成进度（不显示「暂无」和上传按钮），挂「上传中」角标；分片有百分比", async () => {
+    let report: (loaded: number, total: number) => void = () => undefined
+    let finish: (value: { url: string }) => void = () => undefined
+    uploadAsset.mockReset().mockImplementation(
+      (_flowId: string, _file: Blob, io: { onProgress: typeof report }) =>
+        new Promise((resolve) => {
+          report = io.onProgress
+          finish = resolve
+        })
+    )
+    const { store } = setup(record("img", "image"))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+
+    const input = wrapper.find('[data-testid="node-upload-input"]')
+    Object.defineProperty(input.element, "files", { value: [new File(["x"], "a.png")], configurable: true })
+    await input.trigger("change")
+    await nextTick()
+
+    // 还没有进度（一次传完的就一直这样）：只转圈
+    expect(wrapper.find('[data-testid="node-upload-progress"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="node-upload-percent"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="node-upload-button"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain("暂无图片")
+    expect(wrapper.find('[data-testid="node-status-uploading"]').exists()).toBe(true)
+
+    report(30, 120)
+    await nextTick()
+    expect(wrapper.find('[data-testid="node-upload-percent"]').text()).toBe("上传中 25%")
+
+    finish({ url: "https://s3.test/b/a.png" })
+    await vi.waitFor(() => expect(store.nodeById.get("img")?.data.src).toBe("https://s3.test/b/a.png"))
+    await nextTick()
+    expect(wrapper.find('[data-testid="node-status-uploading"]').exists()).toBe(false)
+  })
+
+  it("取消上传：断开请求、什么都不写，占位回到「暂无 + 上传」", async () => {
+    let signal: AbortSignal | undefined
+    uploadAsset.mockReset().mockImplementation(
+      (_flowId: string, _file: Blob, io: { signal: AbortSignal }) =>
+        new Promise((_, reject) => {
+          signal = io.signal
+          io.signal.addEventListener("abort", () => reject(io.signal.reason))
+        })
+    )
+    const { store } = setup(record("img", "image"))
+    const mounted = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+    wrapper = mounted
+
+    const input = mounted.find('[data-testid="node-upload-input"]')
+    Object.defineProperty(input.element, "files", { value: [new File(["x"], "a.png")], configurable: true })
+    await input.trigger("change")
+    await nextTick()
+    await mounted.find('[data-testid="node-upload-cancel"]').trigger("click")
+
+    expect(signal?.aborted).toBe(true)
+    await vi.waitFor(() => expect(mounted.find('[data-testid="node-upload-button"]').exists()).toBe(true))
+    expect(mounted.find('[data-testid="node-upload-progress"]').exists()).toBe(false)
+    expect(store.nodeById.get("img")?.data.src ?? "").toBe("")
+  })
+
+  it("导演台：点「打开导演台」发出 director:open（发出方是这个节点），不写文档", async () => {
     const { store } = setup(record("dc", "director"))
-    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("dc", "director") })
+    const runtime = createNodeKitRuntime(createDefaultNodeKit())
+    const global = { provide: { [NODE_KIT_KEY as symbol]: runtime } }
+    const opened: string[] = []
+    runtime.kit.on("director:open", (_, ctx) => opened.push(ctx.id))
+    wrapper = mount(NodeHost, { global, props: nodeProps("dc", "director") })
     const button = wrapper.find('[data-testid="director-open"]')
     expect(button.element.tagName).toBe("BUTTON")
     expect(button.text()).toBe("打开导演台")
 
     const before = JSON.stringify(store.nodeById.get("dc"))
     await button.trigger("click")
+    expect(opened).toEqual(["dc"])
     expect(JSON.stringify(store.nodeById.get("dc"))).toBe(before)
   })
 })

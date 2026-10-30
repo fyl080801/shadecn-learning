@@ -143,11 +143,12 @@ describe("拉线校验与端口", () => {
     wrapper = null
   })
 
-  it("isValidConnection 忽略 handle id，按 shared 的规则（带节点数据）判", () => {
+  it("isValidConnection 忽略 handle id，按 shared 的规则（交互门 + 逻辑门，带节点数据）判", () => {
     const { store, canvas } = setup()
     store.addNode(record("t1", "text"))
     store.addNode(record("img", "image"))
     store.addNode({ ...record("full", "image"), data: { src: "https://x/a.png" } })
+    store.addNode({ ...record("asset", "image"), data: { src: "https://x/a.png", form: "asset" } })
     store.addNode(record("vid", "video"))
     store.addNode(record("dc", "director"))
     store.addNode(record("p1", "process"))
@@ -160,8 +161,10 @@ describe("拉线校验与端口", () => {
     expect(ok({ source: "img", target: "dc" })).toBe(true)
     // 文本没有输入
     expect(ok({ source: "img", target: "t1" })).toBe(false)
-    // 图片已经有资源：不再接受连入
-    expect(ok({ source: "t1", target: "full" })).toBe(false)
+    // generate 形态的图片有了图照样能连；asset（素材）形态的不接受拖进来的线
+    expect(ok({ source: "t1", target: "full" })).toBe(true)
+    expect(ok({ source: "t1", target: "asset" })).toBe(false)
+    expect(ok({ source: "asset", target: "img" })).toBe(true)
     // 导演台不收视频
     expect(ok({ source: "vid", target: "dc" })).toBe(false)
     // 认不出 / 兜底的老节点和谁都能连
@@ -190,18 +193,26 @@ describe("拉线校验与端口", () => {
     ])
   })
 
-  it("松手时目标已经有了资源：不建边，提示原因；已有的线不动", async () => {
+  it("松手时目标是素材（asset）：不建边，提示原因，形态不变；generate 有了图照样能连", async () => {
     const { toast } = await import("vue-sonner")
     const { store, flow } = setup()
     store.addNode(record("t1", "text"))
     store.addNode(record("t2", "text"))
     store.addNode(record("img", "image"))
+    store.addNode(record("pic", "image"))
+    // 有连入时上传：仍是 generate，还能再连
     flow.emits.connect(connection({ source: "t1", target: "img" }))
-    store.writeNode("img", "data", { set: { src: "https://x/a.png" } })
-
+    store.attachAsset("img", { src: "https://x/a.png" })
     flow.emits.connect(connection({ source: "t2", target: "img" }))
-    expect(store.edges).toHaveLength(1)
-    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("已经有资源"))
+    expect(store.edges).toHaveLength(2)
+
+    // 没有连入时上传：成了素材，拖线连不进去
+    store.attachAsset("pic", { src: "https://x/b.png" })
+    expect(store.nodeById.get("pic")!.data.form).toBe("asset")
+    flow.emits.connect(connection({ source: "t1", target: "pic" }))
+    expect(store.edges).toHaveLength(2)
+    expect(store.nodeById.get("pic")!.data.form).toBe("asset")
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("素材"))
   })
 
   it("交给 Vue Flow 的边 handle 一律为空（连接点不带 id，带 id 的老边也照样渲染）", () => {

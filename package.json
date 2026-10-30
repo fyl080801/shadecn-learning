@@ -12,6 +12,7 @@
     "build": "pnpm build:client && pnpm build:server",
     "build:client": "pnpm --filter @shadecn/web build",
     "build:server": "pnpm --filter @shadecn/server build",
+    "build:sandbox-image": "pnpm build:server && node apps/server/scripts/agent-sandbox/build-image.mjs",
     "start": "NODE_ENV=production node --import ./apps/server/scripts/local-start.mjs output/server/index.js",
     "typecheck:server": "pnpm --filter @shadecn/server typecheck",
     "typecheck:shared": "pnpm --filter @shadecn/shared typecheck",

@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LocalSandboxProvider } from '../../src/sandbox/local.ts'
+import { createMediaTool } from '../../src/sandbox/media-tool.ts'
+import type { ExecOptions, ExecResult, Sandbox } from '../../src/sandbox/types.ts'
 
 /**
  * 本地沙箱只防两件事：凭据经环境变量泄露、误操作（白名单 / 超时 / 截断 / 路径穿越）。
@@ -128,5 +130,57 @@ describe('路径穿越', () => {
   it('flowId / runId 不能拿来拼出别的目录', async () => {
     await expect(provider().create('../x', 'run1')).rejects.toThrow('目录名')
     await expect(provider().create('flow1', 'a/b')).rejects.toThrow('目录名')
+  })
+})
+
+describe('中止即杀（docs/22 §10 验收 5）', () => {
+  // 测试专用的白名单：`sleep` 当「跑很久的媒体命令」
+  it('signal 一掐就 SIGKILL 子进程：不等它跑完，aborted=true', async () => {
+    const sandbox = await provider(['sleep']).create('flow1', 'run1')
+    const ac = new AbortController()
+    const started = Date.now()
+    const running = sandbox.exec('sleep', ['30'], { ...EXEC, timeoutMs: 60_000, signal: ac.signal })
+    setTimeout(() => ac.abort(), 50)
+    const result = await running
+    expect(result).toMatchObject({ aborted: true, timedOut: false, signal: 'SIGKILL', exitCode: null })
+    expect(Date.now() - started).toBeLessThan(3000)
+    await sandbox.dispose()
+  })
+
+  it('调用前就已掐掉：不启动，直接拒绝', async () => {
+    const sandbox = await provider(['sleep']).create('flow1', 'run1')
+    const ac = new AbortController()
+    ac.abort()
+    await expect(sandbox.exec('sleep', ['30'], { ...EXEC, signal: ac.signal })).rejects.toThrow('已中止')
+    await sandbox.dispose()
+  })
+
+  it('dispose 先杀掉还在跑的子进程、等它退出，再删工作目录', async () => {
+    const sandbox = await provider(['sleep']).create('flow1', 'run1')
+    const started = Date.now()
+    const running = sandbox.exec('sleep', ['30'], { ...EXEC, timeoutMs: 60_000 })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await sandbox.dispose()
+    expect(await running).toMatchObject({ signal: 'SIGKILL', exitCode: null })
+    expect(Date.now() - started).toBeLessThan(3000)
+    expect(await readdir(path.join(root, 'flow1'))).toEqual([])
+  })
+
+  it('媒体工具把 pi 的 signal 交给沙箱；被中止的命令回报为错误', async () => {
+    let seen: AbortSignal | undefined
+    const fake = {
+      workdir: '/w',
+      writeFile: async () => {},
+      readFile: async () => new Uint8Array(),
+      async exec(_command: string, _args: readonly string[], options: ExecOptions): Promise<ExecResult> {
+        seen = options.signal
+        return { exitCode: null, signal: 'SIGKILL', stdout: '', stderr: '', timedOut: false, aborted: true, truncated: false }
+      },
+      dispose: async () => {},
+    } satisfies Sandbox
+    const ac = new AbortController()
+    const tool = createMediaTool(fake)
+    await expect(tool.execute('call', { command: 'ffmpeg', args: ['-i', 'a.mp4'] } as never, ac.signal)).rejects.toThrow('中止')
+    expect(seen).toBe(ac.signal)
   })
 })

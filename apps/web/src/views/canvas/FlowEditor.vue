@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import FlowCanvas from "@/components/flow/FlowCanvas.vue"
 import FlowAgentChat from "@/components/flow/agent/FlowAgentChat.vue"
 import FlowConnectionEndedDialog from "@/components/flow/FlowConnectionEndedDialog.vue"
+import FlowDirectorOverlay from "@/components/flow/FlowDirectorOverlay.vue"
 import FlowGrowMenu from "@/components/flow/FlowGrowMenu.vue"
 import FlowPresenceBar from "@/components/flow/FlowPresenceBar.vue"
 import FlowShareButton from "@/components/flow/FlowShareButton.vue"
@@ -28,8 +29,8 @@ const router = useRouter()
 
 const editor = provideFlowEditor(props)
 useFlowShortcuts(editor)
-// 右上角对话框和工具栏快捷输入共用的那一份 agent（docs/20）
-provideFlowAgentPanel(editor.flowId)
+// 右上角对话框和工具栏快捷输入共用的那一份 agent（docs/20）；任务列表经 `editor.sync` 的 stateless 推送更新
+provideFlowAgentPanel(editor)
 
 const { sync, document: doc } = editor
 
@@ -90,6 +91,8 @@ const ready = computed(() => {
       <FlowToolbar />
       <!-- 点出口加号 / 拉线到空白处弹出的候选类型菜单；位置由 reka-ui 按参照元素算，放哪一层都行 -->
       <FlowGrowMenu />
+      <!-- 导演台节点「打开导演台」后的全屏导演台；关着不挂，开着 teleport 到 body，层级说明在组件里 -->
+      <FlowDirectorOverlay />
     </template>
 
     <!-- 放在加载分支之外：连接被终结跟画布加载到哪一步无关，任何时候都得盖住整屏 -->

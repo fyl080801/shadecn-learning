@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button"
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger
 } from "@/components/ui/tooltip"
 import { useEditor } from "@/components/three-editor/composables/useEditorContext"
@@ -349,23 +348,21 @@ onBeforeUnmount(() => {
     class="pointer-events-auto z-10 flex flex-col items-center gap-1"
   >
     <div ref="hostRef" />
-    <TooltipProvider :delay-duration="300">
-      <Tooltip>
-        <TooltipTrigger as-child>
-          <Button
-            v-if="showReset"
-            variant="ghost"
-            size="icon"
-            class="view-helper-reset-btn"
-            aria-label="重置视角"
-            @click="resetView"
-          >
-            <RotateCcw class="size-3.5" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="right">重置视角</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Tooltip>
+      <TooltipTrigger as-child>
+        <Button
+          v-if="showReset"
+          variant="ghost"
+          size="icon"
+          class="view-helper-reset-btn"
+          aria-label="重置视角"
+          @click="resetView"
+        >
+          <RotateCcw class="size-3.5" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="right">重置视角</TooltipContent>
+    </Tooltip>
   </div>
 </template>
 

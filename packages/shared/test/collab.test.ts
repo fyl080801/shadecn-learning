@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AGENT_RUNS_MESSAGE,
   CLOSE_QUOTA_LOCKED,
   CLOSE_REVOKED,
   CLOSE_SUPERSEDED,
@@ -21,6 +22,7 @@ describe('同步通道的线上约定', () => {
     expect(COLLAB_PATH).toBe('/ws/collaboration')
     expect(FLOW_ROOM_PREFIX).toBe('flow:')
     expect(STORE_STATE_MESSAGE).toBe('flow:store-state')
+    expect(AGENT_RUNS_MESSAGE).toBe('agent:runs')
     expect(FLOW_STATE_VECTOR_HEADER).toBe('x-flow-state-vector')
   })
 

@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { Share2 } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip"
 
 /**
  * 右上角的分享按钮 —— **占位，暂时没有任何动作**。
@@ -11,14 +16,18 @@ import { Button } from "@/components/ui/button"
 </script>
 
 <template>
-  <Button
-    variant="outline"
-    size="icon"
-    class="size-10 rounded-full bg-card/95 shadow-lg backdrop-blur"
-    title="分享"
-    aria-label="分享"
-    data-testid="flow-share"
-  >
-    <Share2 class="size-5" />
-  </Button>
+  <Tooltip>
+    <TooltipTrigger as-child>
+      <Button
+        variant="outline"
+        size="icon"
+        class="size-10 rounded-full bg-card/95 shadow-lg backdrop-blur"
+        aria-label="分享"
+        data-testid="flow-share"
+      >
+        <Share2 class="size-5" />
+      </Button>
+    </TooltipTrigger>
+    <TooltipContent side="bottom">分享</TooltipContent>
+  </Tooltip>
 </template>

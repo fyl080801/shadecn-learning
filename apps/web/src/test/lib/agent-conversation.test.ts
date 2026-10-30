@@ -182,6 +182,55 @@ describe("画布 Agent 的对话折叠", () => {
     expect(conversation.messages.map((message) => message.id)).toEqual(["old"])
   })
 
+  it("画布改动通知（agent.canvas-change）：追加到末尾、按 id 去重；之后的文字仍拼进同一条 assistant", () => {
+    const change = {
+      id: "chg1",
+      role: "canvas-change",
+      scope: "live",
+      summary: "爱丽丝 改动了画布（1 处）",
+      items: ["新建节点 text「A」（a）"],
+      actors: ["爱丽丝"],
+      omitted: 0,
+      createdAt: 3
+    } as const
+    const event: AgentStreamEvent = { type: "CUSTOM", name: "agent.canvas-change", value: { ...change, items: [...change.items], actors: [...change.actors] } }
+    const conversation = turn([
+      started,
+      echoed,
+      { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "先看看" },
+      event,
+      event,
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "，看到了" }
+    ])
+    expect(conversation.messages.map((message) => message.role)).toEqual(["user", "assistant", "canvas-change"])
+    expect(conversation.messages[1]).toMatchObject({ text: "先看看，看到了" })
+    expect(conversation.messages[2]).toEqual(change)
+  })
+
+  it("技能加载（agent.skill-loaded）：追加到末尾、按 id 去重；名字和 role 对不上的不收", () => {
+    const loaded = { id: "skl1", role: "skill-loaded", skill: { id: "media-view", title: "查看素材" }, createdAt: 3 } as const
+    const event: AgentStreamEvent = { type: "CUSTOM", name: "agent.skill-loaded", value: { ...loaded, skill: { ...loaded.skill } } }
+    const wrong = {
+      type: "CUSTOM",
+      name: "agent.skill-loaded",
+      value: { id: "x", role: "canvas-change", scope: "live", summary: "", items: [], actors: [], omitted: 0, createdAt: 4 }
+    } as unknown as AgentStreamEvent
+    const conversation = turn([
+      started,
+      echoed,
+      { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "先加载" },
+      event,
+      event,
+      wrong,
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "，再看" }
+    ])
+    expect(conversation.messages.map((message) => message.role)).toEqual(["user", "assistant", "skill-loaded"])
+    expect(conversation.messages[1]).toMatchObject({ text: "先加载，再看" })
+    expect(conversation.messages[2]).toEqual(loaded)
+  })
+
   it("认不出的事件类型直接忽略", () => {
     const conversation = turn([started, { type: "STATE_SNAPSHOT" } as unknown as AgentStreamEvent])
     expect(conversation.messages).toHaveLength(1)

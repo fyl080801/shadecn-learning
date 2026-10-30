@@ -19,7 +19,7 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   flowApi: api
 }))
 
-const { uploadFlowAsset } = await import("@/lib/asset-upload")
+const { uploadFlowAsset, isUploadCanceled } = await import("@/lib/asset-upload")
 const { ApiError } = await import("@/lib/api")
 
 /** 不真分配几十 MB：size 是假的，slice 只记下起止 */
@@ -44,7 +44,7 @@ describe("uploadFlowAsset", () => {
     api.uploadAsset.mockResolvedValue({ url: "u" })
     const file = new File(["x"], "a.png", { type: "image/png" })
     expect(await uploadFlowAsset("f1", file)).toEqual({ url: "u" })
-    expect(api.uploadAsset).toHaveBeenCalledWith("f1", file, "a.png")
+    expect(api.uploadAsset).toHaveBeenCalledWith("f1", file, "a.png", undefined)
     expect(api.startAssetUpload).not.toHaveBeenCalled()
   })
 
@@ -59,22 +59,27 @@ describe("uploadFlowAsset", () => {
     const file = fakeFile(ASSET_PART_SIZE + 1)
     expect(await uploadFlowAsset("f1", file)).toEqual({ url: "done" })
 
-    expect(api.startAssetUpload).toHaveBeenCalledWith("f1", {
-      filename: "file",
-      contentType: "video/mp4",
-      size: ASSET_PART_SIZE + 1
-    })
+    expect(api.startAssetUpload).toHaveBeenCalledWith(
+      "f1",
+      { filename: "file", contentType: "video/mp4", size: ASSET_PART_SIZE + 1 },
+      undefined
+    )
     const chunks = api.uploadAssetPart.mock.calls.map(([, , n, chunk]) => [n, chunk])
     expect(chunks).toEqual([
       [1, { start: 0, end: 10 }],
       [2, { start: 10, end: 20 }],
       [3, { start: 20, end: 30 }]
     ])
-    expect(api.completeAssetUpload).toHaveBeenCalledWith("f1", session, [
-      { partNumber: 1, etag: "e1" },
-      { partNumber: 2, etag: "e2" },
-      { partNumber: 3, etag: "e3" }
-    ])
+    expect(api.completeAssetUpload).toHaveBeenCalledWith(
+      "f1",
+      session,
+      [
+        { partNumber: 1, etag: "e1" },
+        { partNumber: 2, etag: "e2" },
+        { partNumber: 3, etag: "e3" }
+      ],
+      undefined
+    )
     expect(api.abortAssetUpload).not.toHaveBeenCalled()
   })
 
@@ -132,5 +137,54 @@ describe("uploadFlowAsset", () => {
     api.abortAssetUpload.mockRejectedValue(new Error("abort 也挂了"))
 
     await expect(uploadFlowAsset("f1", fakeFile(ASSET_PART_SIZE + 1))).rejects.toBe(error)
+  })
+
+  it("分片上传报进度：按传完的片累计，拼对象之前才到 100%；一次传完的不报", async () => {
+    api.startAssetUpload.mockResolvedValue({ ...session, partSize: 10, partCount: 3 })
+    api.uploadAssetPart.mockImplementation(async (_f, _s, partNumber: number) => ({ partNumber, etag: "e" }))
+    api.completeAssetUpload.mockResolvedValue({ url: "done" })
+    const big = vi.fn()
+    await uploadFlowAsset("f1", fakeFile(ASSET_PART_SIZE + 25), { onProgress: big })
+    expect(big.mock.calls[0]).toEqual([0, ASSET_PART_SIZE + 25])
+    expect(big.mock.calls[big.mock.calls.length - 1]).toEqual([ASSET_PART_SIZE + 25, ASSET_PART_SIZE + 25])
+    // 中间的值单调递增
+    const loaded = big.mock.calls.map(([n]) => n as number)
+    expect([...loaded].sort((a, b) => a - b)).toEqual(loaded)
+
+    api.uploadAsset.mockResolvedValue({ url: "u" })
+    const small = vi.fn()
+    await uploadFlowAsset("f1", new File(["x"], "a.png", { type: "image/png" }), { onProgress: small })
+    expect(small).not.toHaveBeenCalled()
+  })
+
+  it("取消 → 不再领新片、不拼对象，放弃这次上传，抛 AbortError", async () => {
+    api.startAssetUpload.mockResolvedValue({ ...session, partCount: 8 })
+    const controller = new AbortController()
+    api.uploadAssetPart.mockImplementation(async (_f, _s, partNumber: number, _c, signal: AbortSignal) => {
+      if (partNumber === 2) controller.abort()
+      signal.throwIfAborted()
+      return { partNumber, etag: "e" }
+    })
+
+    const error = await uploadFlowAsset("f1", fakeFile(ASSET_PART_SIZE + 1), { signal: controller.signal }).catch(
+      (e: unknown) => e
+    )
+    expect(isUploadCanceled(error)).toBe(true)
+    expect(api.uploadAssetPart.mock.calls.length).toBeLessThan(8)
+    expect(api.completeAssetUpload).not.toHaveBeenCalled()
+    expect(api.abortAssetUpload).toHaveBeenCalledWith("f1", { ...session, partCount: 8 })
+  })
+
+  it("取消不当成网络错误重试", async () => {
+    api.startAssetUpload.mockResolvedValue({ ...session, partCount: 1 })
+    const controller = new AbortController()
+    api.uploadAssetPart.mockImplementation(async () => {
+      controller.abort()
+      throw new DOMException("aborted", "AbortError")
+    })
+    await expect(
+      uploadFlowAsset("f1", fakeFile(ASSET_PART_SIZE + 1), { signal: controller.signal })
+    ).rejects.toThrow()
+    expect(api.uploadAssetPart).toHaveBeenCalledTimes(1)
   })
 })

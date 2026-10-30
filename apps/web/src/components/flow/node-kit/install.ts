@@ -3,6 +3,7 @@ import { FLOW_NODE_TYPES } from "@/components/flow/node-types"
 
 import { deleteFeature, duplicateFeature } from "./features/edit-actions"
 import { connectableFeature, statusFeature } from "./features/display"
+import { directorChatFeature } from "./features/director-chat"
 import { editBodyFeature } from "./features/edit-body"
 import { dragStripFeature, resizableFeature, ungroupFeature } from "./features/frame"
 import { outputPreviewFeature } from "./features/output-preview"
@@ -30,6 +31,7 @@ const FEATURES = [
   ungroupFeature,
   resizableFeature,
   dragStripFeature,
+  directorChatFeature,
   // 下面两个是通用能力，眼下没有类型启用（四种节点都还没有运行器 / 产出）；保留登记，有类型要用时只改声明
   outputPreviewFeature,
   runnableFeature

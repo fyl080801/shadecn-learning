@@ -3,7 +3,7 @@ import { User } from './auth.ts'
 import { Flow } from './canvas.ts'
 import { createdAtColumn, idColumn, updatedAtColumn } from './columns.ts'
 
-// 画布 Agent 的持久化（REQ-AGENT，docs/20-agent-canvas.md）：会话 + 运行日志。
+// 画布 Agent 的持久化（REQ-AGENT，docs/20-agent-canvas.md）：会话 + 运行日志 + 委托授权（Grant，docs/22-agent-sandbox.md）。
 // 写实体的规矩见 ./columns.ts 的头注释；读写都在 apps/server/store/agent.ts，接口在 @shadecn/agent/store。
 
 /**
@@ -31,6 +31,19 @@ export const AgentConversation = defineEntity({
     messages: p.text().default('[]').lazy(),
     /** 模型上下文，JSON 字符串：pi 的 `AgentMessage[]`（已裁剪，切口在用户消息上） */
     llmMessages: p.text().default('[]').lazy(),
+    /**
+     * 上一轮结束时的画布摘要，JSON 字符串：`@shadecn/agent` 的 `CanvasDigest`（节点 id → 类型、名字、分组、字段值哈希；连线两端）。
+     * 下一轮开始时拿它和现在的画布比，告诉模型「自你上次运行以来画布的变化」（docs/20 §3.10.2）。
+     * 从没跑完过一轮 / 画布太大没存 → null。lazy：只有跑一轮时要
+     */
+    canvasDigest: p.text().strictNullable().lazy(),
+    /**
+     * 节点范围会话绑定的节点 id（docs/07 §7.4）；普通会话为 null。建会话时定下，之后不改。
+     * 只是 id、不是外键：节点在 Y.Doc 里，不在库里；节点被删了会话照样在（下一轮的系统提示里说明）
+     */
+    nodeId: p.text().strictNullable(),
+    /** 这个会话加载过的技能 id，JSON 字符串数组（docs/23 §3.4，只增不减）。列表要显示，不 lazy */
+    skills: p.text().default('[]'),
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
@@ -56,9 +69,14 @@ export const AgentRun = defineEntity({
     conversationId: p.text(),
     flowId: p.text(),
     userId: p.text(),
-    /** running | success | cancelled | error。进程被硬杀时会永远停在 running */
+    /** 这一轮凭的 Grant（{@link AgentGrant} 的 id）；签发不出来（发起时就已失权）为 null */
+    grantId: p.text().strictNullable(),
+    /**
+     * running | success | cancelled | error | expired（expired = Grant 到期）。失权被叫停的是 cancelled，原因在 `error`。
+     * 进程被硬杀时会永远停在 running
+     */
     status: p.text(),
-    /** 失败 / 中止的原因 */
+    /** 收尾原因（给人看的中文）：失败的报错，或中止 / 失权 / 到期的原因；success 为 null */
     error: p.text().strictNullable(),
     toolCallCount: p.integer().default(0),
     /** 给人看的模型名 */
@@ -81,6 +99,8 @@ export const AgentToolCall = defineEntity({
   properties: {
     id: idColumn(),
     runId: p.text(),
+    /** 这次调用凭的 Grant —— 审计回答「谁、哪个 run、哪份 Grant、做了什么」（docs/22 §10 验收 6） */
+    grantId: p.text().strictNullable(),
     /** 模型给的工具调用 id（同 SSE 里的 toolCallId） */
     toolCallId: p.text(),
     /** 工具名，如 add_node */
@@ -98,3 +118,63 @@ export const AgentToolCall = defineEntity({
   indexes: [{ properties: ['runId'] }],
 })
 export type AgentToolCall = InferEntity<typeof AgentToolCall>
+
+/**
+ * 委托授权（Grant，docs/22 §3）：发起人在一轮开始时签给这一轮（run）的授权。它才是这一轮的执行身份 ——
+ * 不是发起人的登录态（退出登录、会话过期都不影响它）。
+ *
+ * **全部是普通 id，不建外键**（同 {@link AgentRun}）：审计要回答「被删掉的那张画布 / 那个人当时凭什么做了这些」，
+ * 建了外键就会被级联删掉或挡住删除。`projectId` / `projectKind` / `personalOwnerId` 是签发时的**快照**：
+ * 判权时画布必须仍在同一个项目里（个人画布仍是同一个所有者），挪走了就算失权。
+ *
+ * 有效与否看三列：`revokedAt` 为空、`expiresAt` 在将来 —— 再与发起人此刻的权限取交集（`apps/server/agent/authority.ts`）。
+ * 一轮结束时也写 `revokedAt`（原因「本轮已结束」）：结束之后它不能再被用来做任何事。
+ */
+export const AgentGrant = defineEntity({
+  name: 'AgentGrant',
+  properties: {
+    id: idColumn(),
+    /** 发起人（授权方） */
+    userId: p.text(),
+    runId: p.text(),
+    flowId: p.text(),
+    /** 签发时画布所在的项目 */
+    projectId: p.text(),
+    /** 签发时项目的形态：team | personal */
+    projectKind: p.text(),
+    /** 签发时个人空间的所有者；项目画布为 null */
+    personalOwnerId: p.text().strictNullable(),
+    /** 绝对过期时间（这一轮的时长上限 + 余量）。到了这一轮转 expired */
+    expiresAt: p.datetime(),
+    /** 撤销 / 关闭的时刻；null = 仍有效 */
+    revokedAt: p.datetime().strictNullable(),
+    /** 撤销原因（给人看的中文）：失权、到期、账号级撤销、本轮已结束 */
+    revokeReason: p.text().strictNullable(),
+    createdAt: createdAtColumn(),
+  },
+  indexes: [{ properties: ['runId'] }, { properties: ['userId', 'revokedAt'] }],
+})
+export type AgentGrant = InferEntity<typeof AgentGrant>
+
+/**
+ * Grant 的一项授权范围。一个 Grant 多行，`grantId` 只是 id（理由同上）。
+ *
+ * - `scope`：`flow:read` / `flow:write` / `flow:delete` / `llm:invoke` / `sandbox:exec`（`@shadecn/agent/authority`）；
+ * - `resource`：`flow:<id>` / `model:<provider/id>` / `run:<id>`；
+ * - `onRevoke`：这一项失效时怎么处置，`stop` | `pause` | `degrade` | `finish_current` —— **一期只实现 `stop`**，
+ *   列先按四种值留好（docs/22 §9 第六期的部分撤销），免得到时改表；
+ * - `required`：这一项失效时这一轮还能不能继续（一期全部是 true）。
+ */
+export const AgentGrantScope = defineEntity({
+  name: 'AgentGrantScope',
+  properties: {
+    id: idColumn(),
+    grantId: p.text(),
+    scope: p.text(),
+    resource: p.text(),
+    onRevoke: p.text(),
+    required: p.boolean(),
+  },
+  indexes: [{ properties: ['grantId'] }],
+})
+export type AgentGrantScope = InferEntity<typeof AgentGrantScope>

@@ -1,15 +1,9 @@
 import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import {
-  fauxAssistantMessage,
-  fauxText,
-  fauxToolCall,
-  registerFauxProvider,
-  type FauxProviderRegistration,
-  type FauxResponseStep,
-} from '@mariozechner/pi-ai'
-import { createAgentRuntime, type AgentRuntimeOptions } from '@shadecn/agent/session'
+import { fauxAssistantMessage, fauxText, fauxToolCall } from '@mariozechner/pi-ai'
+import type { AgentRuntimeOptions } from '@shadecn/agent/session'
+import type { ScriptedStep } from '@shadecn/agent/testing'
 import type { AgentConversationStore, AgentRunLog } from '@shadecn/agent/store'
 import {
   AGENT_SUMMARY_MAX_LENGTH,
@@ -17,29 +11,35 @@ import {
   agentApiPath,
   agentConversationPath,
   AgentEventType,
+  agentRunAbortPath,
   agentRunEventsPath,
+  type AgentActiveRunView,
   type AgentConversationSummary,
   type AgentConversationView,
   type AgentSessionView,
   type AgentStreamEvent,
 } from '@shadecn/shared/agent'
-import { nodesMap } from '@shadecn/shared/flow-doc'
+import { nodesMap, toYNode } from '@shadecn/shared/flow-doc'
+import { emptyGraph } from '@shadecn/shared/flow-graph'
+import { buildNodeRecord } from '@shadecn/shared/flow-node-types'
 import { replaceAgentRuntime } from '../../agent/index.ts'
-import { attachCollabServer } from '../../collab/hocuspocus.ts'
+import { attachCollabServer, collabInstance } from '../../collab/hocuspocus.ts'
 import { flushCollabWrites, loadFlowState, roomOf } from '../../collab/persistence.ts'
 import { AgentConversation, AgentRun, AgentToolCall } from '../../db/entities/index.ts'
-import { agentConversations, agentRunLog } from '../../store/agent.ts'
-import { users } from '../../store/users.ts'
+import { agentConversations } from '../../store/agent.ts'
+import { useScripted } from '../helpers/agent.ts'
+import { writeGraph } from '../helpers/collab.ts'
 import { db, resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject, joinViaInvite, type Actor } from '../helpers/project.ts'
 
 /**
- * 画布 Agent 的接口：鉴权口径、状态码、SSE 帧格式，「模型调工具 → 画布真的变了」那一整条，
+ * 画布 Agent 的接口：鉴权口径（发起人 / 其他成员 / 管理员 / 非成员的权限矩阵，403 与 404 的分界）、状态码、
+ * SSE 帧格式，「模型调工具 → 画布真的变了」那一整条，按会话并发，
  * 以及会话 / 运行日志真的落进测试库（store/agent.ts 的 MikroORM 实现）。
- * 模型是 pi-ai 的 faux provider（不碰网络 —— 测试里的 fetch 本来就会 reject）。
+ * runtime 用的是生产那套宿主接线（`agentHostOptions`），只把模型换成假的。
+ * 二期起这一轮的 pi 跑在 runner 里（进程内驱动），经本服务的网关路由取输入、调工具、报事件、请求模型；
+ * 模型是脚本化的 OpenAI 兼容上游（`@shadecn/agent/testing`，不碰网络 —— 测试里别的 fetch 照样 reject）。
  */
-
-let faux: FauxProviderRegistration | null = null
 
 beforeAll(async () => {
   // agent 经 direct connection 写活房间，要有一个协同实例（不 listen）
@@ -52,30 +52,18 @@ beforeEach(async () => {
 
 afterEach(async () => {
   replaceAgentRuntime(null)
-  faux?.unregister()
-  faux = null
   await flushCollabWrites()
 })
 
-function useFaux(responses: FauxResponseStep[], overrides: Partial<AgentRuntimeOptions> = {}) {
-  faux = registerFauxProvider()
-  faux.setResponses(responses)
-  const runtime = createAgentRuntime({
-    model: { model: faux.getModel(), apiKey: 'k', label: 'Faux' },
-    store: agentConversations,
-    runLog: agentRunLog,
-    displayName: users.displayName,
-    ...overrides,
-  })
-  replaceAgentRuntime(runtime)
-  return runtime
+function useFaux(responses: ScriptedStep[], overrides: Partial<AgentRuntimeOptions> = {}) {
+  return useScripted(responses, overrides)
 }
 
 /** 一条要等外面放行才回复的模型回复；被中止时立刻收尾 */
 function gated() {
   let release!: () => void
   const gate = new Promise<void>((resolve) => (release = resolve))
-  const step: FauxResponseStep = (_context, options) =>
+  const step: ScriptedStep = (_context, options) =>
     new Promise((resolve) => {
       options?.signal?.addEventListener('abort', () => resolve(fauxAssistantMessage('…')))
       void gate.then(() => resolve(fauxAssistantMessage('完成')))
@@ -92,7 +80,7 @@ function pausedMidRun() {
   const gate = new Promise<void>((resolve) => (release = resolve))
   let reach!: () => void
   const reached = new Promise<void>((resolve) => (reach = resolve))
-  const steps: FauxResponseStep[] = [
+  const steps: ScriptedStep[] = [
     fauxAssistantMessage([fauxText('先说一段比较长的话，'.repeat(6)), fauxToolCall('add_node', { type: 'text', metadata: { label: '中途' } })], {
       stopReason: 'toolUse',
     }),
@@ -122,6 +110,17 @@ function send(who: Actor, flowId: string, body: unknown) {
 
 async function view(who: Actor, flowId: string): Promise<AgentSessionView> {
   return (await (await who.request(agentApiPath(flowId))).json()) as AgentSessionView
+}
+
+/** 这张画布上谁的那一轮（按发起人挑）；没有就抛 */
+async function runOf(who: Actor, flowId: string, ownerId = who.userId): Promise<AgentActiveRunView> {
+  const run = (await view(who, flowId)).activeRuns.find((entry) => entry.owner.id === ownerId)
+  if (!run) throw new Error('列表里没有这一轮')
+  return run
+}
+
+function abort(who: Actor, flowId: string, runId: string) {
+  return who.request(agentRunAbortPath(flowId, runId), { method: 'POST' })
 }
 
 /** 跑完一轮，返回它的事件和会话 id（= RUN_STARTED 的 threadId） */
@@ -160,7 +159,7 @@ describe('未启用', () => {
     expect(await view(alice, flowId)).toEqual({
       enabled: false,
       running: false,
-      activeRun: null,
+      activeRuns: [],
       latest: null,
     })
     expect((await send(alice, flowId, { text: '你好' })).status).toBe(503)
@@ -176,7 +175,15 @@ describe('鉴权与参数', () => {
 
     expect((await bob.request(agentApiPath(flowId))).status).toBe(404)
     expect((await send(bob, flowId, { text: '你好' })).status).toBe(404)
-    expect((await bob.request(`${agentApiPath(flowId)}/abort`, { method: 'POST' })).status).toBe(404)
+    expect((await abort(bob, flowId, 'run_x')).status).toBe(404)
+    expect((await bob.request(agentConversationPath(flowId))).status).toBe(404)
+  })
+
+  it('旧的 POST {agentApiPath}/abort（不指名哪一轮）已经没有了：一张画布上可以同时跑好几轮', async () => {
+    useFaux([fauxAssistantMessage('x')])
+    const alice = await actor()
+    const flowId = await createFlow(alice, await createProject(alice))
+    expect((await alice.request(`${agentApiPath(flowId)}/abort`, { method: 'POST' })).status).toBe(404)
   })
 
   it('空 prompt / 超长 / 不是 JSON → 400', async () => {
@@ -204,6 +211,77 @@ describe('鉴权与参数', () => {
     const alice = await actor()
     const flowId = await createFlow(alice, await createProject(alice))
     expect((await alice.request(agentApiPath(flowId), { method: 'DELETE' })).status).toBe(404)
+  })
+})
+
+describe('节点范围会话（docs/07 §7.4）', () => {
+  it('nodeId：节点不在这张画布上 → 404；续聊时给 → 400；存在 → 会话绑定它，画布只读（没有 canvas-edit 的工具）', async () => {
+    let tools: string[] = []
+    useFaux([
+      (context) => {
+        tools = (context.tools ?? []).map((tool) => tool.name)
+        return fauxAssistantMessage('好')
+      },
+    ])
+    const alice = await actor()
+    const flowId = await createFlow(alice, await createProject(alice))
+    const graph = emptyGraph()
+    graph.nodes.push({
+      id: 'n_dir',
+      type: 'director',
+      layout: { position: { x: 0, y: 0 } },
+      metadata: { label: '片头' },
+      data: {},
+      runtime: { status: 'idle' },
+    })
+    await writeGraph(flowId, graph)
+
+    expect((await send(alice, flowId, { text: '你好', nodeId: 'n_missing' })).status).toBe(404)
+    expect((await send(alice, flowId, { text: '你好', nodeId: 'a b' })).status).toBe(400)
+    expect((await send(alice, flowId, { text: '你好', conversationId: 'c1', nodeId: 'n_dir' })).status).toBe(400)
+
+    const res = await send(alice, flowId, { text: '改一下场景', nodeId: 'n_dir' })
+    expect(res.status).toBe(200)
+    const events = parseSse(await res.text())
+    expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
+    expect(tools).toContain('read_canvas')
+    expect(tools).not.toContain('add_node')
+    // 绑定的是导演台：导演台技能一开始就加载（auto）
+    expect(tools).toContain('add_objects')
+
+    const started = events[0]
+    if (started?.type !== AgentEventType.RUN_STARTED) throw new Error('第一帧不是 RUN_STARTED')
+    const conversation = (await (await alice.request(agentConversationPath(flowId, started.threadId))).json()) as AgentConversationView
+    expect(conversation).toMatchObject({
+      nodeId: 'n_dir',
+      skills: [
+        { id: 'canvas', title: '画布（只读）' },
+        { id: 'director', title: '导演台' },
+      ],
+    })
+    // 列表里也带着
+    const list = (await (await alice.request(agentConversationPath(flowId))).json()) as AgentConversationSummary[]
+    expect(list[0]).toMatchObject({ nodeId: 'n_dir' })
+  })
+
+  it('房间在线时按内存里的文档判：刚建、还没落库的节点也认', async () => {
+    useFaux([fauxAssistantMessage('好')])
+    const alice = await actor()
+    const flowId = await createFlow(alice, await createProject(alice))
+    const connection = await collabInstance()!.openDirectConnection(roomOf(flowId), {})
+    try {
+      connection.document!.transact(() => {
+        nodesMap(connection.document!).set(
+          'n_new',
+          toYNode(buildNodeRecord({ id: 'n_new', type: 'director', label: '新的', position: { x: 0, y: 0 } })),
+        )
+      })
+      const res = await send(alice, flowId, { text: '你好', nodeId: 'n_new' })
+      expect(res.status).toBe(200)
+      await res.text()
+    } finally {
+      await connection.disconnect()
+    }
   })
 })
 
@@ -250,7 +328,9 @@ describe('跑一轮', () => {
     // 对话记录：GET 读回来的就是这一轮
     const session = await view(alice, flowId)
     expect(session.running).toBe(false)
+    expect(session.activeRuns).toEqual([])
     expect(session.latest?.id).toBe(threadId)
+    expect(session.latest).toMatchObject({ mine: true, owner: { id: alice.userId, name: 'alice', avatarUrl: null } })
     expect(session.latest?.messages.map((message) => message.role)).toEqual(['user', 'assistant'])
     expect(session.latest?.messages[1]).toMatchObject({ text: '好的\n\n加好了' })
   })
@@ -268,11 +348,59 @@ describe('跑一轮', () => {
     expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
     await flushCollabWrites()
     expect(await storedNodeLabels(flowId)).toEqual(['私人'])
+    // 个人画布只有所有者：会话都是他自己的
+    const list = (await (await alice.request(agentConversationPath(flowId))).json()) as AgentConversationSummary[]
+    expect(list.map((row) => [row.mine, row.owner.id])).toEqual([[true, alice.userId]])
   })
 })
 
 describe('并发与控制', () => {
-  it('同一张画布第二个发起者 → 409；只有发起人能中止；中止后流以 cancelled 收尾', async () => {
+  it('同一个会话第二次发起 → 409；别人在同一张画布上的新会话照常并行跑完；中止限发起人 / 管理员', async () => {
+    const { step } = gated()
+    useFaux([fauxAssistantMessage('旧的'), step, fauxAssistantMessage('乙的')])
+    const alice = await actor('alice')
+    const bob = await actor('bob')
+    const carol = await actor('carol')
+    const projectId = await createProject(alice)
+    await joinViaInvite(alice, projectId, bob)
+    await joinViaInvite(alice, projectId, carol)
+    const flowId = await createFlow(alice, projectId)
+
+    // bob 先有一个会话（之后他在跑的时候 carol 要试着中止它）
+    const old = await runTurn(bob, flowId, '旧话题')
+    const first = await send(bob, flowId, { text: '慢慢来', conversationId: old.conversationId })
+    expect(first.status).toBe(200)
+    await tick()
+
+    // 同一个会话再发 → 409，带中文原因
+    const again = await send(bob, flowId, { text: '我也要', conversationId: old.conversationId })
+    expect(again.status).toBe(409)
+    expect(((await again.json()) as { message: string }).message).toContain('这个会话')
+    // alice 的新会话不排队：并行跑完
+    const parallel = await runTurn(alice, flowId, '我开个新的')
+    expect(parallel.events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
+    expect((await view(carol, flowId)).running).toBe(true)
+
+    // 正在跑的会话删不掉 → 409；别的成员中止 → 403；发起人中止 → 204
+    const [current] = ((await (await bob.request(agentConversationPath(flowId))).json()) as AgentConversationSummary[]).filter(
+      (row) => row.mine,
+    )
+    expect(current).toMatchObject({ id: old.conversationId, running: true, messageCount: 3 })
+    expect((await bob.request(agentConversationPath(flowId, current!.id), { method: 'DELETE' })).status).toBe(409)
+    const run = await runOf(bob, flowId)
+    expect((await abort(carol, flowId, run.runId)).status).toBe(403)
+    expect((await abort(bob, flowId, run.runId)).status).toBe(204)
+
+    const events = parseSse(await first.text())
+    expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'cancelled' } })
+
+    // 结束之后：中止幂等、删除成功
+    expect((await abort(bob, flowId, run.runId)).status).toBe(204)
+    expect((await bob.request(agentConversationPath(flowId, current!.id), { method: 'DELETE' })).status).toBe(204)
+    expect((await view(bob, flowId)).latest).toBeNull()
+  })
+
+  it('项目管理员能中止成员的一轮；角色每次请求重查（被移出项目后一律 404）', async () => {
     const { step } = gated()
     useFaux([step])
     const alice = await actor('alice')
@@ -281,29 +409,21 @@ describe('并发与控制', () => {
     await joinViaInvite(alice, projectId, bob)
     const flowId = await createFlow(alice, projectId)
 
-    const first = await send(alice, flowId, { text: '慢慢来' })
-    expect(first.status).toBe(200)
+    const origin = await send(bob, flowId, { text: '慢慢来' })
     await tick()
-
-    const second = await send(bob, flowId, { text: '我也要' })
-    expect(second.status).toBe(409)
-    const running = (await (await bob.request(agentApiPath(flowId))).json()) as AgentSessionView
-    expect(running.running).toBe(true)
-
-    // 正在跑的会话删不掉 → 409；别人中止 → 403
-    const [current] = (await (await alice.request(agentConversationPath(flowId))).json()) as AgentConversationSummary[]
-    expect(current).toMatchObject({ running: true, messageCount: 1 })
-    expect((await alice.request(agentConversationPath(flowId, current!.id), { method: 'DELETE' })).status).toBe(409)
-    expect((await bob.request(`${agentApiPath(flowId)}/abort`, { method: 'POST' })).status).toBe(403)
-    expect((await alice.request(`${agentApiPath(flowId)}/abort`, { method: 'POST' })).status).toBe(204)
-
-    const events = parseSse(await first.text())
+    const run = await runOf(alice, flowId, bob.userId)
+    expect(run).toMatchObject({ mine: false, owner: { id: bob.userId, name: 'bob' } })
+    // alice 建的项目，她是管理员
+    expect((await abort(alice, flowId, run.runId)).status).toBe(204)
+    const events = parseSse(await origin.text())
     expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'cancelled' } })
+    expect(await db().findOneOrFail(AgentRun, run.runId)).toMatchObject({ status: 'cancelled', error: '已被项目管理员中止' })
 
-    // 结束之后：中止幂等、删除成功
-    expect((await alice.request(`${agentApiPath(flowId)}/abort`, { method: 'POST' })).status).toBe(204)
-    expect((await alice.request(agentConversationPath(flowId, current!.id), { method: 'DELETE' })).status).toBe(204)
-    expect((await view(alice, flowId)).latest).toBeNull()
+    // bob 被移出项目：他的会话他也看不到了（画布 404），不是 403
+    const removed = await alice.request(`/api/projects/${projectId}/members/${bob.userId}`, { method: 'DELETE' })
+    expect(removed.status).toBe(204)
+    expect((await bob.request(agentConversationPath(flowId))).status).toBe(404)
+    expect((await abort(bob, flowId, run.runId)).status).toBe(404)
   })
 
   it('不同画布互不排队', async () => {
@@ -335,21 +455,21 @@ describe('一轮不随连接中止，可以接回', () => {
     const res = await send(alice, flowId, { text: '我先走了' })
     expect(res.status).toBe(200)
     await tick()
-    const { activeRun } = await view(alice, flowId)
+    const activeRun = await runOf(alice, flowId)
     await res.body!.cancel()
     await tick()
     expect(runtime.isRunning(flowId)).toBe(true)
 
     release()
     await idle(runtime, flowId)
-    const conversation = await db().findOneOrFail(AgentConversation, activeRun!.conversationId!, {
+    const conversation = await db().findOneOrFail(AgentConversation, activeRun.conversationId, {
       populate: ['messages'],
     })
     const messages = JSON.parse(conversation.messages) as { role: string; text: string; error?: string }[]
     expect(messages.map((message) => message.role)).toEqual(['user', 'assistant'])
     expect(messages[1]).toMatchObject({ text: '完成' })
     expect(messages[1]).not.toHaveProperty('error')
-    expect(await db().findOneOrFail(AgentRun, activeRun!.runId)).toMatchObject({ status: 'success', error: null })
+    expect(await db().findOneOrFail(AgentRun, activeRun.runId)).toMatchObject({ status: 'success', error: null })
   })
 
   it('运行中途接回：接回流与原始流逐帧相同（含 TEXT_MESSAGE_CONTENT），完整序列只来一次', async () => {
@@ -360,8 +480,8 @@ describe('一轮不随连接中止，可以接回', () => {
 
     const origin = await send(alice, flowId, { text: '说长一点' })
     await paused.reached
-    const { activeRun } = await view(alice, flowId)
-    const rejoined = await rejoin(alice, flowId, activeRun!.runId)
+    const activeRun = await runOf(alice, flowId)
+    const rejoined = await rejoin(alice, flowId, activeRun.runId)
     expect(rejoined.status).toBe(200)
     expect(rejoined.headers.get('content-type')).toContain('text/event-stream')
 
@@ -379,7 +499,7 @@ describe('一轮不随连接中止，可以接回', () => {
     expect(rejoinedEvents.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'success' } })
   })
 
-  it('别人接回 → 404；runId 不对 → 404；已经结束 → 404；非成员 → 404', async () => {
+  it('其他成员能旁观（只读）接回，序列与发起者相同；runId 不对 / 已经结束 / 非成员 → 404', async () => {
     const { step, release } = gated()
     const runtime = useFaux([step])
     const alice = await actor('alice')
@@ -391,15 +511,16 @@ describe('一轮不随连接中止，可以接回', () => {
 
     const origin = await send(alice, flowId, { text: '慢慢来' })
     await tick()
-    const { activeRun } = await view(alice, flowId)
-    const runId = activeRun!.runId
+    const { runId } = await runOf(bob, flowId, alice.userId)
 
-    expect((await rejoin(bob, flowId, runId)).status).toBe(404)
+    const watching = await rejoin(bob, flowId, runId)
+    expect(watching.status).toBe(200)
     expect((await rejoin(carol, flowId, runId)).status).toBe(404)
     expect((await rejoin(alice, flowId, 'run_nope')).status).toBe(404)
 
     release()
-    await origin.text()
+    const [originRaw, watchedRaw] = await Promise.all([origin.text(), watching.text()])
+    expect(parseSse(watchedRaw)).toEqual(parseSse(originRaw))
     await idle(runtime, flowId)
     expect((await rejoin(alice, flowId, runId)).status).toBe(404)
   })
@@ -412,8 +533,7 @@ describe('一轮不随连接中止，可以接回', () => {
 
     const origin = await send(alice, flowId, { text: '说长一点' })
     await paused.reached
-    const { activeRun } = await view(alice, flowId)
-    expect((await rejoin(alice, flowId, activeRun!.runId)).status).toBe(410)
+    expect((await rejoin(alice, flowId, (await runOf(alice, flowId)).runId)).status).toBe(410)
 
     paused.release()
     const events = parseSse(await origin.text())
@@ -429,56 +549,80 @@ describe('一轮不随连接中止，可以接回', () => {
 
     const origin = await send(alice, flowId, { text: '慢慢来' })
     await tick()
-    const { activeRun } = await view(alice, flowId)
-    const rejoined = await rejoin(alice, flowId, activeRun!.runId)
+    const activeRun = await runOf(alice, flowId)
+    const rejoined = await rejoin(alice, flowId, activeRun.runId)
     expect(rejoined.status).toBe(200)
 
-    expect((await alice.request(`${agentApiPath(flowId)}/abort`, { method: 'POST' })).status).toBe(204)
+    expect((await abort(alice, flowId, activeRun.runId)).status).toBe(204)
     const events = parseSse(await rejoined.text())
     expect(events[0]?.type).toBe(AgentEventType.RUN_STARTED)
     expect(events.at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'cancelled' } })
     expect(parseSse(await origin.text())).toEqual(events)
   })
 
-  it('GET 给出 activeRun：发起人名字；会话 id 只给发起人；latest 是在跑的那个会话', async () => {
-    const { step, release } = gated()
-    const runtime = useFaux([fauxAssistantMessage('旧的'), step])
+  it('GET 给出 activeRuns：所有成员在跑的轮次（发起人、会话标题、会话 id），mine 按请求者算；latest 是我在跑的那个会话；不带邮箱', async () => {
+    const mineGate = gated()
+    const theirGate = gated()
+    const runtime = useFaux([fauxAssistantMessage('旧的'), mineGate.step, theirGate.step])
     const alice = await actor('alice')
     const bob = await actor('bob')
+    const carol = await actor('carol')
     const projectId = await createProject(alice)
     await joinViaInvite(alice, projectId, bob)
+    await joinViaInvite(alice, projectId, carol)
     const flowId = await createFlow(alice, projectId)
 
     const old = await runTurn(alice, flowId, '旧话题')
     const origin = await send(alice, flowId, { text: '新话题' })
+    await tick()
+    const bobs = await send(bob, flowId, { text: '乙的话题' })
     await tick()
     // 旧会话被拨成「最近更新」：latest 仍要选在跑的那个
     await db().nativeUpdate(AgentConversation, old.conversationId, { updatedAt: new Date(Date.now() + 60_000) })
 
     const mine = await view(alice, flowId)
     expect(mine.running).toBe(true)
-    expect(mine.activeRun).toEqual({
-      runId: expect.any(String),
-      conversationId: expect.any(String),
-      initiator: { id: alice.userId, name: 'alice' },
-      mine: true,
-      startedAt: expect.any(Number),
-    })
-    expect(mine.activeRun!.conversationId).not.toBe(old.conversationId)
-    expect(mine.latest).toMatchObject({ id: mine.activeRun!.conversationId, running: true, messageCount: 1 })
+    expect(mine.activeRuns).toEqual([
+      {
+        runId: expect.any(String),
+        conversationId: expect.any(String),
+        conversationTitle: '新话题',
+        owner: { id: alice.userId, name: 'alice', avatarUrl: null },
+        mine: true,
+        startedAt: expect.any(Number),
+      },
+      {
+        runId: expect.any(String),
+        conversationId: expect.any(String),
+        conversationTitle: '乙的话题',
+        owner: { id: bob.userId, name: 'bob', avatarUrl: null },
+        mine: false,
+        startedAt: expect.any(Number),
+      },
+    ])
+    const [aliceRun, bobRun] = mine.activeRuns
+    expect(aliceRun!.conversationId).not.toBe(old.conversationId)
+    expect(mine.latest).toMatchObject({ id: aliceRun!.conversationId, running: true, messageCount: 1, mine: true })
 
-    const theirs = await view(bob, flowId)
-    expect(theirs.running).toBe(true)
-    expect(theirs.activeRun).toEqual({ ...mine.activeRun, conversationId: null, mine: false })
+    // 旁观者看到同一份列表（会话 id 也给 —— 项目画布上会话只读可见），只是 mine 都是 false；latest 只挑自己的
+    const theirs = await view(carol, flowId)
+    expect(theirs.activeRuns).toEqual(mine.activeRuns.map((run) => ({ ...run, mine: false })))
     expect(theirs.latest).toBeNull()
-    // 会话列表里的 running 只对发起人自己的会话成立
-    expect((await (await bob.request(agentConversationPath(flowId))).json()) as unknown[]).toEqual([])
+    expect((await view(bob, flowId)).latest).toMatchObject({ id: bobRun!.conversationId, mine: true })
+    // 会话列表里的 running 对在跑的会话成立（谁的都算）
+    const list = (await (await carol.request(agentConversationPath(flowId))).json()) as AgentConversationSummary[]
+    expect(list.filter((row) => row.running).map((row) => row.id).sort()).toEqual(
+      [aliceRun!.conversationId, bobRun!.conversationId].sort(),
+    )
+    // 邮箱一个都不出去（测试用户的邮箱是 <name><n>@example.com）
+    expect(JSON.stringify([mine, theirs, list])).not.toMatch(/@example\.com/)
 
-    release()
-    await origin.text()
+    mineGate.release()
+    theirGate.release()
+    await Promise.all([origin.text(), bobs.text()])
     await idle(runtime, flowId)
     const after = await view(alice, flowId)
-    expect(after).toMatchObject({ running: false, activeRun: null })
+    expect(after).toMatchObject({ running: false, activeRuns: [] })
     expect(after.latest?.id).toBe(old.conversationId)
   })
 })
@@ -486,7 +630,7 @@ describe('一轮不随连接中止，可以接回', () => {
 describe('会话', () => {
   it('新会话 → 续聊同一会话带上上下文 → 列表倒序、标题与摘要截断 → latest 是最近更新的那个', async () => {
     const seen: number[] = []
-    const reply = (text: string): FauxResponseStep => (context) => {
+    const reply = (text: string): ScriptedStep => (context) => {
       seen.push(context.messages.length)
       return fauxAssistantMessage(text)
     }
@@ -531,10 +675,11 @@ describe('会话', () => {
     expect((await view(alice, flowId)).latest?.id).toBe(first.conversationId)
   })
 
-  it('别人的会话、不存在的会话一律 404：读、删、往里发消息都是', async () => {
+  it('别人的会话只读可见：读得到（mine=false 带发起人）；删、往里发消息 → 403；非成员 / 别的画布 / 不存在 → 404', async () => {
     useFaux([fauxAssistantMessage('alice 的'), fauxAssistantMessage('不该走到这')])
     const alice = await actor('alice')
     const bob = await actor('bob')
+    const carol = await actor('carol')
     const projectId = await createProject(alice)
     await joinViaInvite(alice, projectId, bob)
     const flowId = await createFlow(alice, projectId)
@@ -542,22 +687,42 @@ describe('会话', () => {
 
     const { conversationId } = await runTurn(alice, flowId, '我的会话')
 
-    expect((await bob.request(agentConversationPath(flowId, conversationId))).status).toBe(404)
-    expect((await bob.request(agentConversationPath(flowId, conversationId), { method: 'DELETE' })).status).toBe(404)
-    expect((await send(bob, flowId, { text: '偷看', conversationId })).status).toBe(404)
-    expect((await (await bob.request(agentConversationPath(flowId))).json()) as unknown[]).toEqual([])
+    // 其他成员：只读
+    const read = await bob.request(agentConversationPath(flowId, conversationId))
+    expect(read.status).toBe(200)
+    expect((await read.json()) as AgentConversationView).toMatchObject({
+      id: conversationId,
+      mine: false,
+      owner: { id: alice.userId, name: 'alice', avatarUrl: null },
+      messages: [expect.objectContaining({ role: 'user', text: '我的会话' }), expect.objectContaining({ role: 'assistant' })],
+    })
+    const bobsList = (await (await bob.request(agentConversationPath(flowId))).json()) as AgentConversationSummary[]
+    expect(bobsList.map((row) => [row.id, row.mine, row.owner.id])).toEqual([[conversationId, false, alice.userId]])
     expect((await view(bob, flowId)).latest).toBeNull()
+
+    const deleted = await bob.request(agentConversationPath(flowId, conversationId), { method: 'DELETE' })
+    expect(deleted.status).toBe(403)
+    expect(((await deleted.json()) as { message: string }).message).toContain('只有发起人')
+    const continued = await send(bob, flowId, { text: '接着说', conversationId })
+    expect(continued.status).toBe(403)
+    expect(((await continued.json()) as { message: string }).message).toContain('别人的会话')
+
+    // 非成员：一律 404（不泄露画布存在）
+    expect((await carol.request(agentConversationPath(flowId, conversationId))).status).toBe(404)
+    expect((await carol.request(agentConversationPath(flowId, conversationId), { method: 'DELETE' })).status).toBe(404)
+    expect((await send(carol, flowId, { text: '偷看', conversationId })).status).toBe(404)
     // 同一个人、另一张画布：会话归属画布，也查不到
     expect((await alice.request(agentConversationPath(otherFlowId, conversationId))).status).toBe(404)
     expect((await send(alice, otherFlowId, { text: '串门', conversationId })).status).toBe(404)
-    // 不存在的
-    expect((await alice.request(agentConversationPath(flowId, 'conv_nope'))).status).toBe(404)
-    expect((await alice.request(agentConversationPath(flowId, 'conv_nope'), { method: 'DELETE' })).status).toBe(404)
-    expect((await send(alice, flowId, { text: '续', conversationId: 'conv_nope' })).status).toBe(404)
+    expect((await bob.request(agentConversationPath(otherFlowId, conversationId), { method: 'DELETE' })).status).toBe(404)
+    // 不存在的：404 先于 403
+    expect((await bob.request(agentConversationPath(flowId, 'conv_nope'))).status).toBe(404)
+    expect((await bob.request(agentConversationPath(flowId, 'conv_nope'), { method: 'DELETE' })).status).toBe(404)
+    expect((await send(bob, flowId, { text: '续', conversationId: 'conv_nope' })).status).toBe(404)
 
-    // alice 的会话原封不动
+    // alice 的会话原封不动，模型一次都没再调
     const kept = (await (await alice.request(agentConversationPath(flowId, conversationId))).json()) as AgentConversationView
-    expect(kept.messageCount).toBe(2)
+    expect(kept).toMatchObject({ messageCount: 2, mine: true })
   })
 
   it('删除会话 → 204，之后列表里没有它', async () => {
