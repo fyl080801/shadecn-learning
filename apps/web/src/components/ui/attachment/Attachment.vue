@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { HTMLAttributes } from "vue"
-import type { AttachmentVariants } from "."
+import type { AttachmentVariants } from "./variants"
 import { cn } from "@/lib/utils"
-import { attachmentVariants } from "."
+import { attachmentVariants } from "./variants"
 
 interface Props {
   size?: AttachmentVariants["size"]
