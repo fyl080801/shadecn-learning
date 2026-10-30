@@ -1,6 +1,7 @@
 # REQ-AGENT-SANDBOX Agent 沙箱：身份、委托授权与执行运行时
 
-> 状态：**一期（身份核心）、二期（网关 + runner + `process` 驱动）、三期（`oci` 驱动 + 沙箱镜像，§9 第 1～3 项）已实现**；四期起（`k8s` 驱动等）为方案。
+> 状态：**一期（身份核心）、二期（网关 + runner + `process` 驱动）、三期（`oci` 驱动 + 沙箱镜像）、四期（`k8s` 驱动 + 部署清单，§9 第 1～4 项）已实现**；
+> 四期**还没在真实集群上跑过**（单元测试对着假的 k8s API，真集群的用例默认跳过，见 §7.5）。五期起为方案。
 > 一期已实现：Grant / scope 表（`agent_grant` / `agent_grant_scope`，签发时 scope = 请求的 ∩ 发起人当时的权限 ∩ 服务端配置）；
 > run 状态机 running → success / cancelled / error / expired（线上 RUN_FINISHED 仍只有 success / cancelled，expired 在线上是 cancelled）；
 > 全部工具执行前、每次请求模型前、画布每次读写前 `authorize(capability)`；失效即 `stop`（整轮立即停，cancelled + 原因，Grant 标撤销）；
@@ -10,6 +11,9 @@
 > STS（bootstrap token → run 短令牌、续期）、模型代理、画布工具 RPC、事件上报、改动通知下行；`process` 驱动（生产拒绝）。
 > 三期已实现：`oci` 驱动（每轮一个 Docker / Podman 容器，Engine API 直连 unix socket，生产可用）、沙箱镜像（`pnpm build:sandbox-image`）、
 > 启动自检 + 孤儿容器清理；本地用 podman machine 跑通（§7.2、§7.3；本地的出网限制做到什么程度见 §7.4）。
+> 四期已实现：`k8s` 驱动（每轮一个 Pod，Kubernetes API 直连，零依赖；Pod 规格满足 Pod Security `restricted`）、启动自检决定启不启用、
+> 孤儿 Pod 清理；部署清单（沙箱命名空间、RBAC、NetworkPolicy、配额兜底、可选的 gVisor RuntimeClass、服务端 Deployment 补丁，
+> 都在 `k8s/variants/`）。工作负载凭证仍是一次性 bootstrap token（projected token + TokenReview 没做，见 §4.1）（§7.5）。
 >
 > 前置：[REQ-AGENT](20-agent-canvas.md)（画布 agent，本需求改写它的 §3.1「大脑在服务端」与 §3.9 ①④）。
 > 来源：《多用户 Agent 沙箱：身份、委托授权与权限设计方案》（2026-10-29），本文把它落到本项目，
@@ -105,18 +109,25 @@
   驱动立即杀掉沙箱（`process`：整个进程组 SIGKILL，ffmpeg 一起），等它退出、照常收尾。沙箱没报收尾就退出 → RUN_ERROR 写明原因。
 - **一轮只在发起它的副本上有登记**（run 注册表在进程内存，F14）：runner 必须连回同一个实例。`process` 驱动天然如此
   （网关地址默认本机回环）；`oci` 驱动的网关地址是「容器里看到的这个实例」（默认 `host.docker.internal:<PORT>`，§7.2），
-  同一台机器上多个实例各有各的地址；`k8s` 驱动要按实例路由，留到四期。
+  同一台机器上多个实例各有各的地址；`k8s` 驱动的网关地址是**发起它的那个服务端 Pod 的 IP**（Downward API 注入的 `POD_IP`，
+  默认 `http://$POD_IP:$PORT`，§7.5），不经 Service —— Service 会把请求分给任意副本，别的副本上没有这一轮的登记（401）。
 
 ### 4.1 工作负载凭证
 
 | 驱动 | 凭证 | 换取 |
 |---|---|---|
 | `process` / `oci` | 起沙箱时注入**一次性 bootstrap token**（绑定 runId，只存哈希，兑换一次即废） | 首次兑换得 run 短令牌，之后用短令牌续期 |
-| `k8s` | projected ServiceAccount token（audience=`shadecn-agent-sts`，10 分钟，kubelet 轮换），`automountServiceAccountToken: false` | 网关经 TokenReview 校验 Pod → run 映射 |
+| `k8s`（四期实现） | 同上：一次性 bootstrap token 放在 Pod 的 env 里；`automountServiceAccountToken: false` | 同上 |
+| `k8s`（原方案，未做） | projected ServiceAccount token（audience=`shadecn-agent-sts`，10 分钟，kubelet 轮换） | 网关经 TokenReview 校验 Pod → run 映射 |
+
+- 四期没做 projected token + TokenReview：那要求每一轮一个独立的 ServiceAccount（或按 Pod 名 / uid 在 TokenReview 结果里认 run），
+  服务端还要有 `tokenreviews create`（集群级）和建 ServiceAccount 的权限，换来的只是「token 不进 Pod 规格」。
+  bootstrap token 60 秒内有效、兑换一次即废，runner 起来一两秒就兑换掉；代价是**能 `get` 沙箱命名空间里 Pod 的人在那几秒里看得到它**
+  （见 §7.5「凭证可见性」）。
 
 ### 4.2 网络
 
-- 沙箱只能访问网关；`k8s` 用默认拒绝 + 仅放行服务端 Service 的 NetworkPolicy。
+- 沙箱只能访问网关；`k8s` 用默认拒绝 + 仅放行服务端 Pod 网关端口的 NetworkPolicy（四期：按 Pod 选择，不经 Service；不放行 DNS，§7.5）。
 - `oci`：沙箱进专用网络，出站只到网关；做不到的环境（本地开发）启动时告警「沙箱可出网」。
   实际做到的程度见 §7.4：只有 `--internal` 网络 + 服务端也接在里面才真的「只到网关」；默认的 `bridge` 网络可以出网（启动告警）。
 - `process`：不隔离网络，**生产环境拒绝启用**。
@@ -175,14 +186,14 @@ interface SandboxHandle {
 |---|---|---|---|
 | `process` | `node` 子进程跑 runner，env 从零造（只有网关地址 + bootstrap token） | 弱 | 本地开发；`NODE_ENV=production` 拒绝 |
 | `oci` | Docker Engine API（unix socket，node `http`，不加依赖）；Docker 与 Podman 兼容 | `--read-only` + tmpfs、非 root、`--cap-drop ALL`、`no-new-privileges`、pids / 内存 / CPU 上限；Linux 主机有 gVisor 时 `--runtime runsc` | 本地（podman machine）、单机部署 |
-| `k8s` | 每个 run 一个 Pod（标签 `shadecn.agent/run`），K8s API 直连 | gVisor RuntimeClass、NetworkPolicy、只读根文件系统、`resources` / `ephemeral-storage`、`activeDeadlineSeconds` | 生产 |
+| `k8s` | 每个 run 一个 Pod（label 同 `oci`），K8s API 直连（`node:https`，不加依赖） | Pod Security `restricted`（独立命名空间）或 ValidatingAdmissionPolicy（共用命名空间）、可选 gVisor RuntimeClass、NetworkPolicy、只读根文件系统、`resources` / `ephemeral-storage`、`activeDeadlineSeconds` | 生产（§7.5） |
 
-- 服务端的 ServiceAccount 只在 `agent-sandbox` 命名空间有创建 / 删除 Pod 的权限；沙箱看不到 K8s API、不挂任何 socket。
+- 服务端的 ServiceAccount 只在沙箱所在的命名空间有建 / 读 / 删 Pod 和读 Pod 日志的权限（当前部署是 `dev`，见 §7.5「部署形态」）；沙箱看不到 K8s API、不挂任何 socket。
 - 沙箱镜像多架构，构建时用 `TARGETARCH` 与 `uname -m` 校验（REQ-DEPLOY §2.5.1）。
 - 配置：`AGENT_SANDBOX=process|oci|k8s`、`AGENT_SANDBOX_IMAGE`、`AGENT_SANDBOX_OCI_SOCKET`、`AGENT_SANDBOX_OCI_NETWORK`、
   `AGENT_SANDBOX_RUNTIME`（可选 `runsc`）、`AGENT_SANDBOX_CPUS` / `_MEMORY_MIB` / `_PIDS` / `_DISK_MIB`、
-  `AGENT_SANDBOX_NAMESPACE`（四期）、`AGENT_GATEWAY_URL`（沙箱看到的网关地址）。三期的取值与默认值见 §7.2。
-- 二期已有的配置：`AGENT_SANDBOX`（默认 `process`；`oci` / `k8s` 配了 = agent 未启用并写明原因；一期的 `local` 当作 `process` + 媒体工具）、
+  `AGENT_SANDBOX_K8S_*`（四期）、`AGENT_GATEWAY_URL`（沙箱看到的网关地址）。三期的取值与默认值见 §7.2，四期见 §7.5。
+- 二期已有的配置：`AGENT_SANDBOX`（默认 `process`；一期的 `local` 当作 `process` + 媒体工具）、
   `AGENT_SANDBOX_EXEC=1`（给模型 ffmpeg / ffprobe 工具，即授 `sandbox:exec`）、`AGENT_SANDBOX_ALLOW_PROCESS=1`（生产也放行 `process`，不建议）、
   `AGENT_GATEWAY_URL`（默认 `http://127.0.0.1:<PORT>`）、`AGENT_TOKEN_SECRET`（签 run 短令牌；不配由 `SESSION_SECRET` 派生）。
 
@@ -190,7 +201,7 @@ interface SandboxHandle {
 
 - 默认 `process`：不装容器也能跑，runner 由 `tsx` 直接执行，启动时告警「非强隔离」。
 - 要验证隔离用 `oci` + podman machine（macOS 上是 Linux 虚拟机；没有 gVisor，只保证其它隔离参数与生产一致），步骤见 §7.3。
-- `k8s` 驱动用 kind / k3d 本地集群验证，不碰共享集群。
+- `k8s` 驱动的本地验证用 kind / k3d；共享集群上的部署形态见 §7.5「部署形态」。
 
 ### 7.2 `oci` 驱动（三期）
 
@@ -276,9 +287,173 @@ AGENT_SANDBOX=oci pnpm dev
 | **网络** | **可以出网**：默认网络有 NAT，容器能访问外网；而且 `host.docker.internal` 落到 macOS 的回环地址，**宿主上所有只听 127.0.0.1 的服务（别的 dev server、ollama、映射到本机的数据库端口…）容器都连得到**。沙箱里没有任何凭据，但无鉴权的本机服务（如 ollama）可以被绕过网关直接调用。启动日志告警 | 服务端以容器运行并同时接入一个 `--internal` 网络（`docker network create --internal shadecn-agent`），`AGENT_SANDBOX_OCI_NETWORK=shadecn-agent`、`AGENT_GATEWAY_URL=http://<服务端容器名>:3000`：沙箱只连得到这个网络里的服务端，外网和宿主都不通（实测见 `sandbox-oci.test.ts` 最后一个用例）。服务端容器挂引擎 socket 是给**服务端**的权限，沙箱里不挂 |
 | 凭证可见性 | 一次性 bootstrap token 在容器配置里（`podman inspect` 可见，有引擎权限的人本来就是 root 等价）；60 秒内兑换一次即废 | 同左 |
 
-- 更严的出网控制（按目的地放行的出网网关、NetworkPolicy）在四期 `k8s` 驱动里做。
+- 更严的出网控制在 `k8s` 驱动里由 NetworkPolicy 做（§7.5）；按目的地放行的出网网关仍未做。
 - 日志走引擎默认的日志驱动：一轮结束容器即删，日志随之删除；一轮之内的日志量没有在引擎侧另设上限（转进服务端日志的有行数上限）。
 - 镜像不会自动拉取：多机部署要先把镜像推到各台机器能拉到的仓库，`AGENT_SANDBOX_IMAGE` 写完整引用。
+
+### 7.5 `k8s` 驱动（四期）
+
+**每轮一个 Pod**，Kubernetes API 直连（Node 自带的 `https`，不加依赖，**不解析 kubeconfig**）。镜像、runner、协议、网关和 `oci` 驱动完全相同，
+差别只在隔离由谁执行（kubelet + 准入 + CNI）。
+
+**为什么是裸 Pod 不是 Job**：Job 的价值是「失败重来」和「控制器替你建 Pod」，这里都不要 —— runner 重跑会拿同一个**一次性** bootstrap token
+再兑换一次（必然被拒），一轮的结局只由服务端判；多一层控制器只多一段建 Pod 的延迟、多一种要授权的资源、删的时候还要管级联。
+`restartPolicy: Never` 的裸 Pod 正好是「跑一次、我们自己删」；节点挂了 Pod 不会被重建，这一轮按 runner 异常退出收尾。
+
+**Pod 形态**（`k8sPodSpec`；清单测试 `apps/server/test/agent/k8s-manifests.test.ts` 和它对齐）：
+
+| 项 | 取值 |
+|---|---|
+| 名字 / label | `shadecn-agent-<runId 转小写、_ 换成 ->`；label 同 `oci`（`shadecn.agent/managed=true`、`/run`、`/flow`、`/grant`、`/instance`） |
+| 命名空间 | `AGENT_SANDBOX_K8S_NAMESPACE`；驱动默认独立的 `shadecn-agent-sandbox`（强制 Pod Security `restricted`），当前部署配成 `dev`（ValidatingAdmissionPolicy 兜底），见下面「部署形态」 |
+| 生命周期 | `restartPolicy: Never`；`activeDeadlineSeconds` = 沙箱时长上限（一轮的时长上限 + 30 秒）；`terminationGracePeriodSeconds: 1` |
+| 身份 / 宿主 | `automountServiceAccountToken: false`、`enableServiceLinks: false`、`hostNetwork` / `hostPID` / `hostIPC` / `shareProcessNamespace` 都是 `false` |
+| 用户 / 权限 | Pod 级 `runAsNonRoot`、`runAsUser` / `runAsGroup` / `fsGroup` = 10001、`seccompProfile: RuntimeDefault`；容器 `allowPrivilegeEscalation: false`、`privileged: false`、`readOnlyRootFilesystem: true`、`capabilities.drop: [ALL]` |
+| 文件系统 | `/work`（大小 = `diskMiB`）与 `/tmp`（64 MiB）是 `medium: Memory` 的 `emptyDir`（对应 `oci` 的 tmpfs，计入内存上限）；不挂别的卷 |
+| 资源 | requests = limits（Guaranteed）：`cpu` = 核数 × 1000m、`memory` = `memoryMiB`、`ephemeral-storage` = 128 MiB（根文件系统只读、工作目录在内存里，节点磁盘上只剩**容器日志**，这就是日志量的上限：超了 kubelet 驱逐，结局写明「被节点驱逐」） |
+| 可选 | `runtimeClassName`（gVisor）、`nodeSelector`（`AGENT_SANDBOX_K8S_NODE_SELECTOR`，如镜像只有 arm64 时 `kubernetes.io/arch=arm64`）、`imagePullSecrets`、`imagePullPolicy` |
+| 环境变量 | 驱动只传 `SHADECN_GATEWAY_URL`、`SHADECN_BOOTSTRAP_TOKEN`、`SHADECN_WORKDIR`；`PATH` 来自镜像。kubelet 另外**无条件**注入 default 命名空间 `kubernetes` Service 的地址（`KUBERNETES_SERVICE_HOST` / `_PORT` / `KUBERNETES_PORT*`，`enableServiceLinks: false` 也去不掉），运行时加 `HOSTNAME`（可能还有 `HOME`）：都不是密钥，沙箱也没有 token、NetworkPolicy 不放行到 API |
+
+**生命周期与超时**：
+
+1. 建 Pod（失败的原因按 API 的回应写明：命名空间不存在 / 配额已满 / 没有权限 / 被准入拒绝 / 规格不合法；一次性 token 从错误信息里抹掉）。
+2. 跟着 Pod 的状态：GET 一次，再从那个 `resourceVersion` 起 **watch**（单个 Pod 的 fieldSelector，60 秒一段）；watch 断开、到点或过期（410）
+   就重新 GET 再 watch —— 断开期间的变化不会漏。选 watch 而不是轮询：终态几毫秒内就到（runner 收尾后服务端只等它 5 秒），
+   长跑的一轮只占一条空闲连接，不是每秒一次 GET。
+3. **Pending 有上限**：50 秒（比 bootstrap token 的 60 秒有效期短 —— 过了那个点起来也兑换不了）还没起来就删掉，原因写明卡在哪：
+   调度不了（`PodScheduled=False` 的 message，如 `Insufficient memory`）/ 镜像拉不下来（`ErrImagePull` / `ImagePullBackOff` + 该查的配置项）/ 其他等待原因。
+   `InvalidImageName`、`ErrImageNeverPull`、`CreateContainerConfigError`（如镜像以 root 运行）不会自己好，当场收尾。
+4. 容器起来后跟随 `pods/log?follow=true` 逐行转进服务端日志 `[agent-runner] run=…`（k8s 的日志接口不分 stdout / stderr；500 行、每行 2000 字，
+   到上限就断开日志流，单次最多拉 4 MiB）。
+5. 终态（Succeeded / Failed）后读结局：退出码原样；`OOMKilled` → 「内存超过上限 N MiB」；`DeadlineExceeded` → 「超过沙箱时长上限」；
+   `Evicted` → 「被节点驱逐」+ kubelet 的说明；128+n → 「被信号 n 结束」。
+6. 删 Pod（`gracePeriodSeconds: 0` + uid 前提），**确认它不在了 `wait()` 才兑现**。
+7. **杀** = 编排层先作废令牌，驱动再删 Pod（grace 0）：API 层面立即删除对象，节点上的容器由 kubelet 随后结束（kubelet 的最短宽限 2 秒：
+   runner 是 1 号进程、不处理 SIGTERM，于是 2 秒后 SIGKILL）；这段尾巴里令牌已经无效，沙箱什么也做不了。
+8. **API 失联有上限**：时长上限、Pending 上限、编排层的叫停都走同一条「杀」的路；杀了之后最多再等 10 秒确认删掉，之后放弃（留给孤儿清理），一轮不会卡死。
+
+**孤儿清理**（启动时 + 每 10 分钟；按 `shadecn.agent/managed=true` 列沙箱命名空间里的 Pod）：
+
+- 本实例（`instance` label）的：不在在跑的轮次里、也不是驱动正在管的，删（服务端容器在同一个 Pod 里重启时 Pod IP 不变，实例标识不变）；
+- **别的实例的：只删过了它自己的 `activeDeadlineSeconds` + 5 分钟的**。实例标识是网关地址（Pod IP）的哈希，服务端 Pod 被替换后 IP 就变了，
+  它留下的 Pod 再也没有「本实例」来认领；而过了时长上限的 Pod 不可能还属于哪个在跑的轮次（每个实例的驱动到点都会删它），所以任何副本都可以清。
+
+**网络**（NetworkPolicy）：沙箱 Pod 入站全拒（服务端到 runner 不需要连进来，日志走 kubelet → API）；出站只放行服务端 Pod（`app=shadecn-learning`）的 TCP 3000。
+**不放行 DNS**：网关地址是 IP，runner 不解析任何名字，放行 kube-dns 就多一条经 DNS 查询带出数据的路（显式配了带主机名的 `AGENT_GATEWAY_URL` 时才放行）。
+共用 `dev` 的形态下策略只选中 `shadecn.agent/managed=true` 的 Pod（`k8s/agent-sandbox.yaml`），dev 里别的服务不受影响；独立命名空间的形态选中整个命名空间
+（`k8s/variants/agent-sandbox.yaml`，清单里有注释掉的 DNS 放行段）。**需要集群执行 NetworkPolicy**：本集群是 k3s，自带内嵌 kube-router 的策略控制器
+（server 参数里没有 `--disable-network-policy`；flannel 本身不执行策略）；换成不执行策略的 CNI 时它被静默忽略，那样沙箱可以出网。
+**不要**给服务端 Pod 或整个 `dev` 加 ingress 策略：被选中的 Pod 会变成「只放行列出来的来源」，ingress-nginx 的流量就进不来了（`dev` 若本来就默认拒绝入站，才另加一条放行沙箱 → 3000）。
+跨节点的 Pod 流量走 flannel 的 `wireguard-native` 后端，是加密的。
+
+**F14 的 Pod IP 方案**：服务端 Deployment 用 Downward API 注入 `POD_IP`（`status.podIP`），`AGENT_SANDBOX=k8s` 时网关地址默认 `http://$POD_IP:$PORT`
+（IPv6 加方括号；显式 `AGENT_GATEWAY_URL` 优先），服务端监听 `0.0.0.0`。没有 `POD_IP` 又没配 = agent 未启用并写明原因。
+
+**凭据**：集群内用服务端 Pod 的 ServiceAccount（`/var/run/secrets/kubernetes.io/serviceaccount/{token,ca.crt}`，地址取 `KUBERNETES_SERVICE_HOST` / `_PORT`）；
+**token 文件每个请求重新读**（projected token 由 kubelet 轮换，默认 1 小时），CA 启动时读一次。集群外开发显式给
+`AGENT_SANDBOX_K8S_API_URL` / `_TOKEN_FILE` / `_CA_FILE`，或用 `kubectl proxy`（`http://127.0.0.1:8001`，token 文件配成空；注意它连的是 kubectl 当前的 context）；
+`http://` 只许回环地址。
+
+**凭证可见性**：bootstrap token 在 Pod 规格的 env 里，**任何能 `get` 沙箱所在命名空间里 Pod 的人都读得到**（服务端自己的 ServiceAccount、集群管理员、
+被绑了 `view` / `edit` 一类角色的人）。它 60 秒内有效、兑换一次即废，runner 起来一两秒就兑换掉；但在那之前抢先兑换的人能拿到这一轮的 run 令牌
+（权限 = 这一轮的 Grant），runner 则以 401 失败。所以**那个命名空间的 Pod 读权限只给服务端和管理员**（共用 `dev` 时，dev 里别的 CI / 服务账号若有 `pods get`，
+也读得到 —— 这是共用命名空间的代价之一）。
+
+**部署形态**（两种，驱动和镜像相同，差别只在命名空间和由谁兜底准入）：
+
+| | **当前：共用 `dev` + ValidatingAdmissionPolicy** | **更强：独立命名空间 + Pod Security** |
+|---|---|---|
+| 清单 | `k8s/agent-sandbox.yaml`（ArgoCD 同步：服务端 SA、`dev` 里的 Role / RoleBinding、只选沙箱 Pod 的 NetworkPolicy）+ `k8s/variants/agent-sandbox-vap.yaml`（集群级，管理员 apply） | `k8s/variants/agent-sandbox.yaml`（Namespace、跨命名空间的 Role / RoleBinding、NetworkPolicy、ResourceQuota、LimitRange，管理员 apply） |
+| 谁限死服务端能建的 Pod | VAP：只管 `dev` 里**服务端 SA 发起的** Pod CREATE，逐条拒绝（下表） | 命名空间强制 Pod Security `restricted` |
+| 服务端 RBAC 的波及面 | `get` / `list` / `watch` / `delete` / `pods/log` 对 **`dev` 里所有 Pod** 生效（能读别的服务的 Pod 规格和日志、能删它们的 Pod —— 由各自的控制器重建）；RBAC 不能按 label 收窄 | 只有沙箱 Pod |
+| 能挂的 Secret / SA | VAP 禁止一切非 emptyDir 卷、`envFrom`、`valueFrom`、非 default 的 SA、SA token —— 挂不到 `dev` 里别的服务的 Secret | 命名空间里只有拉镜像的那一个 Secret |
+| 配额 | **没有集群级兜底**（`dev` 里加 ResourceQuota 会要求所有服务都写 requests / limits），只有每用户配额 | ResourceQuota 限并发 Pod 数和资源总量，LimitRange 限单个容器 |
+
+切到更强的形态：apply `k8s/variants/agent-sandbox.yaml` → 在新命名空间建拉镜像的 Secret → 提交（`AGENT_SANDBOX_K8S_NAMESPACE=shadecn-agent-sandbox`，
+从 `k8s/agent-sandbox.yaml` 删掉 `dev` 里的 Role / RoleBinding / NetworkPolicy，SA 留着），步骤在那份清单的文件头。
+
+**ValidatingAdmissionPolicy**（`shadecn-agent-sandbox`，`failurePolicy: Fail`，绑定 `Deny`）：`matchConstraints` 只看 `dev` 里的 Pod CREATE，
+`matchConditions` 只看 `system:serviceaccount:dev:shadecn-learning`（一次字符串比较，不会求值出错，别的用户、控制器替 Deployment 建的 Pod 都直接跳过）。
+规则与 Pod Security `restricted` 对齐，再加几条只适合沙箱的（每条 message 以 `[规则名]` 开头）：
+
+| 规则 | 要求 |
+|---|---|
+| `managed-label` | 带 `shadecn.agent/managed=true`（NetworkPolicy 也按它选中） |
+| `single-container` / `no-init-containers` / `no-ephemeral-containers` | 只有一个容器，没有 init / ephemeral 容器 |
+| `sandbox-image` | 镜像是 `192.168.68.95:31443/apps/shadecn-agent-sandbox:<tag>` |
+| `no-host-namespaces` / `no-privileged` / `no-host-ports` / `no-sysctls` / `default-proc-mount` | 不共享宿主网络 / PID / IPC，不 privileged，没有 hostPort、sysctls，procMount 只能 Default |
+| `emptydir-only` | 只有 emptyDir 卷（hostPath、secret、configMap、projected、csi、ephemeral… 都不行） |
+| `no-env-from` / `no-value-from` | 不许 `envFrom`，环境变量只许字面值 |
+| `no-service-account-token` / `default-service-account` | `automountServiceAccountToken: false`；`serviceAccountName` 只能是 `default` 或不填 |
+| `run-as-non-root` / `no-privilege-escalation` / `drop-all-capabilities` / `read-only-root` / `seccomp` | `runAsNonRoot`（`runAsUser` 不能是 0）、`allowPrivilegeEscalation: false`、`drop: [ALL]` 且不加能力、只读根、`RuntimeDefault` / `Localhost` |
+
+驱动生成的 Pod 满足每一条（清单测试用逐条等价的 TS 判定核对，见下）；`k8s/variants/agent-sandbox-vap-samples/` 是一份正例和二十来份各违反一条的反例，
+管理员 apply 之后用 `kubectl create --dry-run=server --as=system:serviceaccount:dev:shadecn-learning -f …` 验证（文件头里有命令和期望输出）。
+它只限**建 Pod**；读 / 删 / 日志的波及面见上表。
+
+**RBAC**（Role，只在沙箱所在的命名空间）：`pods` 的 `create` / `get` / `list` / `watch` / `delete` + `pods/log` 的 `get`。没有 `secrets`、`pods/exec`、
+`update` / `patch`、ClusterRole。服务端被攻破时，这份权限最坏只能在那个命名空间里建 Pod —— 而建出来的 Pod 由准入兜底（restricted 或 VAP：不能 hostPath / hostNetwork /
+privileged、挂不了 Secret），NetworkPolicy 也罩着它建的沙箱 Pod，所以拿不到节点 root、也出不了网。
+
+**启动自检**（决定启不启用）：`GET /version`（连不上 / 401 = 失败）→ 用 SelfSubjectAccessReview 逐项查上面 6 个权限（缺了 = 失败；能读 `secrets` /
+`pods/exec` = 告警「权限多于需要」）→ dry-run 建一个沙箱 Pod（命名空间不在、过不了 Pod Security / VAP / LimitRange / RuntimeClass 的准入 = 失败；
+配额此刻已满、准入 webhook 不支持 dry-run = 告警）→ **再 dry-run 一个只改成 privileged 的反例，它必须被拒**（被放行 = 准入兜底不在：命名空间没打 Pod Security 标签、
+VAP 没 apply 或没匹配上这个 SA —— 这时服务端的 `pods create` 等于节点 root，算失败；反例撞上配额只告警）→ 镜像没写仓库地址、没配 RuntimeClass、服务端只听回环地址 = 告警。
+**没过 = agent 未启用**（原因写在日志和面板上），也拒绝起 Pod；之后每 10 分钟（清孤儿之前）重查一次，**过了的也重查**：没过的过了就恢复，过了的兜底被拿掉（VAP 被删、Role 被删）就在那一轮停用，不等重启。详情只在第一次和结论变化时打日志。所以「先推送、后 apply VAP」不会有一段不设防的窗口，只是 agent 晚一会儿可用。
+
+**gVisor**：`AGENT_SANDBOX_K8S_RUNTIME_CLASS=gvisor` + 清单末尾注释掉的 RuntimeClass（`handler: runsc`）。节点要装 runsc 并在 containerd 里配好那个 handler；
+只有部分节点装了时用 RuntimeClass 的 `scheduling`（nodeSelector / tolerations）把沙箱调度过去（和 `AGENT_SANDBOX_K8S_NODE_SELECTOR` 叠加；驱动不配 tolerations）。
+没配时启动日志告警「不是 gVisor」。本集群的 RuntimeClass 里没有 gVisor。
+
+**配额兜底**（只有独立命名空间的形态有）：沙箱命名空间的 ResourceQuota 限同时在跑的 Pod 数（默认 20）和 CPU / 内存 / ephemeral-storage 总量 —— 每用户配额（REQ-AGENT §3.10.6）之外的
+集群级上限；满了建 Pod 回 403，那一轮以「配额已满，稍后再试」失败。LimitRange 限单个容器（4 核 / 4 GiB / 1 GiB 日志），配错资源时 API 直接拒绝。
+
+配置与默认值：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AGENT_SANDBOX=k8s` | — | 生产可用 |
+| `AGENT_SANDBOX_IMAGE` | `shadecn-agent-sandbox:latest` | 和 `oci` 同一个镜像；集群里要写节点拉得到的**完整引用**（没写仓库地址启动时告警）。驱动不会构建 / 推送它；本仓库的 CI 和服务端镜像一起构建（同一个 tag，REQ-DEPLOY §4.2） |
+| `AGENT_SANDBOX_K8S_NAMESPACE` | `shadecn-agent-sandbox` | 沙箱 Pod 建在哪（当前部署是 `dev`） |
+| `AGENT_SANDBOX_K8S_NODE_SELECTOR` | — | 逗号分隔的 `key=value`，写进 Pod 的 `nodeSelector`（如 `kubernetes.io/arch=arm64`：镜像只构建了 arm64）；格式错 = agent 未启用并写明原因 |
+| `AGENT_SANDBOX_K8S_RUNTIME_CLASS` | 节点默认 | 如 `gvisor` |
+| `AGENT_SANDBOX_K8S_PULL_SECRET` | — | 沙箱命名空间里拉镜像的 Secret 名（kubelet 用，服务端不读 Secret） |
+| `AGENT_SANDBOX_K8S_PULL_POLICY` | k8s 的默认 | `Always` / `IfNotPresent` / `Never`；认不出 = agent 未启用 |
+| `AGENT_SANDBOX_K8S_API_URL` | `https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` | 集群外开发用；`http://` 只许回环地址 |
+| `AGENT_SANDBOX_K8S_TOKEN_FILE` / `_CA_FILE` | ServiceAccount 挂进来的 `token` / `ca.crt` | 配成空串 = 不用（`kubectl proxy` 不要 token；系统 CA） |
+| `POD_IP` | — | Downward API 的 `status.podIP`；决定默认的 `AGENT_GATEWAY_URL` = `http://$POD_IP:$PORT` |
+| `AGENT_SANDBOX_CPUS` / `_MEMORY_MIB` / `_DISK_MIB` | 1 / 512 / 512 | 同 `oci`；`_DISK_MIB` 是内存型 `emptyDir` 的大小 |
+
+**清单**：
+
+- `k8s/deployment.yaml`（ArgoCD 同步）：服务端的 `serviceAccountName`、`nodeSelector: kubernetes.io/arch: arm64`，和 env（`AGENT_SANDBOX=k8s`、`POD_IP`、
+  `AGENT_SANDBOX_K8S_NAMESPACE=dev`、`AGENT_SANDBOX_IMAGE`（和服务端镜像同一个 tag，CI 一起写回）、`AGENT_SANDBOX_K8S_PULL_SECRET=harbor-pull-secret`、
+  `AGENT_SANDBOX_K8S_PULL_POLICY=IfNotPresent`、`AGENT_SANDBOX_K8S_NODE_SELECTOR=kubernetes.io/arch=arm64`）。模型的配置（`AGENT_PROVIDER` / `AGENT_MODEL` /
+  `AGENT_API_KEY`…）不在这里：来自带外的 ConfigMap / Secret `dev/shadecn-learning-agent`（`envFrom`、`optional`，REQ-DEPLOY §3.3），空值 / 没配 = agent 未启用。
+- `k8s/agent-sandbox.yaml`（ArgoCD 同步）：当前形态在 `dev` 里的配套（见「部署形态」）。和 Deployment 同一次 sync，ArgoCD 按 kind 先建 ServiceAccount，
+  所以 `serviceAccountName` 不会让 ReplicaSet 建不出 Pod（`dev` 的 AppProject 放行命名空间级的任意资源）。
+- `k8s/variants/agent-sandbox-vap.yaml`（集群级，不进 ArgoCD）：VAP + 绑定，管理员 `kubectl apply`；`agent-sandbox-vap-samples/` 是验证用的样例 Pod。
+- `k8s/variants/agent-sandbox.yaml`（不进 ArgoCD）：更强的独立命名空间形态，含注释掉的 gVisor RuntimeClass。
+
+**已知限制**：
+
+- **驱动和清单没在真实集群上跑通过**（部署形态已定为 `dev` + VAP，上线后的第一轮才是实测）。单元测试对着假的 k8s API（`packages/agent/test/sandbox/k8s-driver.test.ts`），
+  清单测试（`apps/server/test/agent/k8s-manifests.test.ts`）用等价的 TS 判定核对 VAP；真集群的用例 `apps/server/test/agent/sandbox-k8s.test.ts` 默认跳过，
+  要 `AGENT_SANDBOX_K8S_IT=1` 加显式的 `AGENT_SANDBOX_K8S_IT_API_URL` / `_NAMESPACE` 和 `AGENT_SANDBOX_IMAGE`（可选 `_GATEWAY_HOST` 跑完整一轮、`_NETPOL=1` 验出网限制、
+  `_NODE_SELECTOR`；在 `dev` 里跑时 `kubectl proxy` 要带 `--as=system:serviceaccount:dev:shadecn-learning`，否则 VAP 不匹配、自检的反例会被放行）。
+- **共用 `dev` 的代价**（「部署形态」表）：服务端的 SA 能读 `dev` 里所有 Pod 的规格和日志、能删 `dev` 里任何 Pod；没有并发沙箱数 / 资源总量的集群级上限。
+  VAP 只管建 Pod。要收窄这些，换独立命名空间的形态。
+- VAP 的 CEL 只在真集群里求值：字段名写错不会让 apply 失败（只在 `status.typeChecking` 里出告警）、对应的规则就成了空操作 —— 所以 apply 之后要看 typeChecking、
+  跑一遍反例样例；启动自检的 privileged 反例也会兜住最要紧的那一条。
+- **PIDs 上限不执行**：Pod 规格里没有这个字段，由节点 kubelet 的 `podPidsLimit` 统一设；`AGENT_SANDBOX_PIDS` 对 `k8s` 无效。
+- `emptyDir` 不能设 `noexec` / `nosuid`（`oci` 的 tmpfs 能）：非 root + 无能力 + `allowPrivilegeEscalation: false` 让 setuid 无效，但沙箱能执行写进 `/work` 的文件 ——
+  被攻破的 runner 本来就能执行任意 JS，这不扩大能力；gVisor 下系统调用面另有收窄。
+- NetworkPolicy 是 L4：沙箱到得了每个服务端副本 3000 端口上的**全部路由**（匿名身份：没有 cookie，只有 run 令牌对网关有用）；收紧到 `/api/agent-gateway` 要 L7 策略
+  （如 Cilium）或把网关拆到独立端口。runner ↔ 网关是 Pod 网络上的明文 HTTP（令牌在里面），需要加密就开 CNI 的透明加密（WireGuard / IPsec）；
+  严格 mTLS 的服务网格会挡住它。
+- 工作负载凭证是 env 里的 bootstrap token，不是 projected token + TokenReview（上面「凭证可见性」）。
+- 日志接口不分 stdout / stderr，runner 的错误输出在服务端日志里是 info 级。
+- 被强制删除时节点失联（kubelet 收不到）的容器会活到 kubelet 恢复为止；它的令牌已经作废。
 
 ## 8. 与原方案的差异
 
@@ -312,11 +487,20 @@ AGENT_SANDBOX=oci pnpm dev
    - 网络「只到网关」只在 `internal` 网络 + 服务端也在里面时成立；本地默认网络可以出网，启动日志告警（验收 7 的「做不到就告警」）；
    - 容器里没有「父进程」关系，孤儿由服务端启动时（及之后每 10 分钟）按本实例的 label 清理；runner 是 1 号进程时不看父进程；
    - 镜像是 `FROM scratch` 拼的：配置里只有 `PATH`，基础镜像的 `NODE_VERSION` 等不会进沙箱环境；基础镜像走 build arg，默认上游官方引用。
-4. **`k8s` 驱动**：Pod 规格、RBAC、NetworkPolicy、RuntimeClass、projected token + TokenReview、孤儿清理。
+4. **`k8s` 驱动 + 部署清单**（**已实现，未在真实集群上跑过**）：实现说明见 §7.5，要点：
+   - 每轮一个裸 Pod（不用 Job），Kubernetes API 直连（零新依赖、不读 kubeconfig、token 文件每次请求重读）；Pod 规格满足 Pod Security `restricted`；
+   - watch 跟状态，Pending 50 秒上限（小于 bootstrap token 的有效期）且原因写明，终态读退出码 / OOM / 超时 / 驱逐，删除（grace 0）确认后 `wait()` 才兑现；
+   - F14：网关地址默认是发起它的服务端 Pod 的 IP（Downward API `POD_IP`）；
+   - 孤儿：本实例的照 `oci` 清，别的实例的只清过了时长上限的（服务端 Pod 换了 IP 后旧 Pod 没人认领）；
+   - 启动自检（权限、命名空间、dry-run 过准入）决定 agent 启不启用；
+   - 清单：当前形态 = 共用 `dev`（`k8s/agent-sandbox.yaml` 由 ArgoCD 同步：SA、最小 RBAC、只选沙箱 Pod 的 NetworkPolicy）+ 集群级 VAP（`k8s/variants/agent-sandbox-vap.yaml`，替 `dev` 补 Pod Security 的缺口）；
+     更强的独立命名空间形态（`restricted`、配额兜底、可选 gVisor）留在 `k8s/variants/agent-sandbox.yaml`；
+   - 自检另 dry-run 一个 privileged 的反例，被放行就不启用（准入兜底不在）；`AGENT_SANDBOX_K8S_NODE_SELECTOR` 把沙箱钉在镜像有的那种架构上；
+   - 原方案的 projected token + TokenReview **没做**，仍用一次性 bootstrap token（§4.1）。
 5. **等待决策与恢复**：checkpoint、waiting_input / suspended、interactions + nonce、step-up、通知。需求见 [REQ-AGENT-HITL](24-agent-interaction.md)（本期恢复只基于模型上下文，不 checkpoint 沙箱）。
 6. **部分撤销**：`perm_version`、`pause` / `degrade` / `finish_current`、按 effective 动态工具列表、结构化拒绝、预算计量。
 
-## 10. 验收标准（一期～三期）
+## 10. 验收标准（一期～四期）
 
 1. 沙箱进程 / 容器内读不到 LLM key、数据库连接串、会话密钥；环境变量只有网关地址与一次性凭证。
 2. bootstrap token 兑换一次即失效；伪造 / 过期 / 别的 run 的短令牌调网关一律 401。
@@ -327,3 +511,7 @@ AGENT_SANDBOX=oci pnpm dev
 6. 审计能回答「谁、哪个 run、哪份 Grant、做了什么」。
 7. `oci` 驱动下，沙箱访问网关以外的地址失败（本地开发环境若做不到，启动日志明确告警）。
    三期：`internal` 网络的部署形态下成立（外网、宿主都不通）；默认 `bridge` 网络（含本地 podman machine）做不到，启动日志告警「oci 沙箱可以出网」。
+8. `k8s` 驱动下：沙箱 Pod 满足 Pod Security `restricted`（共用 `dev` 时满足 VAP 的每一条，VAP 的反例样例全部被拒）、不挂 ServiceAccount token；
+   NetworkPolicy 生效时，沙箱只连得到服务端 Pod 的网关端口，外网、DNS、k8s API 都不通；服务端的 ServiceAccount 只在沙箱所在的命名空间有 Pod 的建 / 读 / 删 / 日志权限，读不到 Secret；
+   准入兜底不在（privileged 的反例能建）时 agent 不启用；中止一轮 Pod 当场删除；Pending 起不来的一轮在 bootstrap token 失效前收尾并写明原因。
+   **四期：以上由单元测试 + 清单测试覆盖，未在真实集群验证。**

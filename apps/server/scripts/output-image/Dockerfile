@@ -23,6 +23,17 @@
 ARG NODE_IMAGE=192.168.68.95:31443/docker.io/library/node:22-alpine
 
 FROM ${NODE_IMAGE} AS deps
+# 拿到的基础镜像必须真的是目标架构 —— 单架构 tag + QEMU 会让「拉错架构」完全不报错，
+# 而这个阶段装的是原生模块，错了就一路混进最终镜像（docs/12 §2.5.1）。TARGETARCH 由 --platform 推导；
+# 万一构建器不提供它（值为空），这里就跳过，不误伤。和仓库根 Dockerfile 的同一道检查保持一致（CI 用的是这一份）
+ARG TARGETARCH
+RUN set -e; \
+    have=$(node -p "process.arch === 'x64' ? 'amd64' : process.arch"); \
+    if [ -n "${TARGETARCH}" ] && [ "${TARGETARCH}" != "$have" ]; then \
+      echo "基础镜像是 $have，目标是 ${TARGETARCH} —— 这个 tag 多半没有 ${TARGETARCH} 的 manifest，靠 QEMU 混过去了"; \
+      exit 1; \
+    fi; \
+    echo "base image arch ok: $have ($(uname -m))"
 # 不需要编译工具链：better-sqlite3（@mikro-orm/sqlite 的依赖）从 13 起把各平台的预编译二进制
 # 直接打在包里（含 linuxmusl-x64 / linuxmusl-arm64），并声明了 gypfile: false，npm 不会现场编译
 WORKDIR /app
@@ -31,6 +42,15 @@ RUN npm install --omit=dev --no-audit --no-fund
 
 ARG NODE_IMAGE
 FROM ${NODE_IMAGE}
+# 和 deps 阶段同一道检查：这一层的 node 决定了最终镜像的架构
+ARG TARGETARCH
+RUN set -e; \
+    have=$(node -p "process.arch === 'x64' ? 'amd64' : process.arch"); \
+    if [ -n "${TARGETARCH}" ] && [ "${TARGETARCH}" != "$have" ]; then \
+      echo "基础镜像是 $have，目标是 ${TARGETARCH} —— 这个 tag 多半没有 ${TARGETARCH} 的 manifest，靠 QEMU 混过去了"; \
+      exit 1; \
+    fi; \
+    echo "base image arch ok: $have ($(uname -m))"
 WORKDIR /app
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data
 COPY --from=deps /app/node_modules ./node_modules

@@ -1,0 +1,192 @@
+# 画布 agent 的 k8s 沙箱（docs/22 §7.5）—— **更强的形态**：沙箱 Pod 放进一个只放它们的独立命名空间，由 Pod Security restricted
+# 强制规格、ResourceQuota / LimitRange 兜底资源。当前线上用的是共用 dev 的形态（k8s/agent-sandbox.yaml +
+# k8s/variants/agent-sandbox-vap.yaml），这一份留作升级路线。比 dev 形态强在：
+#   - 服务端的 RBAC 只碰得到沙箱 Pod（dev 形态下 get/list/watch/delete 对 dev 里所有 Pod 生效）；
+#   - 命名空间里没有别的服务的 Secret / ServiceAccount 可挂；
+#   - 有并发 Pod 数和资源总量的配额（dev 里加 ResourceQuota 会波及别的服务，所以 dev 形态没有）。
+#
+# 它在 variants/（ArgoCD 不同步）：里面有集群级的 Namespace（和可选的 RuntimeClass），也有绑到 dev 里 ServiceAccount 的跨命名空间 RBAC。
+# 服务端的 ServiceAccount（dev/shadecn-learning）不在这里，在 k8s/agent-sandbox.yaml（ArgoCD 同步）。
+#
+# 从 dev 形态切过来（集群管理员 + 一次提交）：
+#   1. kubectl apply -f k8s/variants/agent-sandbox.yaml        # 不带 ArgoCD 的 tracking label，不会被 prune
+#   2. 沙箱命名空间里建拉镜像的 Secret（见下面 Namespace 之后的说明）
+#   3. 确认 CNI 真的执行 NetworkPolicy（见 NetworkPolicy 上的说明）
+#   4. 提交：k8s/deployment.yaml 的 AGENT_SANDBOX_K8S_NAMESPACE 改成 shadecn-agent-sandbox；
+#      从 k8s/agent-sandbox.yaml 删掉 dev 里的 Role / RoleBinding / NetworkPolicy（ServiceAccount 留着）
+#   5. 可选：kubectl delete -f k8s/variants/agent-sandbox-vap.yaml（它只管 dev，留着也无害）
+#   服务端启动日志里有一行「k8s 沙箱：Kubernetes v…，命名空间 …」；自检没过（没权限 / 命名空间不在 / 规格过不了准入 /
+#   准入放行了 privileged 的反例 —— 比如命名空间漏了 Pod Security 标签）agent 就是未启用，原因写在日志和面板上。
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shadecn-agent-sandbox
+  labels:
+    # Pod Security 强制 restricted。服务端在这个命名空间有 pods create —— 没有这道闸，被攻破的服务端可以建一个
+    # 挂 hostPath / 用 hostNetwork / privileged 的 Pod，直接拿到节点 root。驱动建的沙箱 Pod 本来就满足 restricted
+    # （启动自检会 dry-run 建一个来验证）。
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+# 拉镜像的 Secret：沙箱命名空间里**只放这一个** Secret。有 pods create 权限 = 能把这个命名空间里的任何 Secret
+# （以及任何 ServiceAccount 的 token）挂进自己建的 Pod 读出来，RBAC 拦不住这条路 —— 所以别往这里放别的密钥。
+# 它带外创建、不进 git（同 shadecn-learning-auth，docs/12 §3.3）：
+#   kubectl -n shadecn-agent-sandbox create secret docker-registry harbor-pull-secret \
+#     --docker-server=192.168.68.95:31443 --docker-username=… --docker-password=…
+# 服务端配 AGENT_SANDBOX_K8S_PULL_SECRET=harbor-pull-secret（服务端自己不需要、也没有读 Secret 的权限：用它的是 kubelet）。
+---
+# 服务端在沙箱命名空间里能做的全部事：建 / 跟 / 删沙箱 Pod、读它的日志。
+# 没有 secrets、没有 pods/exec、没有 update / patch、没有 ClusterRole —— 别的命名空间一概碰不到。
+# 启动自检用的 SelfSubjectAccessReview 不需要授权（system:basic-user 默认就有）。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shadecn-agent-sandbox-driver
+  namespace: shadecn-agent-sandbox
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shadecn-agent-sandbox-driver
+  namespace: shadecn-agent-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: shadecn-agent-sandbox-driver
+subjects:
+  - kind: ServiceAccount
+    name: shadecn-learning
+    namespace: dev
+---
+# 沙箱命名空间的默认 ServiceAccount（控制器自动建的那个）：不挂 token。驱动的 Pod 规格本来就写了
+# automountServiceAccountToken: false，这里再兜一层；它也不绑任何 Role
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: shadecn-agent-sandbox
+automountServiceAccountToken: false
+---
+# 沙箱的网络：命名空间里所有 Pod 入站一律不通；出站只到服务端 Pod 的网关端口。
+#
+# ⚠️ 需要 CNI 支持 NetworkPolicy（Calico、Cilium、Antrea、kube-router…）。flannel 之类不支持的 CNI 会**静默忽略**它 ——
+#    那样沙箱可以出网、可以访问集群里的任何服务。启用前在沙箱命名空间里起一个临时 Pod 试一下 `wget 1.1.1.1` 应当超时。
+#
+# - 不写 ingress = 入站全拒：服务端到 runner 不需要连进来（runner 自己拉 /run/input、/canvas/changes）；日志走 kubelet → API。
+# - 出站只放行服务端 Pod（dev 命名空间、app=shadecn-learning）的 TCP 3000：runner 连的是 http://$POD_IP:3000（发起它的那个副本），
+#   NetworkPolicy 按 Pod 匹配，正好对上，不经 Service。能到达的是每个副本的 3000 端口上的全部路由（匿名身份），
+#   L4 策略收不到 HTTP 路径（docs/22 §7.5「已知限制」）。
+# - **不放行 DNS**：网关地址是 IP，runner 不解析任何名字；放行 kube-dns 就多一条经 DNS 查询把数据带出去的路。
+#   只有显式配了带主机名的 AGENT_GATEWAY_URL（如 headless Service 的每 Pod 域名）时才打开下面注释掉的那段。
+# - 访问 k8s API 也不放行（沙箱本来就没有 token）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shadecn-agent-sandbox
+  namespace: shadecn-agent-sandbox
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: dev
+          podSelector:
+            matchLabels:
+              app: shadecn-learning
+      ports:
+        - protocol: TCP
+          port: 3000
+    # - to:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: kube-system
+    #       podSelector:
+    #         matchLabels:
+    #           k8s-app: kube-dns
+    #   ports:
+    #     - protocol: UDP
+    #       port: 53
+    #     - protocol: TCP
+    #       port: 53
+#
+# 服务端那一侧：dev 命名空间如果对服务端 Pod 有「默认拒绝入站」的策略，再加一条放行沙箱命名空间 → 3000。
+# **没有的话别加**：一条选中服务端 Pod 的 ingress 策略会让它变成「只放行列出来的来源」，ingress-nginx 的流量就进不来了。
+# 同理，dev 有「默认拒绝出站」时，服务端要能出到 k8s API（kubernetes.default.svc 的 443 / API server 的 6443）。
+#   apiVersion: networking.k8s.io/v1
+#   kind: NetworkPolicy
+#   metadata: { name: shadecn-learning-from-agent-sandbox, namespace: dev }
+#   spec:
+#     podSelector: { matchLabels: { app: shadecn-learning } }
+#     policyTypes: [Ingress]
+#     ingress:
+#       - from: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: shadecn-agent-sandbox } } }]
+#         ports: [{ protocol: TCP, port: 3000 }]
+---
+# 集群兜底的配额：每用户配额（REQ-AGENT §3.10.6）之外，整个集群同时在跑的沙箱 Pod 数和资源总量的上限。
+# `pods` 只数没结束的 Pod（终态的不占名额）。满了之后建 Pod 回 403 exceeded quota，那一轮以「配额已满，稍后再试」失败。
+# 数值按集群容量调：默认每个沙箱 1 核 / 512 MiB（AGENT_SANDBOX_CPUS / _MEMORY_MIB），工作目录的内存型 emptyDir 计在内存里。
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: shadecn-agent-sandbox
+  namespace: shadecn-agent-sandbox
+spec:
+  hard:
+    pods: "20"
+    requests.cpu: "20"
+    limits.cpu: "20"
+    requests.memory: 20Gi
+    limits.memory: 20Gi
+    requests.ephemeral-storage: 5Gi
+    limits.ephemeral-storage: 5Gi
+---
+# 单个沙箱容器的上限：AGENT_SANDBOX_CPUS / _MEMORY_MIB 配错（多写一个 0）时 API 直接拒绝建 Pod
+# （那一轮失败、原因写明），而不是让一个沙箱吃掉半个节点。驱动总是写满 requests = limits，所以不需要 default。
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: shadecn-agent-sandbox
+  namespace: shadecn-agent-sandbox
+spec:
+  limits:
+    - type: Container
+      max:
+        cpu: "4"
+        memory: 4Gi
+        ephemeral-storage: 1Gi
+#
+# —— 可选：gVisor（docs/22 §7.5）——
+# 节点要装 runsc，并在 containerd 里配好名为 runsc 的 runtime handler；没装的集群别引用它
+# （Pod 会卡在 ContainerCreating / CreateContainerError「no runtime for "runsc" is configured」，表现为那一轮「Pod 没有起来」）。
+# 只有一部分节点装了 gVisor 时，用 RuntimeClass 的 scheduling 把沙箱 Pod 调度过去（驱动的 AGENT_SANDBOX_K8S_NODE_SELECTOR
+# 是给「镜像只有某种架构」这类约束用的，和它叠加；驱动不配 tolerations）。
+# overhead 会计入上面的 ResourceQuota。打开之后服务端配 AGENT_SANDBOX_K8S_RUNTIME_CLASS=gvisor。
+# ---
+# apiVersion: node.k8s.io/v1
+# kind: RuntimeClass
+# metadata:
+#   name: gvisor
+# handler: runsc
+# overhead:
+#   podFixed:
+#     cpu: 100m
+#     memory: 64Mi
+# scheduling:
+#   nodeSelector:
+#     sandbox.gvisor.dev/runtime: runsc
+#   tolerations:
+#     - key: sandbox.gvisor.dev/runtime
+#       operator: Equal
+#       value: runsc
+#       effect: NoSchedule

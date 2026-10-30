@@ -1,0 +1,86 @@
+# 画布 agent 的 k8s 沙箱（docs/22 §7.5）—— 当前部署形态：沙箱 Pod 直接建在 dev 里（和 gitea 等别的服务共用命名空间）。
+# 这一份是 dev 里的全部配套：服务端的 ServiceAccount、它在 dev 的 Role / RoleBinding、只罩住沙箱 Pod 的 NetworkPolicy。
+#
+# 它在 k8s/ 下、由 ArgoCD 同步（和 deployment.yaml 同一次 sync；ArgoCD 按 kind 排序，ServiceAccount 先于 Deployment 建好，
+# 所以 serviceAccountName 不会让 ReplicaSet 建不出 Pod）。dev 这个 AppProject 放行命名空间级的任意资源，
+# 同命名空间的 janitorai-proxy 就是这样同步 ServiceAccount / Role / RoleBinding 的。
+#
+# ⚠️ 只有这一份不够：dev 没有 Pod Security 标签，有 pods create 的主体能建 privileged / hostPath / 挂别人 Secret 的 Pod
+# （dev 里有 gitea-db、gitea-act-runner…）。限死服务端能建什么样的 Pod 的是集群级的 ValidatingAdmissionPolicy
+# k8s/variants/agent-sandbox-vap.yaml —— 集群级、不进 ArgoCD，由管理员 apply。没 apply 时服务端的启动自检
+# （privileged 的反例被放行）不通过，agent 就是未启用，原因写在日志里。
+#
+# 更强的形态（独立命名空间 + Pod Security restricted + 配额）在 k8s/variants/agent-sandbox.yaml，切换步骤见它的文件头。
+#
+# 不要在这里给 dev 加别的 NetworkPolicy：一条选中服务端 Pod（或全命名空间）的 ingress 策略会让被选中的 Pod 变成
+# 「只放行列出来的来源」，ingress-nginx 的流量就进不来了，gitea 等也会被波及。
+---
+# 服务端的 ServiceAccount。Deployment 用 serviceAccountName 引用它
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shadecn-learning
+  namespace: dev
+# 服务端要调 k8s API：它的 token 要挂（projected token，kubelet 定期轮换文件，驱动每个请求重读）
+automountServiceAccountToken: true
+---
+# 服务端在 dev 里能做的全部事：建 / 跟 / 删沙箱 Pod、读它的日志。
+# 没有 secrets、没有 pods/exec / attach / portforward / ephemeralcontainers、没有 update / patch、没有 ClusterRole。
+# RBAC 不能按 label 收窄：这些动词对 dev 里**所有** Pod 都生效（能读别的服务的 Pod 规格和日志、能删别的 Pod），
+# 这是共用命名空间的代价（docs/22 §7.5「已知限制」）；建 Pod 这一条由 VAP 收窄。
+# 启动自检用的 SelfSubjectAccessReview 不需要授权（system:basic-user 默认就有）。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shadecn-agent-sandbox-driver
+  namespace: dev
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shadecn-agent-sandbox-driver
+  namespace: dev
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: shadecn-agent-sandbox-driver
+subjects:
+  - kind: ServiceAccount
+    name: shadecn-learning
+    namespace: dev
+---
+# 沙箱的网络：只选中沙箱 Pod（shadecn.agent/managed=true，驱动给每个沙箱 Pod 都打这个 label，VAP 也要求它），dev 里别的 Pod 不受影响。
+#
+# k3s 自带 NetworkPolicy 控制器（内嵌 kube-router；server 参数里没有 --disable-network-policy）。flannel 本身不执行策略，
+# 换成没有策略控制器的 CNI 时这一份会被**静默忽略** —— 那样沙箱可以出网、可以访问集群里的任何服务。
+#
+# - 不写 ingress = 入站全拒：服务端到 runner 不需要连进来（runner 自己拉 /run/input、/canvas/changes）；日志走 kubelet → API。
+# - 出站只放行服务端 Pod（同命名空间、app=shadecn-learning）的 TCP 3000：runner 连的是 http://$POD_IP:3000（发起它的那个副本），
+#   NetworkPolicy 按 Pod 匹配，正好对上，不经 Service。能到达的是 3000 端口上的全部路由（匿名身份），L4 策略收不到 HTTP 路径。
+# - **不放行 DNS**：网关地址是 IP，runner 不解析任何名字；放行 kube-dns 就多一条经 DNS 查询把数据带出去的路。
+# - 访问 k8s API 也不放行（沙箱本来就没有 token）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shadecn-agent-sandbox
+  namespace: dev
+spec:
+  podSelector:
+    matchLabels:
+      shadecn.agent/managed: "true"
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: shadecn-learning
+      ports:
+        - protocol: TCP
+          port: 3000

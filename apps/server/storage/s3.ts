@@ -8,10 +8,18 @@ import { createHash, createHmac } from 'node:crypto'
  *
  * 一律 path-style（`<endpoint>/<bucket>/<key>`）：自建的 MinIO 一类服务大多不配泛域名，
  * virtual-host 风格（`<bucket>.<host>`）在它们那儿解析不到。
+ *
+ * **两个地址**：`endpoint` 是公开地址 —— 写进节点 `data.src`、浏览器直接读的就是 `<endpoint>/<bucket>/<key>`，
+ * `objectUrl` / 上传的返回值 / `keys.ts` 反解 `src` 都只认它；`requestEndpoint` 是服务端自己发请求用的地址
+ * （集群里走内网，如 `http://minio.minio.svc.cluster.local:9000`，不绕公网再回来），不给就和 `endpoint` 一样。
+ * 每个实际发出去的请求都按它拼 URL，SigV4 签进去的 `host` 跟着实际请求走（签的是哪个 host，就得发给哪个 host）。
  */
 
 export interface S3Options {
+  /** 公开地址（浏览器读、存进节点的那个） */
   endpoint: string
+  /** 服务端发请求的地址；空 / 不给 = `endpoint` */
+  requestEndpoint?: string
   region: string
   bucket: string
   accessKeyId: string
@@ -165,7 +173,12 @@ function canonicalQuery(query: Record<string, string>): string {
 }
 
 export function createS3Client(options: S3Options): S3Client {
-  const objectUrl = (key: string) => `${options.endpoint}/${encodeS3Path(options.bucket)}/${encodeS3Path(key)}`
+  const pathOf = (key: string) => `/${encodeS3Path(options.bucket)}/${encodeS3Path(key)}`
+  /** 对外的原始地址：只拿它给浏览器 / 存进节点，服务端自己从不按它发请求（除非没配 requestEndpoint） */
+  const objectUrl = (key: string) => `${options.endpoint}${pathOf(key)}`
+  const requestBase = options.requestEndpoint?.trim().replace(/\/+$/, '') || options.endpoint
+  /** 服务端实际请求的地址 */
+  const requestUrl = (key: string) => `${requestBase}${pathOf(key)}`
 
   /** 签名并发出一个请求；非 2xx 抛错（`allow` 里的状态码除外），错误信息带上 S3 的错误码 */
   async function send(
@@ -180,7 +193,7 @@ export function createS3Client(options: S3Options): S3Client {
       signal?: AbortSignal
     },
   ): Promise<Response> {
-    const url = new URL(objectUrl(init.key))
+    const url = new URL(requestUrl(init.key))
     url.search = canonicalQuery(init.query ?? {})
     const body = init.body ?? new Uint8Array()
     const headers = signS3Request({

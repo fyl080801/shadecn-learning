@@ -1,7 +1,7 @@
 # push 到 master 就自动起一条 Argo Workflow，并守着它跑完 —— 这个 job 的红/绿就是构建的红/绿。
 #
-# 它**不自己构建**。构建仍然是 ci/workflow-template.yaml 里那条流水线（buildah 双架构 +
-# 三道架构护栏 + 基础镜像重试，约 45 分钟），这里只是替掉原来那句「push 完必须手动
+# 它**不自己构建**。构建仍然是 ci/workflow-template.yaml 里那条流水线（buildah 在 arm64 节点上原生构建
+# 服务端 + agent 沙箱两个 arm64 镜像、三道架构护栏、基础镜像重试），这里只是替掉原来那句「push 完必须手动
 # kubectl create -f ci/run.yaml」。整条链路见 docs/12-deployment.md §4。
 #
 # 跑这个 job 需要集群里的 act_runner（host 模式，label `k8s`），清单在
@@ -89,8 +89,8 @@ jobs:
           fi
 
           # 等价于 `kubectl -n devops create -f ci/run.yaml`，只是 gitRevision 跟着这次 push 走。
-          # nodeSelector 必须留着：buildah 那步只能落在 amd64 节点上（arm64 那半靠 QEMU
-          # 模拟，反过来跑不动）。改这里记得同步 ci/run.yaml，那是手动跑的入口。
+          # nodeSelector 必须留着：模板默认只构建 linux/arm64，要落在 arm64 节点上原生构建（不靠 QEMU）。
+          # 改这里记得同步 ci/run.yaml，那是手动跑的入口。
           MANIFEST="${RUNNER_TEMP:-/tmp}/argo-run.yaml"
           cat >"$MANIFEST" <<EOF
           apiVersion: argoproj.io/v1alpha1
@@ -104,7 +104,7 @@ jobs:
             workflowTemplateRef:
               name: ${WF_TEMPLATE}
             nodeSelector:
-              kubernetes.io/arch: amd64
+              kubernetes.io/arch: arm64
             arguments:
               parameters:
                 - name: gitRevision

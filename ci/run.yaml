@@ -17,9 +17,10 @@ metadata:
 spec:
   workflowTemplateRef:
     name: shadecn-learning-cicd
-  # buildah 那步必须落在 amd64 节点上（arm64 那半靠 QEMU 模拟，反过来跑不动）
+  # 整条流水线落在 arm64 节点上：模板默认只构建 linux/arm64（platforms 参数），在原生架构上跑，不靠 QEMU。
+  # 改 platforms 就要同时想清楚这里、以及 k8s/deployment.yaml 里服务端和沙箱的 nodeSelector
   nodeSelector:
-    kubernetes.io/arch: amd64
+    kubernetes.io/arch: arm64
   arguments:
     parameters:
       - name: gitRevision
@@ -33,3 +34,6 @@ spec:
       # 换之前务必确认它**真的是多架构**，理由见 Dockerfile 顶部和 docs/12 §2.5.1。
       # - name: baseImage
       #   value: 192.168.68.95:31443/docker.io/library/node:22-alpine
+      # 构建哪些架构（逗号分隔），默认只有 linux/arm64。多出来的那种靠 QEMU（产物只构建一次，QEMU 下只跑 npm install / apk add）
+      # - name: platforms
+      #   value: linux/arm64,linux/amd64

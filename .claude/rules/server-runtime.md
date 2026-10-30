@@ -17,7 +17,7 @@ Node + Hono + `@hono/node-server`, run through `tsx` in dev. One process serves 
 
 ## File map
 
-- `index.ts` — entry: load `.env`, `assertAuthConfig()`, `createAdaptorServer` (no `listen` yet), attach collab + frontend, start the hourly session sweep, the agent reconciler and `startAgentSandboxReaper()` (oci: self-check + orphan containers, non-blocking), listen. SIGINT/SIGTERM cleanup; `shutdown()` has a re-entry guard.
+- `index.ts` — entry: load `.env`, `assertAuthConfig()`, `createAdaptorServer` (no `listen` yet), attach collab + frontend, start the hourly session sweep, the agent reconciler and `startAgentSandboxReaper()` (oci / k8s: self-check + orphans, non-blocking; a failed k8s self-check disables the agent), listen. SIGINT/SIGTERM cleanup; `shutdown()` has a re-entry guard.
   - **Dev orphan watch**: `pnpm dev` is several process layers and only the innermost listens; stopping from an IDE or closing a terminal tab often reaches only the top, leaving the listener holding the port (next `pnpm dev` → `EADDRINUSE`, and they accumulate). `watchForOrphan()` samples `process.ppid` every 2s and runs the normal `shutdown()` when it changes (so the Y.Doc still flushes). The timer is `unref()`'d; dev-only.
 - `env.ts` — side effect: `process.loadEnvFile()` on the repo-root `.env` (real env wins). Imported first by `config.ts` and `index.ts`.
 - `runtime.ts` — `isBundle` / `moduleDir` / `appRoot`. `__APP_BUNDLE__` (esbuild `define`) → app root = `process.cwd()`; from source = `apps/server/`'s grandparent.

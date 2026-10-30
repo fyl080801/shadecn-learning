@@ -1,0 +1,111 @@
+# 画布 agent 沙箱的准入兜底（docs/22 §7.5）：dev 命名空间没有 Pod Security，这一份替它限死**服务端的 ServiceAccount**
+# 能在 dev 里建什么样的 Pod。没有它，被攻破的服务端（有 dev 的 pods create）可以建一个 privileged / hostPath / hostNetwork 的 Pod
+# 拿到节点 root，或者把 dev 里别的服务的 Secret（gitea-db、gitea-act-runner…）、别的 ServiceAccount 的 token 挂进来读走。
+#
+# 集群级资源，**不进 ArgoCD**（在 variants/ 下；ArgoCD 只同步 k8s/ 这一层）。管理员 apply / 回滚：
+#   kubectl apply -f k8s/variants/agent-sandbox-vap.yaml
+#   kubectl get validatingadmissionpolicy shadecn-agent-sandbox -o jsonpath='{.status}'   # typeChecking 里不应有任何 warning
+#   kubectl delete -f k8s/variants/agent-sandbox-vap.yaml                                  # 回滚（服务端下一次重查自检时 ≤10 分钟 agent 自动停用）
+# 验证（合规的放行、违规的逐条被拒）：k8s/variants/agent-sandbox-vap-samples/ 的文件头。
+#
+# 影响范围刻意压到最小：
+# - 只看 dev 命名空间里的 Pod CREATE（matchConstraints），再只看 system:serviceaccount:dev:shadecn-learning 发起的（matchConditions）——
+#   gitea、ollama、控制器替 Deployment 建的 Pod 都是别的用户名，直接跳过，不会被这里拦。
+# - matchConditions 只是一次字符串比较，不会求值出错；failurePolicy: Fail 只对通过了它的请求（服务端自己的建 Pod）起作用：
+#   这份策略本身出错时宁可拦下沙箱 Pod（那一轮失败、自检不过），也不放过一个没检查过的 Pod。
+# - 服务端的 RBAC 只有 dev 的 pods create（k8s/agent-sandbox.yaml），所以只匹配 dev 就够；哪天给它别的命名空间的权限，这里要一起扩。
+#
+# 规则和 Pod Security restricted 对齐（再加上：只许沙箱镜像、只许 emptyDir、不许 envFrom / valueFrom、单容器）。
+# 驱动生成的 Pod（k8sPodSpec）满足每一条：apps/server/test/agent/k8s-manifests.test.ts 用一份等价的 TS 判定逐条核对，
+# 每条 message 开头的 [规则名] 就是那份判定里的名字（两边的集合必须一致）。
+# 服务端启动自检会 dry-run 一个 privileged 的反例，**被放行就不启用 agent** —— 这一份没 apply、或者绑定没匹配上，日志里会写明。
+#
+# 每个 expression 都要写成一行的双引号字符串（清单测试用的 YAML 子集解析器不认块标量）。
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: shadecn-agent-sandbox
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: dev
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [pods]
+  matchConditions:
+    - name: agent-sandbox-driver
+      expression: "request.userInfo.username == 'system:serviceaccount:dev:shadecn-learning'"
+  validations:
+    - expression: "has(object.metadata.labels) && 'shadecn.agent/managed' in object.metadata.labels && object.metadata.labels['shadecn.agent/managed'] == 'true'"
+      reason: Forbidden
+      message: "[managed-label] 沙箱 Pod 必须带 label shadecn.agent/managed=true"
+    - expression: "size(object.spec.containers) == 1"
+      reason: Forbidden
+      message: "[single-container] 沙箱 Pod 只能有一个容器"
+    - expression: "!has(object.spec.initContainers) || size(object.spec.initContainers) == 0"
+      reason: Forbidden
+      message: "[no-init-containers] 沙箱 Pod 不许有 initContainers"
+    - expression: "!has(object.spec.ephemeralContainers) || size(object.spec.ephemeralContainers) == 0"
+      reason: Forbidden
+      message: "[no-ephemeral-containers] 沙箱 Pod 不许有 ephemeralContainers"
+    - expression: "object.spec.containers.all(c, c.image.matches('^192[.]168[.]68[.]95:31443/apps/shadecn-agent-sandbox:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'))"
+      reason: Forbidden
+      message: "[sandbox-image] 镜像只能是 192.168.68.95:31443/apps/shadecn-agent-sandbox:<tag>"
+    - expression: "!(has(object.spec.hostNetwork) && object.spec.hostNetwork) && !(has(object.spec.hostPID) && object.spec.hostPID) && !(has(object.spec.hostIPC) && object.spec.hostIPC)"
+      reason: Forbidden
+      message: "[no-host-namespaces] 不许 hostNetwork / hostPID / hostIPC"
+    - expression: "object.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) || !c.securityContext.privileged)"
+      reason: Forbidden
+      message: "[no-privileged] 不许 privileged"
+    - expression: "!has(object.spec.volumes) || object.spec.volumes.all(v, has(v.emptyDir))"
+      reason: Forbidden
+      message: "[emptydir-only] 只许 emptyDir 卷（hostPath / secret / configMap / projected / csi / ephemeral… 一概不许）"
+    - expression: "object.spec.containers.all(c, !has(c.envFrom) || size(c.envFrom) == 0)"
+      reason: Forbidden
+      message: "[no-env-from] 不许 envFrom"
+    - expression: "object.spec.containers.all(c, !has(c.env) || c.env.all(e, !has(e.valueFrom)))"
+      reason: Forbidden
+      message: "[no-value-from] 环境变量只许字面值，不许 valueFrom（Secret / ConfigMap / 字段引用）"
+    - expression: "has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false"
+      reason: Forbidden
+      message: "[no-service-account-token] 必须 automountServiceAccountToken: false"
+    - expression: "(!has(object.spec.serviceAccountName) || object.spec.serviceAccountName in ['', 'default']) && (!has(object.spec.serviceAccount) || object.spec.serviceAccount in ['', 'default'])"
+      reason: Forbidden
+      message: "[default-service-account] serviceAccountName 只能是 default 或不填"
+    - expression: "object.spec.containers.all(c, (has(c.securityContext) && has(c.securityContext.runAsNonRoot)) ? c.securityContext.runAsNonRoot : (has(object.spec.securityContext) && has(object.spec.securityContext.runAsNonRoot) && object.spec.securityContext.runAsNonRoot)) && !(has(object.spec.securityContext) && has(object.spec.securityContext.runAsUser) && object.spec.securityContext.runAsUser == 0) && object.spec.containers.all(c, !(has(c.securityContext) && has(c.securityContext.runAsUser) && c.securityContext.runAsUser == 0))"
+      reason: Forbidden
+      message: "[run-as-non-root] 必须 runAsNonRoot: true，且 runAsUser 不能是 0"
+    - expression: "object.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.allowPrivilegeEscalation) && c.securityContext.allowPrivilegeEscalation == false)"
+      reason: Forbidden
+      message: "[no-privilege-escalation] 容器必须 allowPrivilegeEscalation: false"
+    - expression: "object.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.capabilities) && has(c.securityContext.capabilities.drop) && 'ALL' in c.securityContext.capabilities.drop && (!has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0))"
+      reason: Forbidden
+      message: "[drop-all-capabilities] 容器必须 capabilities.drop: [ALL]，且不加任何能力"
+    - expression: "object.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.readOnlyRootFilesystem) && c.securityContext.readOnlyRootFilesystem == true)"
+      reason: Forbidden
+      message: "[read-only-root] 容器必须 readOnlyRootFilesystem: true"
+    - expression: "object.spec.containers.all(c, (has(c.securityContext) && has(c.securityContext.seccompProfile)) ? c.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost'] : (has(object.spec.securityContext) && has(object.spec.securityContext.seccompProfile) && object.spec.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost']))"
+      reason: Forbidden
+      message: "[seccomp] seccompProfile 必须是 RuntimeDefault 或 Localhost"
+    - expression: "object.spec.containers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))"
+      reason: Forbidden
+      message: "[no-host-ports] 不许 hostPort"
+    - expression: "!has(object.spec.securityContext) || !has(object.spec.securityContext.sysctls) || size(object.spec.securityContext.sysctls) == 0"
+      reason: Forbidden
+      message: "[no-sysctls] 不许 sysctls"
+    - expression: "object.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.procMount) || c.securityContext.procMount == 'Default')"
+      reason: Forbidden
+      message: "[default-proc-mount] procMount 只能是 Default"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: shadecn-agent-sandbox
+spec:
+  policyName: shadecn-agent-sandbox
+  validationActions: [Deny]

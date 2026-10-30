@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isApiPath } from '../config.ts'
 
 /**
@@ -455,5 +455,20 @@ describe('副本模式解析', () => {
 
     vi.stubEnv('INSTANCE_ID', 'pod-7')
     expect((await loadConfig()).instanceId).toBe('pod-7')
+  })
+})
+
+describe('对象存储的两个地址', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('S3_INTERNAL_ENDPOINT 不配 / 空串 = 空（和 S3_ENDPOINT 一样）；配了去掉末尾的 /；公开地址不受它影响', async () => {
+    vi.stubEnv('S3_ENDPOINT', '')
+    vi.stubEnv('S3_INTERNAL_ENDPOINT', '')
+    expect((await loadConfig()).s3Config).toMatchObject({ endpoint: 'https://s3.fyl080801.uk', requestEndpoint: '' })
+    vi.stubEnv('S3_INTERNAL_ENDPOINT', ' http://minio.minio.svc.cluster.local:9000/ ')
+    expect((await loadConfig()).s3Config).toMatchObject({
+      endpoint: 'https://s3.fyl080801.uk',
+      requestEndpoint: 'http://minio.minio.svc.cluster.local:9000',
+    })
   })
 })

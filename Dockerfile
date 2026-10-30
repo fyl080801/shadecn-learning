@@ -43,8 +43,18 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 # 前端 → output/public，后端 → output/server（index.js + db-sync.js），外加 package.json / Dockerfile：
 # output/ 本身就是一个完整可运行的 app 目录，SQLite / PostgreSQL 通用。
-# output/agent-sandbox/ 是 agent 沙箱镜像的构建上下文（pnpm build:sandbox-image 用），不进这个镜像（和 output/.dockerignore 一致）
-RUN pnpm build && rm -rf output/agent-sandbox
+# output/agent-sandbox/ 是 agent 沙箱镜像的构建上下文（docs/22 §7.2），不进这个镜像（和 output/.dockerignore 一致）：
+# 挪到 output/ 外面，下面的运行时阶段只拷 output/；CI 经 artifacts 阶段把它取出来单独构建沙箱镜像
+RUN pnpm build && mv output/agent-sandbox /app/agent-sandbox
+
+# 只给 CI 用：把这一次构建的产物原样导出，镜像在外面分别打（ci/workflow-template.yaml）——
+#   buildah bud --target artifacts --output type=local,dest=<目录> .
+# <目录>/output 是 output/（带着它自己的 Dockerfile = apps/server/scripts/output-image/Dockerfile），
+# <目录>/agent-sandbox 是沙箱镜像的构建上下文。最重的 pnpm install + pnpm build 只跑一次，服务端和沙箱里的
+# runner 出自同一次构建（同一个构建 id）。默认的 `docker build .` 用不到这个阶段。
+FROM scratch AS artifacts
+COPY --from=build /app/output /output
+COPY --from=build /app/agent-sandbox /agent-sandbox
 
 # 运行时依赖只从 output/package.json 装（hono / @mikro-orm/* / yjs 那几个）。
 # 这个阶段不带 --platform，跑在目标平台上 —— better-sqlite3 的预编译二进制是按运行时的

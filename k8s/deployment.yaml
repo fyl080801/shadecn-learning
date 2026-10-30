@@ -25,10 +25,8 @@ spec:
 #     --from-literal=GITHUB_CLIENT_ID="$GITHUB_CLIENT_ID" \
 #     --from-literal=GITHUB_CLIENT_SECRET="$GITHUB_CLIENT_SECRET" \
 # GitHub OAuth App 的回调填 $APP_ORIGIN/api/auth/callback —— 和 Keycloak 共用同一个。
-# 要开画布资源上传（S3）同理，再加这几行（S3_ENDPOINT / S3_REGION 有默认值，不是秘密，要改就放 env）：
-#     --from-literal=S3_BUCKET="$S3_BUCKET" \
-#     --from-literal=S3_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID" \
-#     --from-literal=S3_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY" \
+# 画布资源上传（S3）和画布 agent 的模型配置不在这个 Secret 里：各有一对带外的 ConfigMap + Secret
+# （shadecn-learning-s3、shadecn-learning-agent），见下面 envFrom 的注释和 docs/12 §3.3。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,6 +47,12 @@ spec:
       labels:
         app: shadecn-learning
     spec:
+      # 画布 agent 的 k8s 沙箱驱动用它调 API：只在 dev 有 pods 的 create/get/list/watch/delete 和 pods/log 的 get
+      # （k8s/agent-sandbox.yaml，和这份一起由 ArgoCD 同步，SA 先于 Deployment 建好）
+      serviceAccountName: shadecn-learning
+      # 只用 arm64 节点：CI 只构建 arm64 镜像（ci/workflow-template.yaml 的 platforms），调度到 amd64 节点会拉不到镜像
+      nodeSelector:
+        kubernetes.io/arch: arm64
       containers:
         - name: shadecn-learning
           image: 192.168.68.95:31443/apps/shadecn-learning:359acc1
@@ -89,9 +93,56 @@ spec:
             # 画布资源单个文件上限（MB），分片上传开始时校验；单片大小另由 ingress 的 proxy-body-size 放行
             - name: S3_MAX_UPLOAD_MB
               value: "500"
+            # —— 画布 agent 的沙箱：每一轮在 dev 里建一个 Pod 跑 runner（docs/22 §7.5）——
+            # 沙箱 Pod 和 gitea 等别的服务共用 dev：dev 没有 Pod Security，服务端能建什么样的 Pod 由
+            # k8s/variants/agent-sandbox-vap.yaml（集群级，人工 apply）限死；它不在时启动自检不通过、agent 不启用。
+            # 模型（AGENT_PROVIDER / AGENT_MODEL / AGENT_BASE_URL / AGENT_API / AGENT_IMAGE_INPUT / AGENT_API_KEY / AGENT_TOKEN_SECRET）
+            # **不要写在这里**：它们来自下面 envFrom 的 shadecn-learning-agent（ConfigMap + Secret，带外资源，docs/12 §3.3），
+            # 而 env 优先于 envFrom —— 在这里写一个就把那边的值盖掉了。没配 / 空值 = agent 未启用。
+            - name: AGENT_SANDBOX
+              value: k8s
+            # F14：一轮的令牌和网关登记只在发起它的那个副本的内存里，runner 必须直连这个 Pod ——
+            # 网关地址默认 http://$POD_IP:$PORT。不要改成 Service 的地址（多副本时会被分到别的副本，一律 401）
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: AGENT_SANDBOX_K8S_NAMESPACE
+              value: dev
+            # 沙箱镜像和服务端同一个 tag、同一次构建：CI 写回 tag 时这一行和上面的 image 一起改（ci/workflow-template.yaml）
+            - name: AGENT_SANDBOX_IMAGE
+              value: 192.168.68.95:31443/apps/shadecn-agent-sandbox:359acc1
+            # 沙箱 Pod 拉镜像用 dev 里现成的这个（kubelet 用；服务端没有读 Secret 的权限，也不需要）
+            - name: AGENT_SANDBOX_K8S_PULL_SECRET
+              value: harbor-pull-secret
+            # tag 是提交 hash、不会被覆盖：节点上有就不再去仓库问一次
+            - name: AGENT_SANDBOX_K8S_PULL_POLICY
+              value: IfNotPresent
+            # 沙箱镜像也只有 arm64
+            - name: AGENT_SANDBOX_K8S_NODE_SELECTOR
+              value: kubernetes.io/arch=arm64
           envFrom:
             - secretRef:
                 name: shadecn-learning-auth
+            # 画布 agent 的模型配置（带外资源，不归 ArgoCD，同 shadecn-learning-auth；docs/12 §3.3）：
+            # 非密钥项在 ConfigMap、key 在 Secret。optional：被删了也不挡 Pod 启动（agent 只是未启用）。
+            # envFrom 只在容器启动时读一次：改完要 kubectl -n dev rollout restart deploy/shadecn-learning
+            - configMapRef:
+                name: shadecn-learning-agent
+                optional: true
+            - secretRef:
+                name: shadecn-learning-agent
+                optional: true
+            # 画布资源上传（带外资源，docs/12 §3.3）：ConfigMap 里是 S3_ENDPOINT / S3_INTERNAL_ENDPOINT / S3_REGION / S3_BUCKET，
+            # Secret 里是 S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY。空值 = 不配（地址 / region 走默认值；桶和两项凭据缺一个 = 上传关闭）。
+            # S3_KEY_PREFIX 刻意不在里面：空串的意思是「桶根」，和不配（canvas）不一样。
+            # env 里只留 S3_MAX_UPLOAD_MB，别的 S3_* 不要写在 env（会盖掉这里）。改完同样要 rollout restart
+            - configMapRef:
+                name: shadecn-learning-s3
+                optional: true
+            - secretRef:
+                name: shadecn-learning-s3
+                optional: true
           volumeMounts:
             - name: data
               mountPath: /app/data

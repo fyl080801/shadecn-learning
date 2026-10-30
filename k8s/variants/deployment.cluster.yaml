@@ -16,6 +16,10 @@
 # 数据库种类由 DB_PROVIDER / DATABASE_URL 决定，都不是构建时绑死的
 # （MikroORM 的驱动在运行时按配置动态加载，同一个镜像两种库都能连）。
 #
+# ⚠️ 这一份没有跟上单副本那份后来加的东西：serviceAccountName、nodeSelector（arm64，CI 只构建 arm64）、
+# 画布 agent 沙箱的那组 env（AGENT_SANDBOX=k8s、POD_IP…，docs/22 §7.5）。覆盖之前把它们从 k8s/deployment.yaml 一起带过来；
+# k8s 沙箱在多副本下照常工作（每个副本用自己的 Pod IP 当网关地址）。
+#
 # 前置：集群里得有 Redis 和 PostgreSQL。这里假设它们已经存在，
 # 连接串放进 Secret（见下）——本仓库不管它们怎么部署。
 #

@@ -4,14 +4,21 @@ import { resolveAgentModel } from '@shadecn/agent/model'
 import { AGENT_GATEWAY_PATH } from '@shadecn/agent/protocol'
 import {
   createEngineClient,
+  createK8sDriver,
+  createKubeClient,
   createOciDriver,
   createProcessDriver,
   findEngineSocket,
+  K8S_PULL_POLICIES,
+  kubeConnection,
+  parseK8sNodeSelector,
+  type K8sPullPolicy,
+  type K8sSandboxDriver,
   type OciSandboxDriver,
   type SandboxDriver,
 } from '@shadecn/agent/sandbox/drivers'
 import { createAgentRuntime, type AgentRuntime, type AgentRuntimeOptions } from '@shadecn/agent/session'
-import { agentConfig, agentWorkspaceDir, isDev, s3Enabled } from '../config.ts'
+import { agentConfig, agentWorkspaceDir, host, isDev, s3Enabled } from '../config.ts'
 import { agentConversations, agentRunLog } from '../store/agent.ts'
 import { users } from '../store/users.ts'
 import { agentAuthority } from './authority.ts'
@@ -25,12 +32,14 @@ import { broadcastAgentRuns } from './runs-broadcast.ts'
  * 那个包不读 `process.env`（见 `@shadecn/agent/model`），所以「没给 `AGENT_API_KEY` 时退回
  * pi 自己的环境变量约定」「沙箱子进程的 PATH」「生产环境拒绝 process 驱动」这类环境相关的决定都在这里做。
  *
- * **二期 / 三期（docs/22 §9 第 2、3 项）**：pi 的推理循环跑在每轮一个的沙箱里（`process` 驱动 = 本机 node 子进程；
- * `oci` 驱动 = 每轮一个 Docker / Podman 容器），经网关（`routes/agent-gateway.ts`，挂在 `AGENT_GATEWAY_PATH`）说话。
+ * **二期～四期（docs/22 §9 第 2～4 项）**：pi 的推理循环跑在每轮一个的沙箱里（`process` 驱动 = 本机 node 子进程；
+ * `oci` 驱动 = 每轮一个 Docker / Podman 容器；`k8s` 驱动 = 每轮一个 Pod），经网关（`routes/agent-gateway.ts`，挂在 `AGENT_GATEWAY_PATH`）说话。
  * 真实的 LLM key 只在这里交给网关的模型代理；沙箱的环境变量只有网关地址、一次性 bootstrap token、工作目录和 `PATH`。
  *
- * 驱动和 runtime 分开懒建：驱动在启动时就要用（{@link startAgentSandboxReaper}：`oci` 的启动自检 + 清孤儿容器），
+ * 驱动和 runtime 分开懒建：驱动在启动时就要用（{@link startAgentSandboxReaper}：`oci` / `k8s` 的启动自检 + 清孤儿），
  * runtime 等第一次有人访问 agent 接口。两边拿的是同一个驱动实例。
+ * **`k8s` 的自检决定 agent 开不开**（API 连不上、没权限、命名空间不存在、Pod 规格过不了准入 = 每一轮都会失败）：
+ * 结论记在 {@link sandboxProblem}，没过就按未启用构造 runtime、驱动也拒绝起 Pod；之后每次清孤儿时重查，过了就恢复。
  *
  * **懒创建**：第一次有人访问 agent 接口时才解析模型。没配 key / 驱动不可用的进程里它只是一个
  * `enabled: false` 的空壳，不影响启动、也不打一行警告以外的东西。
@@ -57,9 +66,10 @@ export const agentHostOptions = {
 export const agentGatewayUrl = `${agentConfig.gatewayUrl}${AGENT_GATEWAY_PATH}`
 
 /**
- * 这个实例在容器引擎上的标识（`oci` 容器的 `instance` label，`reap` 只清这个值的）：沙箱看到的网关地址的哈希。
+ * 这个实例在容器引擎 / 集群上的标识（`oci` 容器、`k8s` Pod 的 `instance` label，`reap` 只清这个值的）：沙箱看到的网关地址的哈希。
  * 一轮只能连回发起它的实例（令牌和登记在进程内存），同一个网关地址的旧容器在重启之后就是孤儿；
- * 同一个引擎上别的实例（别的端口 / 别的主机名）的容器不受影响。
+ * 同一个引擎上别的实例（别的端口 / 别的主机名）的容器不受影响。`k8s` 下网关地址是本 Pod 的 IP：
+ * 服务端容器在同一个 Pod 里重启，标识不变；Pod 被替换，标识跟着变（旧 Pod 留下的由驱动按「过了时长上限」清）。
  */
 export const agentSandboxInstance = createHash('sha256').update(agentGatewayUrl).digest('hex').slice(0, 16)
 
@@ -75,8 +85,15 @@ const logRunnerOutput = (runId: string, stream: 'stdout' | 'stderr', line: strin
   else console.info(`[agent-runner] run=${runId} ${line}`)
 }
 
-type BuiltDriver = { ok: true; driver: SandboxDriver; oci?: OciSandboxDriver } | { ok: false; reason: string }
+type BuiltDriver =
+  | { ok: true; driver: SandboxDriver; oci?: OciSandboxDriver; k8s?: K8sSandboxDriver }
+  | { ok: false; reason: string }
 let builtDriver: BuiltDriver | null = null
+
+/** `k8s` 的启动自检没过的原因（null = 过了 / 还没查完）。没过 = agent 未启用 */
+let sandboxProblem: string | null = null
+/** 第一次自检（起 Pod 之前要等它查完） */
+let firstSandboxCheck: Promise<void> | null = null
 
 /** 按 `AGENT_SANDBOX` 建驱动（只建一次）；建不了 → 未启用的原因 */
 function sandboxDriver(): BuiltDriver {
@@ -87,9 +104,9 @@ function sandboxDriver(): BuiltDriver {
 function buildDriver(): BuiltDriver {
   const choice = agentConfig.sandbox
   if (typeof choice === 'object') {
-    return { ok: false, reason: `不认识的沙箱驱动 AGENT_SANDBOX=${choice.unknown}（可选 process / oci；k8s 是后续分期）` }
+    return { ok: false, reason: `不认识的沙箱驱动 AGENT_SANDBOX=${choice.unknown}（可选 process / oci / k8s）` }
   }
-  if (choice === 'k8s') return { ok: false, reason: '沙箱驱动 k8s 还没实现（docs/22 §9 第 4 期）' }
+  if (choice === 'k8s') return buildK8sDriver()
   if (choice === 'oci') return buildOciDriver()
   try {
     const driver = createProcessDriver({
@@ -125,6 +142,53 @@ function buildOciDriver(): BuiltDriver {
   }
 }
 
+/**
+ * `k8s`：连 API 的配置（集群内 = ServiceAccount，集群外 = 显式地址 / 文件，不读 kubeconfig）+ 驱动；生产照常可用。
+ * 起 Pod 前先等第一次自检查完，没过就拒绝（原因同「未启用」）。
+ */
+function buildK8sDriver(): BuiltDriver {
+  const k8s = agentConfig.k8s
+  if (!agentConfig.gatewayUrl) {
+    return {
+      ok: false,
+      reason:
+        'k8s 沙箱要连回发起它的那个副本：Deployment 里用 Downward API 注入 POD_IP（fieldRef: status.podIP），或显式配 AGENT_GATEWAY_URL（docs/22 §7.5）',
+    }
+  }
+  if (k8s.pullPolicy && !K8S_PULL_POLICIES.includes(k8s.pullPolicy as K8sPullPolicy)) {
+    return { ok: false, reason: `AGENT_SANDBOX_K8S_PULL_POLICY=${k8s.pullPolicy} 不认识（可选 ${K8S_PULL_POLICIES.join(' / ')}）` }
+  }
+  const nodeSelector = parseK8sNodeSelector(k8s.nodeSelector)
+  if (!nodeSelector.ok) return { ok: false, reason: nodeSelector.reason }
+  const connection = kubeConnection({ apiUrl: k8s.apiUrl, tokenFile: k8s.tokenFile, caFile: k8s.caFile }, process.env)
+  if (!connection.ok) return { ok: false, reason: connection.reason }
+  try {
+    const driver = createK8sDriver({
+      kube: createKubeClient(connection.value),
+      image: agentConfig.sandboxImage,
+      instance: agentSandboxInstance,
+      ...(k8s.namespace ? { namespace: k8s.namespace } : {}),
+      ...(k8s.runtimeClass ? { runtimeClassName: k8s.runtimeClass } : {}),
+      ...(k8s.pullSecret ? { imagePullSecret: k8s.pullSecret } : {}),
+      ...(k8s.pullPolicy ? { imagePullPolicy: k8s.pullPolicy as K8sPullPolicy } : {}),
+      ...(Object.keys(nodeSelector.value).length > 0 ? { nodeSelector: nodeSelector.value } : {}),
+      onOutput: logRunnerOutput,
+    })
+    const gated: SandboxDriver = {
+      name: driver.name,
+      reap: (live) => driver.reap(live),
+      async start(spec) {
+        await ensureSandboxChecked(driver)
+        if (sandboxProblem !== null) throw new Error(sandboxProblem)
+        return driver.start(spec)
+      },
+    }
+    return { ok: true, driver: gated, k8s: driver }
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 function buildRuntime(): AgentRuntime {
   const gateway = { url: agentGatewayUrl, secret: agentConfig.tokenSecret }
   const disabled = (reason: string) => {
@@ -145,6 +209,7 @@ function buildRuntime(): AgentRuntime {
 
   const built = sandboxDriver()
   if (!built.ok) return disabled(built.reason)
+  if (sandboxProblem !== null) return disabled(sandboxProblem)
 
   const created = createAgentRuntime({
     model: resolved.value,
@@ -174,29 +239,95 @@ export const SANDBOX_REAP_INTERVAL_MS = 10 * 60_000
 /**
  * 启动时调（index.ts）：`oci` 驱动先自检（引擎、镜像、网络 → 日志 / 告警，docs/22 §10 验收 7），
  * 再清一次孤儿容器（上一个进程崩溃 / 被 SIGKILL 时留下的），之后每 10 分钟清一次（删除失败漏下的）。
+ * `k8s` 驱动同理，但每次清之前都重查自检（准入兜底被拿掉也要停用），没过就不清（多半是连不上 / 没权限）。
  * `process` 驱动的 `reap` 是空操作；驱动建不起来（没配 / 生产拒绝 process）就什么也不做 —— 原因由 runtime 那边报。
  * 不阻塞启动；返回停止定时器的函数。
  */
 export function startAgentSandboxReaper(intervalMs = SANDBOX_REAP_INTERVAL_MS): () => void {
   const built = sandboxDriver()
   if (!built.ok) {
-    // 配了 oci 却建不起来（找不到 socket…）：启动时就说，不等第一次有人打开 agent 面板
-    if (agentConfig.sandbox === 'oci') console.warn(`[agent] oci 沙箱不可用（agent 未启用）：${built.reason}`)
+    // 配了 oci / k8s 却建不起来（找不到 socket、不在集群里…）：启动时就说，不等第一次有人打开 agent 面板
+    if (agentConfig.sandbox === 'oci' || agentConfig.sandbox === 'k8s') {
+      console.warn(`[agent] ${agentConfig.sandbox} 沙箱不可用（agent 未启用）：${built.reason}`)
+    }
     return () => {}
   }
   if (built.driver.name === 'process') return () => {}
-  const { driver, oci } = built
+  const { driver, oci, k8s } = built
   const reap = () =>
     driver.reap(runtime?.liveRunIds() ?? new Set()).catch((err: unknown) => {
       console.error(`[agent] 清理孤儿沙箱失败：${err instanceof Error ? err.message : String(err)}`)
     })
+  let ticking = false
+  const tick = async () => {
+    // 上一轮还没完（API 很慢）就跳过这一轮，免得两次自检交错着改结论
+    if (ticking) return
+    ticking = true
+    try {
+      // k8s：每一轮都先重查自检 —— 没过的看它好了没有；过了的看兜底还在不在
+      // （VAP / Role 被删、命名空间的 Pod Security 标签被摘掉，要在这一轮就停用，不能等到重启）。没过就不清孤儿
+      if (k8s && !(await checkK8s(k8s))) return
+      await reap()
+    } finally {
+      ticking = false
+    }
+  }
   void (async () => {
     if (oci) await checkOci(oci)
+    if (k8s) {
+      await ensureSandboxChecked(k8s)
+      if (sandboxProblem !== null) return
+    }
     await reap()
   })()
-  const timer = setInterval(() => void reap(), intervalMs)
+  const timer = setInterval(() => void tick(), intervalMs)
   timer.unref()
   return () => clearInterval(timer)
+}
+
+function ensureSandboxChecked(driver: K8sSandboxDriver): Promise<void> {
+  firstSandboxCheck ??= checkK8s(driver).then(() => undefined)
+  return firstSandboxCheck
+}
+
+/** 自检至少跑完过一次（之后的定时重查只在结论变化时打日志） */
+let sandboxCheckedOnce = false
+
+/**
+ * `k8s` 自检：API、权限、命名空间、Pod 规格能否过准入、准入兜底在不在 → 日志；结论写进 {@link sandboxProblem}。返回是否通过。
+ * 启动时一次，之后每次清孤儿之前一次；详情（版本、告警）只在第一次和结论变化时打 —— 每 10 分钟一组同样的告警只是噪音
+ */
+async function checkK8s(driver: K8sSandboxDriver): Promise<boolean> {
+  let problem: string | null = null
+  let details = () => {}
+  try {
+    const check = await driver.check()
+    details = () => {
+      console.info(
+        `[agent] k8s 沙箱：Kubernetes ${check.version}（${check.server}），命名空间 ${check.namespace}，镜像 ${check.image}，` +
+          `RuntimeClass ${check.runtimeClassName ?? '（节点默认）'}，网关 ${agentGatewayUrl}`,
+      )
+      for (const warning of check.warnings) console.warn(`[agent] k8s 沙箱：${warning}`)
+      if (host === '127.0.0.1' || host === 'localhost' || host === '::1') {
+        console.warn(`[agent] k8s 沙箱：服务端只听 ${host}，沙箱 Pod 连不上 ${agentGatewayUrl}（Deployment 里设 HOST=0.0.0.0）`)
+      }
+    }
+    if (check.problems.length > 0) problem = check.problems.join('；')
+  } catch (err) {
+    problem = `k8s 沙箱自检失败：${err instanceof Error ? err.message : String(err)}`
+  }
+  const first = !sandboxCheckedOnce
+  sandboxCheckedOnce = true
+  const changed = problem !== sandboxProblem
+  if (first || changed) {
+    details()
+    if (problem !== null) console.error(`[agent] k8s 沙箱不可用（agent 未启用）：${problem}`)
+    else if (!first) console.info('[agent] k8s 沙箱自检通过，agent 恢复启用')
+  }
+  sandboxProblem = problem
+  // 已经建好的 runtime 和新结论对不上：没有在跑的轮次就扔掉，下次访问按新结论重建（有在跑的轮次说明它起得来，留着）
+  if (changed && runtime && runtime.liveRunIds().size === 0) runtime = null
+  return problem === null
 }
 
 async function checkOci(driver: OciSandboxDriver) {

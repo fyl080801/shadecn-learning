@@ -90,7 +90,7 @@ pnpm build
 docker build -t shadecn-learning ./output
 ```
 
-`output/Dockerfile` 两个阶段：
+`output/Dockerfile` 两个阶段（CI 构建服务端镜像用的就是这一份，见 §4.2；两个阶段开头都比对 `TARGETARCH`，见 §2.5.1）：
 
 1. **deps** —— 只 `COPY package.json` 再 `npm install --omit=dev`，装的就是那十来个运行时依赖；
    **不再装 `python3 make g++`**：better-sqlite3 13（`@mikro-orm/sqlite` 的依赖）自带 `linuxmusl-x64` /
@@ -106,7 +106,7 @@ docker build -t shadecn-learning ./output
 
 ### 2.5 从源码一把梭（仓库根 `Dockerfile`）
 
-CI 里想一条命令从源码出镜像就用它，三个阶段：
+想一条命令从源码出镜像就用它（`docker build .`），三个阶段，外加一个只给 CI 用的 `artifacts` 阶段：
 
 1. **build** —— 全量 `pnpm install --frozen-lockfile` → `pnpm build`，产出 `/app/output`（没有生成步骤，也不需要编译工具链 ——
    根 `package.json` 的 `pnpm.neverBuiltDependencies` 让 pnpm 不去跑 better-sqlite3 的 `node-gyp rebuild`，见下）；
@@ -117,8 +117,13 @@ CI 里想一条命令从源码出镜像就用它，三个阶段：
    **为什么要 `neverBuiltDependencies`**：pnpm 9 看到包根目录有 `binding.gyp`、又没有 install 脚本时，会**无视
    `gypfile: false`** 自作主张跑 `node-gyp rebuild`（npm 会尊重这个声明），没有 node-gyp 的机器上 install 直接失败。
    better-sqlite3 13 的二进制是预编译好打在包里的，根本不需要这一步；
+   `output/agent-sandbox/`（agent 沙箱镜像的构建上下文）在这一阶段末尾挪到 `/app/agent-sandbox`，不进应用镜像；
 2. **deps** —— 和 `output/Dockerfile` 的 deps 阶段一样，只从 `/app/output/package.json` 装生产依赖；
 3. **运行时** —— `COPY --from=build /app/output ./`，其余同上。
+
+**`artifacts`**（`FROM scratch`，只有 `/output` 和 `/agent-sandbox`）：CI 用 `buildah bud --target artifacts --output type=local,dest=<目录>`
+把 build 阶段的产物原样导出，再分别用 `<目录>/output/Dockerfile` 打服务端镜像、`<目录>/agent-sandbox/Dockerfile` 打沙箱镜像（§4.2）——
+最重的 `pnpm install` + `pnpm build` 只跑一次，两个镜像出自同一次构建。`docker build .` 默认构建最后一个阶段，用不到它。
 
 > ⚠️ 跨架构构建：build 阶段带了 `--platform=$BUILDPLATFORM`（构建产物与架构无关，随构建机跑最快）；
 > deps 阶段**故意不带**，跑在目标平台上 —— better-sqlite3 按运行时的平台 + 架构挑预编译二进制，基础镜像架构对了，加载的就是对的那一个。
@@ -150,9 +155,12 @@ unsupported relocation type 1026
 
 | 护栏 | 位置 | 挡住的是 |
 |---|---|---|
-| 三个阶段同一个**多架构**引用（`192.168.68.95:31443/docker.io/library/node:22-alpine`） | `FROM` 行 | 不同阶段拉到不同架构，拼成嵌合体 |
-| `ARG TARGETARCH` + 比对 `process.arch`（deps、运行时各一处） | 每个阶段开头 | 基础镜像的 tag 没有目标架构，被 QEMU 静默糊弄过去 |
+| 所有阶段同一个**多架构**引用（构建参数 `NODE_IMAGE`；CI 传模板的 `baseImage`） | `FROM` 行 | 不同阶段拉到不同架构，拼成嵌合体 |
+| `ARG TARGETARCH` + 比对 `process.arch`（deps、运行时各一处；沙箱镜像的每个 node 阶段各一处） | 每个阶段开头 | 基础镜像的 tag 没有目标架构，被 QEMU 静默糊弄过去 |
 | `require('better-sqlite3')` 真开一个 `:memory:` 库 + 其余 `*.node` 逐个 `process.dlopen` | 运行时阶段末尾 | 前两道漏掉的任何组合 —— 最终镜像里的原生模块能不能真的加载 |
+
+三道都在仓库根 `Dockerfile` 和 `apps/server/scripts/output-image/Dockerfile`（= `output/Dockerfile`，CI 打服务端镜像用它）里，
+沙箱镜像的 Dockerfile 有前两道（它没有原生模块）；`apps/server/test/scripts/dockerfiles.test.ts` 钉住它们（output-image 那份曾经漏过第二道）。
 
 第三道现在分两步：better-sqlite3 13 的 `prebuilds/` 里**躺着全平台的 `.node`**（darwin、win32、glibc…），
 照原来那样挨个 dlopen 必然失败，所以那个目录不进遍历，改由 `require` 按它自己的挑选规则
@@ -162,7 +170,13 @@ unsupported relocation type 1026
 
 ## 3. Kubernetes 部署需求
 
-`k8s/` 下有 Deployment、Service、Ingress。
+`k8s/` 下有 Deployment、Service、Ingress，以及画布 agent 的 `k8s` 沙箱在 `dev` 里的配套 `agent-sandbox.yaml`（服务端的 ServiceAccount、Role / RoleBinding、
+只选沙箱 Pod 的 NetworkPolicy），都由 ArgoCD 同步。沙箱 Pod 和别的服务共用 `dev`，`dev` 没有 Pod Security，所以另有一份**集群级**的
+ValidatingAdmissionPolicy（`k8s/variants/agent-sandbox-vap.yaml`，不进 ArgoCD、管理员 apply）限死服务端能建什么样的 Pod；没 apply 时 agent 自检不过、不启用。
+更强的独立命名空间形态在 `k8s/variants/agent-sandbox.yaml`。细节见 [REQ-AGENT-SANDBOX §7.5](22-agent-sandbox.md#75-k8s-驱动四期)。
+
+**只用 arm64 节点**：CI 只构建 `linux/arm64`（§4.2），所以服务端 Deployment 带 `nodeSelector: kubernetes.io/arch: arm64`，沙箱 Pod 也一样
+（`AGENT_SANDBOX_K8S_NODE_SELECTOR=kubernetes.io/arch=arm64`）。镜像是只含 arm64 的 manifest list，调度到 amd64 节点会拉不到。
 
 ### 3.1 硬约束
 
@@ -185,7 +199,9 @@ unsupported relocation type 1026
 
 ### 3.3 配置
 
-明文环境变量（在 Deployment 里）：`NODE_ENV`、`HOST`、`PORT`、`DATA_DIR`、`APP_ORIGIN`、`KEYCLOAK_ISSUER`、`KEYCLOAK_CLIENT_ID`；挂多个对外域名时再加 `APP_ORIGINS`。
+明文环境变量（在 Deployment 里）：`NODE_ENV`、`HOST`、`PORT`、`DATA_DIR`、`APP_ORIGIN`、`KEYCLOAK_ISSUER`、`KEYCLOAK_CLIENT_ID`；挂多个对外域名时再加 `APP_ORIGINS`；
+agent 沙箱那一组（`AGENT_SANDBOX=k8s`、`POD_IP`、`AGENT_SANDBOX_K8S_*`、`AGENT_SANDBOX_IMAGE`，[REQ-AGENT-SANDBOX §7.5](22-agent-sandbox.md#75-k8s-驱动四期)）。
+agent 的模型配置**不在 Deployment 里**：来自带外的 `shadecn-learning-agent`（ConfigMap + Secret，见下文），不配 = agent 未启用，别的功能不受影响。
 
 密钥走 Secret（`envFrom.secretRef`）：`KEYCLOAK_CLIENT_SECRET`、`SESSION_SECRET`，PG 部署再加一个 `DATABASE_URL`（连接串里有密码，**不能**写进 Deployment 的明文 env）。
 
@@ -205,6 +221,46 @@ kubectl -n dev create secret generic shadecn-learning-auth \
 `envFrom` 是**整份 Secret 注入**，所以键加进去就生效，**Deployment 清单不用动**。
 GitHub OAuth App 的 Authorization callback URL 填 `$APP_ORIGIN/api/auth/callback` ——
 和 Keycloak 共用同一个回调地址，不要另建。
+
+**画布 agent 的模型配置**和**画布资源上传（S3）**各是一对带外资源（非密钥在 ConfigMap、密钥在 Secret；和 `shadecn-learning-auth` 一样不在 git 里、不归 ArgoCD，
+都带 `app=shadecn-learning` 标签），Deployment 用 `envFrom` 整份注入、都是 `optional: true`（被删了也不挡 Pod 启动，对应功能只是关着）。都是先建好、值留空，由人手动填：
+
+| 资源 | key | 说明 |
+|---|---|---|
+| ConfigMap `dev/shadecn-learning-agent` | `AGENT_PROVIDER`、`AGENT_MODEL`、`AGENT_BASE_URL`、`AGENT_API`、`AGENT_IMAGE_INPUT` | 非密钥的模型配置 |
+| Secret `dev/shadecn-learning-agent` | `AGENT_API_KEY`、`AGENT_TOKEN_SECRET` | 模型 key、签 run 短令牌的密钥 |
+| ConfigMap `dev/shadecn-learning-s3` | `S3_ENDPOINT`、`S3_INTERNAL_ENDPOINT`、`S3_REGION`、`S3_BUCKET` | 画布资源（图片 / 视频）上传的对象存储（[13-flow-canvas-management.md](13-flow-canvas-management.md)「资源上传」） |
+| Secret `dev/shadecn-learning-s3` | `S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY` | 对象存储的凭据 |
+
+- **空值 = 不配**：每一项都按「没设这个变量」处理（`AGENT_PROVIDER` / `AGENT_MODEL` 落回默认的 anthropic 模型、`AGENT_IMAGE_INPUT` 按模型元数据、
+  `AGENT_TOKEN_SECRET` 由 `SESSION_SECRET` 派生）。全部为空时没有任何 key，agent 显示为未启用（`GET …/agent` 的 `enabled: false`），别的功能不受影响。
+- **Deployment 的 `env` 里不写这几项**：`env` 优先于 `envFrom`，写一个就把这几份资源里的值盖掉了（清单测试钉住；`env` 里的 S3 只有 `S3_MAX_UPLOAD_MB`）。
+  `envFrom` 里同名的键以后面的为准（`shadecn-learning-auth` → agent 的 ConfigMap → agent 的 Secret → S3 的 ConfigMap → S3 的 Secret）。
+- **改完要重启才生效**：`envFrom` 只在容器启动时读一次 —— `kubectl -n dev rollout restart deploy/shadecn-learning`（`Recreate`，有短暂中断）。
+- 例：用集群里 `dev` 命名空间的 ollama（不要 key，`AGENT_API_KEY` 留空即可）：
+
+  ```bash
+  kubectl -n dev patch configmap shadecn-learning-agent --type merge -p '{"data":{
+    "AGENT_PROVIDER":"ollama",
+    "AGENT_MODEL":"<ollama list 里的模型名>",
+    "AGENT_BASE_URL":"http://ollama.dev.svc.cluster.local/v1"}}'
+  kubectl -n dev rollout restart deploy/shadecn-learning
+  ```
+
+  走 ollama 的是服务端（网关的模型代理），不是沙箱 —— 沙箱的 NetworkPolicy 只放行到服务端，它直接连不到 ollama。
+  用别的提供方时 key 放进 Secret：`kubectl -n dev edit secret shadecn-learning-agent`（`data` 里是 base64），或从一份本地文件生成
+  `kubectl -n dev create secret generic shadecn-learning-agent --from-env-file=<本地文件> --dry-run=client -o yaml | kubectl apply -f -`（会去掉 `app` 标签，记得补回）；值不进 git。
+- **S3**：
+  - `S3_ENDPOINT` 是**公开地址**：上传后节点的 `data.src` 存的是原始地址 `<endpoint>/<bucket>/<key>`，浏览器直接去那里取，不经后端转发；
+    agent 看图时服务端也是按它把 `data.src` 反解成对象键。所以必须填**浏览器访问得到**的地址，不能填集群内的 `*.svc`；
+    留空 = 默认 `https://s3.fyl080801.uk`。改它之前存进节点的地址不会跟着变（还指着旧地址）。
+  - `S3_INTERNAL_ENDPOINT` **只影响服务端 → S3 的请求**（上传、分片、读字节给 agent 看图）：留空 = 和 `S3_ENDPOINT` 一样（服务端绕公网访问）；
+    k8s 里填 `http://minio.minio.svc.cluster.local:9000`，走集群内网。公网的 `s3.fyl080801.uk` 解析到集群外的机器、TLS 在那里终结，
+    集群内的 MinIO ingress 没有 TLS，所以不能靠 hostAliases 把公网名字指回集群（证书对不上）。浏览器读的、存进节点的仍是 `S3_ENDPOINT`；
+    两个地址必须是同一个 MinIO、同一个桶。服务端 Pod 出站到 `minio` 命名空间的 9000 不受任何 NetworkPolicy 限制（`dev` 里只有选中沙箱 Pod 的那一条）。
+  - `S3_REGION` 留空 = `us-east-1`；`S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` **缺一个 = 上传关闭**（上传接口 503，别的功能照常）。
+  - **桶要对匿名开放读**（`s3:GetObject`），否则画布上的图都是裂的。
+  - `S3_KEY_PREFIX` **刻意不放进这份 Secret**：不配是 `canvas`，而空串的意思是「桶根」—— 一个空值的 key 会把对象键改到桶根下。真要改就在 Deployment 的 `env` 里显式写。
 
 **真值不得提交进仓库** —— 仓库里的 Secret 清单只是占位模板。
 
@@ -274,8 +330,9 @@ Workflows 负责构建镜像并把新 tag 写回 git，ArgoCD 负责把 git 里�
 两边不直接通信，git 就是它们之间唯一的接口。
 
 ```
-本地 commit → push gitea master → Gitea Actions 起 Argo Workflow（.gitea/workflows/cicd.yaml）
-  → clone → buildah 构建 amd64+arm64 推 Harbor → sed 改 tag、提交、push 回同一分支
+本地 commit → push gitea master → Gitea Actions 起 Argo Workflow（.gitea/workflows/cicd.yaml，钉在 arm64 节点）
+  → clone → buildah：pnpm build 一次 → 服务端 + agent 沙箱两个 arm64 镜像推 Harbor
+  → sed 改两行 tag（服务端 image、AGENT_SANDBOX_IMAGE）、提交、push 回同一分支
   → ArgoCD 轮询发现 diff（≤3min）→ Deployment 更新（Recreate，单副本，有短暂中断）
 ```
 
@@ -310,14 +367,20 @@ kubectl apply -f ci/workflow-template.yaml
 三步串行，镜像 tag 一律取 clone 出来的提交短 hash：
 
 1. `git-clone` —— 用 `gitea-deploy-key` clone，checkout `gitRevision`（默认 `master`），输出短/全 hash；整个工作区作为 artifact（走 minio）传给后两步
-2. `buildah-build-push` —— 用仓库根 `Dockerfile` 构建 **amd64 + arm64 manifest**，推到 Harbor 的 `apps/shadecn-learning:<short-sha>`（走集群内地址 `harbor-core.harbor.svc`）。**整条流水线的时间几乎全在这里，约 45 分钟** —— 两个架构各跑一遍完整构建，其中一个还靠 QEMU 模拟。
-   两轮 `bud` 都带 **`--pull=always --no-cache --layers=false`**：两轮共用一个本地存储，
-   这几个开关保证每轮都按各自的 platform 重新拉基础镜像、不复用上一轮的层。
-   构建完会 `buildah manifest inspect` 打一遍每个条目的 `architecture`，日志里能直接对。
+2. `buildah-build-push` —— 构建 **`platforms` 参数里的架构（默认只有 `linux/arm64`）**，推两个镜像到 Harbor（走集群内地址 `harbor-core.harbor.svc`）：
+   服务端 `apps/shadecn-learning:<short-sha>` 和 agent 沙箱 `apps/shadecn-agent-sandbox:<short-sha>`（模板参数 `sandboxImageName`）。分三段：
+   根 `Dockerfile` 的 `artifacts` 阶段导出 `pnpm build` 的产物（最重的一段，只跑一次，§2.5）→ 每个 platform 用产物里的 `output/Dockerfile` 打服务端镜像、
+   `agent-sandbox/Dockerfile` 打沙箱镜像 → 两个 manifest 都核对过架构（必须恰好是 `platforms` 里那几个）再推。
+   Workflow 由 `nodeSelector: kubernetes.io/arch: arm64` 钉在 arm64 节点上，原生构建、不靠 QEMU（以前双架构 + QEMU 约 45 分钟，
+   还在内存吃紧的 amd64 节点上被 OOM 杀过 —— 这一步现在带 `resources`：requests 2 核 / 4Gi / 20Gi ephemeral-storage，limits 6 核 / 12Gi / 60Gi）。
+   每次 `bud` 都带 **`--pull=always --no-cache --layers=false`**：几轮共用一个本地存储，
+   这几个开关保证每轮都按各自的 platform 重新拉基础镜像、不复用别的轮次的层。
+   推之前会 `buildah manifest inspect` 打一遍每个条目的 `architecture`，日志里能直接对。
    **但架构错乱的真凶不在这里，在基础镜像的 tag 上，见 [§2.5.1](#251-三道架构护栏全都是事故留下的)** ——
    日志里那句 `native modules ok: N on <arch>` 才是每轮真实跑在什么架构上的证据，
    `linux/amd64` 那轮打出 `aarch64` 就是出事了
-3. `git-update-image-tag` —— `sed` 改 `k8s/deployment.yaml` 的 tag，提交 `ci: update image tag to <sha>`，push 回同一分支。到这里 CI 就结束了，部署是 ArgoCD 的事。
+3. `git-update-image-tag` —— `sed` 改 `k8s/deployment.yaml` 里的两行 tag（服务端容器的 `image:`、沙箱的 `AGENT_SANDBOX_IMAGE` 那行 `value:`），
+   暂存区里只要多出这两种行以外的改动就失败、不提交；提交 `ci: update image tag to <sha>`，push 回同一分支。到这里 CI 就结束了，部署是 ArgoCD 的事。
    **push 被拒会 fetch + rebase 重试**（最多 5 次）：clone 停在构建开始那个提交，而构建要 45 分钟，
    这期间分支上有了新提交，这一 push 就是 non-fast-forward —— 镜像明明已经在 Harbor 里，
    只差一行 tag 没写回，却要整轮重来。自动触发上线后这个窗口撞得更频繁（每次 push 都起一轮），
@@ -404,14 +467,17 @@ kubectl -n devops get wf -l workflows.argoproj.io/workflow-template=shadecn-lear
   --sort-by=.metadata.creationTimestamp
 ```
 
-不管从哪个入口起，都要带 `nodeSelector: kubernetes.io/arch=amd64`（`ci/run.yaml` 和
-`cicd.yaml` 里都写好了）—— arm64 那半是 QEMU 模拟出来的，反过来跑不动。改其中一处记得看另一处。
+不管从哪个入口起，都要带 `nodeSelector: kubernetes.io/arch=arm64`（`ci/run.yaml` 和
+`cicd.yaml` 里都写好了）—— 默认只构建 arm64，要在 arm64 节点上原生跑。改其中一处记得看另一处；
+改模板的 `platforms` 时，`k8s/deployment.yaml` 里服务端和沙箱的 nodeSelector 也要跟着想清楚（清单测试把这几处钉在一起）。
 
 ### 4.4 ArgoCD Application
 
 `argo/shadecn-learning`，project `dev`，source 是 gitea 仓库 `master` 分支的 `k8s/` 目录，
 destination 是本集群 `dev` 命名空间，`syncPolicy.automated` 开了 **`prune` 和 `selfHeal`**，
-轮询周期是 ArgoCD 的默认值（3 分钟）。不想等就手动催一下：
+轮询周期是 ArgoCD 的默认值（3 分钟）。AppProject `dev` 的 `namespaceResourceWhitelist` / `clusterResourceWhitelist` 都是 `*/*`、destination 只有 `dev`，
+所以 `k8s/agent-sandbox.yaml` 里的 ServiceAccount / Role / RoleBinding / NetworkPolicy 会和 Deployment 一起同步（同一次 sync 里 SA 先建）。
+集群级的 VAP 刻意不放进来（`k8s/variants/`），由管理员 apply。不想等就手动催一下：
 
 ```bash
 argocd app sync shadecn-learning
@@ -482,7 +548,9 @@ workflow-controller 的 tag），argo 升级之后要跟着改这里 —— 这�
 - [ ] `/api/health` 返回 200，探针不误杀。
 - [ ] 同一份产物 / 同一个镜像，只改 `DB_PROVIDER` + `DATABASE_URL` 就能分别连 SQLite 和 PostgreSQL，`/api/health/ready` 都是 200。
 - [ ] 实体上有删列 / 改类型时，容器启动在 `db-sync.js` 那一步失败并打出具体语句，`index.js` 没有被执行。
-- [ ] `kubectl create -f ci/run.yaml` 跑完之后：Harbor 里有 `apps/shadecn-learning:<short-sha>` 的**双架构** manifest，gitea 上多出一条 `ci: update image tag to <short-sha>`，且 ArgoCD 在 3 分钟内把 Application 同步回 `Synced` / `Healthy`。
+- [ ] `kubectl create -f ci/run.yaml` 跑完之后：Harbor 里有 `apps/shadecn-learning:<short-sha>` 和 `apps/shadecn-agent-sandbox:<short-sha>` 两个 manifest（各自恰好包含 `platforms` 里的架构，默认只有 arm64），gitea 上多出一条只改了这两行 tag 的 `ci: update image tag to <short-sha>`，且 ArgoCD 在 3 分钟内把 Application 同步回 `Synced` / `Healthy`。
+- [ ] 构建步骤的 Pod 落在 arm64 节点上；日志里每一轮 `base image arch ok: arm64 (aarch64)`。
+- [ ] 服务端启动日志里有「k8s 沙箱：Kubernetes v…，命名空间 dev」，没有「k8s 沙箱不可用」（VAP 已 apply）；VAP 的反例样例全部被拒。
 - [ ] `ci/workflow-template.yaml` 与集群里那份一致：`kubectl diff -f ci/workflow-template.yaml` 无输出。
 - [ ] `git push gitea master` 之后无需任何手工操作：Gitea 的 Actions 页出现一条 `cicd` 运行，`devops` 命名空间里多出一条 `shadecn-learning-cicd-*`，job 一直守到构建结束（成功则绿、失败则红且日志里有出错那步的 Pod 日志）。
 - [ ] 流水线写回的 `ci: update image tag to <sha>` 提交**不会**再触发一轮构建（Actions 页没有新运行）。
@@ -502,7 +570,7 @@ workflow-controller 的 tag），argo 升级之后要跟着改这里 —— 这�
   `RollingUpdate`，没有中断，但也没做金丝雀）。
 - 流水线里的自动化测试门禁（`pnpm test` 目前不在 CI 里跑）。
 - 数据库备份与灾备。
-- HPA、PDB、NetworkPolicy。
+- HPA、PDB；服务端自己的 NetworkPolicy（只有 agent 沙箱 Pod 有，见 [REQ-AGENT-SANDBOX §7.5](22-agent-sandbox.md#75-k8s-驱动四期)）。
 
 ## 7. 待确认事项
 
@@ -511,7 +579,8 @@ workflow-controller 的 tag），argo 升级之后要跟着改这里 —— 这�
 - Actions 里要不要加测试门禁（`pnpm test` / `pnpm lint`）。加了就是 45 分钟之外再排一段，
   而且得先解决 runner 是 host 模式、镜像里没有 node 这件事（要么给 runner 加一个
   `node:22:docker://…` 的 label 走容器模式，要么把 node 也拷进 `/opt/ci-tools`）。
-- 构建 45 分钟太久：是给 buildah 加缓存（`--layers` + Harbor 上的 cache 镜像），还是干脆只构 amd64。
+- ~~构建 45 分钟太久：是给 buildah 加缓存，还是干脆只构一种架构~~ —— 已改成只构 arm64、在 arm64 节点上原生跑，产物只构建一次（§4.2）。
+  amd64 节点要用时把 `platforms` 加上 `linux/amd64`（靠 QEMU 跑 npm install / apk add，不重跑 pnpm build）并放开 nodeSelector。
 - ~~需要多副本时的演进路线~~ —— 已落地，见 [REQ-CLUSTER](14-clustering.md)：
   `@hocuspocus/extension-redis` + 一层共享状态抽象，由 `CLUSTER_MODE` 切换。
   Redis 本身怎么部署（集群里现成的还是自己起一套）还没定。

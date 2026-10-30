@@ -72,7 +72,8 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  * - `AGENT_SANDBOX`：沙箱驱动（docs/22 §7）—— pi 的推理循环跑在每轮一个的沙箱里：
  *   `process`（默认：本机 `node` 子进程，**不是强隔离**，`NODE_ENV=production` 时拒绝，除非 `AGENT_SANDBOX_ALLOW_PROCESS=1`）；
  *   `oci`（每轮一个 Docker / Podman 容器，经 Engine API 的 unix socket；生产可用）；
- *   `k8s` 是后续分期（现在配了 = agent 未启用并写明原因）。一期的取值 `local` 当作 `process` + 开媒体工具，打一行提示；
+ *   `k8s`（每轮一个 Pod，经 Kubernetes API；生产可用，清单在 `k8s/variants/agent-sandbox.yaml`，docs/22 §7.5）。
+ *   一期的取值 `local` 当作 `process` + 开媒体工具，打一行提示；
  * - `AGENT_SANDBOX_EXEC=1`：给模型 `run_media_command`（ffmpeg / ffprobe，在 runner 自己的工作目录里跑）。默认不开；
  * - `AGENT_SANDBOX_IMAGE`：`oci` 的沙箱镜像（`pnpm build:sandbox-image` 构建），默认 `shadecn-agent-sandbox:latest`；
  * - `AGENT_SANDBOX_OCI_SOCKET`：容器引擎的 unix socket（`unix://` 前缀可有可无）。不配按常见位置找
@@ -80,12 +81,22 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  * - `AGENT_SANDBOX_OCI_NETWORK`：容器进哪个网络，默认引擎的 `bridge`（**可以出网**，启动时告警）；
  *   只有 `--internal` 网络（服务端也接在里面）才真的「只能到网关」，见 docs/22 §7.2；
  * - `AGENT_SANDBOX_RUNTIME`：OCI 运行时（Linux 上装了 gVisor 时 `runsc`），不配用引擎默认；
+ * - `k8s` 驱动（docs/22 §7.5）：`AGENT_SANDBOX_K8S_NAMESPACE`（沙箱 Pod 建在哪，默认 `shadecn-agent-sandbox`）、
+ *   `AGENT_SANDBOX_K8S_RUNTIME_CLASS`（如 gVisor 的 `gvisor`）、`AGENT_SANDBOX_K8S_PULL_SECRET`（沙箱命名空间里拉镜像的 Secret 名）、
+ *   `AGENT_SANDBOX_K8S_PULL_POLICY`（`Always` / `IfNotPresent` / `Never`，不配用 k8s 的默认）、
+ *   `AGENT_SANDBOX_K8S_NODE_SELECTOR`（逗号分隔的 `key=value`，如 `kubernetes.io/arch=arm64`：镜像只有一种架构时把沙箱钉在那种节点上；
+ *   格式错 = agent 未启用并写明原因）；
+ *   API 地址默认按集群内的约定（`KUBERNETES_SERVICE_HOST` / `_PORT` + ServiceAccount 的 token / CA），集群外开发用
+ *   `AGENT_SANDBOX_K8S_API_URL` / `_TOKEN_FILE` / `_CA_FILE` 覆盖（**不读 kubeconfig**；两个文件配成空串 = 不用：
+ *   `kubectl proxy` 不要 token，系统 CA 不要 CA 文件）；
  * - `AGENT_SANDBOX_CPUS` / `AGENT_SANDBOX_MEMORY_MIB` / `AGENT_SANDBOX_PIDS` / `AGENT_SANDBOX_DISK_MIB`：每个沙箱的资源上限
  *   （默认 1 核 / 512 MiB / 128 / 512 MiB；`process` 驱动不执行这几项）。PIDs 含线程：runner 自己约 13 个，ffmpeg（x264）
  *   按 CPU 核数开线程，实测 7 核的机器上峰值约 40 个。`DISK_MIB` 是工作目录 tmpfs 的大小，tmpfs 计入内存上限；
  * - `AGENT_GATEWAY_URL`：沙箱里看到的服务端地址（网关挂在它的 `/api/agent-gateway` 下）。默认：
  *   `process` → `http://127.0.0.1:<PORT>`（runner 和服务端在同一台机器上）；
  *   `oci` → `http://host.docker.internal:<PORT>`（Podman 5 与 Docker Desktop 都给容器加了这个名字；Linux 上的 Docker 没有，要显式配）；
+ *   `k8s` → `http://<POD_IP>:<PORT>`（`POD_IP` 由 Deployment 经 Downward API 注入 `status.podIP`）：一轮的令牌和登记只在发起它的副本的内存里，
+ *   沙箱必须直连**这个** Pod，不能走 Service（会被分到别的副本，401）。没有 `POD_IP` 又没配 = agent 未启用并写明原因；
  * - `AGENT_TOKEN_SECRET`：签 run 短令牌的 HMAC 密钥。不配时由 `SESSION_SECRET` 派生（加了域分隔，和会话的 HMAC 不是同一把）；
  *   两个都没有（只可能在开发环境，生产缺 `SESSION_SECRET` 起不来）就每次启动随机一把 —— 令牌本来就只在发起它的进程里有效；
  * - `AGENT_GRANT_MARGIN_MS`：委托授权（Grant，docs/22）的绝对过期时间 = 签发时刻 + 这一轮的时长上限 + 这个余量（默认 60 秒）。
@@ -105,6 +116,20 @@ export const agentConfig = {
   ociSocket: process.env.AGENT_SANDBOX_OCI_SOCKET?.trim() ?? '',
   ociNetwork: process.env.AGENT_SANDBOX_OCI_NETWORK?.trim() || 'bridge',
   sandboxRuntime: process.env.AGENT_SANDBOX_RUNTIME?.trim() ?? '',
+  k8s: {
+    /** 空 = 驱动的默认（`shadecn-agent-sandbox`） */
+    namespace: process.env.AGENT_SANDBOX_K8S_NAMESPACE?.trim() ?? '',
+    runtimeClass: process.env.AGENT_SANDBOX_K8S_RUNTIME_CLASS?.trim() ?? '',
+    pullSecret: process.env.AGENT_SANDBOX_K8S_PULL_SECRET?.trim() ?? '',
+    /** 原样带着，由 agent 装配点校验（认不出 = 未启用并写明原因） */
+    pullPolicy: process.env.AGENT_SANDBOX_K8S_PULL_POLICY?.trim() ?? '',
+    /** 原样带着，由 agent 装配点解析（`parseK8sNodeSelector`，格式错 = 未启用并写明原因）；空 = 不限节点 */
+    nodeSelector: process.env.AGENT_SANDBOX_K8S_NODE_SELECTOR?.trim() ?? '',
+    apiUrl: process.env.AGENT_SANDBOX_K8S_API_URL?.trim() ?? '',
+    /** `undefined` = ServiceAccount 的默认位置；`''` = 不用（不带 token / 用系统 CA） */
+    tokenFile: process.env.AGENT_SANDBOX_K8S_TOKEN_FILE,
+    caFile: process.env.AGENT_SANDBOX_K8S_CA_FILE,
+  },
   sandboxResources: {
     cpu: positive(Number(process.env.AGENT_SANDBOX_CPUS ?? 1), 1),
     memoryMiB: Math.floor(positive(Number(process.env.AGENT_SANDBOX_MEMORY_MIB ?? 512), 512)),
@@ -151,9 +176,16 @@ function loopbackOf(listen: string): string {
  * 沙箱看到的网关地址的默认值：`process` 同机走回环；`oci` 的容器里回环是容器自己，要走引擎给的宿主名。
  * podman machine（macOS）上这个名字落到宿主的回环地址，所以服务端照常只听 127.0.0.1 就够；
  * Linux 上它是宿主网卡的地址，服务端要监听在那上面（或配 `AGENT_GATEWAY_URL`），见 docs/22 §7.2。
+ * `k8s` 是本 Pod 的 IP（Downward API 的 `POD_IP`，IPv6 加方括号）：沙箱必须连回发起它的那个副本（F14），
+ * Service 会把它分到任意一个副本。没有 `POD_IP` 就是空串 —— 装配点据此报「未启用」，不猜一个连不上的地址。
  */
 function defaultGatewayUrl(sandbox: string | undefined): string {
-  if (sandbox?.trim() === 'oci') return `http://host.docker.internal:${port}`
+  const choice = sandbox?.trim()
+  if (choice === 'oci') return `http://host.docker.internal:${port}`
+  if (choice === 'k8s') {
+    const podIp = process.env.POD_IP?.trim()
+    return podIp ? `http://${podIp.includes(':') ? `[${podIp}]` : podIp}:${port}` : ''
+  }
   return `http://${loopbackOf(host)}:${port}`
 }
 
@@ -182,7 +214,11 @@ export const agentWorkspaceDir = path.join(dataDir, 'agent-workspaces')
 /**
  * 画布资源（图片 / 视频）的对象存储：S3 协议，path-style（`<endpoint>/<bucket>/<key>`）。
  *
- * - `S3_ENDPOINT`：服务地址，默认 `https://s3.fyl080801.uk`；
+ * - `S3_ENDPOINT`：**公开**地址，默认 `https://s3.fyl080801.uk`。节点 `data.src` 存的、浏览器直接读的都是 `<它>/<bucket>/<key>`，
+ *   所以必须是浏览器访问得到的地址（不能是集群内的 `*.svc`）；
+ * - `S3_INTERNAL_ENDPOINT`：服务端自己发请求（上传、读字节给 agent 看图）用的地址，空 = 和 `S3_ENDPOINT` 一样。
+ *   只影响服务端 → S3 这一段：集群里配成内网地址（如 `http://minio.minio.svc.cluster.local:9000`），不绕公网；
+ *   浏览器照旧读 `S3_ENDPOINT`，存进节点的地址也照旧（两边必须是同一个桶、同一份数据）；
  * - `S3_REGION`：签名用的 region，默认 `us-east-1`（MinIO 一类自建服务没改过就是它）；
  * - `S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`：三样缺一个就是**没开上传**
  *   （上传接口 503），和 agent 一样不影响启动；
@@ -195,6 +231,8 @@ export const agentWorkspaceDir = path.join(dataDir, 'agent-workspaces')
  */
 export const s3Config = {
   endpoint: (process.env.S3_ENDPOINT?.trim() || 'https://s3.fyl080801.uk').replace(/\/+$/, ''),
+  /** 空 = 和 endpoint 一样（`createS3Client` 里兜底） */
+  requestEndpoint: (process.env.S3_INTERNAL_ENDPOINT?.trim() ?? '').replace(/\/+$/, ''),
   region: process.env.S3_REGION?.trim() || 'us-east-1',
   bucket: process.env.S3_BUCKET?.trim() ?? '',
   accessKeyId: process.env.S3_ACCESS_KEY_ID?.trim() ?? '',

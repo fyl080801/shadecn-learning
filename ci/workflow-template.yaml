@@ -1,4 +1,4 @@
-# Argo Workflows 流水线定义：clone → 多架构构建推 Harbor → 把新镜像 tag 写回 git。
+# Argo Workflows 流水线定义：clone → 构建服务端 + agent 沙箱两个镜像推 Harbor（默认只 arm64）→ 把新镜像 tag 写回 git。
 #
 # 这个文件不在 k8s/ 下面，是故意的：ArgoCD 的 Application 只同步 k8s/ 目录，而且开了
 # prune + selfHeal —— 流水线定义放进去会被它纳管，以后误删文件就会连集群里的模板一起
@@ -11,6 +11,9 @@
 # 跑一次（默认构建 master，见下面的 gitRevision）：
 #
 #   kubectl -n devops create -f ci/run.yaml
+#
+# 提交 Workflow 时要带 nodeSelector kubernetes.io/arch=arm64（ci/run.yaml 和 .gitea/workflows/cicd.yaml 里都写好了）：
+# 默认只构建 linux/arm64（platforms 参数），在 arm64 节点上原生跑，不靠 QEMU。
 #
 # 依赖这些带外资源（都不在仓库里，缺一个流水线就跑不起来）：
 #   - Secret dev/gitea-deploy-key   —— key: id_ed25519，gitea 上要配成有写权限的 deploy key
@@ -43,6 +46,15 @@ spec:
       # Harbor 的对外地址；构建时会被换成集群内的 harbor-core.harbor.svc
       - name: imageName
         value: 192.168.68.95:31443/apps/shadecn-learning
+      # 画布 agent 的沙箱镜像（docs/22 §7.5），和服务端同一个 tag。k8s/deployment.yaml 的 AGENT_SANDBOX_IMAGE、
+      # k8s/variants/agent-sandbox-vap.yaml 的镜像规则都认这个名字，改名三处一起改
+      - name: sandboxImageName
+        value: 192.168.68.95:31443/apps/shadecn-agent-sandbox
+      # 构建哪些架构，逗号分隔（linux/amd64、linux/arm64）。只写 Workflow 落的那种节点的原生架构最快；
+      # 多写的那种靠 QEMU（产物只构建一次，QEMU 下只跑 npm install / apk add 和自检）。
+      # 改了它，k8s/deployment.yaml 里服务端和沙箱的 nodeSelector 要跟着改，否则 Pod 会落到拉不到镜像的节点上
+      - name: platforms
+        value: linux/arm64
       # 三个构建阶段的基础镜像。Dockerfile 里是 `ARG NODE_IMAGE`，不写死地址。
       #
       # 指的是 Harbor **普通项目**里自存的一份多架构副本，不是 `docker.io/` 那个代理缓存 ——
@@ -89,7 +101,7 @@ spec:
   imagePullSecrets:
     - name: harbor-pull-secret
   templates:
-    # 三步串行。镜像 tag 一律取 clone 出来的提交短 hash，构建和写回用的是同一个值
+    # 三步串行。镜像 tag 一律取 clone 出来的提交短 hash，两个镜像、构建和写回用的都是同一个值
     - name: main
       steps:
         - - name: clone
@@ -160,9 +172,18 @@ spec:
           secret:
             secretName: gitea-deploy-key
 
-    # 用仓库根 Dockerfile 构建 amd64 + arm64 manifest 推 Harbor。整个流水线的时间几乎都在这里
-    # （约 45 分钟：两个架构各跑一遍完整的 pnpm install + build，其中一个还得靠 QEMU 模拟）。
-    # 提交 Workflow 时建议带 nodeSelector kubernetes.io/arch=amd64，历史上成功的运行都是这么跑的。
+    # 一次构建出两个镜像推 Harbor：服务端 apps/shadecn-learning:<sha> 和 agent 沙箱 apps/shadecn-agent-sandbox:<sha>
+    # （同一次 pnpm build：服务端和沙箱里的 runner 是同一个构建 id，协议版本必然一致）。
+    # 只构建 platforms 参数里的架构，默认只有 linux/arm64，Workflow 由 nodeSelector 钉在 arm64 节点上原生跑（不靠 QEMU）。
+    #
+    # 三段：
+    #   1. 根 Dockerfile 的 `artifacts` 阶段（= build 阶段：pnpm install + pnpm build）导出到本地目录 —— 最重的一段只跑一次，
+    #      和要构建几个镜像、几个架构都无关（build 阶段本来就是 $BUILDPLATFORM，产物与架构无关）；
+    #   2. 每个 platform：用产物里的 output/Dockerfile（= apps/server/scripts/output-image/Dockerfile，docs/12 §2.4 的
+    #      「直接基于产物打镜像」）构建服务端镜像，用 agent-sandbox/Dockerfile 构建沙箱镜像；
+    #   3. 两个 manifest 都核对过架构再推。任何一段失败整步失败，下一步就不会把 tag 写回 git。
+    # 三道架构护栏都还在：所有 FROM 用同一个多架构的 baseImage；output/Dockerfile 和沙箱 Dockerfile 每个阶段都比对 TARGETARCH；
+    # 服务端镜像的运行时阶段逐个加载原生模块。详见 docs/12 §2.5.1。
     - name: buildah-build-push
       inputs:
         artifacts:
@@ -181,78 +202,152 @@ spec:
           - |
             set -euo pipefail
             COMMIT_ID="{{inputs.parameters.imageTag}}"
-            # 单个 platform 的构建最多试几次、每次之间等多久（见下面 build_one 的注释）
+            # 单个构建最多试几次、每次之间等多久（见下面 retry 的注释）
             BUILD_ATTEMPTS=4
             BUILD_RETRY_DELAY=90
-            INTERNAL_IMAGE=$(echo {{workflow.parameters.imageName}}:${COMMIT_ID} | sed "s|192.168.68.95:31443|harbor-core.harbor.svc|")
-            INTERNAL_REGISTRY=$(echo ${INTERNAL_IMAGE} | cut -d/ -f1)
-            EXTERNAL_IMAGE={{workflow.parameters.imageName}}:${COMMIT_ID}
+            BASE_IMAGE="{{workflow.parameters.baseImage}}"
+            APP_IMAGE={{workflow.parameters.imageName}}:${COMMIT_ID}
+            SANDBOX_IMAGE={{workflow.parameters.sandboxImageName}}:${COMMIT_ID}
+            # 推送走集群内地址
+            to_internal() { echo "$1" | sed "s|192.168.68.95:31443|harbor-core.harbor.svc|"; }
+            APP_INTERNAL=$(to_internal ${APP_IMAGE})
+            SANDBOX_INTERNAL=$(to_internal ${SANDBOX_IMAGE})
+            INTERNAL_REGISTRY=$(echo ${APP_INTERNAL} | cut -d/ -f1)
+            ARTIFACTS=/tmp/artifacts
+
+            # platforms：逗号分隔，只认 linux/amd64、linux/arm64。不是这台节点原生架构的那几个要靠 QEMU，慢很多
+            PLATFORMS=()
+            for p in $(echo "{{workflow.parameters.platforms}}" | tr ',' ' '); do
+              case "$p" in
+                linux/amd64|linux/arm64) PLATFORMS+=("$p") ;;
+                *) echo "!!! platforms 里有不认识的「${p}」（只认 linux/amd64、linux/arm64，逗号分隔）"; exit 1 ;;
+              esac
+            done
+            if [ ${#PLATFORMS[@]} -eq 0 ]; then echo "!!! platforms 是空的"; exit 1; fi
+            case "$(uname -m)" in
+              x86_64) NATIVE=linux/amd64 ;;
+              aarch64) NATIVE=linux/arm64 ;;
+              *) NATIVE="linux/$(uname -m)" ;;
+            esac
+            echo "=== 构建节点 ${NATIVE}，目标 ${PLATFORMS[*]} ==="
+            for p in "${PLATFORMS[@]}"; do
+              [ "$p" = "$NATIVE" ] || echo "--- 注意：${p} 不是这台节点的原生架构，靠 QEMU 模拟（检查 Workflow 的 nodeSelector）"
+            done
 
             # Read proxy settings from env
             PROXY_ARGS=""
-            if [ -n "$HTTP_PROXY" ]; then
+            if [ -n "${HTTP_PROXY:-}" ]; then
               PROXY_ARGS="$PROXY_ARGS --build-arg HTTP_PROXY=$HTTP_PROXY"
             fi
-            if [ -n "$HTTPS_PROXY" ]; then
+            if [ -n "${HTTPS_PROXY:-}" ]; then
               PROXY_ARGS="$PROXY_ARGS --build-arg HTTPS_PROXY=$HTTPS_PROXY"
             fi
-            if [ -n "$NO_PROXY" ]; then
+            if [ -n "${NO_PROXY:-}" ]; then
               PROXY_ARGS="$PROXY_ARGS --build-arg NO_PROXY=$NO_PROXY"
             fi
 
-            echo "=== Creating manifest ==="
-            buildah manifest create ${INTERNAL_IMAGE}
-            # 两轮共用一个本地存储，--pull=always / --no-cache 保证每轮都按各自的 platform
-            # 重新拉基础镜像、不复用上一轮的层。真正咬人的那个坑不在这里，在 Dockerfile：
-            # 基础镜像的 tag 只要是单架构的，--platform 就只能退而拉它有的那个架构，
-            # 而构建机装了 QEMU binfmt，于是整轮构建「跑得起来」、一步不报错，
-            # 最后把 aarch64 的 better_sqlite3.node 打进标着 amd64 的镜像推上线。
-            # 三道防线都在 Dockerfile 里：同一个多架构引用 + 两处 TARGETARCH 校验 +
-            # 运行时阶段逐个 dlopen 原生模块。详见 docs/12 §2.5。
             # 拉基础镜像会**间歇性**失败，报
             # `no image found in image index for architecture "amd64"`：Harbor 的 docker.io
             # 代理缓存在补齐多架构 index 的过程中，会把一份缺架构的 index 发出来。
             # 实测同一个节点、同一个 buildah、同一个引用，几分钟之内成功和失败会来回翻
             # （匿名 / 已登录、buildah pull / bud、tag / digest 都试过，与这些都无关；
             # Harbor 各组件的出网代理也都配着，直连 docker.io 超时、走代理正常）。
-            # 一轮构建二十多分钟、要在六个 FROM 上各拉一次，撞上坏窗口几乎是必然，
-            # 所以这里自己重试 —— 失败的是拉镜像，重来一次就好，不用重跑整条流水线。
-            build_one() {
-              local PLATFORM=$1
+            # 一轮要在好几个 FROM 上各拉一次，撞上坏窗口几乎是必然，
+            # 所以这里每个构建自己重试 —— 失败的是拉镜像，重来一次就好，不用重跑整条流水线。
+            retry() {
+              local what=$1
+              shift
               local attempt=1
               while true; do
-                echo "=== Building ${PLATFORM}（第 ${attempt} 次）==="
-                if buildah bud --platform ${PLATFORM} --format docker \
-                  --pull=always --no-cache --layers=false \
-                  --file /workspace/Dockerfile \
-                  --build-arg NODE_IMAGE={{workflow.parameters.baseImage}} \
-                  --manifest ${INTERNAL_IMAGE} \
-                  $PROXY_ARGS \
-                  /workspace; then
+                echo "=== ${what}（第 ${attempt} 次）==="
+                if "$@"; then
                   return 0
                 fi
                 if [ ${attempt} -ge ${BUILD_ATTEMPTS} ]; then
-                  echo "!!! ${PLATFORM} 连续 ${BUILD_ATTEMPTS} 次都没成功，放弃"
+                  echo "!!! ${what} 连续 ${BUILD_ATTEMPTS} 次都没成功，放弃"
                   return 1
                 fi
                 attempt=$((attempt + 1))
-                echo "--- ${PLATFORM} 失败，${BUILD_RETRY_DELAY}s 后重试 ---"
+                echo "--- ${what} 失败，${BUILD_RETRY_DELAY}s 后重试 ---"
                 sleep ${BUILD_RETRY_DELAY}
               done
             }
 
-            for PLATFORM in linux/amd64 linux/arm64; do
-              build_one ${PLATFORM}
+            # 每次 bud 都带 --pull=always --no-cache --layers=false：几轮共用一个本地存储，
+            # 这几个开关保证每轮都按各自的 platform 重新拉基础镜像、不复用别的轮次的层。
+            # 真正咬人的那个坑不在这里，在 Dockerfile：基础镜像的 tag 只要是单架构的，--platform 就只能退而拉它有的那个架构，
+            # 而构建机装了 QEMU binfmt，于是整轮构建「跑得起来」、一步不报错，最后把错架构的 better_sqlite3.node
+            # 打进标着另一个架构的镜像推上线。三道防线都在 Dockerfile 里（docs/12 §2.5.1）。
+            build_artifacts() {
+              rm -rf ${ARTIFACTS}
+              buildah bud --pull=always --no-cache --layers=false \
+                --file /workspace/Dockerfile --target artifacts \
+                --build-arg NODE_IMAGE=${BASE_IMAGE} \
+                $PROXY_ARGS \
+                --output type=local,dest=${ARTIFACTS} \
+                /workspace
+            }
+            build_image() {
+              local PLATFORM=$1 MANIFEST=$2 CONTEXT=$3
+              buildah bud --platform ${PLATFORM} --format docker \
+                --pull=always --no-cache --layers=false \
+                --file ${CONTEXT}/Dockerfile \
+                --build-arg NODE_IMAGE=${BASE_IMAGE} \
+                --manifest ${MANIFEST} \
+                $PROXY_ARGS \
+                ${CONTEXT}
+            }
+            # manifest 里必须恰好是要的那几个架构（少了 = 某一轮没加进去；只是打日志的 inspect 看不出来）
+            check_manifest() {
+              local MANIFEST=$1
+              echo "=== ${MANIFEST} ==="
+              # 脚本开头是 set -euo pipefail，grep 没命中会让整步失败 —— 这只是打日志，兜住
+              buildah manifest inspect ${MANIFEST} | grep -E '"(architecture|os|digest)"' || true
+              local have
+              have=$(buildah manifest inspect ${MANIFEST} | grep -oE '"architecture": *"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/' | sort | tr '\n' ' ')
+              local want
+              want=$(for p in "${PLATFORMS[@]}"; do echo "${p#linux/}"; done | sort | tr '\n' ' ')
+              if [ "${have}" != "${want}" ]; then
+                echo "!!! ${MANIFEST} 里的架构是「${have}」，要的是「${want}」"
+                return 1
+              fi
+            }
+
+            retry "构建产物（根 Dockerfile 的 artifacts 阶段）" build_artifacts
+            ls -la ${ARTIFACTS}/output ${ARTIFACTS}/agent-sandbox
+            test -f ${ARTIFACTS}/output/Dockerfile
+            test -f ${ARTIFACTS}/agent-sandbox/Dockerfile
+
+            echo "=== Creating manifests ==="
+            buildah manifest create ${APP_INTERNAL}
+            buildah manifest create ${SANDBOX_INTERNAL}
+            for PLATFORM in "${PLATFORMS[@]}"; do
+              retry "服务端镜像 ${PLATFORM}" build_image ${PLATFORM} ${APP_INTERNAL} ${ARTIFACTS}/output
+              retry "沙箱镜像 ${PLATFORM}" build_image ${PLATFORM} ${SANDBOX_INTERNAL} ${ARTIFACTS}/agent-sandbox
             done
             echo "=== Manifest contents ==="
-            # 脚本开头是 set -euo pipefail，grep 没命中会让整步失败 —— 这只是打日志，兜住
-            buildah manifest inspect ${INTERNAL_IMAGE} | grep -E '"(architecture|os|digest)"' || true
+            check_manifest ${APP_INTERNAL}
+            check_manifest ${SANDBOX_INTERNAL}
             echo "=== Logging in to Harbor ==="
             echo "${PASS}" | buildah login --username="${USER}" --password-stdin ${INTERNAL_REGISTRY} || true
-            echo "=== Pushing manifest to Harbor ==="
-            buildah manifest push --all ${INTERNAL_IMAGE} docker://${INTERNAL_IMAGE}
+            # 先推沙箱：服务端镜像是「可以部署了」的那个信号，最后推
+            echo "=== Pushing manifests to Harbor ==="
+            buildah manifest push --all ${SANDBOX_INTERNAL} docker://${SANDBOX_INTERNAL}
+            buildah manifest push --all ${APP_INTERNAL} docker://${APP_INTERNAL}
             buildah logout ${INTERNAL_REGISTRY} || true
-            echo "=== Done: ${EXTERNAL_IMAGE} ==="
+            echo "=== Done: ${APP_IMAGE} + ${SANDBOX_IMAGE} ==="
+        # 只在这一步配资源：pnpm build 里的 vue-tsc / vite build 吃内存，以前不设上限、在内存吃紧的节点上被
+        # 内核 OOM 杀掉（exit 137）。requests 让调度器只把它放到有余量的节点上；limits 给足但封顶，
+        # vfs 存储（每一层都是完整拷贝）吃的是节点磁盘，ephemeral-storage 一并限住。
+        resources:
+          requests:
+            cpu: "2"
+            memory: 4Gi
+            ephemeral-storage: 20Gi
+          limits:
+            cpu: "6"
+            memory: 12Gi
+            ephemeral-storage: 60Gi
         env:
           # 容器里套容器，overlayfs 用不了，只能退到 vfs
           - name: STORAGE_DRIVER
@@ -291,6 +386,8 @@ spec:
 
     # GitOps 的交接点：把 k8s/deployment.yaml 里的 tag 改成刚构建出来的那个，提交并 push 回
     # 同一个分支。之后就不管了 —— ArgoCD 轮询到这个提交，由它把新镜像部署上去。
+    # 只改两行：服务端容器的 `image: <imageName>:<tag>` 和沙箱的 `value: <sandboxImageName>:<tag>`（AGENT_SANDBOX_IMAGE）。
+    # 改出别的行就失败、不提交（防自触发循环的 paths-ignore 认的是「这个提交只动 k8s/」）。
     - name: git-update-image-tag
       inputs:
         artifacts:
@@ -308,16 +405,33 @@ spec:
             set -e
             IMAGE_TAG="{{inputs.parameters.imageTag}}"
             IMAGE_NAME="{{workflow.parameters.imageName}}"
+            SANDBOX_IMAGE_NAME="{{workflow.parameters.sandboxImageName}}"
             BRANCH="{{workflow.parameters.gitRevision}}"
             # push 被拒之后最多再试几次、每次之间等多久（见下面循环体的注释）
             PUSH_ATTEMPTS=5
             PUSH_RETRY_DELAY=5
             echo "=== Updating image tag to ${IMAGE_TAG} ==="
             cd /workspace
-            sed -i "s|image: ${IMAGE_NAME}:.*|image: ${IMAGE_NAME}:${IMAGE_TAG}|" k8s/deployment.yaml
+            grep -q "value: ${SANDBOX_IMAGE_NAME}:" k8s/deployment.yaml \
+              || echo "--- 注意：k8s/deployment.yaml 里没有沙箱镜像那一行（AGENT_SANDBOX_IMAGE），只改服务端镜像"
+            sed -i \
+              -e "s|image: ${IMAGE_NAME}:.*|image: ${IMAGE_NAME}:${IMAGE_TAG}|" \
+              -e "s|value: ${SANDBOX_IMAGE_NAME}:.*|value: ${SANDBOX_IMAGE_NAME}:${IMAGE_TAG}|" \
+              k8s/deployment.yaml
             git config user.email "cicd@shadecn-learning.local"
             git config user.name "CI/CD Pipeline"
             git add k8s/deployment.yaml
+            # 要提交的只许是这一个文件里的上面那两种行：多出来的改动（比如 sed 的模式命中了注释）一旦推上去，
+            # ArgoCD 就会把它同步到线上。看的是暂存区，工作区里别的东西本来就不会被提交
+            UNEXPECTED_FILES=$(git diff --cached --name-only | grep -vx 'k8s/deployment.yaml' || true)
+            UNEXPECTED_LINES=$(git diff --cached -U0 -- k8s/deployment.yaml | grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' \
+              | grep -vE "^[-+][[:space:]]*(image: ${IMAGE_NAME}|value: ${SANDBOX_IMAGE_NAME}):" || true)
+            if [ -n "${UNEXPECTED_FILES}${UNEXPECTED_LINES}" ]; then
+              echo "!!! 写回 tag 改到了不该改的地方，不提交："
+              echo "${UNEXPECTED_FILES}"
+              echo "${UNEXPECTED_LINES}"
+              exit 1
+            fi
             git commit -m "ci: update image tag to ${IMAGE_TAG}" || echo "No changes to commit"
             mkdir -p /root/.ssh
             cp /ssh-key/id_ed25519 /root/.ssh/id_ed25519

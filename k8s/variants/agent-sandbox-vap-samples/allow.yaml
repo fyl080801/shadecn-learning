@@ -1,0 +1,58 @@
+# ValidatingAdmissionPolicy（k8s/variants/agent-sandbox-vap.yaml）的正例：和驱动生成的沙箱 Pod 同一套安全字段，必须放行。
+# 只 dry-run，不真建（镜像 tag 随便写，dry-run 不拉镜像）。要用服务端的身份发请求，VAP 才会匹配上：
+#
+#   kubectl create --dry-run=server --as=system:serviceaccount:dev:shadecn-learning -f k8s/variants/agent-sandbox-vap-samples/allow.yaml
+#   # 期望：pod/vap-allow created (server dry run)
+#
+# 前提：k8s/agent-sandbox.yaml 的 Role / RoleBinding 已经同步（否则先被 RBAC 403），VAP 已 apply。
+# 清单测试（apps/server/test/agent/k8s-manifests.test.ts）用等价的 TS 判定核对这一份放行、deny.yaml 每一份按注解里的规则被拒。
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vap-allow
+  namespace: dev
+  labels:
+    shadecn.agent/managed: "true"
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  nodeSelector:
+    kubernetes.io/arch: arm64
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: runner
+      image: "192.168.68.95:31443/apps/shadecn-agent-sandbox:vap-check"
+      command: [node, "-e", "0"]
+      env:
+        - name: SHADECN_WORKDIR
+          value: /work/run
+      workingDir: /work
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        privileged: false
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+      volumeMounts:
+        - name: work
+          mountPath: /work
+  volumes:
+    - name: work
+      emptyDir:
+        medium: Memory
+        sizeLimit: "64Mi"
