@@ -3,6 +3,9 @@
 > 状态：**一期（身份核心）、二期（网关 + runner + `process` 驱动）、三期（`oci` 驱动 + 沙箱镜像）、四期（`k8s` 驱动 + 部署清单，§9 第 1～4 项）已实现**；
 > 四期**还没在真实集群上跑过**（单元测试对着假的 k8s API，真集群的用例默认跳过，见 §7.5）。五期起为方案。
 > 模型请求改由服务端发起（§4.3）：**第 1 步（换传输：runner 用 `streamProxy`、服务端调上游、按请求数步数）、第 2 步（服务端维护权威 transcript，模型请求与落库只用它）、第 3 步（对话里给人看的事件由服务端产生）、第 4 步（清理线协议，`RUNNER_PROTOCOL_VERSION` 6 → 7）、第 5 步（模型用量累计进 `agent_run`）已实现**。
+> 本文里的「父 agent / 子 agent」按 [REQ-AGENT-DEF](26-agent-definitions.md) 改称「入口 agent / 被调用的 agent」（同一沙箱里对等协作，差别只在角色）；
+> 那边的 P3 把 `/agent/delegate`、`/agent/finish` 改成 `/agent/task/start`、`/agent/task/finish`，任务输入带上被调用 agent 的模型（`RUNNER_PROTOCOL_VERSION` 7 → 8），
+> P4 起各 agent 按自己定义里的模型调上游、费用按各自模型算（§4.3 第 5 步的「一轮一行合计」不变）。下面的实现说明保留实现时的称呼。
 > 一期已实现：Grant / scope 表（`agent_grant` / `agent_grant_scope`，签发时 scope = 请求的 ∩ 发起人当时的权限 ∩ 服务端配置）；
 > run 状态机 running → success / cancelled / error / expired（线上 RUN_FINISHED 仍只有 success / cancelled，expired 在线上是 cancelled）；
 > 全部工具执行前、每次请求模型前、画布每次读写前 `authorize(capability)`；失效即 `stop`（整轮立即停，cancelled + 原因，Grant 标撤销）；

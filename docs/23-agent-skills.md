@@ -30,7 +30,7 @@
 | **内置技能**（Skill） | 平台随代码提供的能力集：工具 + 提示段 + 所需能力 + 可用条件。由开发者编写，和工具一样受版本管理 |
 | **工具**（Tool） | 不变：一个原子操作，声明自己需要的 `capability`，一次调用一个 Y 事务（[REQ-AGENT §3.10.1](20-agent-canvas.md)） |
 | **能力**（capability） | 不变：`flow:read` / `flow:write` / `sandbox:exec` / `llm:invoke`，由 Grant 授予（[REQ-AGENT-SANDBOX §3](22-agent-sandbox.md)） |
-| **自定义技能** | [REQ-AGENT §3.10.6](20-agent-canvas.md) 规划的「画布设置里定义的技能」：成员写的指令，**只有文字，不带工具**。可以声明自己依赖哪些内置技能（§7） |
+| **自定义技能**（文字技能） | 用 pi `SKILL.md` 格式写的指令，**只有文字，不带工具**，可以声明自己依赖哪些内置技能（§7）。先由仓库目录提供（[REQ-AGENT-DEF](26-agent-definitions.md) §3.8），以后加上 [REQ-AGENT §3.10.6](20-agent-canvas.md) 的「画布设置里定义」 |
 | **加载** | 把一个技能的工具交给模型、把它的提示段放进上下文 |
 
 **技能不授予权限。** 技能只决定「把哪些工具交给模型」；每个工具执行前照样按自己的 `capability` 在网关判权，
@@ -175,7 +175,10 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 
 - 自定义技能是成员写的**指令**，内置技能是平台提供的**工具集**。两者不合并成一种东西：自定义技能永远不能带代码或新增工具。
 - 自定义技能可以声明 `requires: AgentSkillId[]`。模型 `load_skill` 一个自定义技能时，它依赖的内置技能一起加载（同样受 S2 约束，缺了就说明哪项不可用）。
-- 技能目录里两种分开列：内置技能在前，自定义技能在后并标明「成员编写」。提示词层级不变：平台规则 > 自定义技能 > 用户人设 > 当前会话。
+- 技能目录里两种分开列：内置技能在前，自定义技能在后并标明「成员编写」。提示词层级：平台规则 > agent 定义正文 > 技能 > 用户人设 > 当前会话（[REQ-AGENT-DEF](26-agent-definitions.md) §3.2）。
+- **格式**：pi / Agent Skills 标准的 `SKILL.md` —— frontmatter `name`、`description`、可选 `requires`（内置技能 id），正文是指令。
+  `name` 不能和内置技能 id 重复；只能按需加载，一次 `load_skill` 连同依赖算一次加载。来源先只有仓库目录（[REQ-AGENT-DEF](26-agent-definitions.md) §3.8）。
+- **agent 定义的工具白名单**在技能之上再收窄：技能加载时只交出白名单里的工具，全被滤掉的技能对这个 agent 不提供（[REQ-AGENT-DEF](26-agent-definitions.md) §3.3）。
 
 ## 8. 待确认
 
