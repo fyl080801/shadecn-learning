@@ -5,7 +5,7 @@ import {
   isModelStreamRequest,
   parseEventsRequest,
   parseStsTokenRequest,
-  parseSubagentFinishRequest,
+  parseAgentTaskFinishRequest,
   PROTOCOL_MISMATCH_ERROR,
   RUNNER_PROTOCOL_VERSION,
   runnerEventOf,
@@ -103,8 +103,8 @@ describe('请求体解析与构建 id 比较', () => {
   })
 
   it('第 7 版的线格式：/agent/finish 只取 agentId；模型请求体只要是个 JSON 对象（内容不看）；没有取通知的路由', () => {
-    expect(parseSubagentFinishRequest({ agentId: 'sub_1', status: 'needs_confirmation', text: '编的', question: '编的', error: null })).toEqual({ agentId: 'sub_1' })
-    expect(parseSubagentFinishRequest({ status: 'done' })).toBeNull()
+    expect(parseAgentTaskFinishRequest({ agentId: 'sub_1', status: 'needs_confirmation', text: '编的', question: '编的', error: null })).toEqual({ agentId: 'sub_1' })
+    expect(parseAgentTaskFinishRequest({ status: 'done' })).toBeNull()
     expect(isModelStreamRequest({ model: {}, context: { messages: [] }, options: {} })).toBe(true)
     expect(isModelStreamRequest({ context: { messages: 'not checked' } })).toBe(true)
     expect(isModelStreamRequest([])).toBe(false)

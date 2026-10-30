@@ -37,7 +37,7 @@ import { gatewayFetch, registerScriptedModel, type ScriptedModel, type ScriptedS
  * 常驻观察与改动插入（docs/20 §3.10.2）：
  * 别人对画布的改动按 origin 归属、按内容过滤、合并成摘要，在一批工具调用之后 steer 进模型上下文；
  * 模型写最终回复期间到的改动不多开一轮，留给下一轮的跨轮差异；对话里留一条 canvas-change。
- * 二期起推理在 runner 里；docs/22 §4.3 第 2 步起通知由服务端在父 agent 的下一次模型请求时插进它的 transcript
+ * 二期起推理在 runner 里；docs/22 §4.3 第 2 步起通知由服务端在入口 agent 的下一次模型请求时插进它的 transcript
  * （第 7 版协议起 runner 根本不经手通知，没有取通知的路由），这里跑的是完整的 runner + 网关路径。
  */
 
@@ -324,7 +324,7 @@ describe('运行中：别人的改动 steer 进模型上下文', () => {
     expect(JSON.stringify(row.llmMessages)).toContain('画布改动通知')
   })
 
-  it('通知由服务端在父 agent 的下一次请求时插（docs/22 §4.3）：runner 不经手通知（不取、也没有取通知的路由），通知照样进模型上下文', async () => {
+  it('通知由服务端在入口 agent 的下一次请求时插（docs/22 §4.3）：runner 不经手通知（不取、也没有取通知的路由），通知照样进模型上下文', async () => {
     const doc = new Y.Doc()
     addNode(doc, 'n1', '大纲', 'seed')
     const seen: string[][] = []

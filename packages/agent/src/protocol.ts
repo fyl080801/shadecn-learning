@@ -13,7 +13,7 @@ import type { CanvasToolDetails } from './tools.ts'
  *   没有任何长期密钥。跑 pi 的 Agent 循环；画布工具只是 RPC 代理（schema / 描述 / 能力来自同一份 `tools.ts`），
  *   模型请求经 pi 的 `streamProxy` 交给网关（服务端带真实 key 去调上游，拿回事件流）；ffmpeg / ffprobe 在自己的工作目录里跑。
  * - **网关**（`gateway.ts`，宿主挂在 {@link AGENT_GATEWAY_PATH}）：换发令牌、服务端调用模型（真实 key 只在这里）、
- *   画布工具执行（服务端的 `tools.ts` + 宿主的 direct connection）、事件上报。别人改动的通知不经协议：服务端在父 agent 的下一次
+ *   画布工具执行（服务端的 `tools.ts` + 宿主的 direct connection）、事件上报。别人改动的通知不经协议：服务端在入口 agent 的下一次
  *   模型请求时直接插进它的 transcript（docs/22 §4.3）。
  *   **每次调用都按这一轮的 `authorize(capability)` 实时判权，不信令牌里的 scope**（docs/22 §2 第 4 条）。
  *
@@ -30,14 +30,14 @@ import type { CanvasToolDetails } from './tools.ts'
  *    每次画布工具调用、每次模型请求之前先把攒着的事件冲完（服务端在下一次请求时补齐上一批的结果，要先看到它们）；
  * 4. 事件冲完后 `/run/finish`，然后进程退出。
  *
- * ## 子 agent（docs/20 §3.10.11）
+ * ## 被调用的 agent（docs/20 §3.10.11）
  *
- * 父 agent 的 `delegate_task` 在 runner 里执行：先 `/agent/delegate` 登记（服务端分配子 agent id、判上限、转交占用、
+ * 调用方的 `delegate_task` 在 runner 里执行：先 `/agent/delegate` 登记（服务端分配被调用的 agent id、判上限、转交占用、
  * 展开提及、定好它的系统提示与一开始加载的技能），runner 在**同一个进程**里再建一个 pi `Agent` 跑它，
- * 做完 `/agent/finish` 交回（服务端释放它的占用、汇总它改过的节点、拼好回给父 agent 的那段结果）。
- * 子 agent 的工具调用 / 事件带上它的 {@link ToolCallRequest.agentId} / `agentId`；**不带 = 父 agent**。
- * agent id 只用来在这一轮内部区分是谁（占用、「改过」、步数、事件归到哪个子任务）—— 它们都还是这一轮的令牌，
- * 服务端只认自己分配过、还没结束的 id；子 agent 不能再派（服务端拒绝 `agentId` 不是父 agent 的派发）。
+ * 做完 `/agent/finish` 交回（服务端释放它的占用、汇总它改过的节点、拼好回给调用方的那段结果）。
+ * 被调用的 agent 的工具调用 / 事件带上它的 {@link ToolCallRequest.agentId} / `agentId`；**不带 = 入口 agent**。
+ * agent id 只用来在这一轮内部区分是谁（占用、「改过」、步数、事件归到哪个任务）—— 它们都还是这一轮的令牌，
+ * 服务端只认自己分配过、还没结束的 id；被调用的 agent 不能再派（服务端拒绝 `agentId` 不是入口 agent 的发起）。
  *
  * 中止 / 超时 / 失权不经协议通知 runner：服务端当场作废令牌、由驱动杀掉沙箱（docs/22 §5 stop），
  * 收尾帧由服务端按它自己的记录补齐。所以 runner 被杀在任何一步都是合法的结局。
@@ -76,9 +76,9 @@ export const GATEWAY_ROUTES = {
   tool: '/canvas/tool',
   events: '/events',
   finish: '/run/finish',
-  /** 父 agent 派一个子 agent（docs/20 §3.10.11）：登记、判上限、转交占用，回子 agent 的输入 */
+  /** 调用方发起任务（docs/20 §3.10.11）：登记、判上限、转交占用，回被调用的 agent 的输入 */
   delegate: '/agent/delegate',
-  /** 一个子 agent 做完了：交回结果，服务端释放它的占用、拼好给父 agent 的结果 */
+  /** 一个被调用的 agent 做完了：交回结果，服务端释放它的占用、拼好给调用方的结果 */
   agentFinish: '/agent/finish',
   /**
    * 服务端调用模型的前缀（docs/22 §4.3）：完整路径是 `/model/<agentId>` + {@link MODEL_STREAM_SUFFIX}。
@@ -194,14 +194,14 @@ export interface RunnerInput {
 
 // —— 画布工具 ——
 
-/** 父 agent 的 agent id：不带 `agentId` 的请求 / 事件都算它的 */
-export const MAIN_AGENT_ID = 'main'
+/** 入口 agent 的 agent id：不带 `agentId` 的请求 / 事件都算它的 */
+export const ENTRY_AGENT_ID = 'main'
 
 export interface ToolCallRequest {
   toolCallId: string
   name: string
   args: unknown
-  /** 哪个 agent 调的（子 agent 的 id，服务端在 `/agent/delegate` 里分配）；不带 = 父 agent */
+  /** 哪个 agent 调的（被调用的 agent 的 id，服务端在 `/agent/delegate` 里分配）；不带 = 入口 agent */
   agentId?: string
 }
 
@@ -231,7 +231,7 @@ export type ToolCallResponse =
  * 这只是裁剪，不是映射：pi → AG-UI 的映射**只在服务端的 `events.ts`**。
  */
 export type RunnerEvent = RunnerEventBody & {
-  /** 子 agent 的事件带上它的 id（只用于这一轮内部的区分，见文件头「子 agent」）；不带 = 父 agent */
+  /** 被调用的 agent 的事件带上它的 id（只用于这一轮内部的区分，见文件头「被调用的 agent」）；不带 = 入口 agent */
   agentId?: string
 }
 
@@ -245,22 +245,22 @@ export type RunnerEventBody =
       isError: boolean
     }
 
-// —— 子 agent（docs/20 §3.10.11） ——
+// —— 被调用的 agent（docs/20 §3.10.11） ——
 
-/** `/agent/delegate` 的请求：`agentId` 是**发起派发的** agent（只有父 agent 能派，服务端拒绝别的） */
-export interface DelegateRequest {
+/** `/agent/delegate` 的请求：`agentId` 是**发起任务的** agent（调用深度上限 1：只有入口 agent 能发起，服务端拒绝别的） */
+export interface AgentTaskStartRequest {
   agentId: string
-  /** 父 agent 那次 `delegate_task` 调用的 id：子任务条目挂在它上面 */
+  /** 调用方那次 `delegate_task` 调用的 id：任务条目挂在它上面 */
   toolCallId: string
   brief: string
   nodeIds: string[]
 }
 
 /**
- * 子 agent 的输入（服务端定好）：runner 拿它在同一个进程里再建一个 pi `Agent`。它的系统提示、任务说明在服务端它自己的 transcript 里，
+ * 被调用的 agent 的输入（服务端定好）：runner 拿它在同一个进程里再建一个 pi `Agent`。它的系统提示、任务说明在服务端它自己的 transcript 里，
  * 不给 runner（同 {@link RunnerInput}）
  */
-export interface SubagentInput {
+export interface AgentTaskInput {
   agentId: string
   /** 一开始就加载的技能（runner 按注册表展开成工具，外加 `load_skill`）；不含 `delegate`（只有一层） */
   skills: { loaded: AgentSkillId[] }
@@ -270,22 +270,22 @@ export interface SubagentInput {
   }
 }
 
-export type DelegateResponse = { ok: true; agent: SubagentInput } | { ok: false; message: string }
+export type AgentTaskStartResponse = { ok: true; agent: AgentTaskInput } | { ok: false; message: string }
 
 /**
- * `/agent/finish` 的请求：只说「这个子 agent 的循环结束了」。它怎么结束的（完成 / 失败 / 需要确认）、问题、回复文字
+ * `/agent/finish` 的请求：只说「这个被调用的 agent 的循环结束了」。它怎么结束的（完成 / 失败 / 需要确认）、问题、回复文字
  * 全由服务端按它的 transcript 判（docs/22 §4.3 第 3 步），runner 不报
  */
-export interface SubagentFinishRequest {
+export interface AgentTaskFinishRequest {
   agentId: string
 }
 
-/** `/agent/finish` 的回复：交给父 agent 的 `delegate_task` 结果（服务端拼的，限长） */
-export interface SubagentFinishResponse {
-  /** 失败（或这一轮已经停了）：runner 把 `text` 作为工具错误回给父 agent */
+/** `/agent/finish` 的回复：交给调用方的 `delegate_task` 结果（服务端拼的，限长） */
+export interface AgentTaskFinishResponse {
+  /** 失败（或这一轮已经停了）：runner 把 `text` 作为工具错误回给调用方 */
   isError: boolean
   text: string
-  /** 给人看的一句话（父 agent 那条工具调用的 summary） */
+  /** 给人看的一句话（调用方那条工具调用的 summary） */
   summary: string
   /** 它改过的节点 */
   changedNodeIds: string[]
@@ -353,7 +353,7 @@ export function runnerEventOf(event: AgentEvent): RunnerEvent | null {
 export const EVENTS_PER_BATCH = 500
 const ID_MAX = 256
 const NAME_MAX = 64
-/** 子任务说明的上限（服务端回给父 agent 时另外再截到更短） */
+/** 任务说明的上限（服务端回给调用方时另外再截到更短） */
 export const DELEGATE_BRIEF_MAX = 8000
 export const DELEGATE_NODE_IDS_MAX = 20
 /** 节点 id 的格式（同提及 `@{node:<id>}` 认的字符集） */
@@ -420,7 +420,7 @@ export function parseToolCallRequest(body: unknown): ToolCallRequest | null {
 }
 
 /** `/agent/delegate` 的请求体：说明非空、节点 id 合法且不多于上限（去重） */
-export function parseDelegateRequest(body: unknown): DelegateRequest | null {
+export function parseAgentTaskStartRequest(body: unknown): AgentTaskStartRequest | null {
   if (!isObject(body) || !shortString(body.agentId, ID_MAX) || !shortString(body.toolCallId, ID_MAX)) return null
   if (typeof body.brief !== 'string' || !body.brief.trim() || body.brief.length > DELEGATE_BRIEF_MAX) return null
   const raw = body.nodeIds ?? []
@@ -430,7 +430,7 @@ export function parseDelegateRequest(body: unknown): DelegateRequest | null {
 }
 
 /** `/agent/finish` 的请求体：只取 `agentId`（别的字段一概不看） */
-export function parseSubagentFinishRequest(body: unknown): SubagentFinishRequest | null {
+export function parseAgentTaskFinishRequest(body: unknown): AgentTaskFinishRequest | null {
   if (!isObject(body) || !shortString(body.agentId, ID_MAX)) return null
   return { agentId: body.agentId }
 }

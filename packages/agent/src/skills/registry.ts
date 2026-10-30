@@ -68,8 +68,8 @@ export interface SkillContext {
    */
   attachments?: readonly AgentAttachment[]
   /**
-   * 派一个子 agent 并等它做完（docs/20 §3.10.11，`delegate_task` 的执行）：**只有 runner 里父 agent 的上下文有**
-   * （runner 实现：网关登记 → 同一进程里再建一个 pi `Agent` → 交回结果）。服务端和子 agent 的上下文都没有，一调就报错。
+   * 发起任务 并等它做完（docs/20 §3.10.11，`delegate_task` 的执行）：**只有 runner 里入口 agent 的上下文有**
+   * （runner 实现：网关登记 → 同一进程里再建一个 pi `Agent` → 交回结果）。服务端和被调用的 agent 的上下文都没有，一调就报错。
    */
   delegate?: (
     toolCallId: string,
@@ -160,7 +160,7 @@ export function definitionContext(side: SkillContext['side'], sandbox: Sandbox =
 /** 加载技能的平台工具：不属于任何技能，每一轮都给 */
 export const LOAD_SKILL_TOOL_NAME = 'load_skill'
 
-/** 子 agent 的平台工具「需要确认」（`skills/delegate/`）：不属于任何技能，技能里的工具不能叫这个名字 */
+/** 被调用的 agent 的平台工具「需要确认」（`skills/delegate/`）：不属于任何技能，技能里的工具不能叫这个名字 */
 export const REQUEST_CONFIRMATION_TOOL_NAME = 'request_confirmation'
 
 /**
@@ -210,7 +210,7 @@ export interface SkillPlanInput {
   previous: readonly AgentSkillId[]
   /** 用户这条消息 `@` 提及的节点的类型（不存在的节点不算） */
   mentionedNodeTypes: readonly string[]
-  /** 这次不提供的技能（子 agent 不给 `delegate`：只有一层，docs/20 §3.10.11） */
+  /** 这次不提供的技能（被调用的 agent 不给 `delegate`：只有一层，docs/20 §3.10.11） */
   exclude?: readonly AgentSkillId[]
 }
 
@@ -243,7 +243,7 @@ export interface SkillRegistry {
  * `offeredWith` ⊆ `requires`；要起子进程的工具（`spawnsProcess`）必须在 runner 里执行、所在技能必须要求 `sandbox:exec`。
  * 违反任何一条都在建表时抛出（开发期就炸，不留到某一轮）。
  *
- * 「在 runner 里执行」本身不要求 `sandbox:exec`：`delegate_task` 在 runner 里跑，但不起进程，子 agent 的每一步
+ * 「在 runner 里执行」本身不要求 `sandbox:exec`：`delegate_task` 在 runner 里跑，但不起进程，被调用的 agent 的每一步
  * （模型请求、画布工具）仍是经网关判权的普通请求；要求 `sandbox:exec` 的只有真在工作目录里起子进程的那种（ffmpeg）。
  */
 export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistry {

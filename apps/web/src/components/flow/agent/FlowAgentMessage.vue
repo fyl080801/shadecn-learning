@@ -21,8 +21,8 @@ import { splitMentions } from "./nodeMention"
  * 一轮以失败或中止收尾时在最后挂一行原因（模型报错按「状态码 + 上游错误体」拆开显示，见 `FlowAgentError`）。用户消息和 assistant 消息用 shadcn 的 `Message` 排版。
  * 画布改动通知（docs/20 §3.10.2）：灰色的一行系统提示（图标 + 概括），有条目时可以展开看每一处。
  * 技能加载（docs/23 §3.6）：同样灰色的一行「已加载：<技能标题>」。
- * 子任务（docs/20 §3.10.11）：父 agent 的 `delegate_task` 那一条工具调用画成可展开的子任务条目（`FlowAgentSubtask`，按 `toolCallId` 对上）；
- * 被拒、没派出去的 delegate_task 没有条目，照常是一条出错的工具调用。
+ * 任务（docs/20 §3.10.11）：调用方的 `delegate_task` 那一条工具调用画成可展开的任务条目（`FlowAgentSubtask`，按 `toolCallId` 对上）；
+ * 被拒、没发起成的 delegate_task 没有条目，照常是一条出错的工具调用。
  */
 const props = defineProps<{
   message: AgentChatMessage
@@ -44,14 +44,14 @@ const change = computed(() => (props.message.role === "canvas-change" ? props.me
 
 const skillLoaded = computed(() => (props.message.role === "skill-loaded" ? props.message : null))
 
-/** 子任务条目按父 agent 那次 delegate_task 的 id 认 */
+/** 任务条目按调用方那次 delegate_task 的 id 认 */
 const subtaskByCall = computed(() => {
   const map = new Map<string, AgentSubtaskView>()
   for (const task of assistant.value?.subtasks ?? []) map.set(task.toolCallId, task)
   return map
 })
 
-/** 对不上任何一条工具调用的子任务（不该有，容错）：排在工具调用之后 */
+/** 对不上任何一条工具调用的任务（不该有，容错）：排在工具调用之后 */
 const looseSubtasks = computed(() => {
   const ids = new Set(assistant.value?.toolCalls.map((call) => call.id) ?? [])
   return (assistant.value?.subtasks ?? []).filter((task) => !ids.has(task.toolCallId))

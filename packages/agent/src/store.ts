@@ -121,7 +121,7 @@ export interface AgentRunStart {
 
 /**
  * 一轮的模型用量（docs/22 §4.3「用量」）：服务端调模型时拿到的 `usage`（可信；runner 报的不看），
- * 每次模型请求结束时累加 —— **父 agent 与全部子 agent 合在一起**（子 agent 不是 run，预算按 run / 按人计）；
+ * 每次模型请求结束时累加 —— **入口 agent 与全部被调用的 agent 合在一起**（被调用的 agent 不是 run，预算按 run / 按人计）；
  * 失败、中止的请求里 pi 报了的那部分用量也算，一个 token 都没报的请求加的是 0。
  */
 export interface AgentRunUsage {

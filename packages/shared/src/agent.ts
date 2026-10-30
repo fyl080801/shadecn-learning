@@ -186,39 +186,39 @@ export type AgentChatMessage =
       /** 这一轮以失败 / 中止收尾时的说明 */
       error?: string
       /**
-       * 这一轮派出的子任务（docs/20 §3.10.11）：每个 `delegate_task` 工具调用一项（`toolCallId` 对得上 {@link toolCalls} 里那一条），
-       * 按派发的先后。没派过子任务就没有这个字段。
+       * 这一轮发起的任务（docs/20 §3.10.11）：每个 `delegate_task` 工具调用一项（`toolCallId` 对得上 {@link toolCalls} 里那一条），
+       * 按发起的先后。没派过任务就没有这个字段。
        */
       subtasks?: AgentSubtaskView[]
     }
   | AgentCanvasChangeMessage
   | AgentSkillLoadedMessage
 
-// —— 子任务（docs/20 §3.10.11） ——
+// —— 任务（docs/20 §3.10.11） ——
 
-/** `delegate_task` 的工具名：前端据此把那一条工具调用画成子任务条目 */
+/** `delegate_task` 的工具名：前端据此把那一条工具调用画成任务条目 */
 export const AGENT_DELEGATE_TOOL_NAME = 'delegate_task'
 
-/** 子任务的状态：进行中 / 完成 / 失败 / 需要确认（子 agent 不直接问人，以「需要确认 + 问题」交回父 agent） */
+/** 任务的状态：进行中 / 完成 / 失败 / 需要确认（被调用的 agent 不直接问人，以「需要确认 + 问题」交回调用方） */
 export type AgentSubtaskStatus = 'running' | 'done' | 'failed' | 'needs_confirmation'
 
 /**
- * 父会话里的一个子任务条目：父 agent 的一次 `delegate_task`。子 agent 在父 run 的沙箱里跑，**没有自己的会话**；
- * 它的工具调用和最终回复只在这里给人看（只读），不进父 agent 的模型上下文。
+ * 会话里的一个任务条目：调用方的一次 `delegate_task`。被调用的 agent 在这一轮的沙箱里跑，**没有自己的会话**；
+ * 它的工具调用和最终回复只在这里给人看（只读），不进入口 agent 的模型上下文。
  *
- * 实时流里：派发时一帧 CUSTOM {@link AGENT_SUBTASK_EVENT}，`value` 是完整条目（前端按 `id` 整条替换）；
+ * 实时流里：发起时一帧 CUSTOM {@link AGENT_SUBTASK_EVENT}，`value` 是完整条目（前端按 `id` 整条替换）；
  * 之后每次变化一帧 CUSTOM {@link AGENT_SUBTASK_UPDATE_EVENT}，只带变了的（{@link AgentSubtaskUpdate}，前端用 {@link applyAgentSubtaskUpdate} 合并）。
  * 随 assistant 消息落库（{@link AgentChatMessage} 的 `subtasks`，**完整条目**），刷新 / 接回补发 / 只读旁观看到的一样。
  */
 export interface AgentSubtaskView {
-  /** 子 agent 的 id（服务端分配，一轮之内唯一） */
+  /** 被调用的 agent 的 id（服务端分配，一轮之内唯一） */
   id: string
   /**
-   * 父 agent 那次 `delegate_task` 在 assistant 消息 `toolCalls` 里那一条的 `id`（一条消息里唯一：上游复用调用 id 时
+   * 调用方那次 `delegate_task` 在 assistant 消息 `toolCalls` 里那一条的 `id`（一条消息里唯一：上游复用调用 id 时
    * 服务端给后来的那条加后缀，见 `@shadecn/agent` 的 `events.ts`）
    */
   toolCallId: string
-  /** 任务说明（父 agent 写的） */
+  /** 任务说明（调用方写的） */
   brief: string
   /** 派给它处理的节点 */
   nodeIds: string[]
@@ -227,9 +227,9 @@ export interface AgentSubtaskView {
   startedAt: number
   /** 结束的时刻；还在跑没有这个字段 */
   finishedAt?: number
-  /** 子 agent 的工具调用（同 assistant 消息的 `toolCalls`，只读） */
+  /** 被调用的 agent 的工具调用（同 assistant 消息的 `toolCalls`，只读） */
   toolCalls: AgentToolCallView[]
-  /** 子 agent 的回复（最后一次的文字）；还没说话为空串 */
+  /** 被调用的 agent 的回复（最后一次的文字）；还没说话为空串 */
   text: string
   /** 需要确认时它要问的问题 */
   question?: string
@@ -241,7 +241,7 @@ export interface AgentSubtaskView {
 
 const SUBTASK_STATUSES: readonly AgentSubtaskStatus[] = ['running', 'done', 'failed', 'needs_confirmation']
 const TOOL_CALL_STATUSES: readonly AgentToolCallView['status'][] = ['running', 'done', 'error']
-/** 一个子任务条目里最多收几条工具调用、几个节点 id（防一条畸形载荷撑爆界面） */
+/** 一个任务条目里最多收几条工具调用、几个节点 id（防一条畸形载荷撑爆界面） */
 const SUBTASK_TOOL_CALLS_MAX = 200
 const SUBTASK_NODE_IDS_MAX = 200
 
@@ -264,7 +264,7 @@ function stringIds(value: unknown, max: number): string[] {
 }
 
 /**
- * 解析一个子任务条目（CUSTOM {@link AGENT_SUBTASK_EVENT} 的 `value`、落库的 `subtasks` 里的一项）；形状不对返回 null。
+ * 解析一个任务条目（CUSTOM {@link AGENT_SUBTASK_EVENT} 的 `value`、落库的 `subtasks` 里的一项）；形状不对返回 null。
  * **防御着写**：认不出的字段丢掉，列表里个别项不对只丢那一项，不让一条畸形载荷把界面带崩。
  */
 export function parseAgentSubtask(value: unknown): AgentSubtaskView | null {
@@ -299,15 +299,15 @@ export function parseAgentSubtask(value: unknown): AgentSubtaskView | null {
 }
 
 /**
- * 子任务条目的一次变化（CUSTOM {@link AGENT_SUBTASK_UPDATE_EVENT} 的 `value`）：只带变了的字段。
+ * 任务条目的一次变化（CUSTOM {@link AGENT_SUBTASK_UPDATE_EVENT} 的 `value`）：只带变了的字段。
  * 不重复任务说明（最长 8000 字）、节点和已经发过的工具调用 —— 每次变化都发完整条目时，补发量随「调用数 × 条目大小」增长，
- * 几个长子任务就能撑爆补发缓冲（中途接回 410）。没带的字段不变。
+ * 几个长任务就能撑爆补发缓冲（中途接回 410）。没带的字段不变。
  */
 export interface AgentSubtaskUpdate {
   id: string
   status?: AgentSubtaskStatus
   finishedAt?: number
-  /** 子 agent 的回复：整段替换 */
+  /** 被调用的 agent 的回复：整段替换 */
   text?: string
   question?: string
   error?: string
@@ -317,7 +317,7 @@ export interface AgentSubtaskUpdate {
   toolCalls?: AgentToolCallView[]
 }
 
-/** 解析一帧子任务变化；没有 `id` 返回 null。**防御着写**：认不出 / 形状不对的字段丢掉（等于这个字段没变） */
+/** 解析一帧任务变化；没有 `id` 返回 null。**防御着写**：认不出 / 形状不对的字段丢掉（等于这个字段没变） */
 export function parseAgentSubtaskUpdate(value: unknown): AgentSubtaskUpdate | null {
   if (!isObject(value)) return null
   const { id, status, finishedAt, text, question, error } = value
@@ -508,8 +508,8 @@ export interface AgentRunEntry {
    */
   expiresAt?: number
   /**
-   * 这一轮此刻在跑的子任务数（docs/20 §3.10.11，任务列表显示「含 N 个子任务进行中」）；没有在跑的子任务时没有这个字段。
-   * 子任务不是单独的一轮，任务列表里仍只有父 run 这一项。
+   * 这一轮此刻在跑的任务数（docs/20 §3.10.11，任务列表显示「含 N 个任务进行中」）；没有在跑的任务时没有这个字段。
+   * 任务不是单独的一轮，任务列表里仍只有这一轮自己这一项。
    */
   subtasks?: number
 }
@@ -636,7 +636,7 @@ function parseRunEntry(value: unknown): AgentRunEntry | null {
   }
   // expiresAt：不是有限数字就当没有（不按时过期）
   const expiresAt = typeof value.expiresAt === 'number' && Number.isFinite(value.expiresAt) ? value.expiresAt : undefined
-  // subtasks：正整数才算（0 / 不是数字 = 没有在跑的子任务）
+  // subtasks：正整数才算（0 / 不是数字 = 没有在跑的任务）
   const subtasks = typeof value.subtasks === 'number' && Number.isInteger(value.subtasks) && value.subtasks > 0 ? value.subtasks : undefined
   // 只取认得的字段：载荷里多出来的东西不往下传
   return {
@@ -782,13 +782,13 @@ export const AGENT_CANVAS_CHANGE_EVENT = 'agent.canvas-change'
 export const AGENT_SKILL_LOADED_EVENT = 'agent.skill-loaded'
 
 /**
- * CUSTOM 事件的名字：派出了一个子任务（{@link AgentSubtaskView}）。
+ * CUSTOM 事件的名字：发起了一个任务（{@link AgentSubtaskView}）。
  * `value` 是条目的完整样子，前端先 {@link parseAgentSubtask} 再按 `id` 整条替换进这一轮的 assistant 消息
  */
 export const AGENT_SUBTASK_EVENT = 'agent.subtask'
 
 /**
- * CUSTOM 事件的名字：子任务条目变了（子 agent 调工具 / 回复 / 结束）。`value` 只带变了的（{@link AgentSubtaskUpdate}），
+ * CUSTOM 事件的名字：任务条目变了（被调用的 agent 调工具 / 回复 / 结束）。`value` 只带变了的（{@link AgentSubtaskUpdate}），
  * 前端先 {@link parseAgentSubtaskUpdate} 再用 {@link applyAgentSubtaskUpdate} 合并进同 `id` 的那一项；还没有那一项就丢掉
  */
 export const AGENT_SUBTASK_UPDATE_EVENT = 'agent.subtask-update'

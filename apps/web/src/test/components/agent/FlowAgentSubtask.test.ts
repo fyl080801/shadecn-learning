@@ -5,9 +5,9 @@ import type { AgentChatMessage, AgentSubtaskView, AgentToolCallView } from "@sha
 import type { FlowNode } from "@shadecn/shared/flow-graph"
 
 /**
- * 父会话里的子任务条目（docs/20 §3.10.11）：`delegate_task` 那条工具调用画成可展开的条目（任务说明、状态、已运行时长；
- * 展开看子 agent 的工具调用、问题 / 原因和最终回复，只读）；没派出去的 delegate_task 仍是普通的出错工具调用。
- * 任务列表那一行带「含 N 个子任务进行中」。真的挂组件，只把编辑器上下文打桩（提及 badge 要查节点名）。
+ * 会话里的任务条目（docs/20 §3.10.11）：`delegate_task` 那条工具调用画成可展开的条目（任务说明、状态、已运行时长；
+ * 展开看被调用的 agent 的工具调用、问题 / 原因和最终回复，只读）；没发起成的 delegate_task 仍是普通的出错工具调用。
+ * 任务列表那一行带「含 N 个任务进行中」。真的挂组件，只把编辑器上下文打桩（提及 badge 要查节点名）。
  */
 
 const nodes = ref<FlowNode[]>([])
@@ -53,8 +53,8 @@ function message(subtasks: AgentSubtaskView[], extraCalls: AgentToolCallView[] =
   }
 }
 
-describe("子任务条目", () => {
-  it("delegate_task 画成子任务条目：说明、状态、已运行时长；展开后有子 agent 的工具调用和最终回复；没派出去的仍是普通工具调用", async () => {
+describe("任务条目", () => {
+  it("delegate_task 画成任务条目：说明、状态、已运行时长；展开后有被调用的 agent 的工具调用和最终回复；没发起成的仍是普通工具调用", async () => {
     const wrapper = mount(FlowAgentMessage, {
       props: {
         message: message(
@@ -81,7 +81,7 @@ describe("子任务条目", () => {
     expect(items[0]!.find('[data-role="subtask-tools"]').text()).toContain("新建 2 个对象")
     expect(items[1]!.find('[data-role="subtask-reply"] strong').text()).toBe("搭好了")
     expect(items[1]!.find('[data-mention-id="d2"]').exists()).toBe(true)
-    // 被拒、没派出去的 delegate_task 没有条目：照常是一条出错的工具调用
+    // 被拒、没发起成的 delegate_task 没有条目：照常是一条出错的工具调用
     const plain = wrapper.findAll("[data-tool-status]").filter((item) => item.text().includes("被拒的"))
     expect(plain).toHaveLength(1)
     expect(plain[0]!.attributes("data-tool-status")).toBe("error")
@@ -89,7 +89,7 @@ describe("子任务条目", () => {
     expect(items[0]!.find("textarea, input, button").exists()).toBe(false)
   })
 
-  it("任务列表：带子任务的那一行显示「含 N 个子任务进行中」，没有的不显示", () => {
+  it("任务列表：带任务的那一行显示「含 N 个任务进行中」，没有的不显示", () => {
     const run = (runId: string, subtasks?: number) => ({
       runId,
       conversationId: `c_${runId}`,

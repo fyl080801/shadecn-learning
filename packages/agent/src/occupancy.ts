@@ -20,8 +20,8 @@ import type { AgentUserView } from '@shadecn/shared/agent'
 export interface NodeLease {
   runId: string
   /**
-   * 这一轮里的哪个 agent（docs/20 §3.10.11）：父 agent 是 `MAIN_AGENT_ID`（`'main'`），子 agent 是服务端分配的 id。
-   * 同一轮的不同 agent 互相算「别人」。只用于这一轮内部的区分；老的条目没有这个字段，按父 agent 读（{@link leaseAgentOf}）
+   * 这一轮里的哪个 agent（docs/20 §3.10.11）：入口 agent 是 `ENTRY_AGENT_ID`（`'main'`），被调用的 agent 是服务端分配的 id。
+   * 同一轮的不同 agent 互相算「别人」。只用于这一轮内部的区分；老的条目没有这个字段，按入口 agent 读（{@link leaseAgentOf}）
    */
   agentId: string
   conversationId: string
@@ -45,7 +45,7 @@ export interface NodeLeaseRegistry {
   /** 续期：值仍是 `lease` 时重设 TTL 并返回 true；已过期 / 已易主返回 false */
   renew(flowId: string, nodeId: string, lease: NodeLease): Promise<boolean>
   /**
-   * 转交（同一轮里父 agent → 子 agent，docs/20 §3.10.8「转交给子 agent」）：值仍是 `from` 时原子地换成 `to` 并重设 TTL。
+   * 转交（同一轮里调用方 → 被调用的 agent，docs/20 §3.10.8「转交给被调用的 agent」）：值仍是 `from` 时原子地换成 `to` 并重设 TTL。
    * 已易主 / 已过期返回 false（这个节点就不再是这一轮的了）。
    */
   transfer(flowId: string, nodeId: string, from: NodeLease, to: NodeLease): Promise<boolean>
@@ -55,7 +55,7 @@ export interface NodeLeaseRegistry {
   list(flowId: string): Promise<Map<string, NodeLease>>
 }
 
-/** 占用者是这一轮里的哪个 agent：老的条目（子 agent 之前写的）没有 `agentId`，按父 agent 算 */
+/** 占用者是这一轮里的哪个 agent：老的条目（被调用的 agent 之前写的）没有 `agentId`，按调用方算 */
 export function leaseAgentOf(lease: Pick<NodeLease, 'agentId'>): string {
   return typeof lease.agentId === 'string' && lease.agentId ? lease.agentId : 'main'
 }

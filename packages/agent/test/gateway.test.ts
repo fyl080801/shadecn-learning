@@ -521,7 +521,7 @@ describe('服务端调用模型（docs/22 §4.3）', () => {
     expect(message).toMatchObject({ stopReason: 'error', errorMessage: 'Proxy error: 这一轮没有被授予 llm:invoke' })
   })
 
-  it('编排层判「不调上游、回 error 帧」（子 agent 步数用完）：一帧 error，不打上游', async () => {
+  it('编排层判「不调上游、回 error 帧」（被调用的 agent 步数用完）：一帧 error，不打上游', async () => {
     const t = modelSetup({ handlers: { modelRequest: () => ({ kind: 'fail', message: '子任务的步数已达上限 3，这次请求没有发给模型' }) } })
     const token = await t.redeem()
     const res = await t.post('/model/sub_1/api/stream', streamBody(), bearer(token))

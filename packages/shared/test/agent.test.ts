@@ -189,7 +189,7 @@ describe('消息附件（docs/20 §3.10.12）', () => {
   })
 })
 
-describe('子任务（docs/20 §3.10.11）', () => {
+describe('任务（docs/20 §3.10.11）', () => {
   const valid = {
     id: 'sub_1',
     toolCallId: 'call_1',

@@ -83,7 +83,7 @@ export abstract class SharedMap<V> {
    * 比较后写：当前值（按 codec 编码后的字符串比）等于 `expected` 时写入 `next`
    * 并（可选）重设 TTL，返回 true；键不存在或值不同返回 false，原样不动。
    *
-   * 用于持有者续期（expected = next = 自己的值）和占用转交（父 run → 子 run）。
+   * 用于持有者续期（expected = next = 自己的值）和占用转交（同一轮里调用方 → 被调用的 agent）。
    * **必须是一次原子的判断加写入**：键过期后可能已被别人 claim 走，先 get 再 set
    * 会让旧持有者在两步之间把别人的占用覆盖掉，或者把已经易主的键「续」回来。
    */

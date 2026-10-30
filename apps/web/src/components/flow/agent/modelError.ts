@@ -1,5 +1,5 @@
 /**
- * 一轮失败的原因（`RUN_ERROR.message`、子任务的 `error`）在对话里怎么显示 —— 只是展示层的解析，数据原样不动。
+ * 一轮失败的原因（`RUN_ERROR.message`、任务的 `error`）在对话里怎么显示 —— 只是展示层的解析，数据原样不动。
  *
  * 模型报错是 pi（`@earendil-works/pi-ai`）拼的，服务端原样转发。pi 1.x 的 `formatProviderError` 把上游的错误体接在状态码后面：
  * - `400: {"message":"额度用完","type":"invalid_request_error"}`（OpenAI SDK 等：状态码 + 原始 JSON 体，体超过 4000 字截断）；

@@ -10,10 +10,10 @@ import FlowAgentMarkdown from "./FlowAgentMarkdown.vue"
 import FlowAgentMention from "./FlowAgentMention.vue"
 
 /**
- * 父会话里的一个子任务条目（docs/20 §3.10.11）：父 agent 的一次 `delegate_task`，替换掉那条普通的工具调用行。
+ * 会话里的一个任务条目（docs/20 §3.10.11）：调用方的一次 `delegate_task`，替换掉那条普通的工具调用行。
  *
  * 折叠时：状态图标、任务说明、状态（进行中 / 完成 / 失败 / 需要确认）和已运行时长；点开看它要处理的节点、
- * 子 agent 的工具调用、需要确认的问题 / 失败原因和它的最终回复（Markdown，只读）。没有单独的子会话，也不能在这里对它说话。
+ * 被调用的 agent 的工具调用、需要确认的问题 / 失败原因和它的最终回复（Markdown，只读）。没有单独的子会话，也不能在这里对它说话。
  * 已运行时长：在跑时每秒走一次（开始时刻是服务端打的，和本机时钟差出来的负数按 0 算），结束后固定为结束 − 开始。
  */
 const props = defineProps<{ task: AgentSubtaskView }>()

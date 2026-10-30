@@ -1152,7 +1152,7 @@ describe('输入与历史', () => {
 describe('步数与请求上限（docs/22 §4.3：一次模型请求 = 一步，网关按 agent 硬计数）', () => {
   const toolStep = () => fauxAssistantMessage([fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' })
 
-  it('父 agent 第 maxTurns + 1 次请求：不调上游，整轮以「超过本轮步数上限」停下', async () => {
+  it('调用方第 maxTurns + 1 次请求：不调上游，整轮以「超过本轮步数上限」停下', async () => {
     const runtime = runtimeWith([toolStep(), toolStep(), toolStep()], { limits: { maxTurns: 2 } })
     const out = await runOnce(runtime, '一直读')
     expect(out.events.at(-1)).toMatchObject({
@@ -1175,7 +1175,7 @@ describe('步数与请求上限（docs/22 §4.3：一次模型请求 = 一步，
     const probes: { status: number; body: unknown }[] = []
     const runtime = runtimeWith([
       async () => {
-        // 父 agent 的这次请求还在途：拿 runner 的令牌再发两次
+        // 入口 agent 的这次请求还在途：拿 runner 的令牌再发两次
         const probe = async (agentId: string) => {
           const res = await runtime.gateway.handle(
             new Request(`${TEST_GATEWAY_URL}/model/${agentId}/api/stream`, {
@@ -1246,7 +1246,7 @@ describe('步数与请求上限（docs/22 §4.3：一次模型请求 = 一步，
     })
   })
 
-  it('父 agent 的 sessionId 是会话 id（前后几轮命中同一份缓存）；每次模型请求结束打一行用量日志', async () => {
+  it('入口 agent 的 sessionId 是会话 id（前后几轮命中同一份缓存）；每次模型请求结束打一行用量日志', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     const runtime = runtimeWith([fauxAssistantMessage('一'), fauxAssistantMessage('二')])
     // 让上游的 SDK 把 sessionId 放进会话亲和头（同一个模型对象，网关拿的就是它），好断言服务端给的是什么

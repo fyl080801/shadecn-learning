@@ -187,14 +187,14 @@ describe('画布改动通知', () => {
   })
 })
 
-describe('子任务条目（docs/20 §3.10.11）', () => {
+describe('任务条目（docs/20 §3.10.11）', () => {
   const subtaskFrames = (events: AgentStreamEvent[]) =>
     events.filter(
       (event) => event.type === AgentEventType.CUSTOM && (event.name === AGENT_SUBTASK_EVENT || event.name === AGENT_SUBTASK_UPDATE_EVENT),
     )
   const valueOf = (event: AgentStreamEvent | undefined) => (event as { value: Record<string, unknown> }).value
 
-  it('派发一帧完整条目，之后每次变化一帧 agent.subtask-update（只带变了的），不进 assistant 的文字和 toolCalls；依次合并 = 条目本身', () => {
+  it('发起一帧完整条目，之后每次变化一帧 agent.subtask-update（只带变了的），不进 assistant 的文字和 toolCalls；依次合并 = 条目本身', () => {
     const m = mapper()
     const started = m.subtaskStart({ id: 'sub_1', toolCallId: 'call_d', brief: '搭场景', nodeIds: ['d1'], startedAt: 500 })
     expect(started).toMatchObject([
@@ -233,7 +233,7 @@ describe('子任务条目（docs/20 §3.10.11）', () => {
     expect(m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 't4', toolName: 'get_node', args: {} })).toEqual([])
     expect(m.subtaskEvent('sub_x', { type: 'tool_execution_start', toolCallId: 't5', toolName: 'get_node', args: {} })).toEqual([])
 
-    // 父 agent 的 assistant 消息：没有子 agent 的文字和工具调用，只有 subtasks
+    // 调用方的 assistant 消息：没有被调用的 agent 的文字和工具调用，只有 subtasks
     expect(m.message.text).toBe('')
     expect(m.message.toolCalls).toEqual([])
     expect(m.message.subtasks).toHaveLength(1)
@@ -254,7 +254,7 @@ describe('子任务条目（docs/20 §3.10.11）', () => {
     expect(m.subtaskReply('sub_1')).toBe('先说的')
   })
 
-  it('上游复用调用 id：父 agent 和子任务条目里后来的那条加后缀，end 归到最近一次 start；子任务挂在当前那次 delegate_task 上', () => {
+  it('上游复用调用 id：调用方和任务条目里后来的那条加后缀，end 归到最近一次 start；任务挂在当前那次 delegate_task 上', () => {
     const m = mapper()
     const end = (toolCallId: string, toolName: string) =>
       ({ type: 'tool_execution_end', toolCallId, toolName, result: { content: [] }, isError: false }) as const
@@ -271,7 +271,7 @@ describe('子任务条目（docs/20 §3.10.11）', () => {
     ])
     expect(m.message.subtasks!.map((task) => task.toolCallId)).toEqual(['call_0', 'call_0#2'])
     expect(m.toolCall('call_0')!.id).toBe('call_0#2')
-    // 子 agent 自己也复用 id
+    // 被调用的 agent 自己也复用 id
     m.subtaskEvent('sub_2', { type: 'tool_execution_start', toolCallId: 'call_0', toolName: 'get_node', args: {} })
     m.subtaskEvent('sub_2', end('call_0', 'get_node'))
     m.subtaskEvent('sub_2', { type: 'tool_execution_start', toolCallId: 'call_0', toolName: 'read_canvas', args: {} })
@@ -282,7 +282,7 @@ describe('子任务条目（docs/20 §3.10.11）', () => {
     expect(m.toolCall('call_0', 'sub_2')!.name).toBe('read_canvas')
   })
 
-  it('收尾时还在跑的子任务标成失败（原因随结局），先各发一帧变化再发最后一帧；落定的消息里带着完整条目', () => {
+  it('收尾时还在跑的任务标成失败（原因随结局），先各发一帧变化再发最后一帧；落定的消息里带着完整条目', () => {
     const m = mapper()
     m.subtaskStart({ id: 'sub_1', toolCallId: 'call_d', brief: 'a', nodeIds: [], startedAt: 1 })
     m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 't1', toolName: 'get_node', args: {} })

@@ -233,7 +233,7 @@ function buildRuntime(): AgentRuntime {
     ...(s3Enabled ? { mediaReader: agentMediaReader } : {}),
     sandbox: { image: agentConfig.sandboxImage, resources: agentConfig.sandboxResources },
     // 空闲上限（docs/20 §3.10.8）：网关上既没有在途请求、也这么久没有新请求就停下这一轮；
-    // 总时长上限（§3.10.11）：含子 agent 的墙钟上限，沙箱硬期限与 Grant 的绝对过期按它算
+    // 总时长上限（§3.10.11）：含被调用的 agent 的墙钟上限，沙箱硬期限与 Grant 的绝对过期按它算
     limits: { idleTimeoutMs: agentConfig.runIdleTimeoutMs, totalTimeoutMs: agentConfig.runTotalTimeoutMs },
     ...agentHostOptions,
   })

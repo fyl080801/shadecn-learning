@@ -82,7 +82,7 @@ export const AgentRun = defineEntity({
     /** 给人看的模型名 */
     model: p.text().strictNullable(),
     /*
-     * 这一轮累计的模型用量（docs/22 §4.3 第 5 步）：服务端调模型拿到的 usage，父 agent + 全部子 agent，收尾时写。
+     * 这一轮累计的模型用量（docs/22 §4.3 第 5 步）：服务端调模型拿到的 usage，入口 agent + 全部被调用的 agent，收尾时写。
      * 都可空：null = 没记（进程被硬杀停在 running 的行、有这几列之前的旧行），和「一个 token 都没用」的 0 分得开。
      * 加的是可空列，`db:push` 直接加（不重建表）。PG 上 `p.integer()` 是 32 位 int：一轮的 token 数到不了 21 亿
      */

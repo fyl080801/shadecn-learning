@@ -124,7 +124,7 @@ for (const candidate of candidates) {
         expect(await map.compareAndSet('k', 'run-2', 'run-3')).toBe(false)
         expect(await map.get('k')).toBe('run-1')
 
-        // 转交：父 run → 子 run
+        // 转交：持有者换成另一个（同一轮里调用方 → 被调用的 agent）
         expect(await map.compareAndSet('k', 'run-1', 'run-child')).toBe(true)
         expect(await map.get('k')).toBe('run-child')
       })

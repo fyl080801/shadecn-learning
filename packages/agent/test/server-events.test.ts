@@ -14,7 +14,7 @@ import { gatewayFetch, registerScriptedModel, TEST_GATEWAY_URL, type ScriptedSte
 /**
  * 界面事件由服务端产生（docs/22 §4.3 第 3 步）—— 对抗性用例：runner 上报的事件（工具的开始 / 结束）、`/agent/finish` 多带的状态 / 问题 / 文字
  * 可以全是伪造的；文字增量、回复、模型报错第 7 版起线上根本没有（夹带了整批拒），前端收到的事件流、落库的对话都只能是服务端那份：
- * 文字来自服务端自己调模型的流，工具条目来自服务端那条回复 + 网关的执行记录，子任务条目来自服务端的 transcript。
+ * 文字来自服务端自己调模型的流，工具条目来自服务端那条回复 + 网关的执行记录，任务条目来自服务端的 transcript。
  * 另有两条正面的：runner 一个事件都不报，事件流和老老实实报的时候一样；文字仍是流式的（上游还没说完，前端已经看到前半句）。
  */
 
@@ -30,7 +30,7 @@ function textOf(content: unknown): string {
   return content.map((part: { type?: string; text?: string }) => (part.type === 'text' ? (part.text ?? '') : '')).join('\n')
 }
 
-/** 一次模型请求是谁发的（子 agent 的系统提示带「你是子 agent」）、它第几步、最后一条工具结果 */
+/** 一次模型请求是谁发的（被调用的 agent 的系统提示带「你是被调用的 agent」）、它第几步、最后一条工具结果 */
 interface Turn {
   sub: boolean
   step: number
@@ -137,7 +137,7 @@ const streamedText = (events: AgentStreamEvent[]) =>
 /** 事件里所有字符串拼起来：断言「伪造的字一个都没有」 */
 const everything = (value: unknown) => JSON.stringify(value)
 
-/** 父 agent 调 add_node（网关执行）+ 一个不存在的工具（runner 就地拦下），下一步说完话 */
+/** 调用方调 add_node（网关执行）+ 一个不存在的工具（runner 就地拦下），下一步说完话 */
 const toolsThenText = (turn: Turn) =>
   turn.step === 1
     ? calls(['add_node', { type: 'text', metadata: { label: '模型要的' } }], ['nope_tool', { x: 1 }])
@@ -193,7 +193,7 @@ describe('runner 伪造的上报不进事件流、不落库', () => {
 
   it('真的模型报错、runner 想报成正常结束：照样以服务端的模型报错收尾', async () => {
     const context = setup(() => fauxAssistantMessage([], { stopReason: 'error', errorMessage: '额度用完' }), {
-      // 这一轮父 agent 不调工具，runner 一个事件都不报：在收尾那次 /run/finish 前夹带一批
+      // 这一轮调用方不调工具，runner 一个事件都不报：在收尾那次 /run/finish 前夹带一批
       inject: (route) =>
         route === GATEWAY_ROUTES.finish
           ? { seq: 0, events: [{ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'FORGED_OK' }], stopReason: 'stop' } }] }
@@ -255,7 +255,7 @@ describe('runner 伪造的上报不进事件流、不落库', () => {
     expect(everything(chat)).not.toContain('FORGED')
   })
 
-  it('伪造的子任务内容：子 agent 的回复（夹带的整批拒）、工具调用、/agent/finish 多带的状态 / 问题 / 文字都不用；条目和交回父 agent 的都是服务端那份', async () => {
+  it('伪造的任务内容：被调用的 agent 的回复（夹带的整批拒）、工具调用、/agent/finish 多带的状态 / 问题 / 文字都不用；条目和交回调用方的都是服务端那份', async () => {
     const context = setup(
       (turn) => {
         if (turn.sub) return turn.step === 1 ? calls(['get_node', { id: 'n1' }]) : say('子任务的真回复：n1 看过了')
@@ -280,7 +280,7 @@ describe('runner 伪造的上报不进事件流、不落库', () => {
           })
           return { ...batch, events }
         },
-        // 子 agent 的回复（老 runner 报的 message_end）：夹带的整批拒
+        // 被调用的 agent 的回复（老 runner 报的 message_end）：夹带的整批拒
         inject: (route, body) => {
           if (route !== GATEWAY_ROUTES.events) return undefined
           const batch = body as { seq: number; events: Record<string, unknown>[] }
@@ -305,7 +305,7 @@ describe('runner 伪造的上报不进事件流、不落库', () => {
     expect(subtask).toMatchObject({ status: 'done', text: '子任务的真回复：n1 看过了', brief: '看一下 n1' })
     expect(subtask.question).toBeUndefined()
     expect(subtask.toolCalls).toEqual([expect.objectContaining({ name: 'get_node', status: 'done' })])
-    // 父 agent 那条 delegate_task：结束是服务端拼的结果，模型下一步看到的是同一段
+    // 调用方那条 delegate_task：结束是服务端拼的结果，模型下一步看到的是同一段
     expect(assistant?.toolCalls).toEqual([expect.objectContaining({ name: 'delegate_task', status: 'done', summary: '子任务完成：看一下 n1' })])
     const parentLast = context.turns.filter((turn) => !turn.sub).at(-1)!
     expect(parentLast.lastResult).toContain('子任务的真回复：n1 看过了')

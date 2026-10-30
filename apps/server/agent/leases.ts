@@ -23,7 +23,7 @@ function parseLease(raw: string | undefined): NodeLease | null {
     if (!owner || typeof owner.id !== 'string' || typeof owner.name !== 'string') return null
     return {
       runId: value.runId,
-      // 这一轮里的哪个 agent（docs/20 §3.10.11）；子 agent 之前写的条目没有，按父 agent 读
+      // 这一轮里的哪个 agent（docs/20 §3.10.11）；有这个字段之前写的条目没有，按入口 agent 读
       agentId: leaseAgentOf(value as Pick<NodeLease, 'agentId'>),
       conversationId: value.conversationId,
       owner: { id: owner.id, name: owner.name, avatarUrl: typeof owner.avatarUrl === 'string' ? owner.avatarUrl : null },

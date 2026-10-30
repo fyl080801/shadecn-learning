@@ -6,11 +6,11 @@ import type { CanvasTool } from '../../tools.ts'
 import { defineSkill, REQUEST_CONFIRMATION_TOOL_NAME, type SkillContext } from '../registry.ts'
 
 /**
- * 子任务技能 `delegate`（docs/20 §3.10.11）：父 agent 把一个大任务拆开、并行交给子 agent 做。`always`，**子 agent 里不提供**
- * （只有一层：服务端给子 agent 定技能时排除它，也拒绝子 agent 发起的派发）。
+ * 任务技能 `delegate`（docs/20 §3.10.11）：调用方把一个大任务拆开、并行交给被调用的 agent 做。`always`，**被调用的 agent 里不提供**
+ * （只有一层：服务端给被调用的 agent 定技能时排除它，也拒绝被调用的 agent 发起的发起）。
  *
  * `delegate_task` 在 runner 里执行（`execution: 'runner'`）：runner 先经网关登记（服务端分配 id、判上限、转交占用），
- * 再在**同一个进程**里建一个独立的 pi `Agent` 跑子 agent，**等它做完**才返回 —— 子 agent 的每一次模型请求、画布工具调用
+ * 再在**同一个进程**里建一个独立的 pi `Agent` 跑被调用的 agent，**等它做完**才返回 —— 被调用的 agent 的每一次模型请求、画布工具调用
  * 都是正常的网关请求（判权、预算照旧），所以它不起子进程，也就不要求 `sandbox:exec`（`spawnsProcess` 不设）。
  *
  * 并行：它是 `executionMode: 'parallel'`，别的工具一律 `sequential`（runner 统一设）；pi 的规则（1.4 仍然如此）是**一批里只要有一个
@@ -41,7 +41,7 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 export function createDelegateTool(ctx: SkillContext): CanvasTool<typeof delegateParams> {
   return {
     name: AGENT_DELEGATE_TOOL_NAME,
-    // 派发本身只是读：子 agent 的每次写都按各自工具的能力在网关上判
+    // 发起本身只是读：被调用的 agent 的每次写都按各自工具的能力在网关上判
     capability: 'flow:read',
     label: '派子任务',
     description:
@@ -86,9 +86,9 @@ const confirmParams = Type.Object(
 )
 
 /**
- * 子 agent 的平台工具「需要确认」：子 agent 不直接问人（docs/20 §3.10.11），遇到「正在被别人修改」「和别人的改动冲突」这类要问人的情况，
- * 调它以「需要确认 + 问题」结束，交回父 agent。只在 runner 里给子 agent（不属于任何技能）；必须单独调用（同 `load_skill`），
- * 调了这一批就提前结束（`terminate`），子 agent 随之收尾。
+ * 被调用的 agent 的平台工具「需要确认」：被调用的 agent 不直接问人（docs/20 §3.10.11），遇到「正在被别人修改」「和别人的改动冲突」这类要问人的情况，
+ * 调它以「需要确认 + 问题」结束，交回调用方。只在 runner 里给被调用的 agent（不属于任何技能）；必须单独调用（同 `load_skill`），
+ * 调了这一批就提前结束（`terminate`），被调用的 agent 随之收尾。
  */
 export function createRequestConfirmationTool(onRequest: (question: string) => void): AgentTool<typeof confirmParams> {
   return {

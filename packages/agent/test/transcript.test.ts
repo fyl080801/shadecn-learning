@@ -16,14 +16,14 @@ import { TOOL_CALL_ARGS_MISMATCH, TOOL_CALL_NAME_MISMATCH, TOOL_CALL_UNBOUND, TO
 
 /**
  * 服务端的权威 transcript（docs/22 §4.3 第 2 步，问题 C）—— 对抗性用例：runner 不可信，它送来的上下文、上报的消息、
- * 发起的工具调用 / 派发都可以是伪造的。脚本化上游记下的 `requests` 就是服务端真正发出去的请求，所以这里直接断言
+ * 发起的工具调用 / 发起都可以是伪造的。脚本化上游记下的 `requests` 就是服务端真正发出去的请求，所以这里直接断言
  * 「伪造的东西没有进上游，也没有落库」：
  *
  * - 模型请求体里的 `context`（历史、用户原话、工具结果、系统提示、工具表）一律不用（runner 本来只送空的，见 gateway.test 的请求体上限）；
  *   消息第 7 版起根本不上报（解析器拒收，见 gateway.test）；下一轮的上下文来自库里的服务端 transcript；
  * - `/canvas/tool`、`/agent/delegate` 必须对上服务端回复里还没有结果的那次调用（id、名字、参数），对不上的不执行；
  * - 工具参数过长：掐断那条回复，作为工具错误结果回给模型，这一轮继续；
- * - 子 agent 各自一份 transcript，过程不进父 agent；`load_skill` 之后同一轮的下一次请求就带上新工具。
+ * - 被调用的 agent 各自一份 transcript，过程不会进到入口 agent；`load_skill` 之后同一轮的下一次请求就带上新工具。
  */
 
 let faux: ScriptedModel | null = null
@@ -261,7 +261,7 @@ describe('工具调用绑定到服务端的回复', () => {
     const { events } = await run(runtime, doc, '派个子任务')
     const reply = runtime.sent.find((entry) => entry.route === GATEWAY_ROUTES.delegate)?.reply
     expect(reply).toMatchObject({ ok: false, message: expect.stringContaining('不一致') })
-    // 只请求了父 agent 两次：子 agent 没被派出
+    // 只请求了调用方两次：被调用的 agent 没被发起
     expect(faux!.requests).toHaveLength(2)
     expect(events.filter((event) => event.type === AgentEventType.CUSTOM && event.name === 'agent.subtask')).toHaveLength(0)
     expect(parentResult).toBe(TOOL_NOT_EXECUTED)
@@ -354,8 +354,8 @@ describe('工具参数过长（pi #9265）', () => {
   })
 })
 
-describe('子 agent 与技能', () => {
-  it('子 agent 各自一份 transcript：它看不到父 agent 的对话，它的过程不进父 agent 的请求和落库的上下文', async () => {
+describe('被调用的 agent 与技能', () => {
+  it('被调用的 agent 各自一份 transcript：它看不到入口 agent 的对话，它的过程不会进到入口 agent 的请求和落库的上下文', async () => {
     const doc = new Y.Doc()
     const contexts: { sub: boolean; text: string }[] = []
     const route: ScriptedStep = (context) => {
@@ -376,13 +376,13 @@ describe('子 agent 与技能', () => {
     expect(parents).toHaveLength(2)
     for (const item of subs) expect(item.text).not.toContain('PARENT_ONLY_TEXT')
     expect(subs[1]!.text).toContain('SUB_PROCESS_TEXT')
-    // 父 agent 只拿到结果摘要（含子 agent 的最终回复），不含它的过程
+    // 调用方只拿到结果摘要（含被调用的 agent 的最终回复），不含它的过程
     expect(parents[1]!.text).toContain('SUB_FINAL_REPLY')
     expect(parents[1]!.text).not.toContain('SUB_PROCESS_TEXT')
     expect(JSON.stringify(runtime.store.rows.get(threadId)!.llmMessages)).not.toContain('SUB_PROCESS_TEXT')
   })
 
-  it('父 agent load_skill 之后同一轮的下一次请求就带上新工具（服务端插的 toolsAdded）；runner 塞进请求体的工具表不算', async () => {
+  it('入口 agent load_skill 之后同一轮的下一次请求就带上新工具（服务端插的 toolsAdded）；runner 塞进请求体的工具表不算', async () => {
     const doc = new Y.Doc()
     seedText(doc, 'd1', '导演台', '', 'director')
     const tools: string[][] = []

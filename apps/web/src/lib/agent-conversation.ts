@@ -137,7 +137,7 @@ function findToolCall(conversation: AgentConversation, toolCallId: string) {
   return null
 }
 
-/** 还挂着「运行中」的工具调用 / 子任务在一轮结束时一律算出错 —— 留着会是一个永远在转的圈 */
+/** 还挂着「运行中」的工具调用 / 任务在一轮结束时一律算出错 —— 留着会是一个永远在转的圈 */
 function settleRunningTools(message: AssistantMessage | null) {
   for (const call of message?.toolCalls ?? []) {
     if (call.status === "running") call.status = "error"
@@ -150,8 +150,8 @@ function settleRunningTools(message: AssistantMessage | null) {
 }
 
 /**
- * 子任务条目（docs/20 §3.10.11）：派发时那一帧是这一项的完整样子 —— 解析过（畸形的丢掉）再按 id 整条替换进它所属的 assistant 消息。
- * 属于哪条消息：本轮那条；还没有（理论上不会：派发之前一定有那次 delegate_task 的 TOOL_CALL_START）就按 toolCallId 找。
+ * 任务条目（docs/20 §3.10.11）：发起时那一帧是这一项的完整样子 —— 解析过（畸形的丢掉）再按 id 整条替换进它所属的 assistant 消息。
+ * 属于哪条消息：本轮那条；还没有（理论上不会：发起之前一定有那次 delegate_task 的 TOOL_CALL_START）就按 toolCallId 找。
  */
 function applySubtask(conversation: AgentConversation, value: unknown) {
   const task = parseAgentSubtask(value)
@@ -171,8 +171,8 @@ function applySubtask(conversation: AgentConversation, value: unknown) {
 }
 
 /**
- * 子任务条目的一次变化（之后的每一帧只带变了的）：解析过再合并进同 id 的那一项（先找本轮那条 assistant，再全表找）。
- * 还没有那一项（没收到派发那一帧）就丢掉 —— 补发总是从 RUN_STARTED 起，正常不会发生
+ * 任务条目的一次变化（之后的每一帧只带变了的）：解析过再合并进同 id 的那一项（先找本轮那条 assistant，再全表找）。
+ * 还没有那一项（没收到发起那一帧）就丢掉 —— 补发总是从 RUN_STARTED 起，正常不会发生
  */
 function applySubtaskUpdate(conversation: AgentConversation, value: unknown) {
   const update = parseAgentSubtaskUpdate(value)
@@ -270,7 +270,7 @@ export function applyAgentEvent(conversation: AgentConversation, event: AgentStr
       const result = event.result
       if (result && result.role === "assistant") {
         const settled: AssistantMessage = { ...result, toolCalls: [...(result.toolCalls ?? [])] }
-        // 落定消息里的子任务同样防御着读（只留认得出的）
+        // 落定消息里的任务同样防御着读（只留认得出的）
         if (result.subtasks !== undefined) {
           const subtasks = Array.isArray(result.subtasks) ? result.subtasks.flatMap((item) => parseAgentSubtask(item) ?? []) : []
           if (subtasks.length > 0) settled.subtasks = subtasks

@@ -99,8 +99,8 @@ export interface GrantRequest {
   /** 给人看的模型名（`llm:invoke` 的资源标识） */
   model: string | null
   /**
-   * 这一轮的**总**时长上限（含子 agent，docs/20 §3.10.11）；宿主据此定 Grant 的绝对过期时间（再加一点余量）。
-   * 不是单轮上限：等子 agent 的时间不算进单轮上限，一轮开始时不知道它会不会派子 agent
+   * 这一轮的**总**时长上限（含被调用的 agent，docs/20 §3.10.11）；宿主据此定 Grant 的绝对过期时间（再加一点余量）。
+   * 不是单轮上限：等被调用的 agent 的时间不算进单轮上限，一轮开始时不知道它会不会发起任务
    */
   timeoutMs: number
   /**

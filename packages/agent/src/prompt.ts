@@ -72,11 +72,11 @@ export function systemPromptFor(input: SystemPromptInput): string {
 }
 
 /**
- * 子 agent 的提示段（docs/20 §3.10.11），接在它的系统提示末尾：它是谁派来的、预算（步数、交回的回复多长）、做完怎么交回、
- * 不能问人、遇到占用 / 冲突怎么办。数字取服务端这一轮实际的上限（`maxTurns` / `subagentReplyChars`），不写死。
- * 平台基础段里「停下来、结束这一轮、问用户」的说法对子 agent 不适用 —— 这一段明确改成「以需要确认结束」。
+ * 被调用的 agent 的提示段（docs/20 §3.10.11），接在它的系统提示末尾：它是谁派来的、预算（步数、交回的回复多长）、做完怎么交回、
+ * 不能问人、遇到占用 / 冲突怎么办。数字取服务端这一轮实际的上限（`maxTurns` / `taskReplyChars`），不写死。
+ * 平台基础段里「停下来、结束这一轮、问用户」的说法对被调用的 agent 不适用 —— 这一段明确改成「以需要确认结束」。
  */
-export function subagentPrompt(input: { maxTurns: number; replyChars: number }): string {
+export function taskPrompt(input: { maxTurns: number; replyChars: number }): string {
   return `## 你是子 agent
 你是另一个 agent（父 agent）为了一件具体的事派出来的子 agent，和它在同一张画布上、用同一套工具（不能再派子任务）。
 1. **只做任务说明（brief）里的事**。
@@ -86,8 +86,8 @@ export function subagentPrompt(input: { maxTurns: number; replyChars: number }):
 5. 别的子 agent 可能同时在改别的节点：只碰任务说明里给你的、和你要新建的节点。`
 }
 
-/** 子 agent 的第一条用户消息：任务说明 + 要处理的节点（提及，之后由 {@link expandMentions} 附上它们当前的内容） */
-export function subagentBrief(brief: string, nodeIds: readonly string[]): string {
+/** 被调用的 agent 的第一条用户消息：任务说明 + 要处理的节点（提及，之后由 {@link expandMentions} 附上它们当前的内容） */
+export function taskBrief(brief: string, nodeIds: readonly string[]): string {
   const nodes = nodeIds.length > 0 ? `\n\n要处理的节点：${nodeIds.map((id) => formatNodeMention(id)).join(' ')}` : ''
   return `【父 agent 交给你的任务】\n${brief}${nodes}`
 }

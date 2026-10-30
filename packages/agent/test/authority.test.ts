@@ -163,7 +163,7 @@ describe('签发与判权', () => {
       userId: 'u1',
       capabilities: ['flow:read', 'flow:write', 'flow:delete', 'llm:invoke'],
       model: 'Faux',
-      // Grant 的绝对过期按总时长上限算（docs/20 §3.10.11：等子 agent 的时间不算进单轮上限）
+      // Grant 的绝对过期按总时长上限算（docs/20 §3.10.11：等被调用的 agent 的时间不算进单轮上限）
       timeoutMs: 30 * 60_000,
     })
     expect(grant!.calls).toEqual(['llm:invoke', 'flow:read', 'flow:write', 'flow:delete', 'llm:invoke'])

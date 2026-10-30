@@ -11,22 +11,22 @@ import {
   PROTOCOL_MISMATCH_STATUS,
   RUNNER_PROTOCOL_VERSION,
   isModelStreamRequest,
-  parseDelegateRequest,
+  parseAgentTaskStartRequest,
   parseEventsRequest,
   parseFinishRequest,
-  parseSubagentFinishRequest,
+  parseAgentTaskFinishRequest,
   parseStsTokenRequest,
   parseToolCallRequest,
-  type DelegateRequest,
-  type DelegateResponse,
+  type AgentTaskStartRequest,
+  type AgentTaskStartResponse,
   type FinishRequest,
   type ModelStreamErrorBody,
   type ProtocolMismatchBody,
   type RunnerEvent,
   type RunnerInput,
   type StsTokenResponse,
-  type SubagentFinishRequest,
-  type SubagentFinishResponse,
+  type AgentTaskFinishRequest,
+  type AgentTaskFinishResponse,
   type ToolCallRequest,
   type ToolCallResponse,
 } from './protocol.ts'
@@ -50,7 +50,7 @@ import {
  *
  * - 管：STS（bootstrap token → run 短令牌、续期）、令牌校验（验签 + 这一轮还在 + Grant id 对得上）、
  *   请求体的大小与形状、`/events` 的批次顺序、服务端调用模型（真实 key 只在这里，见下）；
- * - 不管：判权与执行。画布工具、子 agent 的派发与交回、事件、收尾交给这一轮登记的 {@link GatewayRunHandlers}
+ * - 不管：判权与执行。画布工具、被调用的 agent 的发起与交回、事件、收尾交给这一轮登记的 {@link GatewayRunHandlers}
  *   （编排层 `session.ts` 实现，判权走这一轮的 `authorize`，执行走服务端的 `tools.ts`）。
  *   **令牌里的 scope 从来不读**：每一次调用都按 Grant 实时判（docs/22 §2 第 4 条）。
  *
@@ -99,7 +99,7 @@ const DEFAULT_MAX_RETRY_DELAY_MS = 60_000
  *   （上游抛错 / 没给终止帧时是补的那条出错回复，用量为 0），编排层收尾时要等它；拿不到定稿（不该发生）给 null。`frame`：终止帧之前的每一帧，写给 runner **之前**交给编排层一份
  *   （界面上的文字流由服务端从这里产生，docs/22 §4.3 第 3 步；编排层抛错不影响下发）；
  * - `refuse`：开流之前拒绝（`{ error }` + 状态码），不调上游；
- * - `fail`：开流、只发一帧 `error`（如子 agent 步数用完），不调上游。
+ * - `fail`：开流、只发一帧 `error`（如被调用的 agent 步数用完），不调上游。
  */
 export type ModelRequestDecision =
   | {
@@ -116,10 +116,10 @@ export type ModelRequestDecision =
 export interface GatewayRunHandlers {
   input(): Promise<RunnerInput>
   tool(request: ToolCallRequest): Promise<ToolCallResponse>
-  /** 派一个子 agent（docs/20 §3.10.11）：发起者、上限、转交占用都由编排层判；拒绝是 `{ ok: false }`，不是 HTTP 错误 */
-  delegate(request: DelegateRequest): Promise<DelegateResponse>
-  /** 一个子 agent 做完了：编排层释放它的占用、拼好给父 agent 的结果 */
-  agentFinish(request: SubagentFinishRequest): Promise<SubagentFinishResponse>
+  /** 发起任务（docs/20 §3.10.11）：发起者、上限、转交占用都由编排层判；拒绝是 `{ ok: false }`，不是 HTTP 错误 */
+  delegate(request: AgentTaskStartRequest): Promise<AgentTaskStartResponse>
+  /** 一个被调用的 agent 做完了：编排层释放它的占用、拼好给调用方的结果 */
+  agentFinish(request: AgentTaskFinishRequest): Promise<AgentTaskFinishResponse>
   /** 同步处理一批事件（批内按顺序；批与批之间网关保证不并发、不乱序） */
   events(events: RunnerEvent[]): void
   finish(request: FinishRequest): void
@@ -628,12 +628,12 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
         return json(await handlers.tool(body))
       }
       case GATEWAY_ROUTES.delegate: {
-        const body = parseDelegateRequest(await readJson(request))
+        const body = parseAgentTaskStartRequest(await readJson(request))
         if (!body) throw new GatewayHttpError(400, '派子任务的请求不对')
         return json(await handlers.delegate(body))
       }
       case GATEWAY_ROUTES.agentFinish: {
-        const body = parseSubagentFinishRequest(await readJson(request))
+        const body = parseAgentTaskFinishRequest(await readJson(request))
         if (!body) throw new GatewayHttpError(400, '子任务收尾的请求不对')
         return json(await handlers.agentFinish(body))
       }

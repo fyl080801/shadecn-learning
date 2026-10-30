@@ -105,7 +105,7 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  * - `AGENT_RUN_IDLE_TIMEOUT_MS`：一个 run 的空闲上限（默认 120 秒）：网关上既没有在途请求、也这么久没有新请求就停下；
  * - `AGENT_MAX_OUTPUT_TOKENS`：每次模型请求的输出 token 上限（docs/22 §4.3）。模型请求由服务端发、参数完全由服务端定，
  *   实际取 min(模型的 maxTokens, 它)；不配按 16384。它也决定了工具参数最长能有多长（pi #9265 的缓解之一）；
- * - `AGENT_RUN_TOTAL_TIMEOUT_MS`：一轮含它全部子 agent 的总时长上限（墙钟，默认 30 分钟，docs/20 §3.10.11）：等子 agent 的时间不算进单轮上限，
+ * - `AGENT_RUN_TOTAL_TIMEOUT_MS`：一轮含它全部被调用的 agent 的总时长上限（墙钟，默认 30 分钟，docs/20 §3.10.11）：等被调用的 agent 的时间不算进单轮上限，
  *   由它封顶；沙箱硬期限（`deadlineMs` / `activeDeadlineSeconds`）和 Grant 的绝对过期按它算。
  */
 export const agentConfig = {

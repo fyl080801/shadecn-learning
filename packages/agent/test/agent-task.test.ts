@@ -35,13 +35,13 @@ import { gatewayFetch, registerScriptedModel, TEST_GATEWAY_URL, type ScriptedSte
 import { TOOL_CALL_UNBOUND } from '../src/transcript.ts'
 
 /**
- * 子 agent（docs/20 §3.10.11，F19，验收 16 / 21 / 22）：走完整的二期路径（进程内 runner → 网关 → 编排层 → 脚本化上游）。
+ * 被调用的 agent（docs/20 §3.10.11，F19，验收 16 / 21 / 22）：走完整的二期路径（进程内 runner → 网关 → 编排层 → 脚本化上游）。
  *
- * 子 agent 和父 agent 的模型请求都打到同一个脚本化上游，而且几个子 agent 是**并行**的 —— 请求的先后不固定，
- * 所以这里不按顺序排回复，而是一个「路由」：每次请求看系统提示（子 agent 的带「你是子 agent」）和第一条用户消息（它的任务说明）
- * 决定是谁、回什么。守的是：同批派出的并行执行并拿回结果摘要；只有一层（工具里没有、服务端也拒）；上限服务端判；
- * 随父 run 一起停；失败 / 需要确认交回父 agent；占用转交、子 agent 结束释放、同一轮的两个子 agent 互相算别人；
- * 步数按 agent 各算、工具调用次数全轮共用；等子 agent 的时间不算单轮时长、总时长上限封顶；子任务条目的映射、落库与补发。
+ * 被调用的 agent 和入口 agent 的模型请求都打到同一个脚本化上游，而且几个被调用的 agent 是**并行**的 —— 请求的先后不固定，
+ * 所以这里不按顺序排回复，而是一个「路由」：每次请求看系统提示（被调用的 agent 的带「你是被调用的 agent」）和第一条用户消息（它的任务说明）
+ * 决定是谁、回什么。守的是：同批发起的并行执行并拿回结果摘要；只有一层（工具里没有、服务端也拒）；上限服务端判；
+ * 随这一轮 一起停；失败 / 需要确认交回调用方；占用转交、被调用的 agent 结束释放、同一轮的两个被调用的 agent 互相算别人；
+ * 步数按 agent 各算、工具调用次数全轮共用；等被调用的 agent 的时间不算单轮时长、总时长上限封顶；任务条目的映射、落库与补发。
  */
 
 afterEach(() => {
@@ -50,10 +50,10 @@ afterEach(() => {
 
 const profiles = async (ids: string[]) => new Map(ids.map((id) => [id, { id, name: `名字-${id}`, avatarUrl: null }]))
 
-/** 一次模型请求是谁发的：父 agent，或某个子 agent（按它任务说明的第一行认） */
+/** 一次模型请求是谁发的：调用方，或某个被调用的 agent（按它任务说明的第一行认） */
 interface Turn {
   context: Context
-  /** null = 父 agent */
+  /** null = 调用方 */
   brief: string | null
   /** 这个 agent 第几次请求模型（从 1 起） */
   step: number
@@ -183,17 +183,17 @@ async function start(runtime: ReturnType<typeof setup>, doc: Y.Doc, text = '开�
   return Object.assign(started, { events })
 }
 
-/** 派发时那一帧（完整条目） */
+/** 发起时那一帧（完整条目） */
 const subtaskFrames = (events: AgentStreamEvent[]) =>
   events.flatMap((event) => (event.type === AgentEventType.CUSTOM && event.name === AGENT_SUBTASK_EVENT ? [event.value] : []))
 
-/** 两种子任务帧（完整条目 + 之后的变化） */
+/** 两种任务帧（完整条目 + 之后的变化） */
 const allSubtaskFrames = (events: AgentStreamEvent[]) =>
   events.filter(
     (event) => event.type === AgentEventType.CUSTOM && (event.name === AGENT_SUBTASK_EVENT || event.name === AGENT_SUBTASK_UPDATE_EVENT),
   )
 
-/** 实时流里的子任务帧依次折起来（首帧完整、之后合并变化，和前端一样）：补发 / 只读旁观看到的条目 */
+/** 实时流里的任务帧依次折起来（首帧完整、之后合并变化，和前端一样）：补发 / 只读旁观看到的条目 */
 function foldSubtasks(events: AgentStreamEvent[]): AgentSubtaskView[] {
   const views: AgentSubtaskView[] = []
   for (const event of allSubtaskFrames(events)) {
@@ -240,8 +240,8 @@ function latch(n: number, timeoutMs = 2000) {
   }
 }
 
-describe('同批派出、并行执行、拿回结果摘要（验收 21）', () => {
-  it('父 agent 同一批调三个 delegate_task：三个子 agent 同时在跑，各改各的节点，父 agent 收到三份结果；子 agent 的过程不进父 agent 的上下文', async () => {
+describe('同批发起、并行执行、拿回结果摘要（验收 21）', () => {
+  it('调用方同一批调三个 delegate_task：三个被调用的 agent 同时在跑，各改各的节点，调用方收到三份结果；被调用的 agent 的过程不会进到入口 agent 的上下文', async () => {
     const doc = new Y.Doc()
     for (const id of ['n1', 'n2', 'n3']) seedText(doc, id)
     const together = latch(3)
@@ -253,7 +253,7 @@ describe('同批派出、并行执行、拿回结果摘要（验收 21）', () =
         return say('三个都做完了')
       }
       const id = turn.brief.slice(2)
-      // 三个子 agent 都发出了第一次请求才放行：顺序执行永远等不齐
+      // 三个被调用的 agent 都发出了第一次请求才放行：顺序执行永远等不齐
       if (turn.step === 1) {
         await together.arrive()
         return call('update_node', { id, data: { text: `新-${id}` } })
@@ -264,7 +264,7 @@ describe('同批派出、并行执行、拿回结果摘要（验收 21）', () =
     await run.done
 
     expect(['n1', 'n2', 'n3'].map((id) => dataText(doc, id))).toEqual(['新-n1', '新-n2', '新-n3'])
-    // 父 agent 拿回的是三份结果摘要：状态、改过的节点、最终回复（不是它们的过程）
+    // 调用方拿回的是三份结果摘要：状态、改过的节点、最终回复（不是它们的过程）
     expect(parentResults).toHaveLength(3)
     for (const id of ['n1', 'n2', 'n3']) {
       const result = parentResults.find((text) => text.includes(`改 ${id}`))!
@@ -273,7 +273,7 @@ describe('同批派出、并行执行、拿回结果摘要（验收 21）', () =
       expect(result).toContain(`${id} 改好了`)
       expect(result).not.toContain('update_node')
     }
-    // 子 agent 的工具里没有 delegate_task，有 request_confirmation；父 agent 有 delegate_task、没有 request_confirmation
+    // 被调用的 agent 的工具里没有 delegate_task，有 request_confirmation；调用方有 delegate_task、没有 request_confirmation
     const subTurn = runtime.turns.find((turn) => turn.brief !== null)!
     expect(subTurn.tools).not.toContain('delegate_task')
     expect(subTurn.tools).toContain('request_confirmation')
@@ -283,7 +283,7 @@ describe('同批派出、并行执行、拿回结果摘要（验收 21）', () =
 
     const last = finished(run.events)
     expect(last.outcome).toEqual({ type: 'success' })
-    // 子任务条目：三条，完成，挂在各自的 delegate_task 上；父 agent 的 toolCalls 里只有三个 delegate_task
+    // 任务条目：三条，完成，挂在各自的 delegate_task 上；调用方的 toolCalls 里只有三个 delegate_task
     const subtasks = last.result.subtasks!
     expect(subtasks.map((task) => [task.brief, task.status, task.changedNodeIds])).toEqual(
       expect.arrayContaining([
@@ -299,11 +299,11 @@ describe('同批派出、并行执行、拿回结果摘要（验收 21）', () =
       expect(task.text).toMatch(/改好了/)
       expect(task.finishedAt).toBeGreaterThanOrEqual(task.startedAt)
     }
-    // 实时流里子 agent 的工具调用不是 TOOL_CALL_START（那只给父 agent 的）
+    // 实时流里被调用的 agent 的工具调用不是 TOOL_CALL_START（那只给调用方的）
     const toolStarts = run.events.filter((event) => event.type === AgentEventType.TOOL_CALL_START)
     expect(toolStarts.map((event) => (event as { toolCallName: string }).toolCallName)).toEqual(['delegate_task', 'delegate_task', 'delegate_task'])
 
-    // 落库：assistant 消息带着子任务条目（刷新后一样）；模型上下文里没有子 agent 的消息
+    // 落库：assistant 消息带着任务条目（刷新后一样）；模型上下文里没有被调用的 agent 的消息
     const conversationId = (run.events[0] as { threadId: string }).threadId
     const stored = runtime.store.rows.get(conversationId)!
     const assistant = stored.messages.find((message): message is Extract<AgentChatMessage, { role: 'assistant' }> => message.role === 'assistant')!
@@ -312,11 +312,11 @@ describe('同批派出、并行执行、拿回结果摘要（验收 21）', () =
     expect(llmText).not.toContain('父 agent 交给你的任务')
     expect(llmText).not.toContain('update_node')
     expect(llmText).toContain('delegate_task')
-    // 占用：子 agent 结束时都释放了
+    // 占用：被调用的 agent 结束时都释放了
     expect(await runtime.leases.list('flow-1')).toEqual(new Map())
   })
 
-  it('任务列表那一项带着在跑的子任务数；补发（中途接回）和发起者看到的逐帧相同', async () => {
+  it('任务列表那一项带着在跑的任务数；补发（中途接回）和发起者看到的逐帧相同', async () => {
     const doc = new Y.Doc()
     seedText(doc, 'n1')
     const both = latch(2)
@@ -341,18 +341,18 @@ describe('同批派出、并行执行、拿回结果摘要（验收 21）', () =
     gate()
     await run.done
     expect(replayed).toEqual(run.events)
-    // 结束后列表里没有它（子任务数随之归零）
+    // 结束后列表里没有它（任务数随之归零）
     expect(runtime.changes.at(-1)).toEqual([])
   })
 })
 
-describe('只有一层：子 agent 不能再派（验收 21）', () => {
-  it('子 agent 的工具里没有 delegate_task；拿着这一轮的令牌伪造子 agent 发起的派发、经 /canvas/tool 点名 delegate_task，都被拒', async () => {
+describe('只有一层：被调用的 agent 不能再派（验收 21）', () => {
+  it('被调用的 agent 的工具里没有 delegate_task；拿着这一轮的令牌伪造被调用的 agent 发起的发起、经 /canvas/tool 点名 delegate_task，都被拒', async () => {
     const doc = new Y.Doc()
     const forged: { delegate?: unknown; tool?: unknown; load?: unknown } = {}
     const runtime: ReturnType<typeof setup> = setup(async (turn) => {
       if (turn.brief === null) return turn.step === 1 ? calls(delegate('试试再派')) : say('好')
-      // 子 agent 第一次请求模型时：拿父 run 的令牌、以它自己的 agent id 伪造请求
+      // 被调用的 agent 第一次请求模型时：拿这一轮的令牌、以它自己的 agent id 伪造请求
       const assigned = runtime.sent.find((item) => item.route === GATEWAY_ROUTES.delegate)!
       const token = assigned.token!
       const agentId = (assigned.reply as { agent: { agentId: string } }).agent.agentId
@@ -375,15 +375,15 @@ describe('只有一层：子 agent 不能再派（验收 21）', () => {
     expect(subTurn.tools).not.toContain('delegate_task')
     expect(forged.delegate).toMatchObject({ ok: false, message: expect.stringContaining('只有一层') })
     expect(forged.tool).toMatchObject({ isError: true, message: 'Tool delegate_task not found' })
-    // load_skill('delegate') 以前到 loadSkill 才被「只有一层」拒；第 2 步起它先得对上子 agent 回复里的一次调用 —— 伪造的对不上
+    // load_skill('delegate') 以前到 loadSkill 才被「只有一层」拒；第 2 步起它先得对上被调用的 agent 回复里的一次调用 —— 伪造的对不上
     expect(forged.load).toMatchObject({ isError: true, message: TOOL_CALL_UNBOUND })
-    // 只派出了父 agent 的那一个
+    // 只发起了调用方的那一个
     expect(finished(run.events).result.subtasks).toHaveLength(1)
   })
 })
 
-describe('子 agent 按需加载技能（docs/23 §3.3）', () => {
-  it('子 agent load_skill 之后，它的下一次请求就带上新工具', async () => {
+describe('被调用的 agent 按需加载技能（docs/23 §3.3）', () => {
+  it('被调用的 agent load_skill 之后，它的下一次请求就带上新工具', async () => {
     const doc = new Y.Doc()
     seedText(doc, 'n1')
     const runtime = setup(async (turn) => {
@@ -403,7 +403,7 @@ describe('子 agent 按需加载技能（docs/23 §3.3）', () => {
 })
 
 describe('上限服务端判（验收 21）', () => {
-  it('同时上限 2、累计上限 3：第一批三个里一个因「同时」被拒；第二批两个里一个因「累计」被拒 —— 拒绝是给父 agent 的工具错误，不停整轮', async () => {
+  it('同时上限 2、累计上限 3：第一批三个里一个因「同时」被拒；第二批两个里一个因「累计」被拒 —— 拒绝是给调用方的工具错误，不停整轮', async () => {
     const doc = new Y.Doc()
     const batches: string[][] = []
     const runtime = setup(
@@ -420,7 +420,7 @@ describe('上限服务端判（验收 21）', () => {
         }
         return say(`${turn.brief} 完成`)
       },
-      { limits: { maxSubagents: 2, maxSubagentsPerRun: 3 } },
+      { limits: { maxConcurrentTasks: 2, maxTasksPerRun: 3 } },
     )
     const run = await start(runtime, doc)
     await run.done
@@ -429,13 +429,13 @@ describe('上限服务端判（验收 21）', () => {
     expect(batches[0]!.filter((text) => text.includes('子任务完成'))).toHaveLength(2)
     expect(batches[1]!.filter((text) => text.includes('达到上限 3'))).toHaveLength(1)
     expect(batches[1]!.filter((text) => text.includes('子任务完成'))).toHaveLength(1)
-    // 被拒的那几个没有子任务条目
+    // 被拒的那几个没有任务条目
     expect(finished(run.events).result.subtasks).toHaveLength(3)
   })
 })
 
-describe('随父 run 一起停（验收 21）', () => {
-  it('子 agent 正在请求模型时点停止：这一轮 cancelled，子任务条目标成失败（已中止），占用释放', async () => {
+describe('随这一轮 一起停（验收 21）', () => {
+  it('被调用的 agent 正在请求模型时点停止：这一轮 cancelled，任务条目标成失败（已中止），占用释放', async () => {
     const doc = new Y.Doc()
     seedText(doc, 'n1')
     let waiting = false
@@ -475,7 +475,7 @@ function withUsage(message: AssistantMessage, tokens: { input: number; output: n
 }
 
 describe('模型用量落进运行日志（docs/22 §4.3 第 5 步）', () => {
-  it('父 agent 与子 agent 的每次请求都累加进这一轮；子 agent 中途失败的那次请求报了的部分也算；费用按模型价格算', async () => {
+  it('调用方与被调用的 agent 的每次请求都累加进这一轮；被调用的 agent 中途失败的那次请求报了的部分也算；费用按模型价格算', async () => {
     const doc = new Y.Doc()
     const runLog = createMemoryRunLog()
     const runtime = setup(
@@ -505,8 +505,8 @@ describe('模型用量落进运行日志（docs/22 §4.3 第 5 步）', () => {
   })
 })
 
-describe('失败与需要确认交回父 agent', () => {
-  it('子 agent 的模型出错：delegate_task 回「失败 + 原因」，父 agent 接着做完这一轮', async () => {
+describe('失败与需要确认交回调用方', () => {
+  it('被调用的 agent 的模型出错：delegate_task 回「失败 + 原因」，调用方接着做完这一轮', async () => {
     const doc = new Y.Doc()
     let parentSaw = ''
     const runtime = setup(async (turn) => {
@@ -525,11 +525,11 @@ describe('失败与需要确认交回父 agent', () => {
     expect(last.outcome).toEqual({ type: 'success' })
     expect(last.result.text).toContain('换个做法')
     expect(last.result.subtasks).toMatchObject([{ status: 'failed', error: expect.stringContaining('上游炸了') }])
-    // 父 agent 那条 delegate_task 是出错状态
+    // 调用方那条 delegate_task 是出错状态
     expect(last.result.toolCalls).toMatchObject([{ name: 'delegate_task', status: 'error' }])
   })
 
-  it('子 agent 调 request_confirmation：以「需要确认 + 问题」结束，父 agent 收到问题自己决定', async () => {
+  it('被调用的 agent 调 request_confirmation：以「需要确认 + 问题」结束，调用方收到问题自己决定', async () => {
     const doc = new Y.Doc()
     let parentSaw = ''
     const runtime = setup(async (turn) => {
@@ -546,14 +546,14 @@ describe('失败与需要确认交回父 agent', () => {
     expect(parentSaw).toContain('这个节点要不要等对方改完？')
     const last = finished(run.events)
     expect(last.result.subtasks).toMatchObject([{ status: 'needs_confirmation', question: '这个节点要不要等对方改完？' }])
-    // request_confirmation 不列进它的工具调用；父 agent 的 delegate_task 不是错误
+    // request_confirmation 不列进它的工具调用；调用方的 delegate_task 不是错误
     expect(last.result.subtasks![0]!.toolCalls).toEqual([])
     expect(last.result.toolCalls).toMatchObject([{ name: 'delegate_task', status: 'done' }])
   })
 })
 
 describe('占用按 agent（验收 16）', () => {
-  it('父 agent 占着的节点派给子 agent：占用转给它，它写不被拒；它结束时释放、不还给父 agent；父 agent 之后再写要重读（子 agent 改过）', async () => {
+  it('调用方占着的节点派给被调用的 agent：占用转给它，它写不被拒；它结束时释放、不还给调用方；调用方之后再写要重读（被调用的 agent 改过）', async () => {
     const doc = new Y.Doc()
     seedText(doc, 'n1')
     const seen: { subLease?: NodeLease | null; afterSub?: NodeLease | null; subResult?: string; parentWrite?: string } = {}
@@ -581,14 +581,14 @@ describe('占用按 agent（验收 16）', () => {
     expect(seen.subLease).toMatchObject({ runId: run.runId, agentId: expect.stringMatching(/^sub_/) })
     expect(seen.subResult).not.toContain('正在被')
     expect(dataText(doc, 'n1')).toBe('子改的')
-    // 子 agent 结束时释放了，没有还给父 agent
+    // 被调用的 agent 结束时释放了，没有还给调用方
     expect(seen.afterSub).toBeNull()
-    // 子 agent 改过它的 data：父 agent 读过之后它被「别人」（同一轮的子任务）改了，先重读
+    // 被调用的 agent 改过它的 data：调用方读过之后它被「别人」（同一轮的任务）改了，先重读
     expect(seen.parentWrite).toContain('在你读过之后被改过')
     expect(seen.parentWrite).toContain('这一轮的子任务')
   })
 
-  it('两个子 agent 写同一个节点：先写的占着；后写的先因「改过」被拒（同一轮的别的 agent 也算别人），重读后因「正在改」被拒，按规矩以「需要确认」交回', async () => {
+  it('两个被调用的 agent 写同一个节点：先写的占着；后写的先因「改过」被拒（同一轮的别的 agent 也算别人），重读后因「正在改」被拒，按规矩以「需要确认」交回', async () => {
     const doc = new Y.Doc()
     seedText(doc, 'n2')
     let aWrote!: () => void
@@ -619,7 +619,7 @@ describe('占用按 agent（验收 16）', () => {
     await run.done
     expect(b[0]).toContain('在你读过之后被改过（这一轮的子任务')
     expect(b[0]).toContain('request_confirmation')
-    // 读的结果里标出占用者是同一轮的另一个子任务
+    // 读的结果里标出占用者是同一轮的另一个任务
     expect(b[1]).toContain('【节点占用】')
     expect(b[1]).toContain('这一轮的另一个子任务')
     expect(b[2]).toContain('正在被这一轮的另一个子任务')
@@ -631,7 +631,7 @@ describe('占用按 agent（验收 16）', () => {
 })
 
 describe('预算：步数按 agent 各算，工具调用次数全轮共用', () => {
-  it('单轮步数上限 3：子 agent 自己用满 3 步被结束（子任务失败），父 agent 的步数不受它影响、照常收尾', async () => {
+  it('单轮步数上限 3：被调用的 agent 自己用满 3 步被结束（任务失败），入口 agent 的步数不受它影响、照常收尾', async () => {
     const doc = new Y.Doc()
     let parentSaw = ''
     const runtime = setup(
@@ -641,14 +641,14 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
           parentSaw = turn.lastResult
           return say('它步数用完了')
         }
-        // 每一步都带一句话再调工具：结束时子任务的文字是最后这一步的真回复
+        // 每一步都带一句话再调工具：结束时任务的文字是最后这一步的真回复
         return fauxAssistantMessage([fauxText(`读第 ${turn.step} 遍`), fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' })
       },
       { limits: { maxTurns: 3 } },
     )
     const run = await start(runtime, doc)
     await run.done
-    // 父 2 步 + 子 3 步 > 3：按轮合计早就超了，但各算各的
+    // 调用方 2 步 + 被调用的 agent 3 步 > 3：按轮合计早就超了，但各算各的
     expect(finished(run.events).outcome).toEqual({ type: 'success' })
     expect(parentSaw).toContain('子任务失败')
     expect(parentSaw).toContain('步数上限 3')
@@ -658,13 +658,13 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
     expect(subModelRequests).toHaveLength(3)
     const subTools = runtime.sent.filter((entry) => entry.route === GATEWAY_ROUTES.tool && (entry.body as { agentId?: string }).agentId !== undefined)
     expect(subTools).toHaveLength(3)
-    // 子任务的文字是第 3 步的回复（不是一条被中止的空消息）
+    // 任务的文字是第 3 步的回复（不是一条被中止的空消息）
     expect(parentSaw).toContain('读第 3 遍')
     const last = foldSubtasks(run.events).at(-1)
     expect(last).toMatchObject({ status: 'failed', text: '读第 3 遍', error: '超过子任务的步数上限 3' })
   })
 
-  it('子 agent 第 maxTurns + 1 次模型请求（不守规矩的 runner）：网关只回一帧 error、不调上游，它之后的工具调用被拒', async () => {
+  it('被调用的 agent 第 maxTurns + 1 次模型请求（不守规矩的 runner）：网关只回一帧 error、不调上游，它之后的工具调用被拒', async () => {
     const doc = new Y.Doc()
     const runtime = setup(
       async (turn) => {
@@ -683,7 +683,7 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
         const body = (await request.clone().json()) as { agentId?: string }
         if (body.agentId) {
           subToolCalls += 1
-          // 子 agent 第 3 步的模型请求已经结束、工具还没执行：替它多请求一次（第 4 次）
+          // 被调用的 agent 第 3 步的模型请求已经结束、工具还没执行：替它多请求一次（第 4 次）
           if (subToolCalls === 3) {
             const res = await runtime.gateway.handle(
               new Request(`${TEST_GATEWAY_URL}/model/${encodeURIComponent(body.agentId)}/api/stream`, {
@@ -711,14 +711,14 @@ describe('预算：步数按 agent 各算，工具调用次数全轮共用', () 
       reason: 'error',
       errorMessage: '子任务的步数已达上限 3，这次请求没有发给模型',
     })
-    // 上游只收到父 2 次 + 子 3 次
+    // 上游只收到调用方 2 次 + 被调用的 agent 3 次
     expect(runtime.turns).toHaveLength(5)
     expect(refused).toMatchObject({ isError: true })
     expect(String((refused as { message?: string }).message)).toContain('子任务的步数已达上限 3')
     expect(finished(run.events).outcome).toEqual({ type: 'success' })
   })
 
-  it('工具调用上限 3（父子共用）：delegate_task 算一次，子 agent 再用两次就到顶；之后子 agent、父 agent 的调用都被拦下', async () => {
+  it('工具调用上限 3（调用方与被调用的 agent 共用）：delegate_task 算一次，被调用的 agent 再用两次就到顶；之后被调用的 agent、调用方的调用都被拦下', async () => {
     const doc = new Y.Doc()
     const results: { sub: string[]; parent: string } = { sub: [], parent: '' }
     const runtime = setup(
@@ -753,7 +753,7 @@ describe('时长（验收 22）', () => {
     },
   })
 
-  it('子 agent 跑得比单轮上限久：等它的时间不计入单轮时长，这一轮照常收尾；沙箱硬期限与 Grant 按总时长上限算', async () => {
+  it('被调用的 agent 跑得比单轮上限久：等它的时间不计入单轮时长，这一轮照常收尾；沙箱硬期限与 Grant 按总时长上限算', async () => {
     const doc = new Y.Doc()
     const specs: SandboxSpec[] = []
     const runtime = setup(
@@ -773,7 +773,7 @@ describe('时长（验收 22）', () => {
     expect(runtime.authorities.grants[0]!.request.timeoutMs).toBe(10_000)
   })
 
-  it('总时长上限到了：这一轮连同子 agent 停下，原因「超过总时长上限」', async () => {
+  it('总时长上限到了：这一轮连同被调用的 agent 停下，原因「超过总时长上限」', async () => {
     const doc = new Y.Doc()
     const runtime = setup(
       async (turn, signal) => {
@@ -790,7 +790,7 @@ describe('时长（验收 22）', () => {
     expect(last.result.subtasks).toMatchObject([{ status: 'failed', error: expect.stringContaining('超过总时长上限') }])
   })
 
-  it('没有子 agent 在跑时单轮上限照常生效', async () => {
+  it('没有被调用的 agent 在跑时单轮上限照常生效', async () => {
     const doc = new Y.Doc()
     const runtime = setup(
       async (turn, signal) => {
@@ -805,8 +805,8 @@ describe('时长（验收 22）', () => {
   })
 })
 
-describe('子任务条目的契约', () => {
-  it('派发一帧完整条目，之后每帧只带变化；依次合并 = 落定消息里的那一项', async () => {
+describe('任务条目的契约', () => {
+  it('发起一帧完整条目，之后每帧只带变化；依次合并 = 落定消息里的那一项', async () => {
     const doc = new Y.Doc()
     const runtime = setup(async (turn) => {
       if (turn.brief === null) return turn.step === 1 ? calls(delegate('建一个节点')) : say('好')
@@ -832,11 +832,11 @@ describe('子任务条目的契约', () => {
     // 新建的节点算它改过的
     const created = [...nodesMap(doc).keys()]
     expect(final[0]!.changedNodeIds).toEqual(created)
-    // 子 agent 新建的节点它占着，结束时释放
+    // 被调用的 agent 新建的节点它占着，结束时释放
     expect(await runtime.leases.list('flow-1')).toEqual(new Map())
   })
 
-  it('长任务说明 × 多次工具调用：补发量不再按「调用数 × 条目大小」放大 —— 说明只出现在派发那一帧，补发缓冲小也能中途接回', async () => {
+  it('长任务说明 × 多次工具调用：补发量不再按「调用数 × 条目大小」放大 —— 说明只出现在发起那一帧，补发缓冲小也能中途接回', async () => {
     const doc = new Y.Doc()
     const brief = `长说明${'很'.repeat(DELEGATE_BRIEF_MAX - 20)}`
     const steps = 12
@@ -878,7 +878,7 @@ describe('子任务条目的契约', () => {
 })
 
 describe('交回的结果文字（最后一条有文字的回复）', () => {
-  it('子 agent 先说了结论再调工具、下一步模型出错：交回父 agent 和条目上的都是那句结论，不是空的；不信 runner 报的文字', async () => {
+  it('被调用的 agent 先说了结论再调工具、下一步模型出错：交回调用方和条目上的都是那句结论，不是空的；不信 runner 报的文字', async () => {
     const doc = new Y.Doc()
     let parentSaw = ''
     const runtime = setup(
@@ -905,7 +905,7 @@ describe('交回的结果文字（最后一条有文字的回复）', () => {
 })
 
 describe('调用 id：上游复用 / 不给', () => {
-  it('父 agent 两步都用 call_0 调 delegate_task、子 agent 也每步用 call_0：两次都派出，条目各挂各的那次调用', async () => {
+  it('调用方两步都用 call_0 调 delegate_task、被调用的 agent 也每步用 call_0：两次都发起，条目各挂各的那次调用', async () => {
     const doc = new Y.Doc()
     const results: string[] = []
     const runtime = setup(async (turn) => {
@@ -963,11 +963,11 @@ describe('调用 id：上游复用 / 不给', () => {
   })
 })
 
-describe('派发没成功：名额、计时、登记、占用全部退回', () => {
-  it('展开提及时读画布失败：拒绝是给父 agent 的工具错误；累计名额退回（上限 1 也能再派一次），计时恢复（之后单轮上限照常生效）', async () => {
+describe('发起没成功：名额、计时、登记、占用全部退回', () => {
+  it('展开提及时读画布失败：拒绝是给调用方的工具错误；累计名额退回（上限 1 也能再派一次），计时恢复（之后单轮上限照常生效）', async () => {
     const doc = new Y.Doc()
     seedText(doc, 'n1')
-    // 只让派发那一次的读失败（开始时的读照常）
+    // 只让发起那一次的读失败（开始时的读照常）
     let failRead = false
     const results: string[] = []
     const runtime = setup(
@@ -982,12 +982,12 @@ describe('派发没成功：名额、计时、登记、占用全部退回', () =
             failRead = false
             return callWithId('call_0', delegate('再读 n1', ['n1']))
           }
-          // 子任务都结束了：单轮计时恢复，挂住到超时
+          // 任务都结束了：单轮计时恢复，挂住到超时
           return hang(signal)
         }
         return say('读到了')
       },
-      { limits: { maxSubagentsPerRun: 1, maxSubagents: 1, timeoutMs: 400, totalTimeoutMs: 10_000, idleTimeoutMs: 5000 } },
+      { limits: { maxTasksPerRun: 1, maxConcurrentTasks: 1, timeoutMs: 400, totalTimeoutMs: 10_000, idleTimeoutMs: 5000 } },
     )
     const run = await start(runtime, doc, '开始', (canvas) => ({
       ...canvas,
@@ -1003,11 +1003,11 @@ describe('派发没成功：名额、计时、登记、占用全部退回', () =
     const last = finished(run.events)
     expect(last.result.error).toContain('超过 0.4 秒')
     expect(last.result.subtasks).toMatchObject([{ brief: '再读 n1', status: 'done' }])
-    // 派发失败的那次没有条目、没有开始帧
+    // 发起失败的那次没有条目、没有开始帧
     expect(subtaskFrames(run.events)).toHaveLength(1)
   })
 
-  it('转交占用时登记表出错：这次派发被拒，已转交的占用释放，子 agent 不留登记；工具调用次数照计', async () => {
+  it('转交占用时登记表出错：这次发起被拒，已转交的占用释放，被调用的 agent 不留登记；工具调用次数照计', async () => {
     const doc = new Y.Doc()
     seedText(doc, 'n1')
     seedText(doc, 'n2')
@@ -1043,11 +1043,11 @@ describe('派发没成功：名额、计时、登记、占用全部退回', () =
     await run.done
     expect(seen.delegate).toContain('没有派出子任务')
     expect(seen.delegate).toContain('redis 不可用')
-    // 已转交给子 agent 的 n1 释放了（不还给父 agent）；转交失败的 n2 仍是父 agent 的
+    // 已转交给被调用的 agent 的 n1 释放了（不还给调用方）；转交失败的 n2 仍是调用方的
     expect(seen.n1).toBeNull()
     expect(seen.n2).toMatchObject({ runId: run.runId })
     expect(seen.n2?.agentId ?? 'main').toBe('main')
-    // 没有子 agent 跑过、没有条目
+    // 没有被调用的 agent 跑过、没有条目
     expect(runtime.turns.filter((turn) => turn.brief !== null)).toEqual([])
     expect(finished(run.events).result.subtasks).toBeUndefined()
     // get_node ×2 + update_node ×2 + delegate_task（被拒也算）+ read_canvas = 6：正好到顶，read_canvas 还能执行

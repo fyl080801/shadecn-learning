@@ -28,7 +28,7 @@ import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/r
  *
  * 二期起 pi 跑在沙箱里的 runner 中（docs/22 §4），**映射仍在服务端这里做**；docs/22 §4.3 第 3 步起**喂进来的事件也是服务端产生的**：
  * 编排层（`session.ts` 的 `display`）按 pi 事件的同名同形（{@link ServerAgentEvent}）合成 —— 文字增量来自服务端自己调模型的流，
- * 回复定稿来自服务端的结果，工具的开始 / 结束来自服务端那条回复 + 网关的执行记录 / 服务端拼的子任务结果 / 服务端代算的拒绝。
+ * 回复定稿来自服务端的结果，工具的开始 / 结束来自服务端那条回复 + 网关的执行记录 / 服务端拼的任务结果 / 服务端代算的拒绝。
  * runner 上报的事件不再拿来产生这里的任何内容（被攻破的 runner 不能让人看到、并且落库一段模型没说过的话）；第 7 版起线上也只剩工具的开始 / 结束。
  * 映射放在服务端，是因为 runner 随时可能被杀（中止 / 失权 / 超时）：收尾帧、落库的 assistant 消息
  * 都得由服务端补齐，映射状态必须在服务端。
@@ -46,18 +46,18 @@ import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/r
  * - 思考内容（thinking）不外发：那是模型的草稿，不是给人看的回复。
  * - 画布改动通知（docs/20 §3.10.2）：CUSTOM `agent.canvas-change`，`value` 就是对话里存的那条
  *   `canvas-change` 消息。什么时候发由编排层定（跨轮差异紧跟用户消息回显；运行中的那种在它真正进入
- *   模型上下文时 —— 服务端把它插进父 agent 的 transcript、随下一次模型请求发出的那一刻），这里只管形状。
+ *   模型上下文时 —— 服务端把它插进入口 agent 的 transcript、随下一次模型请求发出的那一刻），这里只管形状。
  * - 技能加载（docs/23 §3.6）：`load_skill` **不作为工具调用条目出现**（不发 TOOL_CALL_*，也不进 assistant 消息的
  *   `toolCalls`）；网关加载成功时发 CUSTOM `agent.skill-loaded`，`value` 就是对话里存的那条 `skill-loaded` 消息。
- * - 工具调用的 id：线上的 `toolCallId` / `toolCalls[].id` 在一条 assistant 消息（一个子任务条目）里唯一。上游复用调用 id
+ * - 工具调用的 id：线上的 `toolCallId` / `toolCalls[].id` 在一条 assistant 消息（一个任务条目）里唯一。上游复用调用 id
  *   （有的端点每次回复都从 `call_0` 起）时，后来的那条加后缀 `#2`、`#3`…；同一个原始 id 的 end 归到最近一次 start 的那一条。
  *   模型上下文、工具调用日志仍用原始 id（它们本来就按批对应）。
- * - 子任务（docs/20 §3.10.11）：父 agent 的 `delegate_task` 照常是一条工具调用；子 agent 的事件（编排层按它的 agent id 归过来的）
- *   **不进**这条 assistant 消息的文字和 `toolCalls`，而是改它 `subtasks` 里对应的那一项：派发时一帧 CUSTOM `agent.subtask`
+ * - 任务（docs/20 §3.10.11）：调用方的 `delegate_task` 照常是一条工具调用；被调用的 agent 的事件（编排层按它的 agent id 归过来的）
+ *   **不进**这条 assistant 消息的文字和 `toolCalls`，而是改它 `subtasks` 里对应的那一项：发起时一帧 CUSTOM `agent.subtask`
  *   （完整条目），之后每次变化一帧 CUSTOM `agent.subtask-update`（**只带变了的**：新的 / 变了的那条工具调用、新的回复、结束时的状态）——
  *   完整条目带着最长 8000 字的任务说明和全部工具调用，逐帧重复会让补发量随调用数成倍增长。落库的 `subtasks` 是完整条目。
- *   子 agent 的文字增量不逐帧发：只在它的一条**有文字的**回复结束（message_end）时更新 `text` —— 所以 `text` 总是它最后一条有文字的回复
- *   （最后一步只调了工具、出错或被中止时也不会变成空），交回父 agent 的结果文字也取它（{@link RunEventMapper.subtaskReply}；
+ *   被调用的 agent 的文字增量不逐帧发：只在它的一条**有文字的**回复结束（message_end）时更新 `text` —— 所以 `text` 总是它最后一条有文字的回复
+ *   （最后一步只调了工具、出错或被中止时也不会变成空），交回调用方的结果文字也取它（{@link RunEventMapper.subtaskReply}；
  *   喂进来的 message_end 是服务端调模型的定稿，runner 不报）。
  *   它的 `load_skill` / `request_confirmation` 不列进它的工具调用（状态和问题已经在条目上了）。
  */
@@ -90,13 +90,13 @@ export interface RunEventMapperOptions {
   now?: () => number
 }
 
-/** 一个子任务条目里最多记多少条工具调用（落库带着它们；预算本来就全轮共用，到不了） */
+/** 一个任务条目里最多记多少条工具调用（落库带着它们；预算本来就全轮共用，到不了） */
 const SUBTASK_TOOL_CALLS_LIMIT = 100
 
-/** 子任务条目里（给人看、随对话落库）留子 agent 回复的多少字；交回父 agent 的另按 `subagentReplyChars` 截 */
+/** 任务条目里（给人看、随对话落库）留被调用的 agent 回复的多少字；交回调用方的另按 `taskReplyChars` 截 */
 export const SUBTASK_TEXT_LIMIT = 8000
 
-/** 子任务条目开始时要的东西（服务端在 `/agent/delegate` 登记时给） */
+/** 任务条目开始时要的东西（服务端在 `/agent/delegate` 登记时给） */
 export interface SubtaskStart {
   id: string
   toolCallId: string
@@ -105,7 +105,7 @@ export interface SubtaskStart {
   startedAt: number
 }
 
-/** 子任务条目结束时（`/agent/finish`，服务端已改判过状态）。回复文字不在这里：条目上已经是它最后一条有文字的回复 */
+/** 任务条目结束时（`/agent/finish`，服务端已改判过状态）。回复文字不在这里：条目上已经是它最后一条有文字的回复 */
 export interface SubtaskEnd {
   status: Exclude<AgentSubtaskStatus, 'running'>
   question?: string | null
@@ -137,7 +137,7 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…（已截断，共 ${text.length} 字）` : text
 }
 
-/** 一条消息 / 一个子任务条目里工具调用的显示 id：没用过就是原始 id，用过了（上游复用 id）加 `#2`、`#3`… */
+/** 一条消息 / 一个任务条目里工具调用的显示 id：没用过就是原始 id，用过了（上游复用 id）加 `#2`、`#3`… */
 function uniqueCallId(raw: string, used: Set<string>): string {
   let id = raw
   for (let n = 2; used.has(id); n += 1) id = `${raw}#${n}`
@@ -145,7 +145,7 @@ function uniqueCallId(raw: string, used: Set<string>): string {
   return id
 }
 
-/** assistant 消息里的文字部分拼起来（子 agent 的一条回复） */
+/** assistant 消息里的文字部分拼起来（被调用的 agent 的一条回复） */
 function assistantText(message: unknown): string {
   const content = (message as { content?: unknown }).content
   if (typeof content === 'string') return content.trim()
@@ -167,21 +167,21 @@ export interface RunEventMapper {
   /** 一次技能加载（同上，先关文字段） */
   skillLoaded(message: AgentSkillLoadedMessage): AgentStreamEvent[]
   /**
-   * 一个子任务开始了（父 agent 的 `delegate_task` 登记成功）：条目进 `subtasks`，发一帧完整条目。
-   * `start.toolCallId` 是父 agent 那次调用的**原始** id，这里换成它在 `toolCalls` 里那一条的显示 id
+   * 一个任务开始了（调用方的 `delegate_task` 登记成功）：条目进 `subtasks`，发一帧完整条目。
+   * `start.toolCallId` 是调用方那次调用的**原始** id，这里换成它在 `toolCalls` 里那一条的显示 id
    */
   subtaskStart(start: SubtaskStart): AgentStreamEvent[]
-  /** 一个子 agent 的事件（同样是编排层合成的）→ 它那一项的变化帧（只带变了的；没变化就是空数组）；认不出的 id 忽略 */
+  /** 一个被调用的 agent 的事件（同样是编排层合成的）→ 它那一项的变化帧（只带变了的；没变化就是空数组）；认不出的 id 忽略 */
   subtaskEvent(agentId: string, event: AgentEvent | ServerAgentEvent): AgentStreamEvent[]
-  /** 一个子任务结束了 */
+  /** 一个任务结束了 */
   subtaskFinish(agentId: string, end: SubtaskEnd): AgentStreamEvent[]
-  /** 这一轮的某个子任务条目（只读用）；没有为 undefined */
+  /** 这一轮的某个任务条目（只读用）；没有为 undefined */
   subtask(agentId: string): AgentSubtaskView | undefined
-  /** 子 agent 最后一条有文字的回复（服务端调模型的定稿里记的，没截短）；没有为空串 */
+  /** 被调用的 agent 最后一条有文字的回复（服务端调模型的定稿里记的，没截短）；没有为空串 */
   subtaskReply(agentId: string): string
-  /** 原始调用 id 最近一次对应的那条工具调用（父 agent 的；给了 `subagentId` 就是那个子 agent 的）；没有为 undefined */
-  toolCall(toolCallId: string, subagentId?: string): AgentToolCallView | undefined
-  /** 收尾：关掉没关的文字段，还在跑的子任务标成失败，再发 RUN_FINISHED / RUN_ERROR */
+  /** 原始调用 id 最近一次对应的那条工具调用（调用方的；给了 `taskAgentId` 就是那个被调用的 agent 的）；没有为 undefined */
+  toolCall(toolCallId: string, taskAgentId?: string): AgentToolCallView | undefined
+  /** 收尾：关掉没关的文字段，还在跑的任务标成失败，再发 RUN_FINISHED / RUN_ERROR */
   finish(outcome: RunOutcome): AgentStreamEvent[]
   /** 这一轮的 assistant 消息（随事件推进；`finish` 之后是最终态） */
   readonly message: AssistantChatMessage
@@ -205,7 +205,7 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
   /** `message.toolCalls` 里用过的显示 id */
   const callIds = new Set<string>()
   /**
-   * 子 agent id → 它的条目（就是 `message.subtasks` 里的那个对象）、它的工具调用（原始 id → 那一条）、
+   * 被调用的 agent id → 它的条目（就是 `message.subtasks` 里的那个对象）、它的工具调用（原始 id → 那一条）、
    * 条目里用过的显示 id、它最后一条有文字的回复（没截短）
    */
   const subtasks = new Map<
@@ -402,8 +402,8 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
 
     subtaskReply: (agentId) => subtasks.get(agentId)?.reply ?? '',
 
-    toolCall: (toolCallId, subagentId) =>
-      subagentId === undefined ? calls.get(toolCallId) : subtasks.get(subagentId)?.calls.get(toolCallId),
+    toolCall: (toolCallId, taskAgentId) =>
+      taskAgentId === undefined ? calls.get(toolCallId) : subtasks.get(taskAgentId)?.calls.get(toolCallId),
 
     handle(event) {
       const out: AgentStreamEvent[] = []
@@ -497,7 +497,7 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
     finish(outcome) {
       const out: AgentStreamEvent[] = []
       closeText(out)
-      // 还在跑的子任务（这一轮被停 / 出错打断的）：标成失败，各发一帧（RUN_ERROR 不带落定的消息，前端靠这一帧收住它）
+      // 还在跑的任务（这一轮被停 / 出错打断的）：标成失败，各发一帧（RUN_ERROR 不带落定的消息，前端靠这一帧收住它）
       for (const { view } of subtasks.values()) {
         if (view.status !== 'running') continue
         const update = settle(view, {

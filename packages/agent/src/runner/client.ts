@@ -6,15 +6,15 @@ import {
   PROTOCOL_MISMATCH_STATUS,
   RUNNER_PROTOCOL_VERSION,
   type ProtocolMismatchBody,
-  type DelegateRequest,
-  type DelegateResponse,
+  type AgentTaskStartRequest,
+  type AgentTaskStartResponse,
   type EventsRequest,
   type FinishRequest,
   type RunnerEvent,
   type RunnerInput,
   type StsTokenResponse,
-  type SubagentFinishRequest,
-  type SubagentFinishResponse,
+  type AgentTaskFinishRequest,
+  type AgentTaskFinishResponse,
   type ToolCallRequest,
   type ToolCallResponse,
 } from '../protocol.ts'
@@ -70,8 +70,8 @@ export interface GatewayClient {
   token(): Promise<string>
   input(): Promise<RunnerInput>
   tool(request: ToolCallRequest): Promise<ToolCallResponse>
-  delegate(request: DelegateRequest): Promise<DelegateResponse>
-  agentFinish(request: SubagentFinishRequest): Promise<SubagentFinishResponse>
+  delegate(request: AgentTaskStartRequest): Promise<AgentTaskStartResponse>
+  agentFinish(request: AgentTaskFinishRequest): Promise<AgentTaskFinishResponse>
   events(request: EventsRequest): Promise<void>
   finish(request: FinishRequest): Promise<void>
 }
@@ -149,8 +149,8 @@ export function createGatewayClient(options: GatewayClientOptions): GatewayClien
     token,
     input: () => authed<RunnerInput>(GATEWAY_ROUTES.input, {}),
     tool: (request) => authed<ToolCallResponse>(GATEWAY_ROUTES.tool, request),
-    delegate: (request) => authed<DelegateResponse>(GATEWAY_ROUTES.delegate, request),
-    agentFinish: (request) => authed<SubagentFinishResponse>(GATEWAY_ROUTES.agentFinish, request),
+    delegate: (request) => authed<AgentTaskStartResponse>(GATEWAY_ROUTES.delegate, request),
+    agentFinish: (request) => authed<AgentTaskFinishResponse>(GATEWAY_ROUTES.agentFinish, request),
     events: async (request) => {
       await authed(GATEWAY_ROUTES.events, request)
     },

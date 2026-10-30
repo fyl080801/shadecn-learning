@@ -3,7 +3,7 @@ import { computed } from "vue"
 import { parseModelError } from "./modelError"
 
 /**
- * 一轮 / 一个子任务失败的原因（docs/20 F21）。原因按 `parseModelError` 拆：认出「状态码 + 上游 JSON 错误体」时，
+ * 一轮 / 一个任务失败的原因（docs/20 F21）。原因按 `parseModelError` 拆：认出「状态码 + 上游 JSON 错误体」时，
  * 正文是体里的 `message`，下面一行灰字标状态码、错误类型、错误码，原文收进「原始报错」（展开看，可选中复制）；
  * 认不出的原样整句显示（和 pi 自己的 TUI 一样不丢字）。外层的图标、颜色、`data-role` 由使用处给。
  */

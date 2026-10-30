@@ -8,7 +8,7 @@ import {
 } from '@earendil-works/pi-agent-core'
 import { normalizeContext } from '@earendil-works/pi-ai'
 import { AGENT_DELEGATE_TOOL_NAME } from '@shadecn/shared/agent'
-import { MAIN_AGENT_ID, runnerEventOf } from '../protocol.ts'
+import { ENTRY_AGENT_ID, runnerEventOf } from '../protocol.ts'
 import { openLocalSandbox } from '../sandbox/local.ts'
 import type { Sandbox } from '../sandbox/types.ts'
 import {
@@ -64,14 +64,14 @@ export { GatewayUnauthorizedError, RunnerProtocolMismatchError } from './client.
  *   runner 执行的命令超过 `maxToolCalls`（计数和服务端同一个口径：除了 `request_confirmation` 的每次调用都计）。
  *   网关执行的工具（含 `delegate_task`、`load_skill`）的工具调用上限、单独调用都由网关在调用到达时判，这里照常发过去；
  * - 每个画布工具调用、每次模型请求之前先冲事件：旁观者先看到条目再看到画布上的改动，服务端在下一次请求时补齐上一批的结果
- *   （runner 执行的工具的结果取上报的）之前已经收到了它们。别人的改动通知不经这里：服务端在父 agent 的下一次模型请求时直接插进它的 transcript。
+ *   （runner 执行的工具的结果取上报的）之前已经收到了它们。别人的改动通知不经这里：服务端在入口 agent 的下一次模型请求时直接插进它的 transcript。
  *
- * ## 子 agent（docs/20 §3.10.11）
+ * ## 被调用的 agent（docs/20 §3.10.11）
  *
- * 父 agent 的 `delegate_task` 在这里执行：`/agent/delegate` 登记（服务端分配 id、判上限、转交占用、定好它的系统提示和技能），
+ * 调用方的 `delegate_task` 在这里执行：`/agent/delegate` 登记（服务端分配 id、判上限、转交占用、定好它的系统提示和技能），
  * 然后在**同一个进程**里再建一个 pi `Agent`（{@link runLoop}，同一套代理工具，调用带着它的 agent id），**等它做完**，
- * `/agent/finish` 交回、把服务端拼好的结果返回给父 agent。同一批里全是 `delegate_task` 时 pi 并行执行它们（`toolExecution: 'parallel'`，
- * 别的工具一律 `sequential` —— 混批时整批顺序）。子 agent：没有 `delegate`（只有一层）、有 `request_confirmation`（不能问人，以「需要确认」交回）、
+ * `/agent/finish` 交回、把服务端拼好的结果返回给调用方。同一批里全是 `delegate_task` 时 pi 并行执行它们（`toolExecution: 'parallel'`，
+ * 别的工具一律 `sequential` —— 混批时整批顺序）。被调用的 agent：没有 `delegate`（只有一层）、有 `request_confirmation`（不能问人，以「需要确认」交回）、
  * 步数各算（到了由 pi 的 `finishTurn` 结束它的循环）；工具调用次数全轮共用（`toolCalls` 一个计数）。
  * 它怎么结束的（完成 / 失败 / 需要确认）、回复文字全由服务端按它的 transcript 判，`/agent/finish` 只报「结束了」。
  *
@@ -121,8 +121,8 @@ function remoteTool(
     executionMode,
     async execute(toolCallId, args) {
       await uplink.flush()
-      // 子 agent 的调用带上它的 id（占用、「改过」、步数按 agent 分开）；父 agent 的不带
-      const reply = await client.tool({ toolCallId, name: tool.name, args, ...(agentId === MAIN_AGENT_ID ? {} : { agentId }) })
+      // 被调用的 agent 的调用带上它的 id（占用、「改过」、步数按 agent 分开）；入口 agent 的不带
+      const reply = await client.tool({ toolCallId, name: tool.name, args, ...(agentId === ENTRY_AGENT_ID ? {} : { agentId }) })
       // 服务端的报错原样交给 pi：它变成 isError 的工具结果回给模型，和在进程内抛出时一样
       if (reply.isError) throw new Error(reply.message)
       if (reply.details.loadedSkill) onLoaded?.(reply.details.loadedSkill)
@@ -131,18 +131,18 @@ function remoteTool(
   }
 }
 
-/** 一个 agent 循环（父 agent 或一个子 agent）要的东西 */
+/** 一个 agent 循环（调用方或一个被调用的 agent）要的东西 */
 interface LoopSpec {
   agentId: string
   /** 一开始就加载的技能 */
   loaded: readonly string[]
-  /** 造工具用的上下文：父 agent 的带 `delegate`，子 agent 的不带 */
+  /** 造工具用的上下文：入口 agent 的带 `delegate`，被调用的 agent 的不带 */
   context: SkillContext
-  /** 父 agent（子 agent 不能加载 `delegate`、事件带上它的 id） */
-  main: boolean
-  /** 平台给的额外工具（子 agent 的 `request_confirmation`） */
+  /** 入口 agent（被调用的 agent 不能加载 `delegate`、事件带上它的 id） */
+  entry: boolean
+  /** 平台给的额外工具（被调用的 agent 的 `request_confirmation`） */
   extraTools: AgentTool[]
-  /** 子 agent 自己的步数上限；到了由 `finishTurn` 结束它的循环（服务端另外按模型请求数硬拦） */
+  /** 被调用的 agent 自己的步数上限；到了由 `finishTurn` 结束它的循环（服务端另外按模型请求数硬拦） */
   maxTurns?: number
   signal?: AbortSignal
 }
@@ -171,7 +171,7 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
     }
 
     /**
-     * 全轮共用的工具调用计数：父 agent 和全部子 agent 加起来（docs/20 §3.10.11「预算」），口径同服务端（除了 `request_confirmation` 都计）。
+     * 全轮共用的工具调用计数：调用方和全部被调用的 agent 加起来（docs/20 §3.10.11「预算」），口径同服务端（除了 `request_confirmation` 都计）。
      * 只用来拦 runner 执行的命令（{@link localCommands}）：网关执行的到网关由服务端的计数判
      */
     let toolCalls = 0
@@ -196,8 +196,8 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
       /** 网关说加载成功了、还没并进 pi 的技能（这一批执行完、下一次请求之前在 prepareNextTurnWithContext 里并） */
       const pending: string[] = []
       const onLoaded = (id: string) => {
-        // 子 agent 不能有 delegate（只有一层）：网关本来就不给它加载，这里再挡一次
-        if (!spec.main && id === DELEGATE_SKILL_ID) return
+        // 被调用的 agent 不能有 delegate（只有一层）：网关本来就不给它加载，这里再挡一次
+        if (!spec.entry && id === DELEGATE_SKILL_ID) return
         if (offered.has(id) && !loaded.has(id) && !pending.includes(id)) pending.push(id)
       }
       const tools: AgentTool[] = [
@@ -205,7 +205,7 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
         ...spec.extraTools.map((tool) => ({ ...tool, executionMode: 'sequential' as const })),
       ]
       for (const id of spec.loaded) {
-        if (loaded.has(id) || (!spec.main && id === DELEGATE_SKILL_ID)) continue
+        if (loaded.has(id) || (!spec.entry && id === DELEGATE_SKILL_ID)) continue
         loaded.add(id)
         tools.push(...toolsOf(id, spec))
       }
@@ -255,9 +255,9 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
           return undefined
         },
         /*
-         * 子 agent 的步数上限：pi 在一步的结果都进了上下文、发 turn_end 之前调它。到了上限、这一步还调了工具（还要再请求模型）
+         * 被调用的 agent 的步数上限：pi 在一步的结果都进了上下文、发 turn_end 之前调它。到了上限、这一步还调了工具（还要再请求模型）
          * → `end`：pi 不再请求模型、照常发 turn_end + agent_end，prompt() 正常返回（不多一次被服务端拒掉的请求）。
-         * 出错 / 被中止的那一步 pi 也调它（返回值不看），照样计一步。父 agent 不设（它的上限只在服务端）。
+         * 出错 / 被中止的那一步 pi 也调它（返回值不看），照样计一步。入口 agent 不设（它的上限只在服务端）。
          */
         ...(maxTurns !== undefined
           ? {
@@ -289,10 +289,10 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
       const stop = () => agent.abort()
       spec.signal?.addEventListener('abort', stop, { once: true })
 
-      // 只报工具的开始 / 结束（runnerEventOf 丢掉别的）；子 agent 的带上它的 id：服务端据此归到它
+      // 只报工具的开始 / 结束（runnerEventOf 丢掉别的）；被调用的 agent 的带上它的 id：服务端据此归到它
       agent.subscribe((event) => {
         const slim = runnerEventOf(event)
-        if (slim) uplink.push(spec.main ? slim : { ...slim, agentId: spec.agentId })
+        if (slim) uplink.push(spec.entry ? slim : { ...slim, agentId: spec.agentId })
       })
 
       try {
@@ -305,13 +305,13 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
     }
 
     /**
-     * 父 agent 的 `delegate_task`（docs/20 §3.10.11）：网关登记 → 同一进程里跑子 agent → 交回结果。
-     * 阻塞到子 agent 做完；同一批的几个在 pi 的并行工具执行里同时跑。父 agent 被停（它的 signal）或整轮被杀时子 agent 一起停。
+     * 调用方的 `delegate_task`（docs/20 §3.10.11）：网关登记 → 同一进程里跑被调用的 agent → 交回结果。
+     * 阻塞到被调用的 agent 做完；同一批的几个在 pi 的并行工具执行里同时跑。调用方被停（它的 signal）或整轮被杀时被调用的 agent 一起停。
      */
     const delegate: NonNullable<SkillContext['delegate']> = async (toolCallId, args, signal) => {
-      // 之前攒着的事件先冲完（顺序：它们发生在这次派发之前）
+      // 之前攒着的事件先冲完（顺序：它们发生在这次发起之前）
       await uplink.flush()
-      const reply = await client.delegate({ agentId: MAIN_AGENT_ID, toolCallId, brief: args.brief, nodeIds: args.nodeIds ?? [] })
+      const reply = await client.delegate({ agentId: ENTRY_AGENT_ID, toolCallId, brief: args.brief, nodeIds: args.nodeIds ?? [] })
       if (!reply.ok) throw new Error(reply.message)
       const sub = reply.agent
       const controller = new AbortController()
@@ -320,22 +320,22 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
         if (source?.aborted) controller.abort()
         source?.addEventListener('abort', abort, { once: true })
       }
-      // 「需要确认」在这里执行（结束这个子 agent 的循环）；问的是什么、它怎么结束的，服务端按它的 transcript 判
+      // 「需要确认」在这里执行（结束这个被调用的 agent 的循环）；问的是什么、它怎么结束的，服务端按它的 transcript 判
       const confirm = createRequestConfirmationTool(() => {}) as unknown as AgentTool
       try {
         await runLoop({
           agentId: sub.agentId,
           loaded: sub.skills.loaded,
-          // 子 agent 的上下文没有 delegate：就算拿到了 delegate_task 的定义，一调也报错
+          // 被调用的 agent 的上下文没有 delegate：就算拿到了 delegate_task 的定义，一调也报错
           context: definitionContext('runner', sandbox ?? undefined),
-          main: false,
+          entry: false,
           extraTools: [confirm],
           maxTurns: sub.limits.maxTurns,
           signal: controller.signal,
         })
       } catch (err) {
-        // 子 agent 的循环抛了（pi 兜不住的那种）：照样交回 —— 怎么结束的由服务端判，原因只写 runner 自己的日志
-        console.warn(`[agent-runner] 子 agent ${sub.agentId} 的循环异常结束：${err instanceof Error ? err.message : String(err)}`)
+        // 被调用的 agent 的循环抛了（pi 兜不住的那种）：照样交回 —— 怎么结束的由服务端判，原因只写 runner 自己的日志
+        console.warn(`[agent-runner] 被调用的 agent ${sub.agentId} 的循环异常结束：${err instanceof Error ? err.message : String(err)}`)
       } finally {
         for (const source of [signal, options.signal]) source?.removeEventListener('abort', abort)
       }
@@ -346,21 +346,21 @@ export async function runAgentRunner(options: RunnerOptions): Promise<void> {
       return { content: [{ type: 'text', text: done.text }], details: { summary: done.summary, elementIds: done.changedNodeIds } }
     }
 
-    const main = await runLoop({
-      agentId: MAIN_AGENT_ID,
+    const entry = await runLoop({
+      agentId: ENTRY_AGENT_ID,
       loaded: input.skills.loaded,
       context: { ...definitionContext('runner', sandbox ?? undefined), delegate },
-      main: true,
+      entry: true,
       extraTools: [],
       ...(options.signal ? { signal: options.signal } : {}),
     })
     /*
-     * 父 agent 的循环以出错结束（模型报错，或 pi 兜住的循环失败 `handleRunFailure`：监听器 / 钩子抛错）：原因只写 runner 自己的日志
+     * 入口 agent 的循环以出错结束（模型报错，或 pi 兜住的循环失败 `handleRunFailure`：监听器 / 钩子抛错）：原因只写 runner 自己的日志
      * （驱动把 runner 的输出收进服务端日志）。服务端不收它（第 7 版起不上报 message_end），结局由服务端按自己的 transcript 判
      */
-    const last = main.state.messages.at(-1)
+    const last = entry.state.messages.at(-1)
     if (last?.role === 'assistant' && last.stopReason === 'error') {
-      console.warn(`[agent-runner] 父 agent 的循环以出错结束：${last.errorMessage ?? '（没有原因）'}`)
+      console.warn(`[agent-runner] 入口 agent 的循环以出错结束：${last.errorMessage ?? '（没有原因）'}`)
     }
     await uplink.flush()
     await client.finish({ error: null })

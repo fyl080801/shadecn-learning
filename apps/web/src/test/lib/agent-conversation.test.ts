@@ -269,7 +269,7 @@ describe("接回一轮", () => {
   })
 })
 
-describe("子任务条目（docs/20 §3.10.11）", () => {
+describe("任务条目（docs/20 §3.10.11）", () => {
   const delegateStart: AgentStreamEvent = {
     type: "TOOL_CALL_START",
     toolCallId: "call_d",
@@ -344,7 +344,7 @@ describe("子任务条目（docs/20 §3.10.11）", () => {
     ])
   })
 
-  it("畸形的帧丢掉、不抛；RUN_ERROR / 中断时还在跑的子任务标成失败", () => {
+  it("畸形的帧丢掉、不抛；RUN_ERROR / 中断时还在跑的任务标成失败", () => {
     const conversation = turn([
       started,
       echoed,
@@ -358,7 +358,7 @@ describe("子任务条目（docs/20 §3.10.11）", () => {
     expect(assistant.subtasks![0]).toMatchObject({ status: "failed" })
   })
 
-  it("落定消息（RUN_FINISHED）里的子任务替换本地拼的那份", () => {
+  it("落定消息（RUN_FINISHED）里的任务替换本地拼的那份", () => {
     const conversation = turn([
       started,
       echoed,

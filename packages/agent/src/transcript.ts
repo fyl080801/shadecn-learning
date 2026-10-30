@@ -25,14 +25,14 @@ import { REQUEST_CONFIRMATION_ALONE_REASON, REQUEST_CONFIRMATION_TOOL_NAME } fro
  * 每一段都有服务端自己的来源（谁往这里写见 `session.ts`）：
  *
  * - 开头的 system 消息：服务端的系统提示 + 这个 agent 一开始的工具（{@link createTranscript}，pi-ai 的 `createInitialSystemMessage`）；
- * - 之前几轮：库里的 `llmMessages`（父 agent；子 agent 没有）；这一轮的用户消息：服务端拼的提示词；
+ * - 之前几轮：库里的 `llmMessages`（入口 agent；被调用的 agent 没有）；这一轮的用户消息：服务端拼的提示词；
  * - assistant：服务端自己调模型的结果（{@link recordReply}，`model-stream.ts` 定稿：调用 id 已补齐、`partialJson` / `partialArgs` 已去掉）；
  * - 工具结果：在这个 agent 的下一次请求时按调用顺序补齐（{@link closeBatch}）—— 网关执行 / 拒绝的（含工具调用上限、`load_skill` 没单独调用，
- *   第 7 版起由网关在调用到达时判）取网关回给 runner 的那一份，`delegate_task` 取服务端拼的子任务结果，
+ *   第 7 版起由网关在调用到达时判）取网关回给 runner 的那一份，`delegate_task` 取服务端拼的任务结果，
  *   runner 执行的工具（`execution: 'runner'`、`request_confirmation`）是**唯一**取 runner 上报的，
  *   pi 在 runner 里就地拦下、到不了网关的那几种由服务端按 pi 的同一套规则代算（{@link recordReply} 里的预判），都不是 →「这次调用没有执行」；
  * - `load_skill` 之后的 `toolsAdded` system 消息：服务端在那一批工具结果之后自己插（{@link declareTools}，同 pi 的 `declareToolChanges` 的位置）；
- * - 别人改动的通知：父 agent 的下一次请求时由服务端追加（{@link appendUserText}）。
+ * - 别人改动的通知：入口 agent 的下一次请求时由服务端追加（{@link appendUserText}）。
  *
  * runner 里 pi 的 transcript 和这一份可以不同（通知、代算的拒绝文字它不知道），但两边看到的回复是同一条、网关回的结果是同一份，
  * 所以 runner 照常执行工具、照常请求下一步。
@@ -62,11 +62,11 @@ export interface TranscriptCall {
   readonly refused: string | null
   /** 校验过的参数（pi-ai 的 `validateToolArguments`，和 runner 那边同一个函数、同一份 schema）；被预判拒绝的为 null */
   readonly args: unknown
-  /** runner 执行的工具（结果取 runner 上报的，`delegate_task` 除外：它取服务端拼的子任务结果） */
+  /** runner 执行的工具（结果取 runner 上报的，`delegate_task` 除外：它取服务端拼的任务结果） */
   readonly local: boolean
   /** 网关已经开始执行它（同一次调用只执行一次） */
   claimed: boolean
-  /** 执行记录（网关回给 runner 的、子任务结果、runner 上报的）；还没有为 null */
+  /** 执行记录（网关回给 runner 的、任务结果、runner 上报的）；还没有为 null */
   result: ToolResultRecord | null
 }
 
@@ -309,7 +309,7 @@ function cleanAssistant(message: AssistantMessage): AssistantMessage {
 }
 
 /**
- * 父 agent 这一轮要落库的那段：用户消息之后的全部，去掉 system 消息（工具表 / `toolsAdded` 每轮由服务端重新给）、
+ * 入口 agent 这一轮要落库的那段：用户消息之后的全部，去掉 system 消息（工具表 / `toolsAdded` 每轮由服务端重新给）、
  * 调用块去掉原始参数文本、图片换占位（`slimMessage`：下一轮看不到之前的图，和以前一致）
  */
 export function persistedMessages(transcript: AgentTranscript): AgentMessage[] {

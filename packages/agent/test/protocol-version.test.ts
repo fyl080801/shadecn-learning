@@ -23,7 +23,8 @@ const RECORDED_HASHES: Record<number, string> = {
   4: '3ba28efff9089c79',
   5: '071f1a2e62c43f0c',
   6: 'bda69b3a658dc0d8',
-  7: 'd5108c293ff344ee',
+  // 7 的哈希在 P1 改名时更新过一次（只改了 TS 标识符名，线上的路由 / 字段 / 版本号都没变；docs/26 §3.9）
+  7: 'f91e3a89d6d32bbf',
 }
 
 function normalized(source: string): string {
