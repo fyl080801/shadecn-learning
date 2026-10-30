@@ -55,7 +55,7 @@ spec:
         kubernetes.io/arch: arm64
       containers:
         - name: shadecn-learning
-          image: 192.168.68.95:31443/apps/shadecn-learning:359acc1
+          image: 192.168.68.95:31443/apps/shadecn-learning:ba67509
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
@@ -111,7 +111,7 @@ spec:
               value: dev
             # 沙箱镜像和服务端同一个 tag、同一次构建：CI 写回 tag 时这一行和上面的 image 一起改（ci/workflow-template.yaml）
             - name: AGENT_SANDBOX_IMAGE
-              value: 192.168.68.95:31443/apps/shadecn-agent-sandbox:359acc1
+              value: 192.168.68.95:31443/apps/shadecn-agent-sandbox:ba67509
             # 沙箱 Pod 拉镜像用 dev 里现成的这个（kubelet 用；服务端没有读 Secret 的权限，也不需要）
             - name: AGENT_SANDBOX_K8S_PULL_SECRET
               value: harbor-pull-secret
