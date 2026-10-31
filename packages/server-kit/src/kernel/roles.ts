@@ -50,9 +50,4 @@ export function assertRolesSupported(roles: ReadonlySet<ServerRole>, options: { 
       `[roles] SERVER_ROLES=${[...roles].join(',')} 但 CLUSTER_MODE 是 single：没有 Redis 时各角色各持一份画布内容，不能拆开部署（docs/28 §3.4.2）`,
     )
   }
-  // 第 1 期：路由仍由 app.ts 静态挂、模块间还有直接调用，拆开起的进程会在运行时碰到不在本进程的东西。
-  // 等第 4 期路由随模块走、直接调用改成总线之后再放开（docs/28 §7）
-  throw new Error(
-    `[roles] SERVER_ROLES=${[...roles].join(',')}：按角色拆分部署要等 REQ-MODULES 第 4 期（docs/28 §7），现在只能全部角色一个进程`,
-  )
 }

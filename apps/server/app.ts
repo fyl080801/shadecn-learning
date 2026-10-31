@@ -5,7 +5,7 @@ import { AGENT_GATEWAY_PATH } from '@shadecn/agent/protocol'
 import type { AuthVariables } from './auth/middleware.ts'
 import { requireAuth, withSession } from './auth/middleware.ts'
 import type { ProjectVariables } from './auth/project.ts'
-import { appOrigin, isAllowedOrigin, isApiPath } from './config.ts'
+import { appOrigin, isAllowedOrigin, isApiPath, serverRoles } from './config.ts'
 import { attachPageGuard } from './frontend/guard.ts'
 import { httpLogger } from './logger/index.ts'
 import { agentGateway } from './routes/agent-gateway.ts'
@@ -18,6 +18,7 @@ import { health } from './routes/health.ts'
 import { invites } from './routes/invites.ts'
 import { notes } from './routes/notes.ts'
 import { projects } from './routes/projects.ts'
+import { roleGate } from './routes/ownership.ts'
 
 /** 前端中间件要拿到 node 原生的 req/res，所以把 Bindings 绑成 node-server 的 */
 export type ServerEnv = { Bindings: HttpBindings; Variables: AuthVariables & ProjectVariables }
@@ -39,6 +40,9 @@ app.use(
     credentials: true,
   }),
 )
+
+// 路由按角色归属（routes/ownership.ts）：本进程不扮演的角色的路由直接 404。排在会话解析之前 —— 不归这里管的请求不必查会话
+app.use('*', roleGate(serverRoles))
 
 // 先解析会话，再决定拦不拦。页面也要判登录，所以挂在 '*' 上而不只是 /api/*
 app.use('*', withSession)

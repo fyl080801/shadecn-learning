@@ -214,7 +214,8 @@ web 角色不跑 agent。`POST /api/flows/:flowId/agent/messages` 在 web 上做
 ### 3.9 构建与部署
 
 - **仍然一个产物、一个镜像**。`pnpm build` 不变；角色只是启动时的环境变量。这保住了"一个产物两种数据库"、沙箱镜像上下文等现有约束。
-- `pnpm dev:cluster` 扩展为按角色起进程：`DEV_CLUSTER_ROLES=web:3000,collab:3001,collab:3002,agent:3003`（现有的 `DEV_CLUSTER_PORTS` 继续可用，等价于每个端口全部角色）。
+- `pnpm dev:cluster` 按角色起进程：`DEV_CLUSTER_ROLES="web:3001,collab:3002,collab:3003,agent:3004"`，前面再起一个**前置代理**听 `PORT`（默认 3000），按路径分流（HTTP 和 WebSocket，同一角色轮流分），作用等同于生产的 ingress；子进程的 `APP_ORIGIN` 都是代理地址。没配它就用 `DEV_CLUSTER_PORTS`（每个端口一个全角色进程，没有代理）。
+- **路由归属是一张表、三处实现**：服务端的 `apps/server/routes/ownership.ts`（不归本进程的路由 404）、本地代理的 `apps/server/scripts/dev-route.mjs`、生产的 `k8s/ingress.yaml`。前两份由测试逐条对比。
 - k8s：每个角色一个 Deployment + Service；`web` 可保留 `Recreate` 与 PVC（SQLite 单副本部署仍然允许，但那时只能全角色一个 Pod），`collab` 用 `RollingUpdate` + HPA（指标：连接数或 CPU），`agent` 按运行中的轮次数扩容。
   ingress 按路径分流：`/ws/collaboration` 与 collab 模块的那几条 REST → collab Service，其余 → web。agent Service 只在集群内。
   `k8s/variants/` 那套"复制覆盖"的切换方式退役，由角色 Deployment 取代。
@@ -257,5 +258,5 @@ web 角色不跑 agent。`POST /api/flows/:flowId/agent/messages` 在 web 上做
 | 2 | **已做**：`@shadecn/server-kit`（内核、共享层、总线、撤权信号从 `apps/server` 搬入）；`@shadecn/mod-storage`（整个 storage 搬入，宿主只交配置）；`@shadecn/mod-collab` 契约入口；撤权改走 `revokeAccess()`、复制画布前的落库改走 `flushRoom()`（scatter-gather）。**剩余**：`routes/flows.ts` 的 `/doc` 读写仍直接 import `collab/flow-writer.ts` 和 `COLLAB_LIMITS`，第 4 期随路由一起进协同包 | ✓ | 能力开始离开 `apps/server` |
 | 3 | **已做**：collab headless（只有 agent 角色的进程挂 Hocuspocus 不接 WebSocket）+ agent 只经 `@shadecn/mod-collab/canvas-host` 拿活房间 | ✓ | — |
 | 4 | **已做**：collab 成包（`CollabPorts`、headless）、agent 成包（`AgentPorts`、惰性单例）、发起一轮改成 web 派发 / agent 执行（§3.6）。路由随模块走、按角色启动见第 5 期 | 每个包一次 | — |
-| 5 | `dev:cluster` 按角色；补 §4 的测试 | ✓ | — |
+| 5 | **已做**：路由按角色归属（`routes/ownership.ts` 的 `roleGate`），解除「非全角色拒绝启动」（单副本仍拒绝）；`dev:cluster` 按角色起进程 + 前置代理 | ✓ | 本地可按角色跑 |
 | 6 | k8s 按角色拆 Deployment、ingress 分流、HPA | ✓ | 协同独立扩容 |

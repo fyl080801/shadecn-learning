@@ -30,7 +30,9 @@ describe('assertRolesSupported：角色集和副本模式的搭配', () => {
     expect(() => assertRolesSupported(parseRoles('collab'), { clustered: false })).toThrow(/CLUSTER_MODE 是 single/)
   })
 
-  it('多副本下拆角色 → 第 1 期仍拒绝，并指向第 4 期', () => {
-    expect(() => assertRolesSupported(parseRoles('web'), { clustered: true })).toThrow(/第 4 期/)
+  it('多副本下按角色拆开 → 成立', () => {
+    for (const raw of ['web', 'collab', 'agent', 'web,collab', 'collab,agent']) {
+      expect(() => assertRolesSupported(parseRoles(raw), { clustered: true })).not.toThrow()
+    }
   })
 })
