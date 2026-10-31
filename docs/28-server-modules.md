@@ -1,6 +1,6 @@
 # REQ-MODULES 服务端模块化：底座 + 可开关能力，按角色独立部署
 
-> 状态：**规划中**。
+> 状态：**部分实现** —— 第 1 期已落地（模块内核、角色解析、生命周期收口、dev 入口与构建断言、`/api/features`）；第 2～6 期规划中。
 >
 > 前置：[REQ-SERVER](03-server-runtime.md)（单进程单端口 —— 本篇把它收窄为"**每个角色**单进程单端口"）、
 > [REQ-CLUSTER](14-clustering.md)（共享层，跨角色通信全靠它）、[REQ-COLLAB](04-realtime-collab.md)、
@@ -104,7 +104,7 @@
 - 仓库根一份 `server.config.ts`：`defineConfig({ roles, modules: { collab: {...}, storage: {...}, agent: {...} } })`。
   用 `c12` 加载：支持 `server.config.{production,development}.ts` 分层，环境变量覆盖（`SHADECN_MODULES_AGENT_ENABLED=false` 这一类），
   现有的 `.env` 变量在过渡期**继续有效**（映射到对应模块的配置项），一次只迁一个模块。
-- 每个模块的 `enabled` 默认值由模块自己定（storage 看 S3 配置齐不齐，agent 看有没有模型 key，collab 默认开）。
+- 每个模块的 `enabled` 默认值由模块自己定（storage 看 S3 配置齐不齐，agent 看有没有模型 key，collab 默认开）。**第 1 期只有这一项**（`enabled()`）；配置文件、环境变量开关、各模块的 schema 随第 4 期成包一起做。
 - 底座保留的只有：端口、host、`NODE_ENV`、数据库、共享层、日志、鉴权、origin。`agentConfig` / `s3Config` / 协同限额各归各模块。
 - `GET /api/features` 回 `{ collab, storage, agent, ... }` 布尔表，前端据此隐藏关掉的入口（agent 面板、上传按钮）。
   **这是"显示什么"，不是权限**；关掉的模块的路由根本不存在（404）。
@@ -228,7 +228,7 @@ agent 进程等于一个不对外的 collab 副本。`canvas-access.ts` 里写�
 
 | 期 | 内容 | 可独立合入 | 立刻拿到的收益 |
 |---|---|---|---|
-| 1 | 内核 + 角色 + 配置分模块；单进程全角色，行为不变；dev 入口 + 构建断言 | ✓ | 生产产物无 Vite |
+| 1 | **已做**：内核（`apps/server/kernel/`）+ 角色解析（`SERVER_ROLES`，非全角色暂拒绝）+ 模块收口生命周期（`apps/server/modules/`，路由仍静态挂、配置仍在 `config.ts`）；dev 入口 `apps/server/dev.ts` + 构建断言；`GET /api/features` | ✓ | 生产产物无 Vite |
 | 2 | 事件总线；拆掉 web → collab 的三个直接调用；flow-writer 移到共享包 | ✓ | — |
 | 3 | **spike**：collab headless + agent `canvasHost`，在 `dev:cluster` 下跑 §4.5 | ✓（spike 结论决定是否继续） | — |
 | 4 | storage / collab / agent 依次成包；agent 入口改队列 | 每个包一次 | 可按角色启动 |

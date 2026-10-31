@@ -18,18 +18,20 @@
 ### 2.1 运行方式
 
 - 开发用 `tsx watch` 直接跑 TypeScript；生产跑 esbuild 打包出来的 `output/server/index.js`，**不需要 tsx**（见 [REQ-DEPLOY](12-deployment.md)）。
-- 源码入口只有 `apps/server/index.ts` 一个：`pnpm dev` 直接跑它，`pnpm start` 跑它的打包产物。
+- 源码入口两个，一套启动流程（`apps/server/boot.ts`）：`apps/server/index.ts` 是生产入口（`pnpm start` 跑它的打包产物，也是唯一的打包入口），`apps/server/dev.ts` 是开发入口（`pnpm dev` 跑它），两者只差前端那一个模块（静态产物 vs Vite 中间件）。**Vite 只在 `dev.ts` 的依赖图里**，构建脚本断言产物里没有它（[REQ-MODULES §3.8](28-server-modules.md)）。
 - `NODE_ENV !== 'production'` 即视为开发环境。
 
 ### 2.2 启动顺序
 
 1. 加载 `.env`（`process.loadEnvFile()`，**不引入 dotenv**；真实环境变量优先于 `.env`）；
-2. `assertAuthConfig()` —— 生产环境缺鉴权配置直接终止启动；
-3. 用 `createAdaptorServer` 建 http server，**先不 listen**；
-4. 挂载协同 WebSocket 服务；
-5. 挂载前端（dev / prod 两种实现）；
+2. `assertAuthConfig()` —— 生产环境缺鉴权配置直接终止启动；副本模式、角色集同样在这一步校验；
+3. 按角色和开关选出能力模块、按依赖排序（[REQ-MODULES §3.1.3](28-server-modules.md)）；选不出合法的一组就不监听端口；
+4. 用 `createAdaptorServer` 建 http server，**先不 listen**；
+5. 按顺序装配模块：协同 WebSocket、agent 的定时器、前端（dev / prod 两种实现）……；
 6. 启动每小时一次的过期会话清扫；
 7. 开始监听。
+
+退出（SIGINT / SIGTERM）按装配的逆序收尾，每个模块各有上限（协同落库 20 秒、agent 收尾 5 秒），之后关共享层、断库、关 server。
 
 拆成"先建后听"是因为 WebSocket upgrade 和 Vite HMR 都需要拿到同一个 http server 实例。
 

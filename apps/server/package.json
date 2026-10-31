@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "pnpm db:push && tsx watch --exclude '../web/node_modules/.vite-temp/**' index.ts",
+    "dev": "pnpm db:push && tsx watch --exclude '../web/node_modules/.vite-temp/**' dev.ts",
     "dev:cluster": "pnpm db:push && node scripts/dev-cluster.mjs",
     "db:push": "tsx db/sync-cli.ts",
     "db:push:force": "tsx db/sync-cli.ts --force",

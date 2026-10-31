@@ -37,7 +37,7 @@ const children = ports.map((port, index) => {
   // 是相对 cwd 的，管不到 ../web 下面，不排掉的话每次启动都会被这次删除触发重启，无限循环
   const child = spawn(
     'pnpm',
-    ['exec', 'tsx', 'watch', '--exclude', '../web/node_modules/.vite-temp/**', 'index.ts'],
+    ['exec', 'tsx', 'watch', '--exclude', '../web/node_modules/.vite-temp/**', 'dev.ts'],
     {
       env: {
         ...process.env,

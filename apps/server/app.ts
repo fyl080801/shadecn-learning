@@ -12,6 +12,7 @@ import { agentGateway } from './routes/agent-gateway.ts'
 import { auth } from './routes/auth.ts'
 import { avatars } from './routes/avatars.ts'
 import { collab } from './routes/collab.ts'
+import { features } from './routes/features.ts'
 import { flows } from './routes/flows.ts'
 import { health } from './routes/health.ts'
 import { invites } from './routes/invites.ts'
@@ -56,6 +57,7 @@ app.use('/api/*', (c, next) => {
 
 const routes = app
   .route('/api/health', health)
+  .route('/api/features', features)
   .route('/api/auth', auth)
   .route('/api/avatars', avatars)
   .route('/api/notes', notes)

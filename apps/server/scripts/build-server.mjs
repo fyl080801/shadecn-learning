@@ -27,9 +27,9 @@
  *   其余 node_modules 里的包全部 external，运行时依赖清单就是从这些 external 反推出来的；
  * - 三个入口共用一次构建：共享的模块（config、实体、ORM 工厂、agent 的工具定义）切成公共 chunk，各入口只是薄薄一层；
  *   runner 只 import packages/agent 里沙箱那一侧的模块，不会把服务端的 config / 数据库拖进它的进程；
- * - splitting: true —— frontend/index.ts 里那句 `await import('./dev.ts')` 必须留成
- *   真正的动态 import 切到独立 chunk，否则 vite 会被提升成顶层静态依赖，
- *   生产环境根本没装 vite，一启动就崩；
+ * - splitting: true —— 三个入口共享的模块切成公共 chunk（见上一条）；
+ * - **产物里不能有 Vite**（docs/28 §3.8）：开发用的中间件只在 `apps/server/dev.ts` 入口里，生产入口 `index.ts`
+ *   不引用它；下面的 assertNoDevCode 对着 metafile 断言，谁要是把它引回 index.ts 的依赖图，构建直接失败；
  * - define __APP_BUNDLE__ —— apps/server/runtime.ts 靠它区分「源码运行」和「产物运行」；
  * - define __AGENT_BUILD_ID__ —— 本次构建的 id（packages/agent/src/build-id.ts），服务端和 runner 两个入口拿到的是同一个：
  *   网关据此发现「沙箱镜像和服务端不是同一次构建」（只打 warn；真正拦截不兼容的是协议版本，protocol.ts）。
@@ -61,12 +61,6 @@ const agentDefinitionsDir = path.join(rootDir, 'packages/agent/agents')
 const agentTextSkillsDir = path.join(rootDir, 'packages/agent/skills')
 /** runner 入口（esbuild 的第三个入口）；沙箱镜像只装它这一支用得到的东西 */
 const RUNNER_ENTRY = 'packages/agent/src/runner/main.ts'
-
-/**
- * 只在 dev 分支（output/server/dev-*.js）里用到的包，不进运行时依赖。
- * 那个 chunk 在生产永远不会被 import —— isDev 为 false 时压根走不到那句动态 import。
- */
-const DEV_ONLY = new Set(['vite'])
 
 /**
  * workspace 里的包（packages/*）。它们是 **source-only 的 TS**：没有构建产物、不发 npm，
@@ -127,6 +121,7 @@ const result = await build({
   metafile: true,
 })
 
+assertNoDevCode(result.metafile)
 await writeOutputPackageJson(collectRuntimeDeps(result.metafile))
 await writeSandboxContext(result.metafile)
 // agent 定义随产物发布：服务端从 index.js 旁边的 agents/ 读（源码运行时读 packages/agent/agents/）
@@ -154,6 +149,27 @@ const bytes = Object.values(result.metafile.outputs).reduce((sum, o) => sum + o.
 console.log(`[build:server] 构建 id ${buildId}`)
 console.log(`[build:server] output/server → ${(bytes / 1024).toFixed(1)} kB（SQLite / PostgreSQL 通用）`)
 
+/**
+ * 产物里不能有开发用的东西（docs/28 §3.8）：`apps/server/dev.ts`、`frontend/dev.ts`、`modules/frontend-dev.ts`
+ * 这几个文件，以及 `vite` 这个包。它们只在 dev 入口的依赖图里；出现在这里 = 有人从 index.ts 那边引到了它们。
+ * 以前靠「动态 import + 运行时 isDev 判断」把 vite 挡在生产之外，但 chunk 仍然在产物里；现在是打包时就不存在。
+ */
+function assertNoDevCode(metafile) {
+  const devFiles = Object.keys(metafile.inputs)
+    .map((file) => file.replaceAll('\\', '/'))
+    .filter((file) => /(^|\/)(dev|frontend\/dev|modules\/frontend-dev)\.ts$/.test(file))
+  const externals = new Set()
+  for (const output of Object.values(metafile.outputs)) {
+    for (const imported of output.imports) {
+      if (imported.external) externals.add(packageName(imported.path))
+    }
+  }
+  const problems = [...devFiles, ...(externals.has('vite') ? ['vite（包）'] : [])]
+  if (problems.length > 0) {
+    throw new Error(`产物里混进了开发用的代码：${problems.join(', ')} —— 生产入口 index.ts 不能引用它们（docs/28 §3.8）`)
+  }
+}
+
 /** 从 esbuild 的 external import 反推运行时依赖：'y-protocols/sync' → 'y-protocols' */
 function collectRuntimeDeps(metafile) {
   const names = new Set()
@@ -162,7 +178,7 @@ function collectRuntimeDeps(metafile) {
     for (const imported of output.imports) {
       if (!imported.external) continue
       const name = packageName(imported.path)
-      if (!name || DEV_ONLY.has(name)) continue
+      if (!name) continue
       names.add(name)
     }
   }
@@ -191,7 +207,7 @@ async function writeSandboxContext(metafile) {
     for (const imported of outputs[key].imports) {
       if (imported.external) {
         const name = packageName(imported.path)
-        if (name && !DEV_ONLY.has(name)) deps.add(name)
+        if (name) deps.add(name)
       } else if (outputs[imported.path]) {
         queue.push(imported.path)
       }

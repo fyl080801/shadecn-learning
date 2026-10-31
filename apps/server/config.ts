@@ -3,6 +3,7 @@ import { createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import path from 'node:path'
+import { parseRoles, type ServerRole } from './kernel/roles.ts'
 import { appRoot, isBundle, moduleDir } from './runtime.ts'
 
 /** 应用根目录：.env、data/、output/ 都以它为准 */
@@ -36,6 +37,12 @@ export const staticDir = process.env.STATIC_DIR
 export const isDev = (process.env.NODE_ENV ?? 'development') !== 'production'
 
 export const port = Number(process.env.PORT ?? 3000)
+
+/**
+ * 这个进程扮演哪些角色（REQ-MODULES，docs/28 §3.2）：`SERVER_ROLES="web,collab"`。不配 = 全部角色一个进程。
+ * 解析在 `kernel/roles.ts`；和副本模式的搭配由 `assertRolesSupported()` 在 boot 时判。
+ */
+export const serverRoles: ReadonlySet<ServerRole> = parseRoles(process.env.SERVER_ROLES)
 export const host = process.env.HOST ?? '127.0.0.1'
 
 /** /api 与 /api/* —— 这部分永远由 Hono 处理，不交给前端 */
