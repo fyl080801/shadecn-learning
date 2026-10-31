@@ -217,7 +217,10 @@
  * 等于没做 —— 默认主题给的是 `stroke: #555`，压在同样是灰的默认线色上几乎看不出来。
  * 这里换成主题色并加粗一档，选中与否一眼可辨。`:focus` 一并带上，
  * 键盘选中一条边时的反馈应该和鼠标选中一样。
+ * 两端任一节点被选中时（`flow-edge-highlighted`，FlowEdge.vue）也画成这样，但边本身不算选中。
+ * 两端的连接点跟着一起亮（`.flow-handle--active`，见下面连接点一节）。
  */
+.vue-flow__edge-path.flow-edge-highlighted,
 .vue-flow__edge.selected .vue-flow__edge-path,
 .vue-flow__edge:focus .vue-flow__edge-path,
 .vue-flow__edge:focus-visible .vue-flow__edge-path {
@@ -320,6 +323,16 @@
 .vue-flow__handle.flow-handle--origin::before,
 .vue-flow__handle.flow-handle.connecting::before {
   opacity: 1;
+}
+
+/*
+ * 接着的线处于选中的样子（线被选中，或它任一端的节点被选中；FlowNodeHandles 挂 `flow-handle--active`）：
+ * 连接点和线一起加粗。线宽 1.5 → 2.5 屏幕像素，圆的描边也按同样比例：伪元素按 16px 画、缩到 0.625，
+ * 平时 2.5px（屏幕约 1.5px），这里 4px（屏幕 2.5px）。`box-sizing: border-box`，描边往里长，
+ * 圆的外沿（连线端点接的位置）不变。
+ */
+.vue-flow__handle.flow-handle.flow-handle--active::before {
+  border-width: 4px;
 }
 
 /*

@@ -15,6 +15,7 @@ export function fakeContext(kit: NodeKit, id: string, type: string): NodePartCon
     label: ref(""),
     editor: {} as NodePartContext["editor"],
     selected: ref(false),
+    dragging: ref(false),
     mode: {
       current: ref(null),
       enter: () => false,

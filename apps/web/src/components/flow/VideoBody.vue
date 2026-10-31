@@ -12,7 +12,7 @@ import { nodeUploadOf } from "@/components/flow/node-upload"
 /**
  * 视频节点的 body —— 平时**只画预览图 `data.poster`**，不放 `<video>`：画布上几十个节点各挂一个播放器
  * （各占一个合成层）太重。鼠标移上来才由 `HoverVideo` 临时挂一个 `<video>` 盖满整个区域静音循环播放，
- * 移出就卸掉、换回预览图。没有预览图就是空占位（有视频地址但没预览图时说「暂无预览图」，移上来一样能播）。
+ * 移出就卸掉、换回预览图；拖动节点时暂停，松手接着播。没有预览图就是空占位（有视频地址但没预览图时说「暂无预览图」，移上来一样能播）。
  *
  * 没有视频时节点右上角有「上传视频」图标（`NodeUploadButton`，挂在 `badge` 区）：先在本地截一帧当预览图，再把视频和预览图一起传到 S3，
  * 两个 **S3 原始地址**经 `attachAsset` 一次写进 `data.src` / `data.poster`（一步撤销，同一步按「有没有连入」
@@ -44,6 +44,7 @@ const uploading = computed(() => nodeUploadOf(ctx))
   <HoverVideo
     :src="src"
     :poster="poster"
+    :suspended="ctx.dragging.value"
     class="overflow-hidden rounded-md bg-muted/40"
     :style="boxStyle"
     data-testid="video-body"

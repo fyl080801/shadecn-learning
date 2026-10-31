@@ -27,7 +27,12 @@ function keyOf(flowId: string, nodeId: string) {
 
 /** 这个节点此刻在不在上传（角标、body 都看它） */
 export function nodeUploadOf(ctx: NodePartContext): NodeUploadState | undefined {
-  return uploads.get(keyOf(ctx.editor.flowId.value, ctx.id))
+  return nodeUploadById(ctx.editor.flowId.value, ctx.id)
+}
+
+/** 同上，按 id 查 —— 别的节点身上的界面（底部输入框的连入预览）要看上游节点在不在传 */
+export function nodeUploadById(flowId: string, nodeId: string): NodeUploadState | undefined {
+  return uploads.get(keyOf(flowId, nodeId))
 }
 
 /**

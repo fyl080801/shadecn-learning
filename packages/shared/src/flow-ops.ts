@@ -321,6 +321,43 @@ export function createConnectedNode(
   return { node, edge }
 }
 
+export interface ConnectTo {
+  /** 连到哪个已有节点（新节点是起点、它是终点） */
+  target: string
+  /** 新节点的输出端口 */
+  sourcePort?: string | null
+  targetPort?: string | null
+  edgeId?: string
+  label?: string
+}
+
+/**
+ * {@link createConnectedNode} 的反方向：新建一个节点作为**上游**，同一个事务里从它连一条线到 `to.target`
+ * （底部输入框里点「加号」选了文件：先建一个连进来的图片 / 视频节点，再往里传）。
+ * 连线规则同样按新节点的最终类型和 data 判；连不上抛 `FlowOpError`，节点也不建。
+ */
+export function createUpstreamNode(
+  ctx: FlowOpContext,
+  record: FlowNodeRecord,
+  to: ConnectTo,
+  options: LayoutOptions = {},
+): { node: FlowNodeRecord; edge: FlowEdge } {
+  requireNodeRecord(ctx, to.target, '终点节点')
+  const context = docConnectionContext(ctx)
+  const ports = pickPorts(
+    { source: record.id, target: to.target, sourcePort: to.sourcePort, targetPort: to.targetPort },
+    {
+      ...context,
+      typeOf: (id) => (id === record.id ? record.type : context.typeOf(id)),
+      dataOf: (id) => (id === record.id ? record.data : context.dataOf(id)),
+    },
+  )
+  const edge = buildEdge(record.id, to.target, ports, context.edges, { id: to.edgeId, label: to.label })
+  const node = createNode(ctx, record, options)
+  insertEdge(ctx, edge)
+  return { node, edge }
+}
+
 /** plain JSON 的深拷贝（shared 的 lib 只有 ES2020，没有 `structuredClone`） */
 function cloneJson<T>(value: T): T {
   if (Array.isArray(value)) return value.map(cloneJson) as T

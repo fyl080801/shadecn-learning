@@ -20,6 +20,7 @@ import { toVueFlowNode } from "@/components/flow/node-view"
 import {
   connectableNodeTypes,
   DEFAULT_EDGE_TYPE,
+  defaultNodeSize,
   interactionGate,
   isConnectableType,
   nodeSizeOf,
@@ -1007,6 +1008,64 @@ export function useFlowCanvas(
     return id
   }
 
+  /** 连入节点（`addInputNode`）放在目标左边隔多远；同一个目标再加一个往下错开多少（画布坐标） */
+  const INPUT_NODE_GAP = 80
+  const INPUT_NODE_STEP = 32
+
+  /**
+   * 给 `targetId` 新建一个**连进来**的 `type` 节点（底部输入框连入预览里的「加号」：选了文件 → 建图片 / 视频节点 → 再往里传）。
+   * 节点 + 线一个事务（`store.addUpstreamNode` → `ops.createUpstreamNode`），连不上就提示原因、不建节点。
+   *
+   * 放在目标左边隔 `INPUT_NODE_GAP`（右边缘对齐到那里），竖直方向和目标居中，目标已经有几个上游就往下错开几步，
+   * 免得几次添加叠在一处。量出尺寸后的摆正并进同一条撤销。**不改选中**：输入框还要开着、接着写。
+   */
+  async function addInputNode(
+    targetId: string,
+    type: string,
+    options: { label?: string } = {}
+  ): Promise<string | null> {
+    const target = findNode(targetId)
+    if (!target || typeOfNode(targetId) === undefined) return null
+    const upstream = new Set(store.edges.filter((edge) => edge.target === targetId).map((edge) => edge.source)).size
+    const anchor = {
+      x: target.computedPosition.x - INPUT_NODE_GAP,
+      y: target.computedPosition.y + target.dimensions.height / 2 + upstream * INPUT_NODE_STEP
+    }
+    const group = groupAt(anchor)
+    const origin = group ? group.computedPosition : { x: 0, y: 0 }
+    const place = (size: { width: number; height: number }) => ({
+      x: anchor.x - origin.x - size.width,
+      y: anchor.y - origin.y - size.height / 2
+    })
+
+    const id = createId("n")
+    const node = buildFlowNode({
+      id,
+      type,
+      position: place(defaultNodeSize(type)),
+      label: options.label || `${flowNodeTypeOf(type).label} ${store.nodes.length + 1}`
+    })
+    if (group) node.layout.parentNode = group.id
+
+    store.separateUndo()
+    try {
+      store.addUpstreamNode(node, { target: targetId })
+    } catch (error) {
+      if (!(error instanceof FlowOpError)) throw error
+      toast.error(error.message)
+      return null
+    }
+
+    const rendered = findNode(id)
+    if (rendered) {
+      await until(() => rendered.dimensions.width).toBeTruthy({ timeout: 1000 })
+      store.moveNodes(new Map([[id, place(rendered.dimensions)]]), "摆放新节点", { sizeOf: measuredSizeOf })
+    }
+    store.separateUndo()
+
+    return id
+  }
+
   // —— 打组 ——
 
   /**
@@ -1135,6 +1194,7 @@ export function useFlowCanvas(
     resizeNode,
     addNode,
     addConnectedNode,
+    addInputNode,
     growMenu,
     growCandidates,
     openGrowMenu,

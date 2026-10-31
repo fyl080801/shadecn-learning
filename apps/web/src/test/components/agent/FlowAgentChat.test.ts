@@ -436,17 +436,27 @@ describe("画布 Agent 对话框", () => {
     expect(wrapper.findComponent(PromptInput).props("modelValue")).toBe("加一个节点")
   })
 
-  it("Enter 发送、Shift+Enter 不发送", async () => {
+  it("回车换行不发送；Shift+回车、⌘+回车发送；输入法组字时的不算", async () => {
     send.mockResolvedValue(undefined)
     const wrapper = await mountOpened()
     await type(wrapper, "加一个节点")
     const editable = wrapper.get('[data-cy="prompt-input"]')
 
-    await editable.trigger("keydown", { key: "Enter", shiftKey: true })
+    await editable.trigger("keydown", { key: "Enter" })
+    await editable.trigger("keydown", { key: "Enter", shiftKey: true, isComposing: true })
     await flushPromises()
     expect(send).not.toHaveBeenCalled()
 
-    await editable.trigger("keydown", { key: "Enter" })
+    await editable.trigger("keydown", { key: "Enter", shiftKey: true })
+    await flushPromises()
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it("⌘+回车同样发送", async () => {
+    send.mockResolvedValue(undefined)
+    const wrapper = await mountOpened()
+    await type(wrapper, "加一个节点")
+    await wrapper.get('[data-cy="prompt-input"]').trigger("keydown", { key: "Enter", metaKey: true })
     await flushPromises()
     expect(send).toHaveBeenCalledTimes(1)
   })

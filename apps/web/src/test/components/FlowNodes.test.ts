@@ -924,6 +924,50 @@ describe("各类型的 body", () => {
     }
   });
 
+  it("视频：拖动节点时暂停，松手接着播；拖之前就停着的松手也不播", async () => {
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockImplementation(function (this: HTMLMediaElement) {
+        this.dispatchEvent(new Event("play"));
+        return Promise.resolve();
+      });
+    const pause = vi
+      .spyOn(HTMLMediaElement.prototype, "pause")
+      .mockImplementation(function (this: HTMLMediaElement) {
+        this.dispatchEvent(new Event("pause"));
+      });
+    try {
+      setup(
+        record("vid", "video", {
+          data: { src: "https://x/v.mp4", poster: "https://x/p.jpg" },
+        }),
+      );
+      wrapper = mount(NodeHost, {
+        global: nodeKitGlobal(),
+        props: nodeProps("vid", "video"),
+      });
+      const body = wrapper.find('[data-testid="video-body"]');
+      await body.trigger("mouseenter");
+      await nextTick();
+      expect(play).toHaveBeenCalledTimes(1);
+
+      await wrapper.setProps({ dragging: true });
+      expect(pause).toHaveBeenCalledTimes(1);
+      await wrapper.setProps({ dragging: false });
+      expect(play).toHaveBeenCalledTimes(2);
+
+      // 用户先点了暂停，再拖：松手不该自己播起来
+      await body.find('[data-testid="hover-video-play"]').trigger("click");
+      expect(pause).toHaveBeenCalledTimes(2);
+      await wrapper.setProps({ dragging: true });
+      await wrapper.setProps({ dragging: false });
+      expect(play).toHaveBeenCalledTimes(2);
+    } finally {
+      play.mockRestore();
+      pause.mockRestore();
+    }
+  });
+
   it("视频：没有视频地址时移上来不播放；视频加载失败就收起", async () => {
     const { store } = setup(record("vid", "video"));
     wrapper = mount(NodeHost, {

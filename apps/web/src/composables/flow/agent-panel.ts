@@ -49,7 +49,7 @@ export const DIRECTOR_AGENT_COPY: FlowAgentPanelCopy = {
   emptyTitle: "让助手搭这个场景",
   emptyDescription: "摆放几何体、机位和灯光，编排移动、旋转、缩放的动画。",
   quickTitle: "让助手改这个场景（新会话）",
-  placeholder: "让助手改这个场景…（回车发送）",
+  placeholder: "让助手改这个场景…（Shift+回车发送）",
   ignoreSelection: true
 }
 

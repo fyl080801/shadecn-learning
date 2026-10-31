@@ -18,6 +18,9 @@ import { Slider } from "@/components/ui/slider"
  * 默认静音（不静音浏览器不让自动播放）；在这个节点上打开过声音，下次移上来接着有声音，
  * 浏览器不让有声自动播放就退回静音再播。
  *
+ * `suspended` 为真时（节点被拖着走）先暂停；变回假时，暂停前在播的接着播，暂停前就停着的照旧停着。
+ * 拖动中一边移位一边解码视频会掉帧，拖的时候也看不清画面。
+ *
  * 没有 `src` 就只是个普通容器；视频加载失败就收起，露回插槽内容。以后别的带可播放视频的节点直接套这一层。
  */
 const props = defineProps<{
@@ -25,6 +28,8 @@ const props = defineProps<{
   src?: string
   /** 视频还没出第一帧时垫的图，一般就是预览图 */
   poster?: string
+  /** 为真时暂停播放（拖动节点时），变回假时恢复暂停前的状态 */
+  suspended?: boolean
 }>()
 
 const active = ref(false)
@@ -42,13 +47,31 @@ watch(
   }
 )
 
-// 每次挂上 <video> 都从头开始播
+// 被挂起时是不是正在播：挂起结束只恢复原本在播的
+let resumeAfterSuspend = false
+
+// 每次挂上 <video> 都从头开始播（挂起中就先不播，等挂起结束）
 watch(video, (element) => {
   currentTime.value = 0
   duration.value = 0
   paused.value = true
-  if (element) void start(element)
+  resumeAfterSuspend = !!element && !!props.suspended
+  if (element && !props.suspended) void start(element)
 })
+
+watch(
+  () => props.suspended,
+  (suspended) => {
+    const element = video.value
+    if (suspended) {
+      resumeAfterSuspend = !!element && !paused.value
+      element?.pause()
+      return
+    }
+    if (element && resumeAfterSuspend) void element.play().catch(() => {})
+    resumeAfterSuspend = false
+  }
+)
 
 async function start(element: HTMLVideoElement) {
   try {

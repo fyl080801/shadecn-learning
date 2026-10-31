@@ -195,7 +195,29 @@ describe("图片节点的底部输入框", () => {
     expect(w.find('[data-node-slot="toolbar"]').exists()).toBe(true)
   })
 
-  it("回车：写回 data.prompt，发 composer:submit；没有谁把它转成运行请求（图片没启用 runnable）", async () => {
+  it("放大编辑：同一块面板搬进弹窗（打的字还在），点右上角的叉搬回节点下方", async () => {
+    const { w } = mountNode(imageNode())
+    await nextTick()
+    const composer = composerOf(w)
+    await composer.focus()
+    await composer.type("写到一半")
+
+    await w.get('[data-testid="prompt-composer-expand"]').trigger("click")
+    await flushPromises()
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    await flushPromises()
+    const dialog = document.querySelector('[data-testid="prompt-composer-dialog"]')
+    expect(dialog?.querySelector('[data-testid="prompt-composer"]')).not.toBeNull()
+    expect(w.findComponent(PromptInput).props("modelValue")).toBe("写到一半")
+
+    ;(dialog!.querySelector('[data-testid="prompt-composer-expand"]') as HTMLElement).click()
+    await flushPromises()
+    expect(document.querySelector('[data-testid="prompt-composer-dialog"] [data-testid="prompt-composer"]')).toBeNull()
+    expect(w.find('[data-node-slot="composer"] [data-testid="prompt-composer"]').exists()).toBe(true)
+    expect(w.findComponent(PromptInput).props("modelValue")).toBe("写到一半")
+  })
+
+  it("Shift+回车：写回 data.prompt，发 composer:submit；没有谁把它转成运行请求（图片没启用 runnable）", async () => {
     const { store, w } = mountNode(imageNode())
     await nextTick()
     const submits: string[] = []
@@ -206,7 +228,7 @@ describe("图片节点的底部输入框", () => {
     const composer = composerOf(w)
     await composer.focus()
     await composer.type("一只橘猫")
-    await composer.key("Enter")
+    await composer.key("Enter", { shiftKey: true })
 
     expect(store.nodeById.get("gen")?.data.prompt).toBe("一只橘猫")
     expect(submits).toEqual(["一只橘猫"])
@@ -214,7 +236,7 @@ describe("图片节点的底部输入框", () => {
     expect(runtime.modes.current.value).toBeNull()
   })
 
-  it("输入法组字时的回车、Shift+回车都不提交", async () => {
+  it("单按回车（换行）、输入法组字时的 Shift+回车都不提交", async () => {
     const { store, w } = mountNode(imageNode())
     await nextTick()
     const submit = vi.fn()
@@ -223,8 +245,8 @@ describe("图片节点的底部输入框", () => {
     const composer = composerOf(w)
     await composer.focus()
     await composer.type("yi zhi")
-    await composer.key("Enter", { isComposing: true })
-    await composer.key("Enter", { shiftKey: true })
+    await composer.key("Enter")
+    await composer.key("Enter", { shiftKey: true, isComposing: true })
 
     expect(submit).not.toHaveBeenCalled()
     expect(store.nodeById.get("gen")?.data.prompt).toBeUndefined()
@@ -258,7 +280,7 @@ describe("图片节点的底部输入框", () => {
     const composer = composerOf(w)
     await composer.focus()
     await composer.type("一只橘猫")
-    await composer.key("Enter")
+    await composer.key("Enter", { shiftKey: true })
 
     expect(runs).toEqual(["一只橘猫"])
   })
@@ -272,7 +294,7 @@ describe("图片节点的底部输入框", () => {
     const composer = composerOf(w)
     await composer.focus()
     await composer.type("   ")
-    await composer.key("Enter")
+    await composer.key("Enter", { shiftKey: true })
 
     expect(run).not.toHaveBeenCalled()
   })

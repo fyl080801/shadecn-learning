@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
-import { ArrowUp, FileIcon, ImageIcon, Paperclip, Square, Video } from "@lucide/vue"
+import { FileIcon, ImageIcon, Paperclip, Square, Video } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { PromptInput, createEditor, type CustomInline } from "@/components/prompt-input"
 import AssetUploadList from "@/components/flow/asset-upload/AssetUploadList.vue"
+import SendButton from "@/components/flow/composer/SendButton.vue"
+import { SEND_KEY_HINT, isSendKey } from "@/components/flow/composer/send-key"
 import { flowNodeTypeOf } from "@/components/flow/node-types"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 import type { AssetUploadList as AssetUploadListState } from "@/composables/useAssetUpload"
@@ -30,7 +32,7 @@ import { NODE_MENTION, nodeMentionIdOf, syncSelectionMentions, useNodeMentionMen
  * - **附件**（docs/20 §3.10.12）：发送按钮同一行最左边一个回形针图标按钮选文件；传着的、传完的附件以缩略图排在输入框上方
  *   （`AssetUploadList`，不画它自己的加号方框），没有附件时这一排不占位。附件列表的状态由父组件建（`useAssetUploadList`）传进来：发送时摘走、没发出去还回来是父组件的事。
  *   有附件在传或传失败了不能发；只有附件、没写字也能发。不给 `attachments` 就没有这一排。
- * - **Enter 发送、Shift+Enter 换行**。提及列表开着时 Enter / Tab 是「选中这一项」，
+ * - **回车换行、Shift+回车（或 ⌘ / Ctrl+回车）发送**，和节点底部输入框同一套（`composer/send-key.ts`）。提及列表开着时回车 / Tab 是「选中这一项」，
  *   由插件的 `onKeyDown` 先拦掉，不会走到这里的发送。
  * - `defer-focus-on-click`：面板收起时这个输入框也一直挂着（草稿不丢），
  *   挂载时要是自己抢了焦点，画布上的 Delete / Ctrl+Z 就全落进输入框里了。
@@ -121,13 +123,12 @@ const canSend = computed(
 const hint = computed(() => {
   if (props.attachments?.uploading) return "附件上传中…"
   if (props.attachments?.failed) return "有附件没传上去：重试或移除后再发送"
-  return "Enter 发送 · Shift+Enter 换行"
+  return SEND_KEY_HINT
 })
 
+/** 发送键（Shift / ⌘ + 回车）发送；单按回车不拦，编辑器自己换行 */
 function onKeydown(event: KeyboardEvent) {
-  if (event.key !== "Enter" || event.shiftKey) return
-  // 输入法组合中的 Enter 是「上屏」（Safari 上 isComposing 不可靠，keyCode 229 兜底）
-  if (event.isComposing || event.keyCode === 229) return
+  if (!isSendKey(event)) return
   event.preventDefault()
   if (canSend.value) emit("send")
 }
@@ -299,18 +300,7 @@ defineExpose({
           <!-- 停着的时候按钮自己转圈（loading），不再叠一个方块 -->
           <Square v-if="!props.aborting" class="size-3 fill-current" />
         </Button>
-        <Button
-          v-else
-          size="icon-sm"
-          class="shrink-0 rounded-full"
-          :disabled="!canSend"
-          aria-label="发送"
-          title="发送"
-          data-testid="agent-send"
-          @click="emit('send')"
-        >
-          <ArrowUp class="size-4" />
-        </Button>
+        <SendButton v-else :disabled="!canSend" data-testid="agent-send" @click="emit('send')" />
       </div>
     </div>
   </div>

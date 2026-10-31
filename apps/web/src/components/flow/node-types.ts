@@ -119,7 +119,7 @@ export function defineNodeType(
  * 底部输入框（按类型注册）。文本**有了正文就收起**（`hasNodeResource`）：输入框是「还没有内容时描述想要什么」用的。
  * 图片 / 视频看**形态**（`nodeFormOf`）：generate 一直有（哪怕已经放了一张图），asset（独立素材）没有。导演台一直有。
  *
- * 眼下只到「写进 `data.prompt`、回车发 `composer:submit`」为止 —— 没有谁接这个事件，提交不会触发任何运行。
+ * 眼下只到「写进 `data.prompt`、Shift+回车发 `composer:submit`」为止 —— 没有谁接这个事件，提交不会触发任何运行。
  */
 const whenEmpty = (part: Parameters<typeof definePromptComposerPart>[0]) =>
   definePromptComposerPart({ ...part, when: (ctx) => !hasNodeResource(ctx.type, ctx.node.data.value) })
@@ -183,7 +183,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
       resize: { minWidth: 160, minHeight: 120 }
     },
     features: [...COMPOSER_FEATURES, "edit-body", "resizable"],
-    parts: [whenEmpty({ id: "text.composer", placeholder: "描述想写的内容（Shift+回车换行）" })]
+    parts: [whenEmpty({ id: "text.composer", placeholder: "描述想写的内容（Shift+回车发送）" })]
   }),
   /**
    * 图片 —— body 画 `data.src` 那张图，没有就是空占位。generate 形态接受文本 / 图片 / 视频拖线连入，asset 形态不接受。
@@ -194,7 +194,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     icon: Image,
     view: { body: ImageBody, class: "flex flex-col", style: mediaNodeStyle, fallbackLabel: "图片" },
     parts: [
-      whenGenerate({ id: "image.composer", placeholder: "描述想要的画面（Shift+回车换行）" }),
+      whenGenerate({ id: "image.composer", placeholder: "描述想要的画面（Shift+回车发送）" }),
       uploadingBadge("image"),
       uploadButton("image")
     ],
@@ -206,7 +206,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     icon: Film,
     view: { body: VideoBody, class: "flex flex-col", style: mediaNodeStyle, fallbackLabel: "视频" },
     parts: [
-      whenGenerate({ id: "video.composer", placeholder: "描述想要的视频（Shift+回车换行）" }),
+      whenGenerate({ id: "video.composer", placeholder: "描述想要的视频（Shift+回车发送）" }),
       uploadingBadge("video"),
       uploadButton("video")
     ],
@@ -223,7 +223,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     icon: Clapperboard,
     view: { body: DirectorBody, class: "flex w-[240px] flex-col", fallbackLabel: "导演台" },
     parts: [
-      definePromptComposerPart({ id: "director.composer", placeholder: "让助手搭场景、编排镜头（回车发送）" }),
+      definePromptComposerPart({ id: "director.composer", placeholder: "让助手搭场景、编排镜头（Shift+回车发送）" }),
       defineNodePart({ id: "director.open", slot: "badge", order: ORDER_TYPE, component: DirectorOpenButton })
     ],
     // director-chat：输入框回车 = 打开导演台、在那里的当前会话里发出去，开头补上这个节点的提及（docs/07 §7.5）

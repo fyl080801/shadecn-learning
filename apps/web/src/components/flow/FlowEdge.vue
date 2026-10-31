@@ -2,6 +2,7 @@
 import { computed } from "vue"
 import { BaseEdge, getBezierPath, useVueFlow, type EdgeProps } from "@vue-flow/core"
 
+import { isEdgeHighlighted } from "@/components/flow/edge-highlight"
 import { flowHandleShift, shiftOutward } from "@/components/flow/flow-handle"
 
 /**
@@ -28,12 +29,17 @@ const path = computed(() => {
   })
   return d
 })
+
+const highlighted = computed(() =>
+  isEdgeHighlighted({ selected: props.selected ?? false, sourceNode: props.sourceNode, targetNode: props.targetNode })
+)
 </script>
 
 <template>
   <BaseEdge
     :id="props.id"
     :path="path"
+    :class="{ 'flow-edge-highlighted': highlighted }"
     :marker-start="props.markerStart"
     :marker-end="props.markerEnd"
     :style="props.style"

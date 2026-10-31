@@ -122,6 +122,8 @@ export interface NodePartContext {
   label: Readonly<Ref<string>>
   editor: FlowEditorContext
   selected: Readonly<Ref<boolean>>
+  /** 节点此刻是否正被拖着走（Vue Flow 的拖动态，只是本地反馈，不进文档） */
+  dragging: Readonly<Ref<boolean>>
   mode: NodeModeView
   slots: NodeSlotControl
   /** 只用来降级（「有 runnable 才显示运行按钮」），不是用来写 if 分支替代注册的 */

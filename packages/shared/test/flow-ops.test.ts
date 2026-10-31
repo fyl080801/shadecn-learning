@@ -154,6 +154,33 @@ describe('createConnectedNode', () => {
   })
 })
 
+describe('createUpstreamNode', () => {
+  it('新节点是起点、连到已有节点，同一个事务：一次撤销两样都拿掉', () => {
+    const { doc, run, node, edges } = setup([record('img', 'image')])
+    const undo = new Y.UndoManager([nodesMap(doc), edgesMap(doc)], { trackedOrigins: new Set([ORIGIN]) })
+    const { edge: link } = run((ctx) => ops.createUpstreamNode(ctx, record('ref', 'image'), { target: 'img' }))
+    expect(node('ref')!.type).toBe('image')
+    expect(link).toMatchObject({ source: 'ref', target: 'img', data: { sourcePort: 'image', targetPort: 'image', index: 1 } })
+
+    undo.undo()
+    expect(node('ref')).toBeNull()
+    expect(edges()).toHaveLength(0)
+  })
+
+  it('连不上（导演台不收视频 / 终点不存在）→ 节点也不建', () => {
+    const { run, node, edges } = setup([record('dc', 'director')])
+    expect(codeOf(() => run((ctx) => ops.createUpstreamNode(ctx, record('v', 'video'), { target: 'dc' })))).toBe(
+      'CONNECTION_REJECTED',
+    )
+    expect(codeOf(() => run((ctx) => ops.createUpstreamNode(ctx, record('x', 'image'), { target: 'ghost' })))).toBe(
+      'NODE_NOT_FOUND',
+    )
+    expect(node('v')).toBeNull()
+    expect(node('x')).toBeNull()
+    expect(edges()).toHaveLength(0)
+  })
+})
+
 describe('writeNodeFields', () => {
   it('按 key 写和删，别的 key 原样；老节点没有这一组时现建', () => {
     const { doc, run, node } = setup([{ ...record('a'), data: { keep: 1, drop: 2 } }])

@@ -3,6 +3,7 @@ import { computed, watch } from "vue"
 import { Handle, Position, useNodeConnections, useVueFlow } from "@vue-flow/core"
 import { hasSide } from "@shadecn/shared/flow-node-types"
 
+import { isEdgeHighlighted } from "@/components/flow/edge-highlight"
 import { FLOW_HANDLE_PLUS_RADIUS, flowHandleFollow, flowHandleZone } from "@/components/flow/flow-handle"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 
@@ -42,6 +43,9 @@ import { useFlowEditor } from "@/composables/flow/editor-context"
  * 拉线的起点是别的节点的出口，且 `canvas.isValidConnection` 认可这对节点。出口只在悬停节点时变成加号。
  * （规则在 vue-flow.css 的 `.flow-handle`。）
  *
+ * 接在这一侧的线里有一条处于「选中的样子」（`isEdgeHighlighted`：线被选中，或它任一端的节点被选中）时，
+ * 这一侧的连接点挂 `flow-handle--active`，和线一起高亮加粗。
+ *
  * 能不能连由 `canvas.isValidConnection` 判（先过 shared 的交互门 `interactionGate`，再过和 agent 共用的 `resolveConnection`）。
  * 它挂在 **Handle 上**而不是 `<VueFlow>` 上：Vue Flow 每次同步边都会拿全局那个校验一遍，
  * 判不过的边直接不渲染 —— 而「这对端口已经连过」这些规则拿已经存在的边去判，
@@ -59,7 +63,18 @@ const { canvas } = useFlowEditor()
 const targetConnections = useNodeConnections({ handleType: "target" })
 const sourceConnections = useNodeConnections({ handleType: "source" })
 
-const { updateNodeInternals, viewport, connectionStartHandle } = useVueFlow()
+const { updateNodeInternals, viewport, connectionStartHandle, findEdge } = useVueFlow()
+
+/** 这一侧接着的线里有没有正画成「选中」样子的 */
+function anyHighlighted(connections: readonly { edgeId: string }[]): boolean {
+  return connections.some((c) => {
+    const edge = findEdge(c.edgeId)
+    return edge !== undefined && isEdgeHighlighted(edge)
+  })
+}
+
+const inputActive = computed(() => anyHighlighted(targetConnections.value))
+const outputActive = computed(() => anyHighlighted(sourceConnections.value))
 
 const hasInput = computed(() => hasSide(props.type, "inputs", props.data))
 const hasOutput = computed(() => hasSide(props.type, "outputs", props.data))
@@ -131,7 +146,11 @@ function openGrowMenu(event: MouseEvent) {
     type="target"
     :position="Position.Left"
     class="flow-handle"
-    :class="{ 'flow-handle--connected': targetConnections.length > 0, 'flow-handle--droppable': droppable }"
+    :class="{
+      'flow-handle--connected': targetConnections.length > 0,
+      'flow-handle--droppable': droppable,
+      'flow-handle--active': inputActive
+    }"
     :connectable-start="false"
     :connectable-end="hasInput"
     :is-valid-connection="canvas.isValidConnection"
@@ -144,7 +163,11 @@ function openGrowMenu(event: MouseEvent) {
     type="source"
     :position="Position.Right"
     class="flow-handle"
-    :class="{ 'flow-handle--connected': sourceConnections.length > 0, 'flow-handle--origin': lineOrigin }"
+    :class="{
+      'flow-handle--connected': sourceConnections.length > 0,
+      'flow-handle--origin': lineOrigin,
+      'flow-handle--active': outputActive
+    }"
     title="点击或拖出连线，新建相连的节点"
     :connectable-end="false"
     :is-valid-connection="canvas.isValidConnection"

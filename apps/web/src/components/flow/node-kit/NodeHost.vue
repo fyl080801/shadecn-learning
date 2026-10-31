@@ -59,6 +59,7 @@ const view = computed(() => kit.viewOf(props.type))
 const openSlots = shallowReactive(new Set<NodeSlotName>())
 
 const selected = computed(() => props.selected)
+const dragging = computed(() => props.dragging)
 
 /** 显示的名字：起了名用名字，没起名用兜底 */
 const label = computed(() => node.label.value || view.value.fallbackLabel || "")
@@ -77,6 +78,7 @@ const ctx: NodePartContext = {
   label,
   editor,
   selected,
+  dragging,
   mode: modes.viewFor(
     () => props.id,
     () => ctx
@@ -345,10 +347,11 @@ const OUTER_OFFSET = 8
       align="center"
       :offset="OUTER_OFFSET"
     >
-      <div
-        class="nodrag nopan flex items-center gap-1 rounded-xl bg-card/95 p-1.5 shadow-lg backdrop-blur"
-        data-node-slot="composer"
-      >
+      <!--
+        这一层不画外观：面板（边框 / 底色 / 阴影）是部件自己的 —— 底部输入框能「放大」到弹窗里独立编辑，
+        面板整块被搬走（Teleport），这里要是带着边框就会剩一个空框挂在节点下面。
+      -->
+      <div class="nodrag nopan flex items-end gap-1" data-node-slot="composer">
         <NodeSlot :parts="parts.composer" />
         <ActionBar :actions="actions.composer" />
       </div>

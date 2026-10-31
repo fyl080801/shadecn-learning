@@ -254,7 +254,7 @@ describe("全屏导演台的键盘", () => {
     expect(useFlowStore().nodeById.has("t1")).toBe(true)
   })
 
-  it("对话面板的输入框收得到按键：回车发送；里面的 Delete / Ctrl+Z 不触发导演台快捷键，也到不了画布", async () => {
+  it("对话面板的输入框收得到按键：Shift+回车发送；里面的 Delete / Ctrl+Z 不触发导演台快捷键，也到不了画布", async () => {
     await mountOverlay()
     await openDirector()
     const input = wrapper!.findComponent(PromptInput)
@@ -266,7 +266,7 @@ describe("全屏导演台的键盘", () => {
     press(editable, { key: "z", ctrlKey: true })
     expect(runShortcut).not.toHaveBeenCalled()
 
-    press(editable, { key: "Enter" })
+    press(editable, { key: "Enter", shiftKey: true })
     await flushPromises()
     expect(send).toHaveBeenCalledTimes(1)
     // 新会话的第一条带 nodeId：服务端只记下入口（会话是全局 agent）

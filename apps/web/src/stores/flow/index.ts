@@ -15,7 +15,7 @@ import {
 import { NODE_FORM_KEY, nodeFormOf } from "@shadecn/shared/flow-node-types"
 import type { GroupArrangement } from "@shadecn/shared/flow-layout"
 import * as ops from "@shadecn/shared/flow-ops"
-import { FlowOpError, type ConnectFrom, type FlowOpContext, type NodeFieldChanges } from "@shadecn/shared/flow-ops"
+import { FlowOpError, type ConnectFrom, type ConnectTo, type FlowOpContext, type NodeFieldChanges } from "@shadecn/shared/flow-ops"
 import type { FlowDetail, FlowSummary } from "@shadecn/shared/canvas"
 import type {
   FlowEdge,
@@ -531,6 +531,14 @@ export const useFlowStore = defineStore("flow", () => {
   }
 
   /**
+   * 新建一个节点作为 `to.target` 的**上游**、并从它连一条线过去，一个事务（`ops.createUpstreamNode`）。
+   * 连不上抛 `FlowOpError`，节点也不建 —— 和 {@link addConnectedNode} 一样原样抛给调用方去提示。
+   */
+  function addUpstreamNode(node: FlowNodeRecord, to: ConnectTo, label = "新增连入节点") {
+    return mutate((ctx) => ops.createUpstreamNode(ctx, node, to), label)
+  }
+
+  /**
    * 复制一个节点（运行态重置、不带连线，见 `ops.duplicateNode`），返回副本；原件不存在返回 null。
    * 新 id 和错开多少由调用方给。
    */
@@ -844,6 +852,7 @@ export const useFlowStore = defineStore("flow", () => {
     addElements,
     connect,
     addConnectedNode,
+    addUpstreamNode,
     duplicateNode,
     attachAsset,
     groupNodes,
