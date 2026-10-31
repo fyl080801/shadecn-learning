@@ -12,6 +12,7 @@ import {
   isDev,
   s3Config,
   s3Enabled,
+  serverRoles,
 } from '../config.ts'
 import { isBundle, moduleDir } from '../runtime.ts'
 import { agentConversations, agentGrants, agentRunLog } from '../store/agent.ts'
@@ -31,6 +32,7 @@ export const agentModule = createAgentModule<ServerApp>({
   instanceId,
   host,
   isDev,
+  executesRuns: serverRoles.has('agent'),
   paths: {
     workspaceDir: agentWorkspaceDir,
     modelsFile: agentModelsFile,

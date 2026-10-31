@@ -80,9 +80,11 @@ export async function boot(options: { modules: readonly ServerModule<ServerApp>[
 
   server.listen(port, host, () => {
     const loadedNames = new Set(loaded.modules.map((module) => module.name))
-    const mode = isDev ? 'dev（Vite 中间件）' : `prod（静态资源 ${staticDir}）`
+    const frontend = !loadedNames.has('frontend') ? '不托管前端' : isDev ? 'Vite 中间件' : `静态资源 ${staticDir}`
+    const mode = `${isDev ? 'dev' : 'prod'}（${frontend}）`
     console.log(`${mode} 服务已启动  http://${host}:${port}`)
-    if (loadedNames.has('collab')) {
+    // headless 的协同（只有 agent 角色）不接 WebSocket，不打这一行
+    if (loadedNames.has('collab') && serverRoles.has('collab')) {
       console.log(`Yjs websocket        ws://${host}:${port}${COLLAB_PATH}（房间名走消息）`)
     }
     const providers = enabledProviders()

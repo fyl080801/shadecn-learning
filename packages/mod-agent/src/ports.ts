@@ -113,6 +113,11 @@ export interface AgentPorts {
   host: string
   /** 开发环境：process 驱动在生产要显式放行 */
   isDev: boolean
+  /**
+   * 这个进程执行 agent 吗（有 `agent` 角色）。不执行的进程（web）也要 runtime —— 视图、会话列表、接回、中止都经它读共享登记 ——
+   * 但发起只经派发（docs/28 §3.6），所以它的 runtime **不建沙箱驱动**：不白占一个驱动、不打「已启用 / 沙箱」那几行误导人的日志。
+   */
+  executesRuns: boolean
   paths: {
     /** 沙箱工作目录的根：`<dataDir>/agent-workspaces` */
     workspaceDir: string

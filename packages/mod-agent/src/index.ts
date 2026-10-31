@@ -253,6 +253,19 @@ function buildRuntime(): AgentRuntime {
     )
   }
 
+  // 不执行 agent 的进程（web）：只读的 runtime —— 模型照样解析（视图要显示「已启用 / 模型名」），没有沙箱驱动。
+  // 它从不 start()（发起经派发，dispatch.ts）；万一被调到，NO_DRIVER 让这一轮起不来而不是在 web 上跑
+  if (!agentPorts().executesRuns) {
+    return createAgentRuntime({
+      model: defaultModel.ok ? defaultModel.value : null,
+      ...(defaultModel.ok ? {} : { disabledReason: defaultModel.reason }),
+      models: agentModels,
+      driver: NO_DRIVER,
+      gateway,
+      ...agentHostOptions,
+    })
+  }
+
   const built = sandboxDriver()
   if (!built.ok) return disabled(built.reason)
   if (sandboxProblem !== null) return disabled(sandboxProblem)
