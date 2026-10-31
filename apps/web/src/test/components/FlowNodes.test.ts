@@ -378,7 +378,7 @@ describe("各类型的 body", () => {
     expect(wrapper.find('[data-testid="image-body-empty"]').exists()).toBe(false)
   })
 
-  it("图片是本服务素材：先垫毛玻璃的图标档，低清档加载完盖上去；缩得很小只用图标档、不要占位", async () => {
+  it("图片是本服务素材：先垫毛玻璃的图标档，图标到了才请求低清档，低清档加载完盖上去；缩得很小只用图标档、不要占位", async () => {
     zoomLevel.value = 1
     const id = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
     const src = `https://s3.test/b/canvas/assets/3f/a8/${id}.png`
@@ -389,6 +389,10 @@ describe("各类型的 body", () => {
     const placeholder = body().find('[data-role="placeholder"]')
     expect(placeholder.attributes("src")).toBe(src.replace(".png", "@icon.webp"))
     expect(placeholder.classes()).toContain("blur-md")
+    // 图标还在路上：低清档先不发请求
+    expect(body().find('[data-role="main"]').exists()).toBe(false)
+
+    await placeholder.trigger("load")
     const main = body().find('[data-role="main"]')
     expect(main.attributes("src")).toBe(src.replace(".png", "@low.webp"))
     expect(main.classes()).toContain("opacity-0")
@@ -403,11 +407,36 @@ describe("各类型的 body", () => {
     expect(body().find('[data-role="main"]').attributes("src")).toBe(src.replace(".png", "@icon.webp"))
     expect(body().find('[data-role="placeholder"]').exists()).toBe(false)
 
-    // 再放大：换回低清，加载期间露出毛玻璃占位
+    // 再放大：换回低清，加载期间露出毛玻璃占位；图标早有结果，低清档不再等它
     zoomLevel.value = 1
     await nextTick()
     expect(body().find('[data-role="main"]').attributes("src")).toBe(src.replace(".png", "@low.webp"))
     expect(body().find('[data-role="placeholder"]').exists()).toBe(true)
+  })
+
+  it("换了图：重新先等新图的图标档", async () => {
+    zoomLevel.value = 1
+    const id = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+    const src = `https://s3.test/b/canvas/assets/3f/a8/${id}.png`
+    const { store } = setup(record("img", "image", { data: { src } }))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+    const body = () => wrapper!.find('[data-testid="image-body"]')
+
+    await body().find('[data-role="placeholder"]').trigger("load")
+    expect(body().find('[data-role="main"]').exists()).toBe(true)
+
+    store.attachAsset("img", { src: src.replace("3fa85f64", "3fa8aaaa") })
+    await nextTick()
+    expect(body().find('[data-role="main"]').exists()).toBe(false)
+  })
+
+  it("外部链接没有图标档：不等，直接加载", () => {
+    zoomLevel.value = 1
+    setup(record("img", "image", { data: { src: "https://example.com/a.png" } }))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+    const body = wrapper.find('[data-testid="image-body"]')
+    expect(body.find('[data-role="placeholder"]').exists()).toBe(false)
+    expect(body.find('[data-role="main"]').attributes("src")).toBe("https://example.com/a.png")
   })
 
   it("没有缩略图（图标档 404）：撤掉占位，目标档照常显示；低清档也 404 就退回原图", async () => {

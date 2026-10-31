@@ -46,10 +46,11 @@ export async function storeAssetVariants(
   key: string,
   body: Uint8Array,
   contentType: string,
+  variants: readonly AssetVariant[] = ASSET_VARIANTS,
 ): Promise<AssetVariant[]> {
   if (!wantsVariants(contentType)) return []
   const done: AssetVariant[] = []
-  for (const variant of ASSET_VARIANTS) {
+  for (const variant of variants) {
     const variantKey = assetVariantPath(key, variant)
     if (!variantKey) return done
     try {
@@ -74,6 +75,7 @@ export async function storeVariantsFromStorage(
   key: string,
   contentType: string,
   size: number,
+  variants: readonly AssetVariant[] = ASSET_VARIANTS,
 ): Promise<AssetVariant[]> {
   if (!wantsVariants(contentType) || !assetVariantPath(key, 'icon')) return []
   if (size > VARIANT_SOURCE_MAX_BYTES) {
@@ -88,5 +90,85 @@ export async function storeVariantsFromStorage(
     return []
   }
   if (got.status !== 'ok') return []
-  return storeAssetVariants(storage, key, got.body, contentType)
+  return storeAssetVariants(storage, key, got.body, contentType, variants)
+}
+
+
+// —— 补档（docs/27 §3.3）——
+
+/** 同时最多几张图在补档：老画布一打开几十张没缩略图的图，别一下子全读进内存解码 */
+const BACKFILL_CONCURRENCY = 2
+
+/**
+ * 补不出来的原图（类型不对、太大、图片损坏）记一阵，别每个人每次打开都读一遍原图再失败一次。
+ * 只记一阵而不是永远：写 S3 偶尔失败也会落到这里，过了这段时间就再试。
+ */
+const UNBACKFILLABLE_TTL_MS = 10 * 60 * 1000
+const UNBACKFILLABLE_MAX = 5000
+
+/** 同一张原图正在补：多人同时打开、同一画布里重复用一张图，都等同一次 */
+const inFlight = new Map<string, Promise<AssetVariant[]>>()
+/** 原图键 → 到什么时候之前不再试 */
+const unbackfillable = new Map<string, number>()
+let running = 0
+const waiting: (() => void)[] = []
+
+async function withSlot<T>(run: () => Promise<T>): Promise<T> {
+  if (running >= BACKFILL_CONCURRENCY) await new Promise<void>((resolve) => waiting.push(resolve))
+  running += 1
+  try {
+    return await run()
+  } finally {
+    running -= 1
+    waiting.shift()?.()
+  }
+}
+
+/**
+ * 补生成原图 `key` 缺的那几档，回补完之后**桶里有的**档（按 `ASSET_VARIANTS` 的顺序）。
+ *
+ * 先逐档 HEAD：都在就什么都不做（别人刚补过、或者前端只是图片加载失败）。缺的才读回原图、只生成缺的那几档，
+ * 规则同分片上传完成后（类型名单、大小上限、像素上限）。原图不存在、补不出来 → 只回已有的。
+ * 生成失败只记日志（同上传）；**HEAD / 读 S3 出错照常抛**，由路由回 502 —— 那是存储的问题，不是这张图的。
+ */
+export function backfillAssetVariants(storage: S3Client, key: string): Promise<AssetVariant[]> {
+  const pending = inFlight.get(key)
+  if (pending) return pending
+  const task = backfill(storage, key).finally(() => inFlight.delete(key))
+  inFlight.set(key, task)
+  return task
+}
+
+/** 测试用：清掉「补不出来」的记忆和进行中的任务 */
+export function resetVariantBackfill(): void {
+  inFlight.clear()
+  unbackfillable.clear()
+}
+
+async function backfill(storage: S3Client, key: string): Promise<AssetVariant[]> {
+  const present: AssetVariant[] = []
+  const missing: AssetVariant[] = []
+  for (const variant of ASSET_VARIANTS) {
+    const variantKey = assetVariantPath(key, variant)
+    if (!variantKey) return []
+    if (await storage.headObject(variantKey)) present.push(variant)
+    else missing.push(variant)
+  }
+  if (missing.length === 0) return present
+  const retryAt = unbackfillable.get(key)
+  if (retryAt !== undefined) {
+    if (Date.now() < retryAt) return present
+    unbackfillable.delete(key)
+  }
+
+  const source = await storage.headObject(key)
+  if (!source) return present
+  const made = await withSlot(() => storeVariantsFromStorage(storage, key, source.contentType, source.size, missing))
+  if (made.length === 0) {
+    if (unbackfillable.size >= UNBACKFILLABLE_MAX) unbackfillable.clear()
+    unbackfillable.set(key, Date.now() + UNBACKFILLABLE_TTL_MS)
+  } else {
+    console.info(`[assets] 已补生成缩略图 ${key}（${made.join('/')}）`)
+  }
+  return ASSET_VARIANTS.filter((variant) => present.includes(variant) || made.includes(variant))
 }

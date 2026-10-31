@@ -11,6 +11,7 @@ import NodeHost from "@/components/flow/node-kit/NodeHost.vue"
 import { FLOW_NODE_TYPES } from "@/components/flow/node-types"
 import { provideNodeKit, type NodeKitRuntime } from "@/components/flow/node-kit/context"
 import { createDefaultNodeKit } from "@/components/flow/node-kit/install"
+import { DOWNLOAD_FRAME_TTL } from "@/components/flow/node-kit/features/download"
 import { useFlowStore } from "@/stores/flow"
 
 /**
@@ -31,10 +32,12 @@ vi.mock("@/composables/flow/editor-context", () => ({
       deleteNode,
       duplicateNode,
       isValidConnection: () => true,
-      boxSelecting: ref(false)
+      boxSelecting: ref(false),
+      zoomLevel: ref(1)
     },
     presence: { occupantsOf: () => [] },
     selection: { selectedNodeId },
+    flowId: ref("flow-1"),
     store: useFlowStore()
   })
 }))
@@ -109,6 +112,14 @@ describe("默认注册表的组合", () => {
     expect(kit.partsFor("group", "handles")).toHaveLength(0)
   })
 
+  it("只有图片 / 视频启用下载，排在复制和删除之间", () => {
+    const kit = createDefaultNodeKit()
+    for (const type of Object.keys(FLOW_NODE_TYPES)) {
+      expect(kit.hasFeature(type, "download"), type).toBe(type === "image" || type === "video")
+    }
+    expect(ids(kit.actionsFor("image", "toolbar"))).toEqual(["node.duplicate", "node.download", "node.delete"])
+  })
+
   it("分组：解组、拉伸、顶部把手；文本多一个就地编辑", () => {
     const kit = createDefaultNodeKit()
     expect(ids(kit.actionsFor("group", "toolbar"))).toEqual(["group.ungroup"])
@@ -177,6 +188,62 @@ describe("复制 / 删除动作", () => {
     expect(duplicateNode).toHaveBeenCalledWith("n1")
     expect(deleteNode).toHaveBeenCalledWith("n1")
     expect(wrapper.find('[data-node-action="node.delete"]').classes()).toContain("text-destructive")
+  })
+})
+
+describe("下载动作", () => {
+  let wrapper: VueWrapper | null = null
+  const id = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+  const src = `https://s3.example.test/bucket/canvas/assets/3f/a8/${id}.png`
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    selectedNodeId.value = "n1"
+  })
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.restoreAllMocks()
+  })
+
+  function mountImage(src: string) {
+    const store = useFlowStore()
+    store.load(detail())
+    store.attachDoc(new Y.Doc())
+    store.addNode(buildNodeRecord({ id: "n1", type: "image", label: "封面图", position: { x: 0, y: 0 } }))
+    if (src) store.attachAsset("n1", { src })
+    const Root = defineComponent({
+      setup() {
+        provideNodeKit(createDefaultNodeKit(), selectedNodeId)
+        return () => h(NodeHost, nodeProps("n1", "image"))
+      }
+    })
+    wrapper = mount(Root)
+    return wrapper
+  }
+
+  it("没有资源 → 不出现", () => {
+    expect(mountImage("").find('[data-node-action="node.download"]').exists()).toBe(false)
+  })
+
+  it("点了按节点名下载：素材地址带 response-content-disposition，在隐藏 iframe 里打开，页面不跳走", async () => {
+    vi.useFakeTimers()
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined)
+    await mountImage(src).find('[data-node-action="node.download"]').trigger("click")
+    await nextTick()
+
+    const frame = document.body.querySelector("iframe")
+    expect(frame).not.toBeNull()
+    expect(frame!.style.display).toBe("none")
+    expect(new URL(frame!.src).searchParams.get("response-content-disposition")).toContain(
+      "filename*=UTF-8''%E5%B0%81%E9%9D%A2%E5%9B%BE.png"
+    )
+    // 没有走 <a>：跨源的 <a> 会导航（整页或新标签）
+    expect(click).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(DOWNLOAD_FRAME_TTL)
+    expect(frame!.isConnected).toBe(false)
+    vi.useRealTimers()
   })
 })
 

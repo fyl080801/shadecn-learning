@@ -3,6 +3,7 @@ import { FLOW_NODE_TYPES } from "@/components/flow/node-types"
 
 import { deleteFeature, duplicateFeature } from "./features/edit-actions"
 import { connectableFeature, statusFeature } from "./features/display"
+import { downloadFeature } from "./features/download"
 import { directorChatFeature } from "./features/director-chat"
 import { editBodyFeature } from "./features/edit-body"
 import { dragStripFeature, resizableFeature, ungroupFeature } from "./features/frame"
@@ -23,6 +24,8 @@ import { createNodeKit, type NodeKit } from "./registry"
 const FEATURES = [
   renameFeature,
   duplicateFeature,
+  // 下载排在复制和删除之间：工具条上的顺序就是登记顺序
+  downloadFeature,
   deleteFeature,
   connectableFeature,
   statusFeature,

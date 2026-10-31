@@ -37,4 +37,8 @@ export const flowAssets = {
       return found ? [found] : []
     })
   },
+  /** 这个键有没有经本服务上传过（哪张画布都算）：补缩略图只给自己传进来的原图补 */
+  async exists(key: string): Promise<boolean> {
+    return (await db().count(FlowAsset, { key })) > 0
+  },
 }

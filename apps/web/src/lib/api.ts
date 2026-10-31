@@ -15,6 +15,7 @@ import type {
   ProjectSummary,
   AssetUploadPart,
   AssetUploadSession,
+  AssetVariantBackfill,
   UploadedAsset
 } from "@shadecn/shared/canvas"
 import {
@@ -301,6 +302,14 @@ export const flowApi = {
     return request<void>(`/api/flows/${flowId}/user-state`, {
       method: "PATCH",
       body: json(patch)
+    })
+  },
+
+  /** 补生成原图 `src` 缺的缩略图（docs/27 §3.3），回补完之后有的档。只由 `asset-backfill.ts` 调 */
+  backfillAssetVariants(flowId: string, src: string) {
+    return request<AssetVariantBackfill>(`/api/flows/${flowId}/assets/variants`, {
+      method: "POST",
+      body: json({ src })
     })
   },
 

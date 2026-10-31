@@ -49,9 +49,13 @@
 - 已存的节点里还是 S3 原始地址。前端渲染时把以 `<S3_ENDPOINT>/<bucket>/` 开头的地址**映射成** `/api/assets/<key>`（反解逻辑已在 `apps/server/storage/keys.ts`，可挪到 `packages/shared` 复用）；或者一次性迁移脚本改写所有画布的 Y.Doc。二选一，实施时定。
 - 线上 2026-10-30 已换成空库，当下没有存量；从 Prisma 旧库（`app.db.prisma-backup-20261030`）导入数据时要一并处理。
 
+### 3.4.0 下载改名
+
+节点工具条的「下载」（[REQ-CANVAS](13-flow-canvas-management.md) §4.4）靠在素材地址上带 `response-content-disposition=attachment; filename=…` 让对象存储回下载头。现在是匿名直读：**MinIO 对匿名 GET 也认这个参数**（实测 2026-10-31，UTF-8 的 `filename*` 也原样回），AWS S3 则只对签名请求认。改成 `/api/assets/<key>` 判权 + 302 后，服务端要把这个查询参数**透传并签进**预签名 URL（`response-content-disposition` 是 SigV4 query 的一部分），否则下载会丢名字。
+
 ### 3.4.1 缩略图
 
-缩略图（[REQ-ASSET-THUMB](27-asset-thumbnails.md)）用查询参数取档：`/api/assets/<key>?size=icon|low`，判权按原图的键，302 到那一档的签名 URL；档位对象键规则不变。
+缩略图（[REQ-ASSET-THUMB](27-asset-thumbnails.md)）用查询参数取档：`/api/assets/<key>?size=icon|low`，判权按原图的键，302 到那一档的签名 URL；档位对象键规则不变。到时补档（REQ-ASSET-THUMB §3.3）可以挪进这条路：档位不存在就在服务端当场补，前端不再单独请求补档接口。
 
 ### 3.5 存储侧
 

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
-import { assetVariantPath, type AssetSize } from "@shadecn/shared/canvas"
+import { assetVariantPath, type AssetSize, type AssetVariant } from "@shadecn/shared/canvas"
+
+import { useAssetBackfill } from "@/components/flow/asset-backfill"
 
 /**
  * 按档显示一张画布资源图（docs/27 §4）：`src` 永远是**原图**地址（节点里存的那个），`size` 决定取哪一档。
@@ -30,6 +32,25 @@ watch(
 
 const original = computed(() => props.src?.trim() || undefined)
 
+/**
+ * 缩略图取不到：请服务端补档（docs/27 §3.3；编辑器里才有，见 `asset-backfill.ts`），这次先退回原图。
+ * 补出了要的那一档、图也没换，就换回缩略图 —— 画布上别一直挂着原图。
+ */
+const backfill = useAssetBackfill()
+/** 已经换回去重试过的档位地址：服务端说有、浏览器却还是加载失败（比如解码出错），别来回换个没完 */
+const retried = new Set<string>()
+
+function requestBackfill(src: string, size: AssetVariant) {
+  if (!backfill) return
+  const variantUrl = assetVariantPath(src, size)
+  if (!variantUrl || retried.has(variantUrl)) return
+  void backfill(src).then((variants) => {
+    if (!variants.includes(size) || original.value !== src || props.size !== size) return
+    retried.add(variantUrl)
+    variantFailed.value = false
+  })
+}
+
 const current = computed(() => {
   if (!original.value) return undefined
   if (props.size === "original" || variantFailed.value) return original.value
@@ -40,7 +61,9 @@ const current = computed(() => {
 const actualSize = computed<AssetSize>(() => (current.value === original.value ? "original" : props.size))
 
 function onError(event: Event) {
-  if (props.fallback && current.value !== original.value) {
+  const triedVariant = current.value !== original.value
+  if (triedVariant && original.value && props.size !== "original") requestBackfill(original.value, props.size)
+  if (props.fallback && triedVariant) {
     variantFailed.value = true
     return
   }

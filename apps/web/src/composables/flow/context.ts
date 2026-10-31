@@ -1,4 +1,5 @@
 import { computed, provide, toRef, watch } from "vue"
+import { provideAssetBackfill } from "@/components/flow/asset-backfill"
 import { provideNodeKit } from "@/components/flow/node-kit/context"
 import { createDefaultNodeKit } from "@/components/flow/node-kit/install"
 import { useFlowStore } from "@/stores/flow"
@@ -81,5 +82,7 @@ export function provideFlowEditor(props: { flowId: string }): FlowEditorContext 
   }
 
   provide(FLOW_EDITOR_KEY, context)
+  // 缩略图取不到时补档（docs/27 §3.3）：补档接口挂在这张画布下
+  provideAssetBackfill(flowId)
   return context
 }

@@ -5,6 +5,7 @@ import {
   ASSET_PART_SIZE,
   type AssetUploadPart,
   type AssetUploadSession,
+  type AssetVariantBackfill,
   type UploadedAsset,
 } from '@shadecn/shared/canvas'
 import type { AuthVariables } from '../auth/middleware.ts'
@@ -12,8 +13,8 @@ import { currentUserId, type ProjectVariables } from '../auth/project.ts'
 import { s3Config } from '../config.ts'
 import { assetStorage } from '../storage/index.ts'
 import { flowAssets } from '../store/assets.ts'
-import { assetCategory, buildAssetKey, isAssetKey } from '../storage/keys.ts'
-import { storeAssetVariants, storeVariantsFromStorage } from '../storage/variants.ts'
+import { assetCategory, assetKeyOfUrl, buildAssetKey, isAssetKey } from '../storage/keys.ts'
+import { backfillAssetVariants, storeAssetVariants, storeVariantsFromStorage } from '../storage/variants.ts'
 import type { S3Client } from '../storage/s3.ts'
 import { INVALID_JSON, readJson } from './params.ts'
 
@@ -218,6 +219,28 @@ export const assets = new Hono<Env>()
       `[assets] 已分片上传 ${key}（${contentType}，${size}B，${parts.length} 片，缩略图 ${variants.join('/') || '无'}）`,
     )
     return c.json({ url: done.url, key, contentType, size, variants } satisfies UploadedAsset, 201)
+  })
+
+  /**
+   * 补缩略图：`src` 是节点里存的原图地址。只认本服务桶里、素材目录下的键（`assetKeyOfUrl`，外部链接 400），
+   * 并且这个键**经本服务上传过**（`FlowAsset` 里有，哪张画布都算 —— 复制画布后节点仍指着原画布传的图；
+   * 没有记录 404）。判权只到「是这张画布的成员」：缩略图是从原图推出来的，补不补不改变谁能看到什么。
+   * 回补完之后有的档；已经齐了就什么都不做。
+   */
+  .post('/variants', async (c) => {
+    const storage = withStorage(c)
+    if (storage instanceof Response) return storage
+
+    const payload = await readJson<{ src?: unknown }>(c.req)
+    if (!payload) return c.json(badRequest(INVALID_JSON), 400)
+    if (typeof payload.src !== 'string') return c.json(badRequest('src 必须是字符串'), 400)
+    const key = assetKeyOfUrl(payload.src, storage.objectUrl(''), s3Config.keyPrefix)
+    if (!key) return c.json(badRequest('src 不是本服务的素材地址'), 400)
+    if (!(await flowAssets.exists(key))) return c.json({ error: 'Not Found', message: '没有这个素材' }, 404)
+
+    const variants = await viaS3(c, `补缩略图 ${key} `, () => backfillAssetVariants(storage, key))
+    if (variants instanceof Response) return variants
+    return c.json({ variants } satisfies AssetVariantBackfill)
   })
 
   .delete('/multipart/:uploadId', async (c) => {

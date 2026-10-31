@@ -3,6 +3,7 @@ import sharp from 'sharp'
 import { ASSET_PART_SIZE, type AssetUploadSession, type UploadedAsset } from '@shadecn/shared/canvas'
 import type { S3Client } from '../../storage/s3.ts'
 import { replaceAssetStorage } from '../../storage/index.ts'
+import { resetVariantBackfill } from '../../storage/variants.ts'
 import { flowAssets } from '../../store/assets.ts'
 import { resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject, type Actor } from '../helpers/project.ts'
@@ -15,6 +16,9 @@ import { actor, createFlow, createProject, type Actor } from '../helpers/project
 /** 一个记得住东西的假 S3：对象、进行中的分片上传 */
 function fakeS3() {
   const objects = new Map<string, { size: number; contentType: string }>()
+  /** 一次传完的对象连字节一起记下：补缩略图要读回原图 */
+  const bytes = new Map<string, Uint8Array>()
+  const reads: string[] = []
   const uploads = new Map<string, { key: string; contentType: string; parts: Map<number, number> }>()
   const aborted: string[] = []
   let seq = 0
@@ -23,14 +27,18 @@ function fakeS3() {
     objectUrl: (key) => `https://s3.example.test/canvas-bucket/${key}`,
     async putObject(key, body, contentType) {
       objects.set(key, { size: body.byteLength, contentType })
+      bytes.set(key, body)
       return client.objectUrl(key)
     },
     async headObject(key) {
       return objects.get(key) ?? null
     },
-    // 上传接口不读对象
-    async getObject() {
-      return { status: 'not_found' }
+    // 上传接口只在补缩略图、分片上传完成后读回原图
+    async getObject(key) {
+      reads.push(key)
+      const body = bytes.get(key)
+      const meta = objects.get(key)
+      return body && meta ? { status: 'ok', body, contentType: meta.contentType } : { status: 'not_found' }
     },
     async createMultipartUpload(key, contentType) {
       seq += 1
@@ -57,7 +65,7 @@ function fakeS3() {
       uploads.delete(uploadId)
     },
   }
-  return { client, objects, uploads, aborted }
+  return { client, objects, bytes, reads, uploads, aborted }
 }
 
 let s3 = fakeS3()
@@ -81,6 +89,7 @@ beforeEach(async () => {
   await resetDb()
   s3 = fakeS3()
   replaceAssetStorage(s3.client)
+  resetVariantBackfill()
 })
 
 afterEach(() => replaceAssetStorage(undefined))
@@ -314,5 +323,96 @@ describe('分片上传 /api/flows/:flowId/assets/multipart', () => {
     )
     expect(res.status).toBe(204)
     expect(s3.aborted).toEqual([`${session.key}|${session.uploadId}`])
+  })
+})
+
+describe('补缩略图 POST /api/flows/:flowId/assets/variants', () => {
+  const jpeg = async () =>
+    new File(
+      [await sharp({ create: { width: 2000, height: 1000, channels: 3, background: '#3366cc' } }).jpeg().toBuffer()],
+      'a.jpg',
+      { type: 'image/jpeg' },
+    )
+
+  async function upload(alice: Actor, flowId: string, file: File): Promise<UploadedAsset> {
+    return (await (await alice.request(`/api/flows/${flowId}/assets`, form(file))).json()) as UploadedAsset
+  }
+
+  const backfill = (alice: Actor, flowId: string, src: unknown) =>
+    alice.request(`/api/flows/${flowId}/assets/variants`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ src }),
+    })
+
+  it('缺一档 → 读回原图、只补缺的那档，回补完之后有的档', async () => {
+    const { alice, flowId } = await memberFlow()
+    const asset = await upload(alice, flowId, await jpeg())
+    const stem = asset.key.replace(/\.jpg$/, '')
+    const icon = s3.bytes.get(`${stem}@icon.webp`)
+    s3.objects.delete(`${stem}@low.webp`)
+
+    const res = await backfill(alice, flowId, asset.url)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ variants: ['icon', 'low'] })
+    expect(s3.objects.get(`${stem}@low.webp`)?.contentType).toBe('image/webp')
+    expect(s3.bytes.get(`${stem}@icon.webp`)).toBe(icon)
+    expect(s3.reads).toEqual([asset.key])
+  })
+
+  it('各档都在 → 什么都不做，不读原图', async () => {
+    const { alice, flowId } = await memberFlow()
+    const asset = await upload(alice, flowId, await jpeg())
+
+    expect(await (await backfill(alice, flowId, asset.url)).json()).toEqual({ variants: ['icon', 'low'] })
+    expect(s3.reads).toEqual([])
+  })
+
+  it('补不出来（图片损坏）→ 空数组；一阵子之内再请求不再读原图', async () => {
+    const { alice, flowId } = await memberFlow()
+    const asset = await upload(alice, flowId, png())
+
+    expect(await (await backfill(alice, flowId, asset.url)).json()).toEqual({ variants: [] })
+    expect(await (await backfill(alice, flowId, asset.url)).json()).toEqual({ variants: [] })
+    expect(s3.reads).toEqual([asset.key])
+  })
+
+  it('同项目另一张画布（比如复制出来的）引用这张图也能补', async () => {
+    const { alice, projectId, flowId } = await memberFlow()
+    const other = await createFlow(alice, projectId)
+    const asset = await upload(alice, flowId, await jpeg())
+    s3.objects.delete(asset.key.replace(/\.jpg$/, '@icon.webp'))
+
+    const res = await backfill(alice, other, asset.url)
+    expect(await res.json()).toEqual({ variants: ['icon', 'low'] })
+  })
+
+  it('外部链接、档位地址、不是字符串 → 400；形状对但没经本服务上传过 → 404', async () => {
+    const { alice, flowId } = await memberFlow()
+    const asset = await upload(alice, flowId, await jpeg())
+
+    for (const src of ['https://example.com/a.jpg', asset.url.replace(/\.jpg$/, '@low.webp'), 42]) {
+      expect([src, (await backfill(alice, flowId, src)).status]).toEqual([src, 400])
+    }
+    const unknown = s3.client.objectUrl('canvas/assets/3f/a8/3fa85f64-5717-4562-b3fc-2c963f66afa6.jpg')
+    expect((await backfill(alice, flowId, unknown)).status).toBe(404)
+  })
+
+  it('非成员 → 404，不读原图', async () => {
+    const { alice, flowId } = await memberFlow()
+    const asset = await upload(alice, flowId, await jpeg())
+    s3.objects.delete(asset.key.replace(/\.jpg$/, '@low.webp'))
+    const bob = await actor('bob')
+
+    expect((await backfill(bob, flowId, asset.url)).status).toBe(404)
+    expect(s3.reads).toEqual([])
+  })
+
+  it('HEAD 出错 → 502', async () => {
+    const { alice, flowId } = await memberFlow()
+    const asset = await upload(alice, flowId, await jpeg())
+    replaceAssetStorage({ ...s3.client, headObject: async () => Promise.reject(new Error('boom')) })
+
+    expect((await backfill(alice, flowId, asset.url)).status).toBe(502)
   })
 })

@@ -162,6 +162,14 @@ export interface UploadedAsset {
 export const ASSET_VARIANTS = ['icon', 'low'] as const
 export type AssetVariant = (typeof ASSET_VARIANTS)[number]
 
+/**
+ * 补档（`POST /api/flows/:flowId/assets/variants` `{ src }`，docs/27 §3.3）的回包：补完之后这张原图**有的**档。
+ * 推不出档位、补不出来（类型不对、太大、损坏）就是空数组。
+ */
+export interface AssetVariantBackfill {
+  variants: AssetVariant[]
+}
+
 /** 显示时取哪一档：两档缩略图之外加上原图 */
 export type AssetSize = AssetVariant | 'original'
 
@@ -198,6 +206,52 @@ export function assetVariantPath(original: string, variant: AssetVariant): strin
   const ext = match[5] ?? ''
   if (NO_VARIANT_EXTENSIONS.has(ext)) return null
   return `${original.slice(0, original.length - ext.length)}@${variant}.webp`
+}
+
+// —— 下载（节点工具条的「下载」）——
+
+/** 文件名里不能出现的字符（Windows 最严的那套 + 控制字符），一律换成 `_` */
+// eslint-disable-next-line no-control-regex
+const UNSAFE_FILENAME = /[\\/:*?"<>|\u0000-\u001f\u007f]/g
+
+/** 资源地址的扩展名（只看路径最后一段，忽略 query / hash）；取不到回 '' */
+function extensionOfSrc(src: string): string {
+  const path = src.split(/[?#]/, 1)[0] ?? ''
+  const last = path.slice(path.lastIndexOf('/') + 1)
+  return /\.[a-z0-9]{1,8}$/i.exec(last)?.[0].toLowerCase() ?? ''
+}
+
+/**
+ * 下载时的文件名 = 节点名 + 资源原来的扩展名。名字已经以这个扩展名结尾就不重复加；
+ * 不安全的字符换成 `_`，清空了就用 `fallback`。
+ */
+export function assetDownloadName(label: string, src: string, fallback = 'download'): string {
+  const ext = extensionOfSrc(src)
+  const base = label.replace(UNSAFE_FILENAME, '_').trim().replace(/^\.+/, '') || fallback
+  return ext && base.toLowerCase().endsWith(ext) ? base : `${base}${ext}`
+}
+
+/** RFC 5987 的 `filename*` 编码：`encodeURIComponent` 之外再编掉 `'()*` */
+const encodeRfc5987 = (value: string) =>
+  encodeURIComponent(value).replace(/['()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`)
+
+/** `attachment; filename="<ASCII 兜底>"; filename*=UTF-8''<原名>` —— 老浏览器读前者，现代浏览器读后者 */
+export function attachmentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeRfc5987(filename)}`
+}
+
+/**
+ * 我们自己的素材地址 → 带 `response-content-disposition` 的下载地址：对象存储按它回
+ * `Content-Disposition: attachment; filename=…`，浏览器于是**按这个名字存盘**，字节仍由对象存储直接下发。
+ *
+ * - 不是我们拼出来的素材形状（外部链接、`data:` / `blob:`、老分层键、已带 query 的）→ null，调用方自己兜底；
+ * - MinIO 对匿名读也认这个参数（实测，2026-10-31）；AWS S3 只对**签名**请求认 —— 按 docs/25 改成判权 + 302 签名地址时，
+ *   服务端要把这个参数一并签进去。
+ */
+export function assetDownloadUrl(src: string, filename: string): string | null {
+  if (!ASSET_TAIL.test(src)) return null
+  return `${src}?response-content-disposition=${encodeURIComponent(attachmentDisposition(filename))}`
 }
 
 /**

@@ -138,6 +138,9 @@ const uploadingBadge = (type: string) =>
  */
 const COMPOSER_FEATURES = [...STANDARD_NODE_FEATURES, "edit-prompt"] as const
 
+/** 媒体类型（图片 / 视频，以后的音频之类同理）多启用 `download`：工具条上一枚下载，文件名 = 节点名 */
+const MEDIA_FEATURES = [...COMPOSER_FEATURES, "download"] as const
+
 export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
   /**
    * 文本 —— body 是一个输入框样子的正文区（`TextBody`，双击进入编辑，失焦提交一次），正文在 `data.text`。
@@ -162,7 +165,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
       whenGenerate({ id: "image.composer", placeholder: "描述想要的画面（Shift+回车换行）" }),
       uploadingBadge("image")
     ],
-    features: COMPOSER_FEATURES
+    features: MEDIA_FEATURES
   }),
   /** 视频 —— body 只画预览图 `data.poster`（不放 `<video>`），没有就是空占位。连入规则、尺寸规则同图片 */
   video: defineNodeType("video", {
@@ -173,7 +176,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
       whenGenerate({ id: "video.composer", placeholder: "描述想要的视频（Shift+回车换行）" }),
       uploadingBadge("video")
     ],
-    features: COMPOSER_FEATURES
+    features: MEDIA_FEATURES
   }),
   /**
    * 导演台 —— body 是一个「打开导演台」按钮，点了全屏打开导演台（`FlowDirectorOverlay`）。底部输入框一直在，
