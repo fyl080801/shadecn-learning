@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
-import { ArrowUp, Paperclip, Square } from "@lucide/vue"
+import { ArrowUp, FileIcon, ImageIcon, Paperclip, Square, Video } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { PromptInput, createEditor, type CustomInline } from "@/components/prompt-input"
 import AssetUploadList from "@/components/flow/asset-upload/AssetUploadList.vue"
@@ -8,7 +8,17 @@ import { flowNodeTypeOf } from "@/components/flow/node-types"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 import type { AssetUploadList as AssetUploadListState } from "@/composables/useAssetUpload"
 import { cn } from "@/lib/utils"
+import FlowAgentAttachmentMention from "./FlowAgentAttachmentMention.vue"
 import FlowAgentMention from "./FlowAgentMention.vue"
+import {
+  ATTACHMENT_MENTION,
+  attachmentMentionKeyOf,
+  attachmentMentionKind,
+  createAttachmentMentionPlugin,
+  removeAttachmentMentions,
+  shortFileName,
+  useMentionAttachments
+} from "./attachmentMention"
 import { NODE_MENTION, nodeMentionIdOf, syncSelectionMentions, useNodeMentionMenu } from "./nodeMention"
 
 /**
@@ -28,6 +38,9 @@ import { NODE_MENTION, nodeMentionIdOf, syncSelectionMentions, useNodeMentionMen
  * - **画布选区跟着输入框走**（docs/20 §3.10.9）：新选中的节点在输入框末尾加一枚提及，取消选中就把它的提及去掉。
  *   只看选区的**变化**：挂载时已有的选区由父组件按「新会话」规则放（`selectionMentions`）；删掉某个选中节点的提及后，
  *   它保持选中不会再被加回来。已经提及过的节点再选中不重复加。
+ * - **`@` 也能提及附件**（docs/20 §3.10.12）：弹层分「附件」「节点」两组，附件来自外层 provide 的清单（输入区里传完的 +
+ *   这个会话之前带过的）。附件 badge 是回形针 + 文件名，和节点的类型图标 + 名字区分开。从附件排里删掉一个附件，
+ *   它的提及跟着去掉（之前几轮带过的同一个键除外 —— 那个仍然可以指）。
  */
 const props = defineProps<{
   /** 当前会话正在跑：不能再发，按钮换成「停止」（别的会话在跑不挡这里，docs/20 §3.10.3） */
@@ -50,8 +63,12 @@ const emit = defineEmits<{
 
 const { store, canvas } = useFlowEditor()
 
-const menu = useNodeMentionMenu(() => store.nodes)
-const { editor } = createEditor({ plugins: [menu.plugin] })
+const mentionAttachments = useMentionAttachments()
+const menu = useNodeMentionMenu(
+  () => store.nodes,
+  () => mentionAttachments.list.value
+)
+const { editor } = createEditor({ plugins: [menu.plugin, createAttachmentMentionPlugin()] })
 
 const input = ref<InstanceType<typeof PromptInput> | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -72,6 +89,24 @@ watch(
     draft.value = syncSelectionMentions(draft.value, next, previous)
   }
 )
+
+/**
+ * 附件排里删掉了一个（已传完的）附件：它的提及从草稿里去掉。按键比较 —— 发送时整排被摘走那一下草稿已经清空了，
+ * 没发出去还回来时键又回来，都不会误删；还能提及的（之前几轮带过同一个键）留着。
+ */
+watch(
+  () =>
+    (props.attachments?.items ?? []).flatMap((item) =>
+      item.upload.status === "done" && item.upload.result ? [item.upload.result.key] : []
+    ),
+  (next, previous) => {
+    const still = new Set(next)
+    const gone = previous.filter((key) => !still.has(key) && !mentionAttachments.byKey.value.has(key))
+    if (gone.length > 0) draft.value = removeAttachmentMentions(draft.value, gone)
+  }
+)
+
+const attachmentIcons = { image: ImageIcon, video: Video, file: FileIcon } as const
 
 /** 附件在传 / 传失败了：先等它传完、或者重试 / 删掉，再发（不然就是悄悄少发了一个） */
 const attachmentsBlocking = computed(() => Boolean(props.attachments?.uploading || props.attachments?.failed))
@@ -131,7 +166,7 @@ defineExpose({
         v-model="draft"
         :editor="editor"
         :defer-focus-on-click="true"
-        :placeholder="props.placeholder ?? '让 agent 改画布… 输入 @ 提及节点'"
+        :placeholder="props.placeholder ?? (props.attachments ? '让 agent 改画布… 输入 @ 提及节点或附件' : '让 agent 改画布… 输入 @ 提及节点')"
         wrapper-class="-mt-1 [&_[data-slate-editor]]:min-h-16 [&_[data-slate-editor]]:max-h-40 [&_[data-slate-editor]]:overflow-y-auto [&_[data-slate-editor]]:p-0 [&_[data-slate-editor]]:leading-6 [&_[data-slate-editor]]:before:left-0 [&_[data-slate-editor]]:before:top-0 [&_[data-slate-editor]]:before:leading-6"
         @keydown="onKeydown"
         @trigger-open="menu.onOpen"
@@ -141,6 +176,11 @@ defineExpose({
         <template #[`element:${NODE_MENTION}`]="{ element, attributes }">
           <span v-bind="attributes" contenteditable="false" class="mx-0.5 inline-block">
             <FlowAgentMention :node-id="nodeMentionIdOf((element as CustomInline).data) ?? ''" />
+          </span>
+        </template>
+        <template #[`element:${ATTACHMENT_MENTION}`]="{ element, attributes }">
+          <span v-bind="attributes" contenteditable="false" class="mx-0.5 inline-block">
+            <FlowAgentAttachmentMention :attachment-key="attachmentMentionKeyOf((element as CustomInline).data) ?? ''" />
           </span>
         </template>
 
@@ -154,31 +194,66 @@ defineExpose({
             class="w-72 -translate-y-[calc(100%+32px)] rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
             data-testid="agent-mention-menu"
           >
-            <div v-if="menu.candidates.value.length === 0" class="px-2 py-1.5 text-xs text-muted-foreground">
-              没有匹配的节点
+            <div v-if="menu.options.value.length === 0" class="px-2 py-1.5 text-xs text-muted-foreground">
+              没有匹配的附件或节点
             </div>
-            <button
-              v-for="(item, index) in menu.candidates.value"
-              :key="item.id"
-              type="button"
-              :class="
-                cn(
-                  'flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left text-sm',
-                  index === menu.active.value ? 'bg-accent text-accent-foreground' : ''
-                )
-              "
-              :data-mention-option="item.id"
-              @mouseenter="menu.active.value = index"
-              @click="menu.pick(item)"
-            >
-              <component :is="iconOf(item.id)" v-if="iconOf(item.id)" class="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-              <span class="min-w-0 flex-1">
-                <span class="block truncate">{{ item.label || "未命名节点" }}</span>
-                <span v-if="item.excerpt" class="block truncate text-xs text-muted-foreground">
-                  {{ item.excerpt }}
+            <template v-for="(option, index) in menu.options.value" :key="option.key">
+              <!-- 组标题：组变了的第一项上面一行（附件组在前） -->
+              <div
+                v-if="index === 0 || menu.options.value[index - 1]?.kind !== option.kind"
+                :class="cn('flex items-center gap-1 px-2 pb-0.5 text-[11px] text-muted-foreground', index > 0 && 'mt-1 border-t pt-1.5')"
+                :data-mention-group="option.kind"
+              >
+                {{ option.kind === "attachment" ? "附件" : "节点" }}
+              </div>
+              <button
+                v-if="option.kind === 'attachment'"
+                type="button"
+                :class="
+                  cn(
+                    'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm',
+                    index === menu.active.value ? 'bg-accent text-accent-foreground' : ''
+                  )
+                "
+                :title="option.item.name"
+                :data-mention-option="option.item.key"
+                data-mention-kind="attachment"
+                @mouseenter="menu.active.value = index"
+                @click="menu.pick(option)"
+              >
+                <component :is="attachmentIcons[attachmentMentionKind(option.item)]" class="size-3.5 shrink-0 text-muted-foreground" />
+                <span class="min-w-0 flex-1 truncate">{{ shortFileName(option.item.name, 24) }}</span>
+                <span class="shrink-0 text-[11px] text-muted-foreground">
+                  {{ option.item.source === "draft" ? "本条" : "之前" }}
                 </span>
-              </span>
-            </button>
+              </button>
+              <button
+                v-else
+                type="button"
+                :class="
+                  cn(
+                    'flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left text-sm',
+                    index === menu.active.value ? 'bg-accent text-accent-foreground' : ''
+                  )
+                "
+                :data-mention-option="option.item.id"
+                data-mention-kind="node"
+                @mouseenter="menu.active.value = index"
+                @click="menu.pick(option)"
+              >
+                <component
+                  :is="iconOf(option.item.id)"
+                  v-if="iconOf(option.item.id)"
+                  class="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                />
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate">{{ option.item.label || "未命名节点" }}</span>
+                  <span v-if="option.item.excerpt" class="block truncate text-xs text-muted-foreground">
+                    {{ option.item.excerpt }}
+                  </span>
+                </span>
+              </button>
+            </template>
           </div>
         </template>
       </PromptInput>

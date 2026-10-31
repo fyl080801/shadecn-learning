@@ -16,9 +16,12 @@ import {
   AGENT_CONVERSATION_TITLE_EVENT,
   AGENT_TITLE_MAX_LENGTH,
   AgentEventType,
+  agentAttachmentKind,
+  ATTACHMENT_MENTION_PATTERN,
   canonicalSkillIds,
   NODE_MENTION_PATTERN,
   parseAgentAttachmentRefs,
+  parseAttachmentMentions,
   parseNodeMentions,
   withMine,
   type AgentAttachment,
@@ -1132,6 +1135,15 @@ function clipText(text: string, max: number): string {
   return `${head.trimEnd()}…`
 }
 
+/** 文本里的附件提及换成「文件名」（这条消息没带的键写「某个附件」） */
+function namedAttachmentMentions(text: string, attachments: readonly AgentAttachment[]): string {
+  const names = new Map(attachments.map((item) => [item.key, item.name]))
+  return text.replace(ATTACHMENT_MENTION_PATTERN, (_match, key: string) => {
+    const name = names.get(key)
+    return name ? `「${name}」` : '某个附件'
+  })
+}
+
 /** 会话标题：首条用户消息的开头，原文（提及保留，前端按提及渲染），空白折成一个空格 */
 /** 只发了附件、没写字的消息拿什么当会话标题：「[附件] a.png、b.mp4」 */
 function attachmentTitle(attachments: readonly AgentAttachment[]): string {
@@ -1149,10 +1161,24 @@ function conversationAttachments(chat: readonly AgentChatMessage[]): AgentAttach
 }
 
 /**
- * 交给模型起标题的那段文字：首条用户消息，提及换成节点名（「名字」，找不到的写「某个节点」），带了附件就在末尾列出文件名
+ * 用户提及的、这个会话里确实有的附件的类别（`agentAttachmentKind`，去重）—— `auto` 技能按它自动加载（`media-view` 认 `image`）。
+ * 不是这个会话的键不算：提及只是「指」，附件本身得随用户消息发过
+ */
+function mentionedAttachmentKinds(text: string, attachments: readonly AgentAttachment[]): string[] {
+  const byKey = new Map(attachments.map((item) => [item.key, item]))
+  const kinds = parseAttachmentMentions(text).flatMap((key) => {
+    const item = byKey.get(key)
+    return item ? [agentAttachmentKind(item.contentType)] : []
+  })
+  return [...new Set(kinds)]
+}
+
+/**
+ * 交给模型起标题的那段文字：首条用户消息，提及换成节点名 / 附件文件名（「名字」，找不到的写「某个节点」/「某个附件」），
+ * 带了附件就在末尾列出文件名
  */
 function titleSource(doc: Parameters<typeof readNodeById>[0], text: string, attachments: readonly AgentAttachment[]): string {
-  const named = text.replace(NODE_MENTION_PATTERN, (_match, id: string) => {
+  const named = namedAttachmentMentions(text, attachments).replace(NODE_MENTION_PATTERN, (_match, id: string) => {
     const label = readNodeById(doc, id)?.metadata.label.trim()
     return label ? `「${label}」` : '某个节点'
   })
@@ -1164,11 +1190,12 @@ export function conversationTitle(text: string): string {
   return clipText(text.replace(/\s+/g, ' ').trim(), AGENT_TITLE_MAX_LENGTH)
 }
 
-/** 把模型回复压成一行纯文本：去掉 markdown 的记号，提及换成「@节点」（这里没有画布可查名字） */
+/** 把模型回复压成一行纯文本：去掉 markdown 的记号，提及换成「@节点」/「@附件」（这里没有画布可查名字） */
 function plainText(text: string): string {
   return text
     // 全局正则交给 replace 是安全的：它从头扫、不受 lastIndex 残留影响
     .replace(NODE_MENTION_PATTERN, '@节点')
+    .replace(ATTACHMENT_MENTION_PATTERN, '@附件')
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, '')
@@ -2007,7 +2034,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         chat = [userMessage]
         llmHistory = []
         previousSummary = ''
-        title = conversationTitle(text || attachmentTitle(attachments))
+        // 附件提及换成文件名：标题在历史列表里显示，那里查不到这个会话的附件（节点提及保留，前端按画布现查名字）
+        title = conversationTitle(namedAttachmentMentions(text, attachments) || attachmentTitle(attachments))
         nodeId = input.nodeId ?? null
         const created = await store.create({
           flowId,
@@ -2425,6 +2453,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         env: envFor(mainAgent.model),
         previous: [...new Set([...previousBuiltin, ...textDeps])].filter((id) => !entryExclude.includes(id)),
         mentionedNodeTypes,
+        mentionedAttachmentKinds: mentionedAttachmentKinds(text, conversationAttachments(chat)),
         allowedTools: mainAgent.allowed,
         exclude: entryExclude,
       })
@@ -2507,7 +2536,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         send(mapper.canvasChange(sinceLastRun))
       }
 
-      const expanded = await opened.read((doc) => expandMentions(text, (id) => lookupMention(doc, id)))
+      const expanded = await opened.read((doc) =>
+        expandMentions(text, (id) => lookupMention(doc, id), skillContext.attachments ?? []),
+      )
       // 能不能看附件：提供了 view_attachment 的那个技能（模型吃图 + 接了素材读取，同 view_node_media）
       const viewerSkill = registry.skillOfTool(VIEW_ATTACHMENT_TOOL_NAME)
       const viewer =
@@ -3055,7 +3086,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
               const node = readNodeById(doc, nodeId)
               return node ? [node.type] : []
             }),
-            prompt: expandMentions(text, (nodeId) => lookupMention(doc, nodeId)),
+            prompt: expandMentions(text, (nodeId) => lookupMention(doc, nodeId), skillContext.attachments ?? []),
           }))
           if (run.stopped !== null) throw new Error('这一轮已经停止')
           const depth = caller.depth + 1
@@ -3063,6 +3094,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             env: envFor(model.value),
             previous: [],
             mentionedNodeTypes: types,
+            mentionedAttachmentKinds: mentionedAttachmentKinds(text, skillContext.attachments ?? []),
             // 深度到了上限：不提供 `agents`（工具表里没有 run_agent）
             exclude: depth < limits.maxCallDepth ? [] : [AGENTS_SKILL_ID],
             allowedTools: agentToolWhitelist(definition),

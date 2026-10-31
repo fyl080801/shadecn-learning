@@ -12,6 +12,7 @@ import { useFlowEditor } from "@/composables/flow/editor-context"
 import { useFlowAgentPanel } from "@/composables/flow/agent-panel"
 import { useAssetUploadList } from "@/composables/useAssetUpload"
 import { AGENT_ATTACHMENT_LIMIT, attachmentsOf } from "./attachments"
+import { mentionableAttachments, provideMentionAttachments } from "./attachmentMention"
 import FlowAgentComposer from "./FlowAgentComposer.vue"
 import { syncSelectionMentions } from "./nodeMention"
 
@@ -37,6 +38,8 @@ const open = ref(false)
 const draft = ref("")
 const attachments = useAssetUploadList(flowId, { max: AGENT_ATTACHMENT_LIMIT })
 const composer = ref<InstanceType<typeof FlowAgentComposer> | null>(null)
+/** 快捷会话总是新会话：能 `@` 的附件只有输入区里传完的 */
+provideMentionAttachments(() => mentionableAttachments(attachments.items, []))
 
 const enabled = computed(() => agent.session.value?.enabled === true)
 

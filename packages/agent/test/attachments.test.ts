@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { fauxAssistantMessage, fauxToolCall, type Context } from '@earendil-works/pi-ai'
-import { AgentEventType, type AgentAttachment, type AgentStreamEvent } from '@shadecn/shared/agent'
+import { AgentEventType, formatAttachmentMention, type AgentAttachment, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { createMemoryAuthorityProvider } from '../src/authority.ts'
 import { createDocCanvasHandle } from '../src/canvas.ts'
 import { MediaReadError, type MediaAsset, type MediaReader } from '../src/media.ts'
@@ -259,5 +259,88 @@ describe('view_attachment', () => {
 
     expect(second.at(-1)?.type).toBe(AgentEventType.RUN_FINISHED)
     expect(reads).toEqual([CAT.url])
+  })
+})
+
+describe('提及附件', () => {
+  /** 这一轮发给模型的系统提示 */
+  function systemOf(context: Context | null): string {
+    return context?.systemPrompt ?? ''
+  }
+
+  it('提及图片附件：消息末尾多一块「提及的附件」，media-view 一开始就加载（不用模型再 load_skill）', async () => {
+    const { reader } = fakeReader({})
+    let seen: Context | null = null
+    const runtime = runtimeWith(
+      [
+        (context) => {
+          seen = context
+          return fauxAssistantMessage('好')
+        },
+      ],
+      { mediaReader: reader },
+    )
+    await run(runtime, new Y.Doc(), {
+      text: `按 ${formatAttachmentMention(CAT.key)} 做封面`,
+      attachments: [CAT, CLIP],
+    })
+
+    const text = lastUserText(seen)
+    expect(text).toContain('<提及的附件>')
+    expect(text).toContain(`- ${formatAttachmentMention(CAT.key)}：附件 ${CAT.key}，图片（image/png），文件名「猫.png」，地址 ${CAT.url}`)
+    // 已经加载了：附件块不再提示先 load_skill
+    expect(text).not.toContain("load_skill({ id: 'media-view' })")
+    expect(systemOf(seen)).toContain('view_attachment 能看用户随消息上传的图片附件')
+  })
+
+  it('只提及视频附件 / 提及的键不是这个会话的：不自动加载，照实说不是这个会话的附件', async () => {
+    const { reader } = fakeReader({})
+    let seen: Context | null = null
+    const runtime = runtimeWith(
+      [
+        (context) => {
+          seen = context
+          return fauxAssistantMessage('好')
+        },
+      ],
+      { mediaReader: reader },
+    )
+    const foreign = 'canvas/assets/ee/ff/other.png'
+    await run(runtime, new Y.Doc(), {
+      text: `${formatAttachmentMention(CLIP.key)} 和 ${formatAttachmentMention(foreign)}`,
+      attachments: [CLIP],
+    })
+
+    const text = lastUserText(seen)
+    expect(text).toContain(`- ${formatAttachmentMention(CLIP.key)}：附件 ${CLIP.key}，视频（video/mp4）`)
+    expect(text).toContain(`- ${formatAttachmentMention(foreign)}：不是这个会话里上传的附件，忽略它。`)
+    expect(systemOf(seen)).not.toContain('view_attachment 能看用户随消息上传的图片附件')
+  })
+
+  it('续聊里提及上一轮的图片附件：照样认、照样自动加载', async () => {
+    const { reader } = fakeReader({})
+    const runtime = runtimeWith([fauxAssistantMessage('收到')], { mediaReader: reader })
+    const doc = new Y.Doc()
+    const firstEvents = await run(runtime, doc, { text: '先收着', attachments: [CAT] })
+    const threadId = (firstEvents[0] as { threadId: string }).threadId
+
+    let seen: Context | null = null
+    runtime.scripted.setResponses([
+      (context) => {
+        seen = context
+        return fauxAssistantMessage('好')
+      },
+    ])
+    await run(runtime, doc, { text: `看看 ${formatAttachmentMention(CAT.key)}`, conversationId: threadId })
+
+    expect(lastUserText(seen)).toContain(`文件名「猫.png」`)
+    expect(systemOf(seen)).toContain('view_attachment 能看用户随消息上传的图片附件')
+  })
+
+  it('新会话的兜底标题里，附件提及换成文件名', async () => {
+    const runtime = runtimeWith([fauxAssistantMessage('好')])
+    const events = await run(runtime, new Y.Doc(), { text: `用 ${formatAttachmentMention(CAT.key)} 做封面`, attachments: [CAT] })
+    const threadId = (events[0] as { threadId: string }).threadId
+    expect((await runtime.store.get('flow-1', threadId))?.title).toBe('用 「猫.png」 做封面')
   })
 })

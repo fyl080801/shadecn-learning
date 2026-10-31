@@ -53,7 +53,7 @@ interface AgentSkill {
   available?(env: SkillAvailability): boolean   // 判断提不提供，此时还没打开画布：Grant 能力、部署条件（看图 / 对象存储 / 沙箱执行）
   workdirFiles?(ctx): Promise<Record<string, string>>   // 服务端钩子：提供了这个技能时往 runner 工作目录写的文件（如 canvas.json）
   activation: 'always' | 'auto' | 'on-demand'
-  activatesFor?: { nodeTypes?: string[] }  // activation = 'auto' 时，什么情况下一轮开始就自动加载
+  activatesFor?: { nodeTypes?: string[]; attachmentKinds?: string[] }  // activation = 'auto' 时，什么情况下一轮开始就自动加载
 }
 ```
 
@@ -75,6 +75,7 @@ interface AgentSkill {
    - `activation: 'always'` 的技能（`canvas`）；
    - 命中 `activatesFor` 的 `auto` 技能：用户这条消息 `@` 提及了它声明的节点类型的节点
      （从导演台里发起的新会话自动带上导演台节点的提及，[REQ-AGENT](20-agent-canvas.md) §3.10.9）；
+     或提及了它声明类别的附件（`attachmentKinds`，按 `image` / `video` / `file` 分；只算这个会话里的附件，REQ-AGENT §3.10.12）；
    - 这个会话之前加载过的技能（§3.4）。
 3. 其余提供了但没加载的技能进系统提示末尾的**技能目录**（`id` + `summary`），模型需要时调 `load_skill` 加载。
 
@@ -133,7 +134,7 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 | id | 标题 | 工具 | requires | 可用条件 | activation |
 |---|---|---|---|---|---|
 | `canvas` | 画布 | 读 `read_canvas`、`get_node`、`check_connection`；写 `add_node`、`update_node`、`duplicate_node`、`connect`、`delete_elements`、`move_nodes`、`resize_node`、`group_nodes`、`ungroup`、`auto_layout` | `flow:read`、`flow:write`、`flow:delete` | — | `always` |
-| `media-view` | 查看素材 | `view_node_media`、`view_attachment` | `flow:read` | 模型支持图片输入，并且配了对象存储（[REQ-AGENT §3.10.7](20-agent-canvas.md)；看消息附件见 §3.10.12） | `on-demand` |
+| `media-view` | 查看素材 | `view_node_media`、`view_attachment` | `flow:read` | 模型支持图片输入，并且配了对象存储（[REQ-AGENT §3.10.7](20-agent-canvas.md)；看消息附件见 §3.10.12） | `auto`：`attachmentKinds: ['image']`（提及图片附件时） |
 | `media-exec` | 媒体处理 | `run_media_command`（runner） | `sandbox:exec` | `AGENT_SANDBOX_EXEC=1` | `on-demand` |
 | `director` | 导演台：写 + 量 | 原子操作 `get_director_scene`、`add_objects`、`transform_objects`、`place_object`、`align_objects`、`distribute_objects`、`aim_camera`、`update_objects`、`set_director_settings`、`set_keyframes`、`animate_motion`、`delete_director_elements`；测量 `measure_objects`、`measure_distance`、`check_scene`、`camera_view`（都在网关执行） | `flow:read`、`flow:write`、`flow:delete` | — | `auto`：`nodeTypes: ['director']` |
 | `director-view` | 导演台：看 | `render_view`（网关调单独部署的渲染服务，和视口共用渲染库 `@shadecn/three-render`，见 REQ-DIRECTOR §7.9） | `flow:read` | 配了渲染服务（`DIRECTOR_RENDER_URL`），并且模型支持图片输入；不需要 `sandbox:exec` | `auto`：同上 |
@@ -155,7 +156,7 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 |---|---|
 | S1 | 工具按内置技能注册；每轮只把已加载技能的工具交给模型 |
 | S2 | 技能的提供由 Grant 能力与部署条件共同决定；不提供的技能对模型不可见 |
-| S3 | `always` 技能每轮自动加载；`auto` 技能在提及对应类型的节点时自动加载；其余由模型调 `load_skill` 加载 |
+| S3 | `always` 技能每轮自动加载；`auto` 技能在提及对应类型的节点（或对应类别的附件）时自动加载；其余由模型调 `load_skill` 加载 |
 | S4 | `load_skill` 单独成批，加载后新工具在同一轮里可用；每轮加载次数有上限 |
 | S5 | 网关拒绝执行本轮没加载的技能里的工具 |
 | S6 | 会话记住加载过的技能，下一轮预加载（仍受 S2 约束） |

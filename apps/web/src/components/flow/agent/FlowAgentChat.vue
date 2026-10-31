@@ -36,6 +36,7 @@ import { useFlowAgentPanel } from "@/composables/flow/agent-panel"
 import { useAssetUploadList } from "@/composables/useAssetUpload"
 import { useAsyncAction } from "@/composables/useAsyncAction"
 import { AGENT_ATTACHMENT_LIMIT, attachmentsOf } from "./attachments"
+import { mentionableAttachments, provideMentionAttachments } from "./attachmentMention"
 import FlowAgentComposer from "./FlowAgentComposer.vue"
 import FlowAgentHistory from "./FlowAgentHistory.vue"
 import FlowAgentMessage from "./FlowAgentMessage.vue"
@@ -82,6 +83,8 @@ const draft = ref("")
 const attachments = useAssetUploadList(flowId, { max: AGENT_ATTACHMENT_LIMIT })
 /** 面板里三选一：对话 / 历史会话列表 / 进行中的任务（同一个面板里切视图，不弹新窗口） */
 const view = ref<"chat" | "history" | "tasks">("chat")
+/** 能 `@` 的附件（docs/20 §3.10.12）：输入区里传完的 + 当前会话之前的消息带过的；消息里的附件 badge 也从这里查名字 */
+provideMentionAttachments(() => mentionableAttachments(attachments.items, agent.messages.value))
 
 const composer = ref<InstanceType<typeof FlowAgentComposer> | null>(null)
 const scroller = provideMessageScroller({ autoScroll: true, defaultScrollPosition: "end" })

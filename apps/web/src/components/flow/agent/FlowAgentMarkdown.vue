@@ -2,6 +2,7 @@
 import { computed, Fragment, h, type VNodeChild } from "vue"
 import MarkdownIt, { type Token } from "markdown-it"
 import FlowAgentCodeBlock from "./FlowAgentCodeBlock.vue"
+import FlowAgentAttachmentMention from "./FlowAgentAttachmentMention.vue"
 import FlowAgentMention from "./FlowAgentMention.vue"
 import { splitMentions } from "./nodeMention"
 
@@ -64,11 +65,13 @@ function element(token: Token, children: VNodeChild[]): VNodeChild {
   return h(BLOCK_TAGS.has(token.tag) ? token.tag : "span", children)
 }
 
-/** 文字里的 `@{node:<id>}` 换成提及 badge，其余原样当文本 */
+/** 文字里的 `@{node:<id>}` / `@{attachment:<key>}` 换成提及 badge，其余原样当文本 */
 function textNodes(content: string): VNodeChild[] {
-  return splitMentions(content).map((segment) =>
-    segment.kind === "mention" ? h(FlowAgentMention, { nodeId: segment.id, class: "mx-0.5" }) : segment.text
-  )
+  return splitMentions(content).map((segment) => {
+    if (segment.kind === "mention") return h(FlowAgentMention, { nodeId: segment.id, class: "mx-0.5" })
+    if (segment.kind === "attachment") return h(FlowAgentAttachmentMention, { attachmentKey: segment.key, class: "mx-0.5" })
+    return segment.text
+  })
 }
 
 /** 不成对的 token */

@@ -1,13 +1,28 @@
 import { computed, ref, type Ref } from "vue"
-import { NODE_MENTION_PATTERN, formatNodeMention, parseNodeMentions } from "@shadecn/shared/agent"
+import {
+  MENTION_PATTERN,
+  NODE_MENTION_PATTERN,
+  formatNodeMention,
+  mentionOfMatch,
+  parseNodeMentions
+} from "@shadecn/shared/agent"
 import type { FlowNode } from "@shadecn/shared/flow-graph"
 import {
+  Transforms,
+  createInline,
   definePlugin,
   splitByRegex,
   type ParsedSegment,
   type PromptPlugin,
   type TriggerContext
 } from "@/components/prompt-input"
+import {
+  ATTACHMENT_MENTION,
+  attachmentMentionCandidates,
+  attachmentMentionKeyOf,
+  type AttachmentMentionData,
+  type MentionableAttachment
+} from "./attachmentMention"
 
 /**
  * 「提及节点」—— prompt-input 的一个插件，给画布 Agent 的输入框用（REQ-AGENT）。
@@ -21,6 +36,9 @@ import {
  * 插件放在 flow 这边而不是 prompt-input 目录里：那个组件的规矩是只依赖 vue，
  * 它不该知道画布是什么。这里用的全是它公开的扩展点（`definePlugin` / `splitByRegex` /
  * `#element:<name>` / `#portal:<name>` / 插件的 `onKeyDown`），没有改它一行。
+ *
+ * **`@` 弹层也列附件**（docs/20 §3.10.12，`attachmentMention.ts`）：弹层只有这一个插件的（一个触发字符一个弹层），
+ * 列表分「附件」「节点」两组；选中附件时 `commit` 插进的是附件那种 inline（`{ key }`），选中节点插进节点的（`{ id }`）。
  */
 
 /** 插件名 = inline 节点的 `type` = 两个插槽名的后缀。**发布后不能改**（影响 round-trip） */
@@ -56,9 +74,12 @@ function bodyOf(node: FlowNode): string {
   return oneLine(node.data.text) || oneLine(node.data.prompt)
 }
 
-/** 节点在列表 / badge 里露出来的那两样：名字（`metadata.label`）+ 一行摘要 */
+/** 不在提及列表里露正文的节点类型：文本节点的正文先不显示（只按名字认；关键词照样能搜到正文） */
+const HIDDEN_EXCERPT_TYPES: ReadonlySet<string> = new Set(["text"])
+
+/** 节点在列表 / badge 里露出来的那两样：名字（`metadata.label`）+ 一行摘要（文本节点没有摘要） */
 export function describeNode(node: FlowNode): NodeMentionCandidate {
-  const body = bodyOf(node) || oneLine(node.metadata.description)
+  const body = HIDDEN_EXCERPT_TYPES.has(node.type ?? "") ? "" : bodyOf(node) || oneLine(node.metadata.description)
   return {
     id: node.id,
     type: node.type ?? "",
@@ -115,6 +136,12 @@ export function createNodeMentionPlugin(
     name: NODE_MENTION,
     trigger: { key: "@" },
     inline: { type: NODE_MENTION },
+    // 弹层里选的可能是附件：载荷带 `key` 的插附件那种 inline，否则是节点
+    commit(editor, { range, data }) {
+      const type = attachmentMentionKeyOf(data) ? ATTACHMENT_MENTION : NODE_MENTION
+      Transforms.select(editor, range)
+      Transforms.insertNodes(editor, createInline(type, data))
+    },
     parse(text): ParsedSegment[] {
       return splitByRegex(text, NODE_MENTION_PATTERN, (match) => ({
         kind: "node",
@@ -131,31 +158,43 @@ export function createNodeMentionPlugin(
   })
 }
 
-/**
- * 把一段带提及的文本切成「文字 / 提及」两种片段 —— 消息列表里渲染用户消息时用。
- * 和插件的 `parse` 是同一个正则，所以输入框里看到什么，发出去之后就还是什么。
- */
-export function splitMentions(
-  text: string
-): Array<{ kind: "text"; text: string } | { kind: "mention"; id: string }> {
-  return splitByRegex(text, NODE_MENTION_PATTERN, (match) => ({
-    kind: "node",
-    type: NODE_MENTION,
-    data: { id: match[1] ?? "" }
-  })).map((segment) =>
-    segment.kind === "text"
-      ? { kind: "text" as const, text: segment.text }
-      : { kind: "mention" as const, id: nodeMentionIdOf(segment.data) ?? "" }
-  )
-}
+export type MentionSegment =
+  | { kind: "text"; text: string }
+  | { kind: "mention"; id: string }
+  | { kind: "attachment"; key: string }
 
 /**
- * 弹出列表的状态 + 键盘：上下移动高亮、Enter / Tab 选中、Esc 交给 PromptInput 关掉。
+ * 把一段带提及的文本切成「文字 / 节点提及 / 附件提及」三种片段 —— 消息列表里渲染消息时用。
+ * 和插件的 `parse` 是同一套格式（shared 的 `MENTION_PATTERN`），所以输入框里看到什么，发出去之后就还是什么。
+ */
+export function splitMentions(text: string): MentionSegment[] {
+  return splitByRegex(text, MENTION_PATTERN, (match) => ({
+    kind: "node",
+    type: "mention",
+    data: mentionOfMatch(match)
+  })).map((segment): MentionSegment => {
+    if (segment.kind === "text") return { kind: "text", text: segment.text }
+    const mention = segment.data as ReturnType<typeof mentionOfMatch>
+    return mention.kind === "node" ? { kind: "mention", id: mention.id } : { kind: "attachment", key: mention.key }
+  })
+}
+
+/** 弹层里的一项：附件或节点（列表按这个顺序分两组） */
+export type MentionOption =
+  | { kind: "attachment"; key: string; item: MentionableAttachment }
+  | { kind: "node"; key: string; item: NodeMentionCandidate }
+
+/**
+ * 弹出列表的状态 + 键盘：上下移动高亮（跨两组连续走）、Enter / Tab 选中、Esc 交给 PromptInput 关掉。
  *
+ * 附件排在节点前面：刚传完一张图就 `@`，多半是要指它；附件也就几个，不会把节点挤没。
  * `commit` 要等 PromptInput 挂上之后才有（`#portal` 插槽的 scope / 组件暴露的
  * `commitActive`），所以用 `bindCommit` 晚绑定。
  */
-export function useNodeMentionMenu(nodes: () => readonly FlowNode[]) {
+export function useNodeMentionMenu(
+  nodes: () => readonly FlowNode[],
+  attachments: () => readonly MentionableAttachment[] = () => []
+) {
   const open = ref(false)
   const search = ref("")
   const active = ref(0)
@@ -164,14 +203,29 @@ export function useNodeMentionMenu(nodes: () => readonly FlowNode[]) {
     open.value ? nodeMentionCandidates(nodes(), search.value) : []
   )
 
+  const attachmentCandidates = computed(() =>
+    open.value ? attachmentMentionCandidates(attachments(), search.value) : []
+  )
+
+  /** 平铺的全部选项（键盘按它走）：附件组在前、节点组在后 */
+  const options = computed<MentionOption[]>(() => [
+    ...attachmentCandidates.value.map((item) => ({ kind: "attachment" as const, key: `attachment:${item.key}`, item })),
+    ...candidates.value.map((item) => ({ kind: "node" as const, key: `node:${item.id}`, item }))
+  ])
+
   let commitFn: ((payload: { data: unknown }) => void) | null = null
 
   function bindCommit(fn: (payload: { data: unknown }) => void) {
     commitFn = fn
   }
 
-  function pick(candidate: NodeMentionCandidate) {
-    commitFn?.({ data: { id: candidate.id } satisfies NodeMentionData })
+  function pick(option: MentionOption | NodeMentionCandidate) {
+    if ("kind" in option && option.kind === "attachment") {
+      commitFn?.({ data: { key: option.item.key } satisfies AttachmentMentionData })
+      return
+    }
+    const node = "kind" in option ? option.item : option
+    commitFn?.({ data: { id: node.id } satisfies NodeMentionData })
   }
 
   function onOpen(ctx: TriggerContext) {
@@ -187,7 +241,7 @@ export function useNodeMentionMenu(nodes: () => readonly FlowNode[]) {
   }
 
   function onKeyDown(event: KeyboardEvent): boolean {
-    const list = candidates.value
+    const list = options.value
     // 一个都没匹配上：不拦，Enter 照常是「发送」，`@xxx` 就当普通文字
     if (list.length === 0) return false
     switch (event.key) {
@@ -220,6 +274,8 @@ export function useNodeMentionMenu(nodes: () => readonly FlowNode[]) {
     search,
     active,
     candidates,
+    attachmentCandidates,
+    options,
     bindCommit,
     pick,
     onOpen,

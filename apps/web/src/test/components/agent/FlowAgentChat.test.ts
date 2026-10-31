@@ -1783,4 +1783,54 @@ describe("附件（docs/20 §3.10.12）", () => {
       .find((item) => item.element.closest('[data-testid="agent-quick-prompt"]'))!
     expect(input.props("modelValue")).toBe("做封面")
   })
+
+  it("提及附件：输入框里是回形针 + 文件名的 badge；从附件排删掉附件，提及跟着去掉；发出去后消息里照样显示文件名", async () => {
+    send.mockImplementation(async (_id: string, body: { text: string }, options: SendOptions) => {
+      options.onOpen?.()
+      options.onEvent({ type: "RUN_STARTED", threadId: "c-new", runId: "r1" })
+      options.onEvent({
+        type: "CUSTOM",
+        name: "agent.user-message",
+        value: {
+          id: "u1",
+          role: "user",
+          text: body.text,
+          createdAt: 1,
+          attachments: [{ key: "canvas/assets/aa/bb/cat.png", url: "https://s3.test/b/cat.png", contentType: "image/png", name: "cat.png" }]
+        }
+      })
+      options.onEvent({ ...finished, threadId: "c-new" })
+    })
+    const wrapper = await mountOpened()
+    await pick(dialogInput(wrapper), [
+      new File(["x"], "cat.png", { type: "image/png" }),
+      new File(["y"], "dog.png", { type: "image/png" })
+    ])
+    pending[0]!.resolve(uploaded("cat.png"))
+    pending[1]!.resolve(uploaded("dog.png"))
+    await flushPromises()
+
+    const cat = "@{attachment:canvas/assets/aa/bb/cat.png}"
+    const dog = "@{attachment:canvas/assets/aa/bb/dog.png}"
+    await type(wrapper, `用 ${cat} 和 ${dog} 做封面`)
+    const dialog = wrapper.get('[data-testid="agent-dialog"]')
+    expect(dialog.get('[data-mention-attachment="canvas/assets/aa/bb/cat.png"]').text()).toBe("cat.png")
+
+    // 删掉 dog.png：它的提及从草稿里去掉
+    await wrapper.findAll('[data-testid="asset-upload-tile"]')[1]!.get('[data-testid="asset-upload-remove"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.findComponent(PromptInput).props("modelValue")).toBe(`用 ${cat} 和 做封面`)
+
+    await wrapper.get('[data-testid="agent-send"]').trigger("click")
+    await flushPromises()
+    expect(send).toHaveBeenLastCalledWith(
+      "f1",
+      { text: `用 ${cat} 和 做封面`, conversationId: null, attachments: [{ key: "canvas/assets/aa/bb/cat.png", name: "cat.png" }] },
+      expect.anything()
+    )
+    const user = wrapper.get('[data-testid="agent-messages"] [data-role="user"]')
+    expect(user.get('[data-mention-attachment="canvas/assets/aa/bb/cat.png"]').text()).toBe("cat.png")
+    expect(user.find("[data-mention-missing]").exists()).toBe(false)
+  })
+
 })

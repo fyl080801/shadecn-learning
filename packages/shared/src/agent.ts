@@ -41,6 +41,49 @@ export function parseNodeMentions(text: string): string[] {
   return ids
 }
 
+// —— 提及附件 ——
+//
+// 会话里上传的附件（docs/20 §3.10.12）也能被提及：`@{attachment:<key>}`，`key` 是上传接口回来的对象键
+// （= `AgentAttachment.key`，`view_attachment` 认的那个）。**类型写在前缀里**：节点 / 附件各一种前缀，
+// 两边都不用猜一个 ref 指的是什么。键里有 `/`、`.`，所以 ref 的字符集比节点宽：除空白和花括号以外都行。
+// 提及只是「指」：附件本身仍要随某条用户消息发过（这条或这个会话之前的），服务端只认那些。
+
+/** 全局匹配；用之前记得 `lastIndex = 0`，或者直接调下面的函数 */
+export const ATTACHMENT_MENTION_PATTERN = /@\{attachment:([^\s{}]+)\}/g
+
+/** 键里带空白或花括号就写不进提及（本服务拼出的键不会有），返回空串 */
+export function formatAttachmentMention(key: string): string {
+  return key && !/[\s{}]/.test(key) ? `@{attachment:${key}}` : ''
+}
+
+/** 文本里提及了哪些附件（去重，保持首次出现的顺序） */
+export function parseAttachmentMentions(text: string): string[] {
+  const keys: string[] = []
+  for (const match of text.matchAll(ATTACHMENT_MENTION_PATTERN)) {
+    const key = match[1]!
+    if (!keys.includes(key)) keys.push(key)
+  }
+  return keys
+}
+
+/**
+ * 任意一种提及：第 1 组是节点 id，第 2 组是附件键（只有一组有值）。按出现顺序把文本切成「文字 / 提及」时用，
+ * 两种前缀的字符集各按各的（`@{node:a/b}` 不是提及）。全局匹配，注意 `lastIndex`。
+ */
+export const MENTION_PATTERN = /@\{node:([A-Za-z0-9_-]+)\}|@\{attachment:([^\s{}]+)\}/g
+
+export type AgentMention = { kind: 'node'; id: string } | { kind: 'attachment'; key: string }
+
+/** {@link MENTION_PATTERN} 的一次匹配 → 提及 */
+export function mentionOfMatch(match: RegExpMatchArray): AgentMention {
+  return match[1] !== undefined ? { kind: 'node', id: match[1] } : { kind: 'attachment', key: match[2] ?? '' }
+}
+
+/** 提及 → 文本里的写法 */
+export function formatMention(mention: AgentMention): string {
+  return mention.kind === 'node' ? formatNodeMention(mention.id) : formatAttachmentMention(mention.key)
+}
+
 // —— 请求 ——
 
 /** `POST {agentApiPath}/messages` 的请求体 */

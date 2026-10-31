@@ -18,6 +18,13 @@ import {
   parseAgentSubtaskUpdate,
   applyAgentSubtaskUpdate,
   withMine,
+  formatAttachmentMention,
+  formatMention,
+  formatNodeMention,
+  mentionOfMatch,
+  MENTION_PATTERN,
+  parseAttachmentMentions,
+  parseNodeMentions,
   type AgentRunEntry,
 } from '../src/agent.ts'
 import { AGENT_RUNS_MESSAGE, STORE_STATE_MESSAGE } from '../src/collab.ts'
@@ -149,6 +156,33 @@ describe('技能 id', () => {
     // 第 8 版起发起任务的技能改名：delegate → agents
     expect(canonicalSkillIds(['canvas', 'delegate'])).toEqual(['canvas', 'agents'])
     expect(canonicalSkillIds(['delegate', 'agents'])).toEqual(['agents'])
+  })
+})
+
+describe('提及：节点与附件各一种前缀', () => {
+  const KEY = 'canvas/assets/ab/cd/abcd1234-0000-4000-8000-000000000000.png'
+
+  it('附件提及：键里的 / 和 . 都认，按出现顺序去重；节点提及不受影响', () => {
+    const text = `看 ${formatAttachmentMention(KEY)} 和 ${formatNodeMention('n_1')}，再看 ${formatAttachmentMention(KEY)}`
+    expect(parseAttachmentMentions(text)).toEqual([KEY])
+    expect(parseNodeMentions(text)).toEqual(['n_1'])
+  })
+
+  it('写不进提及的键（空白、花括号）格式化成空串；`@{attachment:}` 不是提及', () => {
+    expect(formatAttachmentMention('a b')).toBe('')
+    expect(formatAttachmentMention('a}b')).toBe('')
+    expect(formatAttachmentMention('')).toBe('')
+    expect(parseAttachmentMentions('@{attachment:} @{attachment: x}')).toEqual([])
+  })
+
+  it('MENTION_PATTERN 按出现顺序认出两种，各按各的字符集（`@{node:a/b}` 不是提及）', () => {
+    const text = `${formatNodeMention('n_1')} ${formatAttachmentMention(KEY)} @{node:a/b}`
+    const found = [...text.matchAll(MENTION_PATTERN)].map(mentionOfMatch)
+    expect(found).toEqual([
+      { kind: 'node', id: 'n_1' },
+      { kind: 'attachment', key: KEY },
+    ])
+    expect(found.map(formatMention).join(' ')).toBe(`${formatNodeMention('n_1')} ${formatAttachmentMention(KEY)}`)
   })
 })
 

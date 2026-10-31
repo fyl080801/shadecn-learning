@@ -3,7 +3,7 @@ import { canvasSnapshot, createViewAttachmentTool, createViewMediaTool, TOOL_LIM
 import { defineSkill } from '../registry.ts'
 
 /**
- * 素材的两个按需技能（docs/23 §4）。原来写在 `session.ts` 里的条件挪到了这里：
+ * 素材的两个技能（docs/23 §4；`media-view` 在提及图片附件时自动加载，其余时候按需）。原来写在 `session.ts` 里的条件挪到了这里：
  * - `media-view`：模型支持图片输入、宿主接了素材读取（对象存储）才提供 —— 模型不吃图时 pi 会把图片悄悄换成一句占位，模型以为自己看过了；
  * - `media-exec`：宿主开了沙箱执行（`AGENT_SANDBOX_EXEC=1`）、Grant 里有 `sandbox:exec` 才提供；
  *   工具在 runner 的工作目录里跑（`execution: 'runner'`），一轮开始时的画布快照 `canvas.json` 由初始化钩子写进那个目录。
@@ -21,7 +21,9 @@ export const mediaViewSkill = defineSkill({
   tools: (ctx) => [createViewMediaTool(ctx), createViewAttachmentTool(ctx)],
   requires: ['flow:read'],
   available: (env) => env.deployment.imageInput && env.deployment.mediaReader,
-  activation: 'on-demand',
+  // 用户 `@` 提及了图片附件 = 多半要按图做事：一开始就加载，省掉一次 load_skill（docs/20 §3.10.12）
+  activation: 'auto',
+  activatesFor: { attachmentKinds: ['image'] },
 })
 
 export const mediaExecSkill = defineSkill({

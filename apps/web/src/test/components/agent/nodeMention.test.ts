@@ -117,8 +117,14 @@ describe("提及候选", () => {
     expect(nodeMentionCandidates(many, "SCENE")).toHaveLength(8)
   })
 
+  it("文本节点不显示正文摘要，但关键词照样能搜到正文", () => {
+    const [item] = nodeMentionCandidates([node("t", "text", "开场白", "大家好")], "")
+    expect(item?.excerpt).toBe("")
+    expect(nodeMentionCandidates([node("t", "text", "开场白", "大家好")], "大家").map((found) => found.id)).toEqual(["t"])
+  })
+
   it("摘要是一行：换行与多余空白压掉、过长截断", () => {
-    const [item] = nodeMentionCandidates([node("x", "text", "长", `第一行\n\n第二行${"字".repeat(60)}`)], "")
+    const [item] = nodeMentionCandidates([node("x", "process", "长", `第一行\n\n第二行${"字".repeat(60)}`)], "")
     expect(item?.excerpt.startsWith("第一行 第二行")).toBe(true)
     expect(item?.excerpt.endsWith("…")).toBe(true)
     expect(item?.excerpt.includes("\n")).toBe(false)

@@ -319,6 +319,7 @@ describe('注册表与 §3.2 的集合计算', () => {
     expect(() => createSkillRegistry([{ ...onDemand('x11'), tools: () => [readTool('request_confirmation')] }])).toThrow(/request_confirmation/)
     expect(() => createSkillRegistry([onDemand('x6'), onDemand('x6')])).toThrow(/重复/)
     expect(() => defineSkill({ ...onDemand('x7'), activation: 'auto' })).toThrow(/activatesFor/)
+    expect(() => defineSkill({ ...onDemand('x8'), activation: 'auto', activatesFor: { attachmentKinds: ['image'] } })).not.toThrow()
     // 内置的那份本身是合法的
     expect(BUILTIN_SKILLS.skills.map((skill) => skill.id)).toEqual(['canvas', 'media-view', 'media-exec', 'director', 'agents'])
   })
@@ -345,6 +346,20 @@ describe('注册表与 §3.2 的集合计算', () => {
 
     const mentioned = TEST_SKILLS.plan({ env: env(), previous: [], mentionedNodeTypes: ['text', 'director'] })
     expect(mentioned.loaded.map((skill) => skill.id)).toEqual(['canvas', 'director'])
+  })
+
+  it('auto：提及了声明的附件类别 → 一开始就加载；内置的 media-view 认图片附件', () => {
+    const viewer = defineSkill({ ...onDemand('viewer'), activation: 'auto', activatesFor: { attachmentKinds: ['image'] } })
+    const registry = createSkillRegistry([viewer])
+    const plan = (kinds: string[]) =>
+      registry.plan({ env: env(), previous: [], mentionedNodeTypes: [], mentionedAttachmentKinds: kinds }).loaded.map((skill) => skill.id)
+    expect(plan([])).toEqual([])
+    expect(plan(['video'])).toEqual([])
+    expect(plan(['video', 'image'])).toEqual(['viewer'])
+    // 不给 mentionedAttachmentKinds = 没有
+    expect(registry.plan({ env: env(), previous: [], mentionedNodeTypes: ['image'] }).loaded).toEqual([])
+
+    expect(BUILTIN_SKILLS.get('media-view')?.activatesFor).toEqual({ attachmentKinds: ['image'] })
   })
 
   it('之前加载过的：仍提供就预加载，不提供（含注册表里已没有的）进 unavailable', () => {

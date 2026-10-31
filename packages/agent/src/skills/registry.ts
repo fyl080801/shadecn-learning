@@ -111,11 +111,15 @@ export interface AgentSkill {
   available?(env: SkillAvailability): boolean
   /**
    * - `always`：提供了就一开始加载；
-   * - `auto`：命中 `activatesFor` 时一开始加载（用户这条消息 `@` 提及了这种类型的节点），否则同 `on-demand`；
+   * - `auto`：命中 `activatesFor` 时一开始加载（用户这条消息 `@` 提及了这种类型的节点、或这种类型的附件），否则同 `on-demand`；
    * - `on-demand`：进技能目录，模型调 `load_skill` 加载。
    */
   activation: SkillActivation
-  activatesFor?: { nodeTypes?: readonly string[] }
+  /**
+   * `nodeTypes`：提及的节点类型；`attachmentKinds`：提及的附件按 `agentAttachmentKind` 分的类别（`image` / `video` / `file`，
+   * 只算这个会话里的附件，docs/20 §3.10.12）。命中任意一项就算
+   */
+  activatesFor?: { nodeTypes?: readonly string[]; attachmentKinds?: readonly string[] }
   /**
    * 服务端初始化钩子：一轮开始时，对**提供了的**技能调一次，返回写进 runner 工作目录的文件（相对路径 → 内容）。
    * runner 只在提供的技能里有人要 `sandbox:exec` 时才开工作目录，所以只有这类技能给它才有意义。
@@ -126,8 +130,8 @@ export interface AgentSkill {
 /** 定义一个技能：只做形状上的检查（id、activation 与 activatesFor 配对）；工具层面的检查在 {@link createSkillRegistry} */
 export function defineSkill(skill: AgentSkill): AgentSkill {
   if (!SKILL_ID_REGEX.test(skill.id)) throw new Error(`技能 id 不合法：${skill.id}`)
-  if (skill.activation === 'auto' && !skill.activatesFor?.nodeTypes?.length) {
-    throw new Error(`技能 ${skill.id} 是 auto，但没有声明 activatesFor.nodeTypes`)
+  if (skill.activation === 'auto' && !skill.activatesFor?.nodeTypes?.length && !skill.activatesFor?.attachmentKinds?.length) {
+    throw new Error(`技能 ${skill.id} 是 auto，但没有声明 activatesFor.nodeTypes / attachmentKinds`)
   }
   if (skill.activation !== 'auto' && skill.activatesFor) {
     throw new Error(`技能 ${skill.id} 不是 auto，不该声明 activatesFor`)
@@ -216,6 +220,8 @@ export interface SkillPlanInput {
   previous: readonly AgentSkillId[]
   /** 用户这条消息 `@` 提及的节点的类型（不存在的节点不算） */
   mentionedNodeTypes: readonly string[]
+  /** 用户这条消息 `@` 提及的附件的类别（`agentAttachmentKind`；不是这个会话的附件不算）；不给 = 没有 */
+  mentionedAttachmentKinds?: readonly string[]
   /** 这次不提供的技能（调用深度到了上限的 agent 不给 `agents`，docs/26 §3.5） */
   exclude?: readonly AgentSkillId[]
   /**
@@ -305,7 +311,11 @@ export function createSkillRegistry(skills: readonly AgentSkill[]): SkillRegistr
 
   const autoHit = (skill: AgentSkill, input: SkillPlanInput) => {
     const types = skill.activatesFor?.nodeTypes ?? []
-    return input.mentionedNodeTypes.some((type) => types.includes(type))
+    const kinds = skill.activatesFor?.attachmentKinds ?? []
+    return (
+      input.mentionedNodeTypes.some((type) => types.includes(type)) ||
+      (input.mentionedAttachmentKinds ?? []).some((kind) => kinds.includes(kind))
+    )
   }
 
   return {

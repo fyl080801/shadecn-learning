@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/trace"
 import FlowAgentError from "./FlowAgentError.vue"
 import FlowAgentMarkdown from "./FlowAgentMarkdown.vue"
+import FlowAgentAttachmentMention from "./FlowAgentAttachmentMention.vue"
 import FlowAgentMention from "./FlowAgentMention.vue"
 import FlowAgentReasoning from "./FlowAgentReasoning.vue"
 import FlowAgentSubtask from "./FlowAgentSubtask.vue"
@@ -187,6 +188,11 @@ const waiting = computed(
         <BubbleContent class="whitespace-pre-wrap" data-role="user-text">
           <template v-for="(segment, index) in segments" :key="index">
             <FlowAgentMention v-if="segment.kind === 'mention'" :node-id="segment.id" class="mx-0.5" />
+            <FlowAgentAttachmentMention
+              v-else-if="segment.kind === 'attachment'"
+              :attachment-key="segment.key"
+              class="mx-0.5"
+            />
             <template v-else>{{ segment.text }}</template>
           </template>
         </BubbleContent>
