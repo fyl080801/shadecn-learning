@@ -41,6 +41,21 @@ export function parseNodeMentions(text: string): string[] {
   return ids
 }
 
+/** 去掉这批节点的提及（连带吃掉紧跟的一个空格）；别的提及和文字不动 */
+export function removeNodeMentions(text: string, nodeIds: Iterable<string>): string {
+  const gone = new Set(nodeIds)
+  if (gone.size === 0) return text
+  let result = ''
+  let cursor = 0
+  for (const match of text.matchAll(NODE_MENTION_PATTERN)) {
+    if (!gone.has(match[1]!)) continue
+    result += text.slice(cursor, match.index)
+    cursor = match.index + match[0].length
+    if (text[cursor] === ' ') cursor += 1
+  }
+  return result + text.slice(cursor)
+}
+
 // —— 提及附件 ——
 //
 // 会话里上传的附件（docs/20 §3.10.12）也能被提及：`@{attachment:<key>}`，`key` 是上传接口回来的对象键

@@ -9,6 +9,7 @@ import FlowAgentChat from "@/components/flow/agent/FlowAgentChat.vue"
 import FlowConnectionEndedDialog from "@/components/flow/FlowConnectionEndedDialog.vue"
 import FlowDirectorOverlay from "@/components/flow/FlowDirectorOverlay.vue"
 import FlowGrowMenu from "@/components/flow/FlowGrowMenu.vue"
+import FlowNodePopupHost from "@/components/flow/popup/FlowNodePopupHost.vue"
 import FlowPresenceBar from "@/components/flow/FlowPresenceBar.vue"
 import FlowShareButton from "@/components/flow/FlowShareButton.vue"
 import FlowTitleCapsule from "@/components/flow/FlowTitleCapsule.vue"
@@ -94,6 +95,8 @@ const ready = computed(() => {
       <FlowGrowMenu />
       <!-- 导演台节点「打开导演台」后的全屏导演台；关着不挂，开着 teleport 到 body，层级说明在组件里 -->
       <FlowDirectorOverlay />
+      <!-- 节点的弹出编辑（带 backdrop 的面板，如文本节点的 Markdown 编辑）；同上，关着不挂 -->
+      <FlowNodePopupHost />
     </template>
 
     <!-- 放在加载分支之外：连接被终结跟画布加载到哪一步无关，任何时候都得盖住整屏 -->

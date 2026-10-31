@@ -257,6 +257,18 @@ describe('removeElements', () => {
   })
 })
 
+describe('disconnectNodes', () => {
+  it('只删 source → target 方向的线（几对端口都删），反方向、别的线不动；没连着回 []', () => {
+    const { run, edges } = setup(
+      [record('a'), record('b'), record('c')],
+      [edge('e1', 'a', 'b'), edge('e2', 'a', 'b'), edge('e3', 'b', 'a'), edge('e4', 'a', 'c')],
+    )
+    expect(run((ctx) => ops.disconnectNodes(ctx, 'a', 'b')).sort()).toEqual(['e1', 'e2'])
+    expect(edges().map((item) => item.id).sort()).toEqual(['e3', 'e4'])
+    expect(run((ctx) => ops.disconnectNodes(ctx, 'a', 'b'))).toEqual([])
+  })
+})
+
 describe('布局', () => {
   it('moveNodes 只写 position，不存在的跳过；resizeNode 尺寸和位置同一笔，节点不在 → NODE_NOT_FOUND', () => {
     const { run, node } = setup([record('a'), record('b')])

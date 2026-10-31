@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 
+import TextMarkdown from "@/components/flow/TextMarkdown.vue"
 import { useNodePart } from "@/components/flow/node-kit/context"
 import { EDIT_BODY_MODE } from "@/components/flow/node-kit/features/edit-body"
 
@@ -10,7 +11,12 @@ import { EDIT_BODY_MODE } from "@/components/flow/node-kit/features/edit-body"
  * 正文存在 `data.text`（业务字段，自己一个 key）；名字在 `metadata.label`。
  * Y.Map 的合并粒度是 key，所以一个人改标题、另一个人改正文不会互相盖掉。
  *
- * 外观是一个输入框（占满节点、无边框的正文区，空着显示占位文字）；编辑用的是「双击进入 textarea、失焦或 Esc 退出」，
+ * 正文是 **Markdown**：平时按 Markdown 渲染（`TextMarkdown`），编辑的是 Markdown 原文。两种编辑：
+ * - **就地编辑**：双击进入 textarea（原文）、失焦提交或 Esc 放弃 —— 下面这一段；
+ * - **弹出编辑**：右上角（角标区）的按钮发 `text:open-editor`，弹出一块带 backdrop 的面板（`TextEditorPanel`，
+ *   原文 + 实时预览）—— 不在这个组件里，见 `popup/`。两条路写的是同一个字段、同一套草稿规矩。
+ *
+ * 就地编辑用的是「双击进入 textarea、失焦或 Esc 退出」，
  * **不是**随时可编辑的 contenteditable：节点首先要能被拖、被框选，一直可编辑的话在上面按下鼠标就成了放光标而不是拖节点。
  *
  * 「双击 → 进入编辑」是能力 `edit-body` 的事（它接 `node:dblclick`、进 `edit-body` 模式）；
@@ -59,7 +65,7 @@ function cancel() {
 
 <template>
   <!--
-    看起来就是一个输入框：平时是一块占满节点、无边框的正文区（空着时显示占位文字），双击变成真的 textarea。
+    看起来就是一个输入框：平时是一块占满节点、无边框的正文区（按 Markdown 渲染，空着时显示占位文字），双击变成编辑原文的 textarea。
     不做成随时可编辑：节点首先要能被拖、被框选，一直可编辑的话按下鼠标就成了放光标而不是拖节点。
 
     nodrag / nopan：在文本框里拖选文字不该变成拖节点或拖画布。
@@ -80,11 +86,12 @@ function cancel() {
   />
   <div
     v-else
-    class="min-h-0 flex-1 overflow-hidden whitespace-pre-wrap break-words rounded-[inherit] bg-background px-3 py-2 text-sm"
+    class="min-h-0 flex-1 overflow-hidden break-words rounded-[inherit] bg-background px-3 py-2 text-sm"
     :class="text ? '' : 'text-muted-foreground'"
     title="双击编辑文本"
     data-testid="text-body"
   >
-    {{ text || "双击输入文本" }}
+    <TextMarkdown v-if="text" :text="text" />
+    <template v-else>双击输入文本</template>
   </div>
 </template>

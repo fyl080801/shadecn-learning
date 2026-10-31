@@ -25,6 +25,7 @@ import {
   MENTION_PATTERN,
   parseAttachmentMentions,
   parseNodeMentions,
+  removeNodeMentions,
   type AgentRunEntry,
 } from '../src/agent.ts'
 import { AGENT_RUNS_MESSAGE, STORE_STATE_MESSAGE } from '../src/collab.ts'
@@ -166,6 +167,12 @@ describe('提及：节点与附件各一种前缀', () => {
     const text = `看 ${formatAttachmentMention(KEY)} 和 ${formatNodeMention('n_1')}，再看 ${formatAttachmentMention(KEY)}`
     expect(parseAttachmentMentions(text)).toEqual([KEY])
     expect(parseNodeMentions(text)).toEqual(['n_1'])
+  })
+
+  it('removeNodeMentions：去掉点名节点的每一处提及和紧跟的一个空格，别的提及和文字不动', () => {
+    const text = `${formatNodeMention('a')} 和 ${formatNodeMention('b')} 叠在 ${formatNodeMention('a')}上 ${formatAttachmentMention(KEY)}`
+    expect(removeNodeMentions(text, ['a'])).toBe(`和 ${formatNodeMention('b')} 叠在 上 ${formatAttachmentMention(KEY)}`)
+    expect(removeNodeMentions(text, [])).toBe(text)
   })
 
   it('写不进提及的键（空白、花括号）格式化成空串；`@{attachment:}` 不是提及', () => {

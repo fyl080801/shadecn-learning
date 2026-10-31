@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue"
 import { Maximize2, X } from "@lucide/vue"
 import type { FlowNode } from "@shadecn/shared/flow-graph"
 import { declaresSide } from "@shadecn/shared/flow-node-types"
+import { removeNodeMentions } from "@shadecn/shared/agent"
 
 import { PromptInput, createEditor, type CustomInline } from "@/components/prompt-input"
 
@@ -24,7 +25,7 @@ import { SEND_KEY_HINT, isSendKey } from "./send-key"
 /**
  * 底部输入框的外壳（docs/13 §3.7「底部输入框」）—— 一块 shadcn 带边框的面板，分上下两块：
  *
- * 1. **连入预览**（`ComposerInputs`）：连进这个节点的上游，可拖动排序，末尾一格加号选媒体建连入节点。
+ * 1. **连入预览**（`ComposerInputs`）：连进这个节点的上游，可拖动排序、点角标断开，末尾一格加号选媒体建连入节点。
  *    只有声明了输入端口的类型才有这一块（文本是源头，没有）；
  * 2. **提示词**（`PromptInput`）+ 右下角的发送按钮（`SendButton`，和 agent 对话框同一枚）。
  *    `@` **只能提及连进来的节点**：候选就是上面那一排、同样的顺序。
@@ -67,6 +68,23 @@ const upstreamNodes = computed(() =>
     return node ? [node as FlowNode] : []
   })
 )
+
+/**
+ * 点了某一格的移除角标：断开这个上游的所有线，同时去掉提示词里对它的提及、把它从 `inputOrder` 里拿掉 ——
+ * 一个事务一条撤销（`store.disconnectUpstream`）。正在写的草稿先按失焦的规矩写回，再在文档里的文字上去提及，
+ * 草稿不会把去掉的提及又写回来。
+ */
+function removeUpstream(nodeId: string) {
+  if (prompt.editing.value) finish("commit")
+  const set: Record<string, unknown> = {}
+  const nextText = removeNodeMentions(current.value, [nodeId])
+  if (nextText !== current.value) set[props.field] = nextText
+  const order = readInputOrder(ctx.node.data.value[INPUT_ORDER_KEY])
+  if (order.includes(nodeId)) set[INPUT_ORDER_KEY] = order.filter((id) => id !== nodeId)
+  store.separateUndo()
+  store.disconnectUpstream(ctx.id, nodeId, Object.keys(set).length > 0 ? { set } : undefined)
+  store.separateUndo()
+}
 
 // —— 输入框 ——
 
@@ -250,7 +268,11 @@ function iconOf(nodeId: string) {
       <Maximize2 v-else />
     </Button>
 
-    <ComposerInputs v-if="hasInputs" class="pr-8" :upstreams="upstreamIds" />
+    <!--
+      连入那一排自带 pt-1.5 / pr-1.5 给移除角标留位置（横向滚动会裁掉溢出）：这里用 -mt-1.5 抵掉，角标落进面板的 padding 里，
+      格子的位置和没角标时一样；右边 mr-6.5 + 那 6px = 原来给放大按钮留的 32px。
+    -->
+    <ComposerInputs v-if="hasInputs" class="-mt-1.5 mr-6.5" :upstreams="upstreamIds" @remove="removeUpstream" />
 
     <!--
       defer-focus-on-click：浮层挂载时不能抢画布的焦点（否则 Delete / Ctrl+Z 全落进输入框），点它才聚焦。

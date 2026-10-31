@@ -1,11 +1,12 @@
 import { markRaw, type Component } from "vue"
-import { Box, Clapperboard, Film, Frame, Image, Type } from "@lucide/vue"
+import { Box, Clapperboard, Film, Frame, Image, SquarePen, Type } from "@lucide/vue"
 
 import { definePromptComposerPart } from "@/components/flow/composer/composer-part"
 import DirectorBody from "@/components/flow/DirectorBody.vue"
 import DirectorOpenButton from "@/components/flow/DirectorOpenButton.vue"
 import ImageBody from "@/components/flow/ImageBody.vue"
 import { mediaNodeStyle } from "@/components/flow/media-fit"
+import { EDIT_BODY_MODE } from "@/components/flow/node-kit/features/edit-body"
 import NodeHost from "@/components/flow/node-kit/NodeHost.vue"
 import {
   defineNodePart,
@@ -15,6 +16,8 @@ import {
   type NodeTypeView
 } from "@/components/flow/node-kit/protocol"
 import NodeUploadBadge from "@/components/flow/NodeUploadBadge.vue"
+import { popupOpenPart } from "@/components/flow/popup/node-popup"
+import { TEXT_OPEN_EDITOR_EVENT } from "@/components/flow/text-editor"
 import NodeUploadButton from "@/components/flow/NodeUploadButton.vue"
 import { nodeUploadOf } from "@/components/flow/node-upload"
 import TextBody from "@/components/flow/TextBody.vue"
@@ -164,8 +167,9 @@ const MEDIA_FEATURES = [...COMPOSER_FEATURES, "download"] as const
 
 export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
   /**
-   * 文本 —— body 是一个输入框样子的正文区（`TextBody`，双击进入编辑，失焦提交一次），正文在 `data.text`。
-   * 只有输出：文本是源头。
+   * 文本 —— body 是一个输入框样子的正文区（`TextBody`，正文按 Markdown 渲染；双击就地编辑原文，失焦提交一次），
+   * 正文在 `data.text`。右上角（角标区）一枚「弹出编辑」按钮：盖一层 backdrop、在面板里编辑原文 + 实时预览
+   * （`popup/`，docs/21 §4.10）；正在双击就地编辑时这枚按钮收起（两种编辑不同时露出入口）。只有输出：文本是源头。
    *
    * **可拉伸**（`resizable`，右下角一个手柄，自由拉伸、Shift 锁比例）。尺寸的三种情况都由这一串 class 接住：
    * - 没拉过（布局里没有 width / height，Vue Flow 的外层不定宽高）：宽 320、高随内容、至少 120；
@@ -183,7 +187,18 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
       resize: { minWidth: 160, minHeight: 120 }
     },
     features: [...COMPOSER_FEATURES, "edit-body", "resizable"],
-    parts: [whenEmpty({ id: "text.composer", placeholder: "描述想写的内容（Shift+回车发送）" })]
+    parts: [
+      whenEmpty({ id: "text.composer", placeholder: "描述想写的内容（Shift+回车发送）" }),
+      popupOpenPart({
+        id: "text.open-editor",
+        event: TEXT_OPEN_EDITOR_EVENT,
+        payload: {},
+        title: "弹出编辑",
+        icon: SquarePen,
+        testId: "text-open-editor",
+        when: (ctx) => ctx.mode.current.value !== EDIT_BODY_MODE
+      })
+    ]
   }),
   /**
    * 图片 —— body 画 `data.src` 那张图，没有就是空占位。generate 形态接受文本 / 图片 / 视频拖线连入，asset 形态不接受。

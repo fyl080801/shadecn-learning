@@ -336,6 +336,33 @@
 }
 
 /*
+ * 节点右上角（角标区）的**操作按钮**（上传、打开导演台、弹出编辑……）只在指针悬停到节点上时出现；
+ * 状态角标（运行中、上传中）不带这个类，一直显示。
+ * 用 `visibility` 而不是只调透明度：藏着时点不到（按钮自己带着 `pointer-events-auto`），也不进 Tab 顺序。
+ * 透明度过渡可以有：它不随缩放变（不违反「随缩放变的值不加 transition」）。
+ * 没有悬停的设备（触屏）一直显示，否则永远点不到。
+ */
+.vue-flow__node .flow-node-hover-reveal {
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    visibility 120ms;
+}
+
+.vue-flow__node:hover .flow-node-hover-reveal {
+  visibility: visible;
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .vue-flow__node .flow-node-hover-reveal {
+    visibility: visible;
+    opacity: 1;
+  }
+}
+
+/*
  * 悬停节点时，**出口**（右边，`.source`）上浮出加号 —— 点它或从它拉线都弹出新建节点的菜单。
  * 鼠标进了出口的感应区（`.flow-handle-zone`），加号的圆心跟着鼠标走（FlowNodeHandles 写变量），
  * 方区里哪儿都点得中。拉线过程中加号收起，线从连接点出发。

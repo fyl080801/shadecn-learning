@@ -838,6 +838,24 @@ describe("inputs 派生（增量）", () => {
     expect(byId(store).get("cfg")!.inputs.map((input) => input.port)).toEqual(["text"])
   })
 
+  it("disconnectUpstream：这对节点之间的线全断、data 同一个事务改，一次撤销都回来；没连着就不写", () => {
+    const { store } = wired()
+    store.writeNode("cfg", "data", { set: { prompt: "@{node:src} 换个背景" } })
+    store.addEdge(edge("e3", "src", "cfg", { data: { sourcePort: "image", targetPort: "image", index: 2 } }))
+    store.separateUndo()
+
+    expect(store.disconnectUpstream("cfg", "src", { set: { prompt: "换个背景" } })).toBe(true)
+    expect(byId(store).get("cfg")!.inputs).toEqual([])
+    expect(byId(store).get("cfg")!.data.prompt).toBe("换个背景")
+
+    store.undo()
+    expect(byId(store).get("cfg")!.inputs.map((input) => input.edgeId).sort()).toEqual(["e1", "e3"])
+    expect(byId(store).get("cfg")!.data.prompt).toBe("@{node:src} 换个背景")
+
+    expect(store.disconnectUpstream("cfg", "other", { set: { prompt: "x" } })).toBe(false)
+    expect(byId(store).get("cfg")!.data.prompt).toBe("@{node:src} 换个背景")
+  })
+
   it("删掉上游节点：连着的边一起没了，下游 inputs 清空", () => {
     const { store } = wired()
     store.removeElements(["src"], [])

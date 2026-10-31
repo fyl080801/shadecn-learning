@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue"
 import { toast } from "vue-sonner"
-import { Plus } from "@lucide/vue"
+import { Plus, X } from "@lucide/vue"
 
 import { useNodePart } from "@/components/flow/node-kit/context"
 import {
@@ -11,6 +11,7 @@ import {
   uploadVideoToNode
 } from "@/components/flow/node-upload"
 import { fileNodeLabel } from "@/components/flow/file-nodes"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 import ComposerInputTile from "./ComposerInputTile.vue"
@@ -22,6 +23,8 @@ import { INPUT_ORDER_KEY, acceptedInputMedia, inputMediaAccept, inputMediaKindOf
  * - 一格一个上游节点（`ComposerInputTile`），顺序由父组件按 `data.inputOrder` 排好传进来（`upstreams`）；
  * - **拖动排序**：浏览器原生拖放，拖着时只改本地的预览顺序（跟手），松手落下才写一次 `data.inputOrder`（一条撤销）；
  *   拖出去 / Esc 取消就回到原来的顺序；
+ * - **移除**：每格右上角一枚叉（悬停 / 键盘聚焦才出现，和附件排的删除角标一个样子）。点了发 `remove`，
+ *   断线、去掉提示词里的提及由父组件做（草稿在它手里）；
  * - 末尾一格虚线**加号**：点了选文件，**只能选媒体**（按这个类型能接的：图片 / 视频节点收图和视频，导演台只收图）。
  *   一个文件建一个连进来的图片 / 视频节点（`canvas.addInputNode`，节点 + 线一个事务），再往里传 ——
  *   和右键菜单「上传」同一条路（先建节点、再 `runNodeUpload`），进度在新节点身上，也在这一格上转圈。
@@ -29,6 +32,7 @@ import { INPUT_ORDER_KEY, acceptedInputMedia, inputMediaAccept, inputMediaKindOf
  * 整排固定一行高（56px 格子），多了横向滚动，不把输入框撑高。
  */
 const props = defineProps<{ upstreams: readonly string[] }>()
+const emit = defineEmits<{ remove: [nodeId: string] }>()
 
 const ctx = useNodePart()
 
@@ -106,13 +110,16 @@ async function onFilesPicked(event: Event) {
 </script>
 
 <template>
-  <!-- nowheel：横向滚动这一排不该缩放画布；pb-1 给横向滚动条留一点位置 -->
-  <div class="nowheel flex gap-2 overflow-x-auto pb-1" data-testid="composer-inputs">
+  <!--
+    nowheel：横向滚动这一排不该缩放画布；pb-1 给横向滚动条留一点位置。
+    pt-1.5 / pr-1.5 给格子右上角的移除角标留位置：横向滚动的容器会把溢出的部分裁掉。
+  -->
+  <div class="nowheel flex gap-2 overflow-x-auto pt-1.5 pr-1.5 pb-1" data-testid="composer-inputs">
     <div
       v-for="id in shown"
       :key="id"
       draggable="true"
-      :class="cn('shrink-0 cursor-grab active:cursor-grabbing', dragging === id && 'opacity-40')"
+      :class="cn('group/input relative shrink-0 cursor-grab active:cursor-grabbing', dragging === id && 'opacity-40')"
       :data-input-sort="id"
       @dragstart="onDragStart($event, id)"
       @dragover="onDragOver($event, id)"
@@ -120,6 +127,20 @@ async function onFilesPicked(event: Event) {
       @dragend="endDrag"
     >
       <ComposerInputTile :node-id="id" />
+      <!-- 删除角标压在边框外；触屏没有悬停，一直显示。拖动中不出现（拖的是格子，不是它） -->
+      <Button
+        v-if="!dragging"
+        variant="ghost"
+        size="icon-xs"
+        draggable="false"
+        class="absolute -top-1.5 -right-1.5 size-4 rounded-full border bg-background opacity-0 shadow-sm transition-opacity group-hover/input:opacity-100 group-focus-within/input:opacity-100 hover:bg-muted pointer-coarse:opacity-100"
+        aria-label="断开这个连入"
+        title="断开这个连入"
+        data-testid="composer-input-remove"
+        @click="emit('remove', id)"
+      >
+        <X class="size-2.5" />
+      </Button>
     </div>
 
     <button

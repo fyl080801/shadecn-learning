@@ -680,6 +680,20 @@ export const useFlowStore = defineStore("flow", () => {
     mutate((ctx) => ops.removeElements(ctx, doomedNodes, doomedEdges), "删除")
   }
 
+  /**
+   * 断开一个上游（`source` → `target` 的所有线），顺带改目标节点的 `data`（比如去掉提示词里对它的提及）——
+   * **同一个事务**：一条撤销，撤回来线和文字一起回来。没连着就什么都不做（不写 data），返回 false。
+   */
+  function disconnectUpstream(targetId: string, sourceId: string, data?: NodeFieldChanges, label = "断开连入") {
+    return (
+      mutate((ctx) => {
+        if (ops.disconnectNodes(ctx, sourceId, targetId).length === 0) return false
+        if (data) lenient(() => ops.writeNodeFields(ctx, targetId, "data", data))
+        return true
+      }, label) ?? false
+    )
+  }
+
   // —— 按用户存的状态 ——
 
   /**
@@ -862,6 +876,7 @@ export const useFlowStore = defineStore("flow", () => {
     recordNodeSize,
     writeNode,
     removeElements,
+    disconnectUpstream,
     // 视图状态
     setViewport,
     setUserState,

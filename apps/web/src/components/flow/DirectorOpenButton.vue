@@ -11,6 +11,7 @@ import { useNodePart } from "@/components/flow/node-kit/context"
  * 点了只发 `director:open` 事件（发出方就是这个节点），由编辑器级的 `FlowDirectorOverlay.vue` 接住、
  * 全屏打开导演台；这里不跳路由、不弹层，也不写文档。
  *
+ * 只在指针悬停到节点上时出现（`flow-node-hover-reveal`，见 vue-flow.css；触屏一直显示）。
  * 角标区整块 `pointer-events-none`（不挡拖节点），按钮自己要 `pointer-events-auto` 拿回点击。
  * `nodrag nopan`：在按钮上按下不该变成拖节点 / 拖画布；`@dblclick.stop` 免得双击按钮被当成双击节点。
  */
@@ -21,7 +22,7 @@ const ctx = useNodePart()
   <Button
     variant="secondary"
     size="icon"
-    class="nodrag nopan pointer-events-auto size-7 rounded-full shadow-sm"
+    class="flow-node-hover-reveal nodrag nopan pointer-events-auto size-7 rounded-full shadow-sm"
     title="打开导演台"
     aria-label="打开导演台"
     data-testid="director-open"

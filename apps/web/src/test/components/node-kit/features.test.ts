@@ -107,7 +107,7 @@ describe("默认注册表的组合", () => {
     expect(ids(kit.partsFor("text", "label"))).toEqual(["rename.title"])
     expect(ids(kit.actionsFor("text", "toolbar"))).toEqual(["node.duplicate", "node.delete"])
     expect(ids(kit.partsFor("text", "handles"))).toEqual(["connectable.handles"])
-    expect(ids(kit.partsFor("text", "badge"))).toEqual(["status.badge"])
+    expect(ids(kit.partsFor("text", "badge"))).toEqual(["status.badge", "text.open-editor"])
 
     expect(ids(kit.partsFor("group", "label"))).toEqual(["rename.title"])
     expect(kit.partsFor("group", "handles")).toHaveLength(0)

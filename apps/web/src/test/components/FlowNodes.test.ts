@@ -616,7 +616,7 @@ describe("各类型的 body", () => {
     wrapper = null;
   });
 
-  it("文本：占满节点、无边框的正文区，有正文显示正文", () => {
+  it("文本：占满节点、无边框的正文区，有正文按 Markdown 渲染（单个换行也换行）", () => {
     setup(record("t1", "text", { data: { text: "第一行\n第二行" } }));
     wrapper = mount(NodeHost, {
       global: nodeKitGlobal(),
@@ -624,7 +624,53 @@ describe("各类型的 body", () => {
     });
     const body = wrapper.find('[data-testid="text-body"]');
     expect(body.classes()).not.toContain("border");
-    expect(body.text()).toBe("第一行\n第二行");
+    expect(body.find("p").html()).toContain("第一行<br>第二行");
+  });
+
+  it("文本：Markdown 正文渲染成标题 / 列表 / 加粗；原始 HTML 当文字，不变成元素", () => {
+    setup(record("t1", "text", { data: { text: "# 标题\n\n- **一**\n- 二\n\n<b>x</b>" } }));
+    wrapper = mount(NodeHost, {
+      global: nodeKitGlobal(),
+      props: nodeProps("t1", "text"),
+    });
+    const body = wrapper.find('[data-testid="text-body"]');
+    expect(body.find("h1").text()).toBe("标题");
+    expect(body.findAll("li").map((item) => item.text())).toEqual(["一", "二"]);
+    expect(body.find("li strong").text()).toBe("一");
+    expect(body.find("b").exists()).toBe(false);
+    expect(body.text()).toContain("<b>x</b>");
+  });
+
+  it("文本：右上角（角标区）的「弹出编辑」按钮发出 text:open-editor（发出方是这个节点），不写文档", async () => {
+    const { store } = setup(record("t1", "text", { data: { text: "正文" } }));
+    const runtime = createNodeKitRuntime(createDefaultNodeKit());
+    const global = { provide: { [NODE_KIT_KEY as symbol]: runtime } };
+    const opened: string[] = [];
+    runtime.kit.on("text:open-editor", (_, ctx) => opened.push(ctx.id));
+    wrapper = mount(NodeHost, { global, props: nodeProps("t1", "text") });
+    const button = wrapper.find('[data-testid="text-open-editor"]');
+    expect(button.element.tagName).toBe("BUTTON");
+    expect(button.attributes("aria-label")).toBe("弹出编辑");
+    expect(button.element.parentElement?.getAttribute("data-node-slot")).toBe("badge");
+
+    const before = JSON.stringify(store.nodeById.get("t1"));
+    await button.trigger("click");
+    expect(opened).toEqual(["t1"]);
+    expect(JSON.stringify(store.nodeById.get("t1"))).toBe(before);
+  });
+
+  it("文本：双击就地编辑时不显示「弹出编辑」按钮，退出编辑后回来", async () => {
+    setup(record("t1", "text", { data: { text: "正文" } }));
+    wrapper = mount(NodeHost, {
+      global: nodeKitGlobal(),
+      props: nodeProps("t1", "text"),
+    });
+    expect(wrapper.find('[data-testid="text-open-editor"]').exists()).toBe(true);
+    await wrapper.find('[data-testid="text-body"]').trigger("dblclick");
+    expect(wrapper.find("textarea").exists()).toBe(true);
+    expect(wrapper.find('[data-testid="text-open-editor"]').exists()).toBe(false);
+    await wrapper.find("textarea").trigger("keydown", { key: "Escape" });
+    expect(wrapper.find('[data-testid="text-open-editor"]').exists()).toBe(true);
   });
 
   it("图片：有 data.src 就画那张图；没有是空占位，右上角（角标区）一枚上传图标，有了图就收起", async () => {

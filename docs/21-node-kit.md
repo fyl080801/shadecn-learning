@@ -335,6 +335,47 @@ export const runnable = defineNodeFeature({
 - 协议层是纯函数，单测不需要挂载：「某类型的 `toolbar` 区域最终解析出哪几个动作、什么顺序」「`replaces` 生效」
   「`hides` 了不存在的 id 在注册时报错」「事件处理函数抛错不影响其他处理函数」。
 
+### 4.10 独立编辑：全屏占用与弹出编辑
+
+有些节点在画布上就地改不方便（内容太长、要一整块工作区），需要把它**从画布上拿出来单独编辑**。独立编辑有两种，互不替代：
+
+| | 全屏占用 | 弹出编辑 |
+|---|---|---|
+| 样子 | 不透明、占满整屏，画布完全看不见；内容自己画全部控件（左上角返回） | 半透明遮罩（backdrop，`bg-black/50` + 模糊）盖住画布，中间一块面板；宿主画面板外框和标题栏（节点名 + 「完成」） |
+| 用在 | 导演台（`FlowDirectorOverlay.vue`，[REQ-DIRECTOR](07-director-console.md) §7.6） | 文本节点的 Markdown 编辑（`TextEditorPanel.vue`） |
+| 关闭 | 左上角返回 / Esc | 「完成」/ Esc / 点遮罩 |
+
+**两种共有的规矩**（节点在 Vue Flow 的变换层里，就地弹出的东西会跟着缩放、被别的节点压住，所以一律这样做）：
+
+- **节点只发事件**（`ctx.emit('<打开事件>', 载荷)`，发出方就是要编辑的节点），不跳路由、不自己弹层；接事件、开层的是编辑器级的宿主组件；
+- 宿主关着就不挂（`v-if`）；开着时 teleport 到 body、`fixed inset-0 z-40`（低于对话框 / toast 的 z-50）；同一时刻只开一个；
+- 开着时登记 `suspendCanvasShortcuts()`，画布快捷键一律让路；**不截断按键的传播**（截了层里的输入框、reka-ui 的 Esc 都会坏）；
+- Esc 分层：在下拉菜单 / 对话框里交给它自己关；其余关闭这一层（输入框里的 Esc 见下）；
+- 打开时把焦点从画布上拿走；开着的节点被删了（撤销、协作者删掉）就收起来；
+- **关闭 = 卸载内容组件，草稿在卸载时提交**：一次独立编辑 = 一次提交 = 一条撤销（全屏导演台有自己的撤销栈，见 docs/07 §7.6）。
+
+**弹出编辑的标准化**（`components/flow/popup/`）：所有弹出编辑共用一个宿主 `FlowNodePopupHost.vue`（`FlowEditor.vue` 里挂一次），上面那些规矩只在它里面写一次。
+每一种只是登记表 `popups.ts` 里的一条声明：
+
+```ts
+defineNodePopup({
+  id: 'text-editor',              // 唯一；遮罩根元素的 data-testid = `<id>-popup`
+  event: 'text:open-editor',      // 打开它的节点事件（模块扩充声明在 FlowNodeEventMap 里）
+  match: { types: ['text'] },     // 只接哪些节点发的
+  component: TextEditorPanel,     // 面板标题栏以下的内容；props { nodeId, payload }，emits close
+  fallbackTitle: '文本',          // 节点没有名字时的标题
+  escapeFromInput: 'close',       // 输入框里按 Esc：close（默认）直接关；blur 先失焦、再按一次才关
+})
+```
+
+- 内容组件可以 `defineExpose` 两个可选钩子：`reopen(payload)`（开着同一个节点的同一种时又收到打开事件：不重挂，交给它）和
+  `handleKey(event)`（自己的快捷键；宿主已排除 Esc、输入框里、输入法组字；返回 `true` 宿主就 `preventDefault`）；Ctrl+S 宿主一律吞掉；
+- 标题栏只有一条：内容自己的按钮（如文本的「预览」开关）用 `useNodePopupActions()` 拿到「完成」左边的按钮位，`<Teleport>` 进去，不另起一行工具栏；
+- **点遮罩关闭**只认「按下和松开都在遮罩本身上」：在面板里拖选文字、松手落到遮罩上不算；
+- 入口是节点右上角（`badge` 区）的一枚图标按钮，用 `popupOpenPart({ id, event, payload, title, icon, testId, when? })` 生成，和图片 / 视频的上传按钮同款、同位置，只在悬停到节点上时出现；`when` 用来在别的编辑进行中收起它（文本：就地编辑时不显示）；
+- **加一种弹出编辑 = `popups.ts` 一条 + 一个内容组件 + 节点类型上一枚 `popupOpenPart`**，宿主不认识任何具体弹出编辑。
+- 全屏占用眼下只有导演台一种，不抽象；将来有第二种全屏占用时再照弹出编辑的样子抽一个宿主。
+
 ## 5. 现有节点怎么映射
 
 | 现在 | 之后 |

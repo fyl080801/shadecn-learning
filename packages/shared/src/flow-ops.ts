@@ -469,6 +469,20 @@ export function removeElements(
   return { nodes: [...doomedNodes], edges: [...doomedEdges], ungrouped: orphaned.length }
 }
 
+/**
+ * 断开 `sourceId` → `targetId` 之间的**所有**线（同一对节点可能经几对端口连着，比如导演台的截图和录制），
+ * 返回删掉的边 id；本来就没连着回 `[]`。节点本身不动（目标节点的形态也不回退，和删线一样）。
+ */
+export function disconnectNodes(ctx: FlowOpContext, sourceId: string, targetId: string): string[] {
+  const doomed: string[] = []
+  for (const [edgeId, edge] of ctx.edges.entries()) {
+    if (!(edge instanceof Y.Map)) continue
+    if (edge.get('source') === sourceId && edge.get('target') === targetId) doomed.push(edgeId)
+  }
+  for (const id of doomed) ctx.edges.delete(id)
+  return doomed
+}
+
 export interface UngroupResult {
   /** 被移出分组的节点（留在原地，坐标换算回画布坐标） */
   children: string[]
