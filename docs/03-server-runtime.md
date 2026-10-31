@@ -1,5 +1,8 @@
 # REQ-SERVER 单进程单端口服务端
 
+> [REQ-MODULES](28-server-modules.md)（规划中）把这里的「一个进程」收窄为「**每个角色**一个进程」：同一份产物按 `SERVER_ROLES` 启动成 web / collab / agent，
+> 什么都不配仍是本篇描述的单进程形态。本篇其余内容不变。
+
 ## 1. 目标
 
 **一个进程、一个端口**同时承载三件事：HTTP API、WebSocket、前端页面。开发和生产环境的拓扑必须完全一致 —— 没有独立的 Vite dev server，没有反向代理，没有 CORS 转发。

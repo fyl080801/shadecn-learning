@@ -35,6 +35,7 @@
 | REQ-ASSET-PRIVATE | 画布资源私有访问：桶私有，判权后跳转短期签名 URL | [25-private-asset-access.md](25-private-asset-access.md) | 规划中 |
 | REQ-AGENT-DEF | Agent 定义（pi 格式、服务端配置）与同一沙箱内的多 agent 协作：取代父 / 子 agent | [26-agent-definitions.md](26-agent-definitions.md) | 已实现（P0～P5） |
 | REQ-ASSET-THUMB | 画布资源缩略图：上传时生成图标 / 低清两档，按场景取档、取不到退回原图并按需补档 | [27-asset-thumbnails.md](27-asset-thumbnails.md) | 已实现 |
+| REQ-MODULES | 服务端模块化：底座 + 可开关能力包，按角色（web / collab / agent）独立部署与扩容 | [28-server-modules.md](28-server-modules.md) | 规划中 |
 
 ## 状态口径
 
