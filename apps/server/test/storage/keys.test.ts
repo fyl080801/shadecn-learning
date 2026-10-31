@@ -24,6 +24,8 @@ describe('资源对象键的目录分层', () => {
     expect(isAssetKey('canvas', `canvas/assets/3f/a8/../${id}.png`)).toBe(false)
     expect(isAssetKey('canvas', `canvas/assets/images/3f/a8/${id}.png`)).toBe(false)
     expect(isAssetKey('canvas', `canvas/projects/p1/flows/f1/images/3f/a8/${id}.png`)).toBe(false)
+    // 缩略图键不是客户端能带回来的键（docs/27 §3.1）
+    expect(isAssetKey('canvas', `canvas/assets/3f/a8/${id}@icon.webp`)).toBe(false)
   })
 })
 

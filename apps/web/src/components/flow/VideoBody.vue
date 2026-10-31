@@ -3,6 +3,7 @@ import { computed } from "vue"
 import { Film } from "@lucide/vue"
 
 import HoverVideo from "@/components/flow/HoverVideo.vue"
+import CanvasAssetImage from "@/components/flow/CanvasAssetImage.vue"
 import { useMediaFit } from "@/components/flow/media-fit"
 import NodeUploadButton from "@/components/flow/NodeUploadButton.vue"
 import NodeUploadProgress from "@/components/flow/NodeUploadProgress.vue"
@@ -20,10 +21,11 @@ import { captureVideoPoster } from "@/lib/video-poster"
  * 两个 **S3 原始地址**经 `attachAsset` 一次写进 `data.src` / `data.poster`（一步撤销，同一步按「有没有连入」
  * 定形态）。截不出预览图就只写 `src`。上传中占位上换成进度（只算视频本身的进度，预览图很小），能取消。
  *
+ * 预览图同图片节点：按缩放取 `icon` / `low` 档、先垫毛玻璃占位（`CanvasAssetImage`，docs/27 §4.1），取不到退回原图。
  * 节点尺寸跟着预览图的高宽比走（预览图就是视频的一帧，比例相同；规则同图片，`media-fit.ts`）。
  */
 const ctx = useNodePart()
-const { boxStyle, onLoad } = useMediaFit()
+const { boxStyle, onLoad, assetSize } = useMediaFit()
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
@@ -58,9 +60,10 @@ const { upload, state: uploading, cancel } = useNodeUpload(ctx, async (file, io)
     :style="boxStyle"
     data-testid="video-body"
   >
-    <img
+    <CanvasAssetImage
       v-if="poster"
       :src="poster"
+      :size="assetSize"
       :alt="ctx.label.value"
       draggable="false"
       class="block h-full w-full object-cover"

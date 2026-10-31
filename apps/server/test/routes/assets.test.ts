@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import sharp from 'sharp'
 import { ASSET_PART_SIZE, type AssetUploadSession, type UploadedAsset } from '@shadecn/shared/canvas'
 import type { S3Client } from '../../storage/s3.ts'
 import { replaceAssetStorage } from '../../storage/index.ts'
@@ -99,6 +100,31 @@ describe('POST /api/flows/:flowId/assets（一次传完）', () => {
     expect(file.startsWith(`${a}${b}`)).toBe(true)
     expect(body).toMatchObject({ url: s3.client.objectUrl(body.key), contentType: 'image/png', size: 4 })
     expect(s3.objects.get(body.key)).toEqual({ size: 4, contentType: 'image/png' })
+  })
+
+  it('真图片 → 同步生成 icon / low 两档 webp，和原图同目录，回包 variants 列出来', async () => {
+    const { alice, flowId } = await memberFlow()
+    const bytes = await sharp({ create: { width: 2000, height: 1000, channels: 3, background: '#3366cc' } })
+      .jpeg()
+      .toBuffer()
+
+    const res = await alice.request(`/api/flows/${flowId}/assets`, form(new File([bytes], 'a.jpg', { type: 'image/jpeg' })))
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as UploadedAsset
+    expect(body.variants).toEqual(['icon', 'low'])
+    const stem = body.key.replace(/\.jpg$/, '')
+    expect(s3.objects.get(`${stem}@icon.webp`)?.contentType).toBe('image/webp')
+    expect(s3.objects.get(`${stem}@low.webp`)?.contentType).toBe('image/webp')
+  })
+
+  it('缩略图生成失败（图片损坏）不算上传失败：201，variants 为空，归属照记', async () => {
+    const { alice, flowId } = await memberFlow()
+    const res = await alice.request(`/api/flows/${flowId}/assets`, form(png()))
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as UploadedAsset
+    expect(body.variants).toEqual([])
+    expect([...s3.objects.keys()]).toEqual([body.key])
+    expect(await flowAssets.findInFlow(flowId, [body.key])).toHaveLength(1)
   })
 
   it('上传成功即记下归属（键 → 这张画布 + 服务端看到的类型）；别的画布查不到它', async () => {
@@ -211,6 +237,7 @@ describe('分片上传 /api/flows/:flowId/assets/multipart', () => {
       key: session.key,
       contentType: 'video/mp4',
       size,
+      variants: [],
     })
     // 完成时才记归属，类型取 S3 拼完后 HEAD 回来的
     expect(await flowAssets.findInFlow(flowId, [session.key])).toEqual([{ key: session.key, contentType: 'video/mp4' }])
@@ -236,6 +263,9 @@ describe('分片上传 /api/flows/:flowId/assets/multipart', () => {
     expect(forged.status).toBe(400)
     const elsewhere = await putPart(alice, flowId, { ...session, key: 'canvas/other/x.mp4' }, 1, 10)
     expect(elsewhere.status).toBe(400)
+    // 缩略图键也不行：否则能借分片上传覆盖别人的缩略图
+    const variant = await putPart(alice, flowId, { ...session, key: session.key.replace(/\.mp4$/, '@icon.webp') }, 1, 10)
+    expect(variant.status).toBe(400)
   })
 
   it('非成员 → 404', async () => {

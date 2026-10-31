@@ -2,6 +2,7 @@
 import { computed } from "vue"
 import { Image } from "@lucide/vue"
 
+import CanvasAssetImage from "@/components/flow/CanvasAssetImage.vue"
 import { useMediaFit } from "@/components/flow/media-fit"
 import NodeUploadButton from "@/components/flow/NodeUploadButton.vue"
 import NodeUploadProgress from "@/components/flow/NodeUploadProgress.vue"
@@ -14,6 +15,7 @@ import { uploadFlowAsset } from "@/lib/asset-upload"
  *
  * 上传经后端转存到 S3（`uploadFlowAsset`：大文件自动分片），回来的 **S3 原始地址**经 `attachAsset` 写进
  * `data.src`（同一步按「有没有连入」定形态：没有就成素材，见 docs/13 §3.7），显示时浏览器直接从 S3 读，不经后端。
+ * 画布上按缩放取 `icon` / `low` 档，目标档没加载完先垫毛玻璃的图标档（`CanvasAssetImage`，docs/27 §4.1），取不到退回原图。
  * 上传中（`useNodeUpload`，本地状态）占位上换成进度：分片的有进度条，不分片的只转圈，都能取消；取消了什么都不写。
  * `draggable="false"`：浏览器原生的拖图片会抢走 Vue Flow 的拖节点。
  *
@@ -21,7 +23,7 @@ import { uploadFlowAsset } from "@/lib/asset-upload"
  * 图片区按记录的比例定高，`object-cover` 铺满（比例被夹过的超长图裁掉两头）；报错行接在下面，不挤图片。
  */
 const ctx = useNodePart()
-const { boxStyle, onLoad } = useMediaFit()
+const { boxStyle, onLoad, assetSize } = useMediaFit()
 
 const src = computed(() => {
   const value = ctx.node.data.value.src
@@ -46,9 +48,10 @@ const { upload, state: uploading, cancel } = useNodeUpload(ctx, async (file, io)
     :style="boxStyle"
     data-testid="image-body"
   >
-    <img
+    <CanvasAssetImage
       v-if="src"
       :src="src"
+      :size="assetSize"
       :alt="ctx.label.value"
       draggable="false"
       class="block h-full w-full object-cover"

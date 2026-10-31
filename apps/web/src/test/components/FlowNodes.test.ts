@@ -25,6 +25,8 @@ import { nodeKitGlobal } from "./node-kit/with-kit"
  */
 
 const selectOnly = vi.fn()
+/** 画布缩放：媒体节点按它取缩略图档 */
+const zoomLevel = ref(1)
 const openGrowMenu = vi.fn()
 const deleteNode = vi.fn()
 const selectedNodeId = ref<string | null>(null)
@@ -45,7 +47,8 @@ vi.mock("@/composables/flow/editor-context", () => ({
       deleteNode,
       duplicateNode: vi.fn(),
       isValidConnection: () => true,
-      boxSelecting: ref(false)
+      boxSelecting: ref(false),
+      zoomLevel
     },
     presence: { occupantsOf: () => [] },
     selection: { selectedNodeId },
@@ -373,6 +376,54 @@ describe("各类型的 body", () => {
     await nextTick()
     expect(wrapper.find('[data-testid="image-body"] img').attributes("src")).toBe("https://x/a.png")
     expect(wrapper.find('[data-testid="image-body-empty"]').exists()).toBe(false)
+  })
+
+  it("图片是本服务素材：先垫毛玻璃的图标档，低清档加载完盖上去；缩得很小只用图标档、不要占位", async () => {
+    zoomLevel.value = 1
+    const id = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+    const src = `https://s3.test/b/canvas/assets/3f/a8/${id}.png`
+    setup(record("img", "image", { data: { src } }))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+    const body = () => wrapper!.find('[data-testid="image-body"]')
+
+    const placeholder = body().find('[data-role="placeholder"]')
+    expect(placeholder.attributes("src")).toBe(src.replace(".png", "@icon.webp"))
+    expect(placeholder.classes()).toContain("blur-md")
+    const main = body().find('[data-role="main"]')
+    expect(main.attributes("src")).toBe(src.replace(".png", "@low.webp"))
+    expect(main.classes()).toContain("opacity-0")
+
+    await main.trigger("load")
+    expect(body().find('[data-role="placeholder"]').exists()).toBe(false)
+    expect(body().find('[data-role="main"]').classes()).not.toContain("opacity-0")
+
+    // 320px 宽的节点缩到 0.1：屏幕上 32 物理像素，图标档够用
+    zoomLevel.value = 0.1
+    await nextTick()
+    expect(body().find('[data-role="main"]').attributes("src")).toBe(src.replace(".png", "@icon.webp"))
+    expect(body().find('[data-role="placeholder"]').exists()).toBe(false)
+
+    // 再放大：换回低清，加载期间露出毛玻璃占位
+    zoomLevel.value = 1
+    await nextTick()
+    expect(body().find('[data-role="main"]').attributes("src")).toBe(src.replace(".png", "@low.webp"))
+    expect(body().find('[data-role="placeholder"]').exists()).toBe(true)
+  })
+
+  it("没有缩略图（图标档 404）：撤掉占位，目标档照常显示；低清档也 404 就退回原图", async () => {
+    zoomLevel.value = 1
+    const id = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+    const src = `https://s3.test/b/canvas/assets/3f/a8/${id}.png`
+    setup(record("img", "image", { data: { src } }))
+    wrapper = mount(NodeHost, { global: nodeKitGlobal(), props: nodeProps("img", "image") })
+    const body = () => wrapper!.find('[data-testid="image-body"]')
+
+    await body().find('[data-role="placeholder"]').trigger("error")
+    expect(body().find('[data-role="placeholder"]').exists()).toBe(false)
+    expect(body().find('[data-role="main"]').classes()).not.toContain("opacity-0")
+
+    await body().find('[data-role="main"]').trigger("error")
+    expect(body().find('[data-role="main"]').attributes("src")).toBe(src)
   })
 
   it("视频：平时只画预览图 data.poster，不放 <video>；没有预览图是空占位", async () => {

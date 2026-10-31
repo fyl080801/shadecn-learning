@@ -281,6 +281,7 @@ layout 不嵌套：拖动是最热的写路径，`position` 一直是顶层的�
 - **大文件分片上传**：分片大小 8 MiB（`ASSET_PART_SIZE`，前后端同一个常量）。不超过一片的一次传完；超过的切片上传 —— 浏览器最多 3 片并发，每片遇到网络错误或 5xx 重试 2 次（4xx 不重试），全部传完再拼成一个对象。中途彻底失败就放弃这次上传（S3 删掉已传的片），提示上传失败。后端同样按 S3 原生的分片上传往存储写，单个请求和后端内存都不超过一片。
 - **桶里分目录**：对象键为 `<S3_KEY_PREFIX>/assets/<uuid 前 2 位>/<uuid 第 3–4 位>/<uuid><ext>`。前缀默认 `canvas`；所有素材进同一个 `assets/` 目录，**不按项目、画布、类别分**；按 uuid 拆两级目录，文件均匀散开，不会堆在同一层。早先的键是 `projects/<projectId>/flows/<flowId>/<images|videos>/…`，那些已上传的对象和画布里存的地址原样保留、不迁移；只有新上传的进新目录。
 - **显示直接用 S3 原始地址**（`<endpoint>/<bucket>/<key>`，path-style），不经后端转发 —— 所以桶要对匿名开放读。这里的 `<endpoint>` 是公开地址 `S3_ENDPOINT`；服务端自己发的请求（上传、读字节给 agent 看图）可以另走内网地址 `S3_INTERNAL_ENDPOINT`，不影响存进节点、给浏览器的地址（REQ-DEPLOY §3.3）。改为私有桶、按成员判权读取的方案见 [REQ-ASSET-PRIVATE](25-private-asset-access.md)（规划中）。
+- **缩略图**：图片（含视频的预览图）上传时服务端同步生成 `icon` / `low` 两档 webp，和原图放在同一目录（`<uuid>@icon.webp` / `<uuid>@low.webp`），节点里仍只存原图地址；各处按场景取档、取不到退回原图。见 [REQ-ASSET-THUMB](27-asset-thumbnails.md)。
 - 视频：上传前先在浏览器里从本地文件截一帧（约 0.1s 处）当预览图，和视频一起传，`src` / `poster` 一次写入；截不出来（格式不认、超时）就只写 `src`，body 显示「暂无预览图」。
 - **上传中**：占位上不再显示「暂无…」和上传按钮，换成进度 —— 分片上传是进度条 + 百分比（按传完的片累计，拼对象前才到 100%；视频只算视频本身，预览图不计），一次传完的没有中间进度，只转圈；节点的角标区挂「上传中」。两种都有「取消」：断开正在发的请求，分片的顺带放弃这次上传（S3 删掉已传的片），节点什么都不写，不提示失败，占位回到原样。**「上传中」是本地状态，不进文档**：别的协作者看不到，刷新页面就没了（写进文档的话，上传的人中途关掉页面，节点就永远卡在上传中）。
 - 只在空占位上有入口：已有资源的节点不提供替换 / 删除；也没有拖放上传、粘贴上传。
@@ -804,10 +805,10 @@ store 的职责边界：
 | PATCH | `/api/flows/:id` | member | 改名 / 描述 / 状态 / 标签；**不能**改内容、不能改 projectId |
 | DELETE | `/api/flows/:id` | member | 软删除，204 空 body |
 | POST | `/api/flows/:id/duplicate` | member | 在同项目内复制一份（名称加「副本」后缀），201；更新流不复制，新画布 `revision` 从 0 起 |
-| POST | `/api/flows/:id/assets` | member | 一次传完一个画布资源（**不超过一片**，否则 413 提示分片）：multipart，字段 `file`，只收 `image/*` / `video/*`（否则 415）。**201** + `{ url, key, contentType, size }`（`UploadedAsset`，`url` 是 S3 原始地址）；没配存储 503，S3 写失败 502 |
+| POST | `/api/flows/:id/assets` | member | 一次传完一个画布资源（**不超过一片**，否则 413 提示分片）：multipart，字段 `file`，只收 `image/*` / `video/*`（否则 415）。**201** + `{ url, key, contentType, size, variants }`（`UploadedAsset`，`url` 是 S3 原始地址；`variants` 是这次生成了的缩略图档，见 [REQ-ASSET-THUMB §3.2](27-asset-thumbnails.md)）；没配存储 503，S3 写失败 502 |
 | POST | `/api/flows/:id/assets/multipart` | member | 分片上传·开始。body `{ filename, contentType, size }`；类型不对 415，`size` 超过 `S3_MAX_UPLOAD_MB`（默认 100MB）413。**201** + `{ uploadId, key, partSize, partCount }` |
 | PUT | `/api/flows/:id/assets/multipart/:uploadId/parts/:partNumber?key=` | member | 分片上传·传一片。请求体是这一片的原始字节（非空，不超过一片，否则 400 / 413）；`partNumber` 1..10000。回 `{ partNumber, etag }` |
-| POST | `/api/flows/:id/assets/multipart/:uploadId/complete` | member | 分片上传·完成。body `{ key, parts }`，`parts` 必须从 1 起连续升序（否则 400）。**201** + `UploadedAsset`（大小、类型以 S3 上实际拼出来的为准） |
+| POST | `/api/flows/:id/assets/multipart/:uploadId/complete` | member | 分片上传·完成。body `{ key, parts }`，`parts` 必须从 1 起连续升序（否则 400）。**201** + `UploadedAsset`（大小、类型以 S3 上实际拼出来的为准；不超过 32MB 的图片同样生成缩略图） |
 | DELETE | `/api/flows/:id/assets/multipart/:uploadId?key=` | member | 分片上传·放弃，S3 删掉已传的片，204 |
 | PATCH | `/api/flows/:id/user-state` | member | 存**我自己**的视图状态（视口…），body 只带要改的分区，204。不涨 `revision`、不写更新流、没有乐观锁 |
 | — | ~~`POST /api/flows/:id/commit`~~ | — | **已删除**，见 4.6。内容不再经过 HTTP |

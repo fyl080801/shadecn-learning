@@ -15,6 +15,9 @@ import { encodeS3Path } from './s3.ts'
  * - **按 uuid 拆两级目录**（取 uuid 开头两段十六进制）：v4 的开头是随机的，文件均匀落进
  *   256 × 256 个目录，素材再多也不会把成千上万个文件堆进同一层；
  * - 文件名是 uuid：同名文件不会互相覆盖，地址也猜不出来。
+ * - 缩略图（docs/27）和原图同目录，文件名 `<uuid>@<档>.webp`，由 `@shadecn/shared/canvas` 的 `assetVariantPath` 推；
+ *   **`isAssetKey` / `assetKeyOfUrl` 有意不认它**：分片上传带回来的键不能是档位键（否则能借此覆盖别人的缩略图），
+ *   agent 看图也只看原图。
  */
 
 /** 图片 / 视频之外的类型在路由层就被 415 拦掉了，这里只认这两种 */

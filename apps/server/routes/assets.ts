@@ -13,6 +13,7 @@ import { s3Config } from '../config.ts'
 import { assetStorage } from '../storage/index.ts'
 import { flowAssets } from '../store/assets.ts'
 import { assetCategory, buildAssetKey, isAssetKey } from '../storage/keys.ts'
+import { storeAssetVariants, storeVariantsFromStorage } from '../storage/variants.ts'
 import type { S3Client } from '../storage/s3.ts'
 import { INVALID_JSON, readJson } from './params.ts'
 
@@ -85,6 +86,7 @@ function parseParts(value: unknown): AssetUploadPart[] | null {
  * 文件经后端转存到 S3（浏览器不碰 AK/SK），对象键的目录分层见 `storage/keys.ts`。
  * 只负责「存下来、记下归属、给地址」；把地址写进哪个节点是前端经 `store.mutate` 的事。
  * 每次成功的上传都在回包之前记一行 `FlowAsset`（键 → 这张画布 + 服务端看到的类型），见 {@link recordAsset}。
+ * 图片在记录之前同步生成 `icon` / `low` 两档缩略图（`storage/variants.ts`，docs/27）；生成失败不影响上传结果。
  *
  * **不超过一片（`ASSET_PART_SIZE`）的文件一次传完**（`POST /`）；**更大的分片上传**：
  *
@@ -121,10 +123,12 @@ export const assets = new Hono<Env>()
       const body = new Uint8Array(await file.arrayBuffer())
       const url = await viaS3(c, `上传 ${key} `, () => storage.putObject(key, body, file.type))
       if (url instanceof Response) return url
+      // 缩略图在记录、回包之前写好：别人看到节点时就能取到（docs/27 §3.2）
+      const variants = await storeAssetVariants(storage, key, body, file.type)
       await recordAsset(c, key, file.type)
 
-      console.info(`[assets] 已上传 ${key}（${file.type}，${file.size}B）`)
-      return c.json({ url, key, contentType: file.type, size: file.size } satisfies UploadedAsset, 201)
+      console.info(`[assets] 已上传 ${key}（${file.type}，${file.size}B，缩略图 ${variants.join('/') || '无'}）`)
+      return c.json({ url, key, contentType: file.type, size: file.size, variants } satisfies UploadedAsset, 201)
     },
   )
 
@@ -208,9 +212,12 @@ export const assets = new Hono<Env>()
 
     const size = done.head?.size ?? 0
     const contentType = done.head?.contentType ?? ''
+    const variants = await storeVariantsFromStorage(storage, key, contentType, size)
     await recordAsset(c, key, contentType)
-    console.info(`[assets] 已分片上传 ${key}（${contentType}，${size}B，${parts.length} 片）`)
-    return c.json({ url: done.url, key, contentType, size } satisfies UploadedAsset, 201)
+    console.info(
+      `[assets] 已分片上传 ${key}（${contentType}，${size}B，${parts.length} 片，缩略图 ${variants.join('/') || '无'}）`,
+    )
+    return c.json({ url: done.url, key, contentType, size, variants } satisfies UploadedAsset, 201)
   })
 
   .delete('/multipart/:uploadId', async (c) => {

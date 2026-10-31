@@ -49,6 +49,10 @@
 - 已存的节点里还是 S3 原始地址。前端渲染时把以 `<S3_ENDPOINT>/<bucket>/` 开头的地址**映射成** `/api/assets/<key>`（反解逻辑已在 `apps/server/storage/keys.ts`，可挪到 `packages/shared` 复用）；或者一次性迁移脚本改写所有画布的 Y.Doc。二选一，实施时定。
 - 线上 2026-10-30 已换成空库，当下没有存量；从 Prisma 旧库（`app.db.prisma-backup-20261030`）导入数据时要一并处理。
 
+### 3.4.1 缩略图
+
+缩略图（[REQ-ASSET-THUMB](27-asset-thumbnails.md)）用查询参数取档：`/api/assets/<key>?size=icon|low`，判权按原图的键，302 到那一档的签名 URL；档位对象键规则不变。
+
 ### 3.5 存储侧
 
 - MinIO 桶策略：去掉匿名的 `s3:GetObject` 和 `s3:ListBucket`；服务端账号保留读写。

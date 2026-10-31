@@ -178,7 +178,7 @@ const waiting = computed(
             :variant="agentAttachmentKind(item.contentType) === 'file' ? 'icon' : 'image'"
             class="group-data-[size=xs]/attachment:w-full"
           >
-            <AssetPreview :kind="agentAttachmentKind(item.contentType)" :src="item.url" :name="item.name" />
+            <AssetPreview :kind="agentAttachmentKind(item.contentType)" :src="item.url" :name="item.name" size="icon" />
           </AttachmentMedia>
           <AttachmentTrigger as="a" :href="item.url" target="_blank" rel="noopener noreferrer" :aria-label="`打开附件 ${item.name}`" />
         </Attachment>

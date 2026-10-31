@@ -41,7 +41,8 @@ vi.mock("@/composables/flow/editor-context", () => ({
       deleteNode: vi.fn(),
       duplicateNode: vi.fn(),
       isValidConnection: () => true,
-      boxSelecting: ref(false)
+      boxSelecting: ref(false),
+      zoomLevel: ref(1)
     },
     presence: { occupantsOf: () => [] },
     selection: { selectedNodeId },

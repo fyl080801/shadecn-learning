@@ -149,6 +149,55 @@ export interface UploadedAsset {
   key: string
   contentType: string
   size: number
+  /**
+   * 这次实际生成了的缩略图档（可能为空）。只供展示 / 调试：节点里不存它，前端也不靠它判断有没有缩略图
+   * （按 {@link assetVariantPath} 推地址，取不到退回原图，docs/27 §4）
+   */
+  variants?: AssetVariant[]
+}
+
+// —— 缩略图（docs/27）——
+
+/** 缩略图的档：`icon` 图标、`low` 低清；原图不算一档 */
+export const ASSET_VARIANTS = ['icon', 'low'] as const
+export type AssetVariant = (typeof ASSET_VARIANTS)[number]
+
+/** 显示时取哪一档：两档缩略图之外加上原图 */
+export type AssetSize = AssetVariant | 'original'
+
+/**
+ * 各档规格：长边上限（只缩不放）、webp 质量、动图是否保留动画。
+ * 前端不读这些数，放在这里只是让「档」的定义只有一处。
+ */
+export const ASSET_VARIANT_SPECS: Readonly<
+  Record<AssetVariant, { readonly maxEdge: number; readonly quality: number; readonly animated: boolean }>
+> = {
+  icon: { maxEdge: 128, quality: 70, animated: false },
+  low: { maxEdge: 768, quality: 80, animated: true },
+}
+
+/**
+ * 素材键 / 地址的末尾：`assets/<uuid 前 2 位>/<第 3–4 位>/<uuid><ext>`，两级目录必须正是 uuid 的开头。
+ * 和服务端 `storage/keys.ts` 拼出来的形状一致（那边另有更严的整键校验）。
+ */
+const ASSET_TAIL =
+  /(^|\/)assets\/([0-9a-f]{2})\/([0-9a-f]{2})\/(\2\3[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(\.[a-z0-9]{1,8})?$/
+
+/** 矢量图不生成缩略图 */
+const NO_VARIANT_EXTENSIONS = new Set(['.svg'])
+
+/**
+ * 原图的对象键或地址 → 那一档缩略图的键或地址（同一目录，文件名 `<uuid>@<档>.webp`）；
+ * 不是我们拼出来的素材形状（外部链接、`data:` / `blob:`、老的 `projects/…` 分层键、带 query 的、SVG）→ null，调用方用原图。
+ *
+ * 只做字符串推导，**不保证对象存在**：老数据、生成失败的没有缩略图，前端加载失败要退回原图。
+ */
+export function assetVariantPath(original: string, variant: AssetVariant): string | null {
+  const match = ASSET_TAIL.exec(original)
+  if (!match) return null
+  const ext = match[5] ?? ''
+  if (NO_VARIANT_EXTENSIONS.has(ext)) return null
+  return `${original.slice(0, original.length - ext.length)}@${variant}.webp`
 }
 
 /**

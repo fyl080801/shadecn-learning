@@ -34,3 +34,20 @@ export function fitMediaSize(naturalWidth: number, naturalHeight: number): Media
     ? { width: Math.round(MEDIA_FIXED_SIDE * ratio), height: MEDIA_FIXED_SIDE }
     : { width: MEDIA_FIXED_SIDE, height: Math.round(MEDIA_FIXED_SIDE / ratio) }
 }
+
+/**
+ * 画布缩小到这个程度就只用图标档：节点在屏幕上的长边（物理像素）不超过图标长边的这么多倍。
+ * 留 1.5 倍余量 —— 缩得很小时略糊一点看不出来，换来几十个节点不必各解一张低清图。
+ */
+export const CANVAS_ICON_SLACK = 1.5
+
+/**
+ * 画布上的媒体节点该取哪一档缩略图（docs/27 §4.1）：按节点**在屏幕上实际占的物理像素**定，
+ * 图标档（长边 `iconMaxEdge`）够用就用图标，否则低清。原图从不在画布上用。
+ *
+ * `longEdge` 是节点的长边（画布坐标，CSS px），`zoom` 是画布缩放，`dpr` 是设备像素比。
+ */
+export function canvasAssetSize(longEdge: number, zoom: number, dpr: number, iconMaxEdge: number): "icon" | "low" {
+  const onScreen = longEdge * zoom * (dpr > 0 ? dpr : 1)
+  return onScreen <= iconMaxEdge * CANVAS_ICON_SLACK ? "icon" : "low"
+}
