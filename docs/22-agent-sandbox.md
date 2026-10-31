@@ -427,7 +427,7 @@ effective(run) = grant.scopes ∩ current_perms(发起人, 画布) ∩ entitleme
 - `current_perms`：`canAccessFlow`（成员关系、画布仍在、仍属同一项目；个人画布仍是同一所有者）。
 - `entitlements`：服务端配置（模型是否可用、沙箱命令白名单）。
 - **判定位置**：网关每次请求；结果可缓存数秒。
-- **Reconciler**：订阅现有撤销事件（`revokeCollabAccess` 的三个触发点：移除成员 / 删项目 / 删画布，
+- **Reconciler**：订阅现有撤销事件（`revokeAccess()` 的三个触发点：移除成员 / 删项目 / 删画布，
   经 `collab/revocation.ts` 跨实例广播）+ 每 10 分钟全量对账；按「用户 + 画布」找出受影响 run，执行 `on_revoke`。
 - **stop**：撤销 Grant、作废 run 短令牌、驱动立即 kill 沙箱、这一轮以 cancelled 收尾并写明原因
   （「发起人已失去这张画布的访问权限」）。已写进画布的内容保留（之后由 REQ-AGENT §3.5 撤回）。

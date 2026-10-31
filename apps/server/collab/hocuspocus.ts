@@ -31,10 +31,12 @@ import {
 import { pruneDanglingEdges } from './flow-doc.ts'
 import {
   REVOCATION_POLL_INTERVAL,
-  announceRevocation,
   createRevocationWatcher,
   notifyAccessRevoked,
-} from './revocation.ts'
+  onAccessRevoked,
+} from '@shadecn/server-kit/access'
+import { bus } from '@shadecn/server-kit/bus'
+import { COLLAB_FLUSH_ROOM } from '@shadecn/mod-collab/contract'
 import { collabLogging } from '../logger/collab.ts'
 import {
   flowIdOf,
@@ -253,7 +255,7 @@ async function revalidateConnections(hocuspocus: Hocuspocus): Promise<void> {
   /*
    * **重入保护**：这是个 async 回调挂在 `setInterval` 上，房间多、数据库慢的时候
    * 一轮可能超过一个间隔，下一轮就会叠上来 —— 数据库压力翻倍，同一批连接被重复查。
-   * 立刻踢线那条路（`revokeCollabAccess`）也走这个函数，叠加的可能性只增不减。
+   * 立刻踢线那条路（`revokeAccess()` 的订阅者）也走这个函数，叠加的可能性只增不减。
    * 已经在跑就复用那一轮：调用方等到的是「有一轮完整的复验跑完了」，语义正好。
    */
   if (revalidating) return revalidating
@@ -262,7 +264,7 @@ async function revalidateConnections(hocuspocus: Hocuspocus): Promise<void> {
     try {
       /*
        * **判定缓存先作废**。这个函数是三条路的汇合点 —— 主动撤销
-       * （`revokeCollabAccess`，改权限的路由里 await 的那个）、跨实例广播的 3 秒巡检、
+       * （`revokeAccess()`，改权限的路由里 await 的那个）、跨实例广播的 3 秒巡检、
        * 20 秒的兜底复验 —— 所以清在这里，一次覆盖全部。
        *
        * 这也是写入闸门敢把 TTL 设成 10 秒的原因：真正紧急的那半（权限被收回）
@@ -282,28 +284,6 @@ async function revalidateConnections(hocuspocus: Hocuspocus): Promise<void> {
   })()
 
   return revalidating
-}
-
-/**
- * **立刻**把权限已被收回的连接踢下线，本实例和其它实例都算。
- *
- * 改权限的路由（移除成员、删项目、删画布）在写库成功之后调它。不调也不会出错 ——
- * `REAUTH_INTERVAL` 的轮询终究会发现 —— 但那意味着被移除的人还有一整轮的时间继续编辑，
- * 而他在那段时间里改的东西会被 CRDT 合并、落库，**且其他人撤销不回来**
- * （`Y.UndoManager` 只跟踪自己的 origin）。所以这条路径是主路径，轮询降级为兜底。
- *
- * 两件事的顺序无所谓，但两件都要做：
- * - `announceRevocation()` —— 广播给别的实例，它们最迟一个巡检周期（3s）后跟上；
- * - 本地跑一轮完整复验 —— 本实例上的连接当场断掉；同时通知 `onAccessRevoked` 的订阅者
- *   （画布 agent 按当前权限对账在跑的轮次，失权的当场叫停 —— 协同层不知道订阅者是谁）。
- *
- * **是 await 而不是即发即忘**：这样 `DELETE …/members/:userId` 返回 204 的时候，
- * 「这个人已经不在画布上了」是成立的。权限变更本来就罕见，管理员那一个请求多等几毫秒
- * 换一个能讲清楚的契约，划算。
- */
-export async function revokeCollabAccess(): Promise<void> {
-  await announceRevocation()
-  await Promise.all([instance ? revalidateConnections(instance) : undefined, notifyAccessRevoked()])
 }
 
 /**
@@ -693,7 +673,7 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
   /*
    * 别的实例上有人被移除权限了吗。只读共享层的一个键（内存模式下就是一次 Map 查询），
    * 变了才跑复验 —— 权限变更罕见，所以这个定时器平时什么都不做。
-   * 它管的是**跨实例**那半：写权限的那个实例当场就把本地的踢了（`revokeCollabAccess`），
+   * 它管的是**跨实例**那半：写权限的那个实例当场就把本地的踢了（`revokeAccess()` → 下面注册的订阅者），
    * 人挂在别的 Pod 上时就靠这里，延迟一个轮询周期。
    */
   /*
@@ -731,16 +711,39 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
   const revocationTimer = setInterval(() => {
     void watcher
       .changed()
-      .then((changed) =>
-        changed ? Promise.all([revalidateConnections(hocuspocus), notifyAccessRevoked()]) : undefined,
-      )
+      // 别的实例广播了撤销 → 转成本实例的通知：踢连接（下面注册的订阅者）和 agent 的对账都在里面
+      .then((changed) => (changed ? notifyAccessRevoked() : undefined))
       .catch((err: unknown) => console.error('[collab] 权限撤销广播处理失败', err))
   }, REVOCATION_POLL_INTERVAL)
   revocationTimer.unref()
 
+  await detachHooks?.()
+  /*
+   * 权限被收回（`@shadecn/server-kit/access` 的 `revokeAccess()`，改权限的路由 await 的那个）→ 本实例当场复验、
+   * 断掉失权的连接。路由不认识协同层，协同层也不认识路由：两边只经底座的这个订阅点。
+   * 不调也不会出错 —— `REAUTH_INTERVAL` 的轮询终究会发现 —— 但那段时间里被移除的人改的东西会被 CRDT 合并、落库，
+   * **且其他人撤销不回来**（`Y.UndoManager` 只跟踪自己的 origin），所以这条是主路径，轮询是兜底。
+   */
+  const offAccess = onAccessRevoked(() => revalidateConnections(hocuspocus))
+  /*
+   * 「把这张画布还开着的房间落一次库」—— 别的角色经总线问（`@shadecn/mod-collab/contract` 的 `flushRoom`），
+   * 每个协同实例各落各的，房间不在本实例上就是空操作，照样回话（请求方据此知道不用再等）。
+   */
+  const offFlush = await bus().handle(COLLAB_FLUSH_ROOM, async ({ flowId }) => {
+    await flushRoomToDatabase(flowId)
+    return null
+  })
+  detachHooks = async () => {
+    offAccess()
+    await offFlush()
+  }
+
   instance = hocuspocus
   return hocuspocus
 }
+
+/** 上一次 attach 注册的订阅；再 attach（测试）时先撤掉，免得同一个实例在总线上登记两次 */
+let detachHooks: (() => Promise<void>) | undefined
 
 /**
  * 当前进程的协同实例 —— 画布 Agent 拿它开 direct connection（`agent/canvas-access.ts`）。
@@ -770,11 +773,11 @@ export function collabStats() {
 }
 
 /**
- * 把某张画布**还开着的房间**立刻落一次库。
+ * 把某张画布**还开着的房间**立刻落一次库（只管本实例）。
  *
  * 内容的事实源是内存里的 Y.Doc，库里那份 `ydoc` 只在防抖窗口和散场时更新。
- * 凡是要**读库里的内容**再做事的接口（复制画布…），都得先叫一次这个，
- * 否则拿到的是上一次写入时的样子。房间没开着就什么也不用做。
+ * 别的角色不直接调它，经总线的 `COLLAB_FLUSH_ROOM`（`@shadecn/mod-collab/contract` 的 `flushRoom`）问所有协同实例。
+ * 房间没开着就什么也不用做。
  */
 export async function flushRoomToDatabase(flowId: string): Promise<void> {
   const document = instance?.documents.get(roomOf(flowId))

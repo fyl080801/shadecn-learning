@@ -38,6 +38,9 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/agent/package.json ./packages/agent/
+COPY packages/server-kit/package.json ./packages/server-kit/
+COPY packages/mod-collab/package.json ./packages/mod-collab/
+COPY packages/mod-storage/package.json ./packages/mod-storage/
 COPY apps/server/package.json ./apps/server/
 RUN pnpm install --frozen-lockfile
 COPY . .

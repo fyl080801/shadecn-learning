@@ -2,17 +2,17 @@ import type { ServerModule } from './module.ts'
 import type { ServerRole } from './roles.ts'
 
 /** 一个没加载的模块和原因（进启动日志和 `/api/features`） */
-export interface SkippedModule {
-  readonly module: ServerModule
+export interface SkippedModule<App = unknown> {
+  readonly module: ServerModule<App>
   readonly reason: 'disabled' | 'role'
   /** `enabled()` 给的原因；`role` 时为空 */
   readonly detail: string
 }
 
-export interface ResolvedModules {
+export interface ResolvedModules<App = unknown> {
   /** 按装配顺序（依赖在前）排好的模块 */
-  readonly ordered: readonly ServerModule[]
-  readonly skipped: readonly SkippedModule[]
+  readonly ordered: readonly ServerModule<App>[]
+  readonly skipped: readonly SkippedModule<App>[]
 }
 
 /**
@@ -27,18 +27,18 @@ export interface ResolvedModules {
  *
  * 排序是稳定的：同一层的模块按声明顺序。
  */
-export function resolveModules(
-  modules: readonly ServerModule[],
+export function resolveModules<App>(
+  modules: readonly ServerModule<App>[],
   options: { roles: ReadonlySet<ServerRole> },
-): ResolvedModules {
-  const byName = new Map<string, ServerModule>()
+): ResolvedModules<App> {
+  const byName = new Map<string, ServerModule<App>>()
   for (const module of modules) {
     if (byName.has(module.name)) throw new Error(`[kernel] 模块名重复：${module.name}`)
     byName.set(module.name, module)
   }
 
-  const skipped: SkippedModule[] = []
-  const selected = new Map<string, ServerModule>()
+  const skipped: SkippedModule<App>[] = []
+  const selected = new Map<string, ServerModule<App>>()
   for (const module of modules) {
     const verdict = module.enabled?.() ?? true
     if (verdict !== true) {
@@ -62,10 +62,10 @@ export function resolveModules(
   return { ordered: topologicalOrder(selected), skipped }
 }
 
-function describeMissing(
+function describeMissing<App>(
   name: string,
-  byName: Map<string, ServerModule>,
-  skipped: readonly SkippedModule[],
+  byName: Map<string, ServerModule<App>>,
+  skipped: readonly SkippedModule<App>[],
 ): string {
   if (!byName.has(name)) return `没有这个模块`
   const entry = skipped.find((item) => item.module.name === name)
@@ -75,12 +75,12 @@ function describeMissing(
 }
 
 /** Kahn 算法，每一层按声明顺序取，所以顺序稳定；剩下取不完的就是环 */
-function topologicalOrder(selected: Map<string, ServerModule>): ServerModule[] {
-  const edges = (module: ServerModule) =>
+function topologicalOrder<App>(selected: Map<string, ServerModule<App>>): ServerModule<App>[] {
+  const edges = (module: ServerModule<App>) =>
     [...(module.dependsOn ?? []), ...(module.optional ?? [])].filter((dep) => selected.has(dep))
 
   const remaining = new Map(selected)
-  const ordered: ServerModule[] = []
+  const ordered: ServerModule<App>[] = []
   const done = new Set<string>()
 
   while (remaining.size > 0) {

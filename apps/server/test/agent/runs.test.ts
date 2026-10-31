@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { RunRecord, StopCommand } from '@shadecn/agent/run-registry'
 import { agentHostOptions } from '../../agent/index.ts'
 import { agentRunRegistry, createSharedRunRegistry } from '../../agent/runs.ts'
-import { stringCodec } from '../../cluster/index.ts'
-import { createMemoryBackend } from '../../cluster/memory.ts'
+import { stringCodec } from '@shadecn/server-kit/cluster'
+import { createMemoryBackend } from '@shadecn/server-kit/cluster/memory'
 import { agentConfig, instanceId } from '../../config.ts'
 
 /**

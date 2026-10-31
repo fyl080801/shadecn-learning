@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from '../../app.ts'
-import { createMemoryBackend, useBackendForTesting } from '../../cluster/index.ts'
+import { createMemoryBackend, useBackendForTesting } from '@shadecn/server-kit/cluster'
 import { orm } from '../../db.ts'
 import { health } from '../../routes/health.ts'
 import { resetDb } from '../helpers/db.ts'

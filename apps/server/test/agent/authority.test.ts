@@ -17,7 +17,7 @@ import { replaceAgentRuntime } from '../../agent/index.ts'
 import { useScripted } from '../helpers/agent.ts'
 import { attachCollabServer } from '../../collab/hocuspocus.ts'
 import { flushCollabWrites } from '../../collab/persistence.ts'
-import { notifyAccessRevoked } from '../../collab/revocation.ts'
+import { notifyAccessRevoked } from '@shadecn/server-kit/access'
 import { AgentGrant, AgentGrantScope, AgentRun, AgentToolCall, ProjectMember, Session } from '../../db/entities/index.ts'
 import { agentGrants } from '../../store/agent.ts'
 import { db, resetDb } from '../helpers/db.ts'
@@ -231,7 +231,7 @@ describe('失权即 stop（docs/22 §5）', () => {
       [
         async () => {
           calls += 1
-          // 模型这一步返回之前，发起人悄悄失权（没走 revokeCollabAccess）
+          // 模型这一步返回之前，发起人悄悄失权（没走 revokeAccess）
           await db().nativeDelete(ProjectMember, { project: projectId, user: bobId })
           return fauxAssistantMessage([fauxToolCall('read_canvas', {})], { stopReason: 'toolUse' })
         },

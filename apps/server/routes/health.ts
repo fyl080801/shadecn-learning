@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { clusterHealth } from '../cluster/index.ts'
+import { clusterHealth } from '@shadecn/server-kit/cluster'
 import { orm } from '../db.ts'
 
 /**

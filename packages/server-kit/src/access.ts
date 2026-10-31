@@ -1,8 +1,12 @@
 import crypto from 'node:crypto'
-import { sharedMap, stringCodec } from '../cluster/index.ts'
+import { sharedMap, stringCodec } from './cluster/index.ts'
 
 /**
- * 权限被收回时的**跨实例广播**。
+ * 权限被收回时的**跨实例广播**（原 `apps/server/collab/revocation.ts`；REQ-MODULES 第 2 期挪到底座）。
+ *
+ * **它属于底座，不属于协同**：收回权限的是项目 / 画布的路由（底座），关心的是协同（踢连接）和 agent（叫停在跑的轮次）。
+ * 路由只调 {@link revokeAccess}，不知道谁在听；协同和 agent 各自 {@link onAccessRevoked} 订阅本实例的通知，
+ * 协同的巡检（`createRevocationWatcher`）负责把别的实例发的世代号变化转成本实例的通知。
  *
  * 背景：`revalidateConnections` 每 `REAUTH_INTERVAL` 轮询一次，那是**兜底**，
  * 不是主路径。轮询决定了「被移出项目的人还能继续编辑多久」，而那段时间里他改的东西
@@ -44,14 +48,14 @@ export const REVOCATION_POLL_INTERVAL = 3000
  * 宣告「有人的权限被收回了」。
  *
  * 只负责广播给**别的**实例；本实例该干的事由调用方当场做掉
- * （`revokeCollabAccess` 里紧接着就是一次复验）。所以这里不碰本地的 watcher 状态 ——
+ * （{@link revokeAccess} 里紧接着就通知本实例的订阅者，协同的那个当场复验）。所以这里不碰本地的 watcher 状态 ——
  * 本实例的 watcher 会在下一次巡检时也看到这个 token 并再扫一轮，那一轮什么也踢不到
  * （人早没了），纯属幂等的空转，不值得为它多绕一层状态同步。
  */
 export async function announceRevocation(): Promise<void> {
   const token = crypto.randomUUID()
   await signals.set(EPOCH_KEY, token, EPOCH_TTL).catch((err: unknown) => {
-    console.warn('[collab] 权限撤销广播写入失败，改由定期复验兜底', err)
+    console.warn('[access] 权限撤销广播写入失败，改由定期复验兜底', err)
   })
 }
 
@@ -77,7 +81,7 @@ export function createRevocationWatcher(): RevocationWatcher {
         current = await signals.get(EPOCH_KEY)
       } catch (err) {
         // 读不到就当没变：漏掉一次广播只是退回到定期复验，而误报会让所有实例白扫一轮
-        console.warn('[collab] 读取权限撤销世代号失败，本轮跳过', err)
+        console.warn('[access] 读取权限撤销世代号失败，本轮跳过', err)
         return false
       }
 
@@ -99,7 +103,7 @@ export function createRevocationWatcher(): RevocationWatcher {
 /**
  * 「权限可能被收回了」的订阅点 —— 给协同层以外、同样要按当前权限对账的东西用（画布 agent 的 Grant 对账，
  * `agent/authority.ts`）。协同层不认识订阅者是谁，只在两个时刻通知：
- * - 本实例的 `revokeCollabAccess()`（改权限的路由 await 的那个）—— 当场；
+ * - 本实例的 {@link revokeAccess}（改权限的路由 await 的那个）—— 当场；
  * - 巡检发现别的实例广播了撤销 —— 最迟一个 {@link REVOCATION_POLL_INTERVAL}。
  *
  * 不带「谁的什么权限」：广播本来就只有一个世代号（理由见文件头），订阅者自己按当前权限全量复核。
@@ -115,10 +119,22 @@ export function onAccessRevoked(listener: RevocationListener): () => void {
   return () => listeners.delete(listener)
 }
 
-/** 通知全部订阅者并等它们做完（`revokeCollabAccess` 返回时，订阅者也已经对完账） */
+/** 通知全部订阅者并等它们做完（{@link revokeAccess} 返回时，订阅者也已经对完账） */
 export async function notifyAccessRevoked(): Promise<void> {
   const results = await Promise.allSettled([...listeners].map(async (listener) => listener()))
   for (const result of results) {
-    if (result.status === 'rejected') console.error('[collab] 权限撤销订阅者处理失败', result.reason)
+    if (result.status === 'rejected') console.error('[access] 权限撤销订阅者处理失败', result.reason)
   }
+}
+
+/**
+ * 收回权限之后调（移除成员、删项目、删画布）：先广播给别的实例，再**等**本实例的订阅者处理完。
+ *
+ * **是 await 而不是即发即忘**：这样 `DELETE …/members/:userId` 返回 204 的时候，「这个人已经不在本实例的画布上了」是成立的
+ * （协同的订阅者当场复验、断掉他的连接；agent 的订阅者按当前权限对账）。别的实例最迟一个巡检周期（3s）后跟上。
+ * 权限变更本来就罕见，管理员那一个请求多等几毫秒，换一个能讲清楚的契约，划算。
+ */
+export async function revokeAccess(): Promise<void> {
+  await announceRevocation()
+  await notifyAccessRevoked()
 }

@@ -18,7 +18,7 @@ import {
   type SharedChannel,
   type SharedLog,
   type SharedMap,
-} from '../cluster/index.ts'
+} from '@shadecn/server-kit/cluster'
 import { agentConfig, instanceId } from '../config.ts'
 
 /**

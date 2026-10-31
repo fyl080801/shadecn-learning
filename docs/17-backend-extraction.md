@@ -257,7 +257,7 @@ resolveProjectAccess(sessionId, projectId)
 ### 6.2 权限撤销的事件通道（正确性）
 
 现在踢人是这样成立的：改权限的路由（移除成员 / 删项目 / 删画布）在写库成功后
-`await revokeCollabAccess()` —— 本实例当场复验，跨实例靠一个共享 token + 3s 轮询。
+`await revokeAccess()`（`@shadecn/server-kit/access`）—— 本实例当场复验，跨实例靠一个共享 token + 3s 轮询。
 **它成立的前提是「改权限的代码和协同服务在同一个进程里」。**
 
 下沉之后这个前提没了：成员可能在后端侧、甚至在别的系统里被移除，Node 根本不知道。

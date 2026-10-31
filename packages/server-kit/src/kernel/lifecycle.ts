@@ -1,9 +1,9 @@
 import { DEFAULT_SHUTDOWN_TIMEOUT_MS, type ModuleContext, type ModuleHandle, type ServerModule } from './module.ts'
 
 /** 装配完的一组模块 */
-export interface LoadedModules {
+export interface LoadedModules<App = unknown> {
   /** 按装配顺序 */
-  readonly modules: readonly ServerModule[]
+  readonly modules: readonly ServerModule<App>[]
   /** 全部 `ready()`，按装配顺序串行 */
   ready(): Promise<void>
   /** 按装配的逆序收尾，每个带上限；可重入（第二次调直接返回同一个 Promise） */
@@ -17,15 +17,15 @@ export interface LoadedModules {
  * - 任一 `setup` 抛错就整体失败 —— 那是配置错，不是运行时故障，进程不该带着半套模块监听端口；
  * - 收尾逆序、每个带上限：超时只记一笔不阻断后面的。一个模块收尾卡死不能拖着别的模块落不了库。
  */
-export async function startModules(
-  ordered: readonly ServerModule[],
-  context: Omit<ModuleContext, 'service' | 'provide'>,
-): Promise<LoadedModules> {
+export async function startModules<App>(
+  ordered: readonly ServerModule<App>[],
+  context: Omit<ModuleContext<App>, 'service' | 'provide'>,
+): Promise<LoadedModules<App>> {
   const services = new Map<string, unknown>()
-  const handles: { module: ServerModule; handle: ModuleHandle }[] = []
+  const handles: { module: ServerModule<App>; handle: ModuleHandle }[] = []
 
   for (const module of ordered) {
-    const ctx: ModuleContext = {
+    const ctx: ModuleContext<App> = {
       ...context,
       service: <T>(name: string) => services.get(name) as T | undefined,
       provide: (name, value) => {

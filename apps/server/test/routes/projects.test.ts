@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { app } from '../../app.ts'
-import { createRevocationWatcher } from '../../collab/revocation.ts'
+import { createRevocationWatcher } from '@shadecn/server-kit/access'
 import { db, resetDb } from '../helpers/db.ts'
 import { ProjectMember } from '../../db/entities/index.ts'
 import { actor, createProject, joinViaInvite } from '../helpers/project.ts'

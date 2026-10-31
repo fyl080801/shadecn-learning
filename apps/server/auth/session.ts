@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { numberCodec, sharedLock, sharedMap } from '../cluster/index.ts'
+import { numberCodec, sharedLock, sharedMap } from '@shadecn/server-kit/cluster'
 import { db } from '../db.ts'
 import { authConfig, isDev } from '../config.ts'
 import { AuthRequest, PendingLink, Session, User } from '../db/entities/index.ts'

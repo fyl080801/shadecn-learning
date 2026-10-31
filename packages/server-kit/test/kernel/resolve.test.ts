@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { defineModule, type ServerModule } from '../../kernel/module.ts'
-import { resolveModules } from '../../kernel/resolve.ts'
-import { ALL_ROLES, type ServerRole } from '../../kernel/roles.ts'
+import { defineModule, type ServerModule } from '../../src/kernel/module.ts'
+import { resolveModules } from '../../src/kernel/resolve.ts'
+import { ALL_ROLES, type ServerRole } from '../../src/kernel/roles.ts'
 
 const mod = (name: string, extra: Partial<ServerModule> = {}): ServerModule =>
   defineModule({ name, roles: [...ALL_ROLES], setup() {}, ...extra })

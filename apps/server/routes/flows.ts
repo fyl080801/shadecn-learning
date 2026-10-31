@@ -3,7 +3,8 @@ import { FLOW_STATE_VECTOR_HEADER } from '@shadecn/shared/collab'
 import type { AuthVariables } from '../auth/middleware.ts'
 import { currentUserId, requireFlowMember, type ProjectVariables } from '../auth/project.ts'
 import { applyFlowUpdate, decodeStateVectorParam, readFlowUpdate } from '../collab/flow-writer.ts'
-import { flushRoomToDatabase, revokeCollabAccess } from '../collab/index.ts'
+import { flushRoom } from '@shadecn/mod-collab/contract'
+import { revokeAccess } from '@shadecn/server-kit/access'
 import { COLLAB_LIMITS } from '../collab/quota.ts'
 import { parseUserStatePatch } from '../store/flow-types.ts'
 import { flowUserState } from '../store/flow-user-state.ts'
@@ -115,7 +116,7 @@ export const flows = new Hono<Env>()
     await store.softDelete(c.req.param('flowId'))
     // 画布已删 = 这个房间谁都进不去了（`projectIdOf` 会过滤 deletedAt）。
     // 还开着那张画布的人当场断掉，不然他会继续对着一张已经不存在的画布画
-    await revokeCollabAccess()
+    await revokeAccess()
     return c.body(null, 204)
   })
 
@@ -206,7 +207,8 @@ export const flows = new Hono<Env>()
     if (!userId) return c.json(UNAUTHORIZED, 401)
 
     const flowId = c.req.param('flowId')
-    await flushRoomToDatabase(flowId)
+    // 房间可能开在任何一个协同实例上：经总线问全部，超时 / 没有协同实例就按库里现有内容复制
+    await flushRoom(flowId)
 
     const copy = await store.duplicate(flowId, userId)
     if (!copy) return c.json(NOT_FOUND, 404)

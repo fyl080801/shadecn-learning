@@ -1,0 +1,31 @@
+{
+  /*
+   * 对象存储能力包（REQ-MODULES §3.5）：S3 客户端、对象键规则、缩略图。它是库不是角色，web 和 agent 两个角色都用。
+   * 纯服务端：apps/server 以源码形式 import，再由 esbuild 内联进 bundle。
+   * 配置照 apps/server / packages/agent 的来（Node 类型 + ES2023）。**它不 import apps/server，也不读 process.env；底座的东西只经 @shadecn/server-kit 和宿主交进来的端口拿**。
+   */
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.mod-storage.tsbuildinfo",
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}

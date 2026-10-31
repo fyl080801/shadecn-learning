@@ -289,7 +289,7 @@ describe('落库失败', () => {
     const flowId = await newFlow()
     const doc = docWith(['n1'])
 
-    const cluster = await import('../../cluster/index.ts')
+    const cluster = await import('@shadecn/server-kit/cluster')
     const restore = cluster.useBackendForTesting({
       ...cluster.createMemoryBackend(),
       createMap: () => {

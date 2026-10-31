@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import type { AgentRunEntry, AgentStreamEvent } from '@shadecn/shared/agent'
 
 /**
- * 运行中轮次的共享登记（docs/20 §3.10.10，F14）—— **服务端**接口，本包只认这个抽象，不认识 `apps/server/cluster`。
+ * 运行中轮次的共享登记（docs/20 §3.10.10，F14）—— **服务端**接口，本包只认这个抽象，不认识 `@shadecn/server-kit/cluster`。
  * 和节点占用（`occupancy.ts` 的 `NodeLeaseRegistry`）同一个注入方式：宿主用共享层实现（单副本内存、多副本 redis），
  * 本包测试用 {@link createMemoryRunRegistry}；`createAgentRuntime` 的 `runRegistry` 必填。
  *

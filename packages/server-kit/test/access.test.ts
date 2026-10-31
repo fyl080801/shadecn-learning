@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { announceRevocation, createRevocationWatcher } from '../../collab/revocation.ts'
+import { describe, expect, it, vi } from 'vitest'
+import { announceRevocation, createRevocationWatcher, onAccessRevoked, revokeAccess } from '../src/access.ts'
 
 /**
  * 权限撤销的跨实例广播。
@@ -68,3 +68,43 @@ describe('权限撤销广播', () => {
     expect(await watcher.changed()).toBe(false)
   })
 })
+
+describe('revokeAccess：改权限的路由 await 的那个', () => {
+  it('先广播给别的实例，再等本实例的订阅者全部处理完才返回', async () => {
+    const otherInstance = createRevocationWatcher()
+    await otherInstance.changed()
+
+    const order: string[] = []
+    const offSlow = onAccessRevoked(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      order.push('协同复验')
+    })
+    const offFast = onAccessRevoked(() => void order.push('agent 对账'))
+
+    await revokeAccess()
+
+    // 返回时两个订阅者都已经做完 —— 「204 = 人已经不在本实例的画布上了」靠的就是这个
+    expect(order.sort()).toEqual(['agent 对账', '协同复验'])
+    expect(await otherInstance.changed()).toBe(true)
+    offSlow()
+    offFast()
+  })
+
+  it('一个订阅者抛错只记日志，不影响别的订阅者，也不让路由失败', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const seen: string[] = []
+    const offBad = onAccessRevoked(() => {
+      throw new Error('对账失败')
+    })
+    const offGood = onAccessRevoked(() => void seen.push('ok'))
+
+    await expect(revokeAccess()).resolves.toBeUndefined()
+
+    expect(seen).toEqual(['ok'])
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('权限撤销订阅者处理失败'), expect.any(Error))
+    offBad()
+    offGood()
+    error.mockRestore()
+  })
+})
+

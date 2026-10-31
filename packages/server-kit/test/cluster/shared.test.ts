@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createMemoryBackend } from '../../cluster/memory.ts'
-import { jsonCodec, numberCodec, stringCodec, type ClusterBackend } from '../../cluster/shared.ts'
+import { createMemoryBackend } from '../../src/cluster/memory.ts'
+import { jsonCodec, numberCodec, stringCodec, type ClusterBackend } from '../../src/cluster/shared.ts'
 
 /**
  * 共享状态抽象的**契约**：同一组用例，两套实现各跑一遍。
@@ -27,7 +27,7 @@ if (redisUrl) {
   candidates.push({
     name: 'Redis 实现',
     create: async () => {
-      const { createRedisBackend } = await import('../../cluster/redis.ts')
+      const { createRedisBackend } = await import('../../src/cluster/redis.ts')
       // 每轮一个随机前缀：跑完不用收拾，也不会和别的测试/真实数据撞键
       return createRedisBackend({ url: redisUrl, prefix: `test-${randomUUID().slice(0, 8)}` })
     },

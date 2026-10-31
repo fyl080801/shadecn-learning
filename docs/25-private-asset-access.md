@@ -35,7 +35,7 @@
 3. 浏览器直接从 MinIO 拿字节；视频的 `Range` 请求由 MinIO 原生处理。
 4. 302 响应 `Cache-Control: private, max-age` 不超过签名有效期（建议直接 `no-store` 或略短于有效期），避免跳到已过期的签名。
 
-签名在现有的手写 SigV4 客户端（`apps/server/storage/s3.ts`）上加一个预签名方法即可，**不引新依赖**。
+签名在现有的手写 SigV4 客户端（`@shadecn/mod-storage/s3`）上加一个预签名方法即可，**不引新依赖**。
 
 ### 3.3 资源归属
 
@@ -46,7 +46,7 @@
 
 ### 3.4 旧数据兼容
 
-- 已存的节点里还是 S3 原始地址。前端渲染时把以 `<S3_ENDPOINT>/<bucket>/` 开头的地址**映射成** `/api/assets/<key>`（反解逻辑已在 `apps/server/storage/keys.ts`，可挪到 `packages/shared` 复用）；或者一次性迁移脚本改写所有画布的 Y.Doc。二选一，实施时定。
+- 已存的节点里还是 S3 原始地址。前端渲染时把以 `<S3_ENDPOINT>/<bucket>/` 开头的地址**映射成** `/api/assets/<key>`（反解逻辑已在 `@shadecn/mod-storage/keys`，可挪到 `packages/shared` 复用）；或者一次性迁移脚本改写所有画布的 Y.Doc。二选一，实施时定。
 - 线上 2026-10-30 已换成空库，当下没有存量；从 Prisma 旧库（`app.db.prisma-backup-20261030`）导入数据时要一并处理。
 
 ### 3.4.0 下载改名

@@ -9,7 +9,7 @@ import {
 } from '@shadecn/agent/authority'
 import type { AgentRunStatus } from '@shadecn/agent/store'
 import { agentConfig } from '../config.ts'
-import { announceRevocation, onAccessRevoked } from '../collab/revocation.ts'
+import { announceRevocation, onAccessRevoked } from '@shadecn/server-kit/access'
 import { agentGrants } from '../store/agent.ts'
 import { flows } from '../store/flows.ts'
 import { projects } from '../store/projects.ts'
@@ -40,7 +40,7 @@ import { projects } from '../store/projects.ts'
  * ## 对账（Reconciler）
  *
  * 在跑的 Grant 记在本进程的 `live` 表里（一轮收尾 `release` 时拿掉）。三条路触发对账，**逐份重判（不用缓存）**：
- * - **权限变化事件**：`collab/revocation.ts` 的 `onAccessRevoked` —— 本实例的 `revokeCollabAccess()`（移除成员 / 删项目 / 删画布，
+ * - **权限变化事件**：`@shadecn/server-kit/access` 的 `onAccessRevoked` —— 本实例的 `revokeAccess()`（移除成员 / 删项目 / 删画布，
  *   路由 await 它，所以 204 时失权的那一轮已经被叫停）当场触发；别的实例做的经撤销世代号巡检，最迟一个巡检周期；
  * - **定时全量对账**（{@link startAgentReconciler}，默认每 10 分钟）：先把库里过期未撤销的 Grant 标成到期
  *   （含进程崩溃留下的孤儿），再重判 `live` 里的每一份；

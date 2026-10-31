@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import sharp from 'sharp'
-import type { S3Client } from '../../storage/s3.ts'
+import type { S3Client } from '../src/s3.ts'
 import {
   storeAssetVariants,
   storeVariantsFromStorage,
   VARIANT_SOURCE_MAX_BYTES,
   wantsVariants,
-} from '../../storage/variants.ts'
+} from '../src/variants.ts'
 
 /** 缩略图生成（docs/27）：两档规格、只缩不放、按 EXIF 转正、哪些类型生成、失败不抛 */
 

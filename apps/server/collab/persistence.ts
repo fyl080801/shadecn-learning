@@ -1,7 +1,7 @@
 import * as Y from 'yjs'
 import { applyGraphToDoc } from '@shadecn/shared/flow-doc'
 import { FLOW_ROOM_PREFIX } from '@shadecn/shared/collab'
-import { bytesCodec, sharedMap } from '../cluster/index.ts'
+import { bytesCodec, sharedMap } from '@shadecn/server-kit/cluster'
 import { db } from '../db.ts'
 import { Flow } from '../db/entities/index.ts'
 import { GRAPH_LIMITS, readGraph } from '../store/flow-types.ts'

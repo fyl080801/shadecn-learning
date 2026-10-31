@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { sharedMap, stringCodec } from '../cluster/index.ts'
+import { sharedMap, stringCodec } from '@shadecn/server-kit/cluster'
 
 /**
  * 画布内容的配额。

@@ -10,7 +10,7 @@ paths:
 
 ## Projects
 
-- One config per package plus a root aggregator: `apps/server/vitest.config.ts` (`server`, node, `apps/server/test/**/*.test.ts`), `apps/web/vitest.config.ts` (`client`, jsdom + `vue` plugin + `@/`, `apps/web/src/test/**/*.test.ts`), `packages/shared/vitest.config.ts` (`shared`, node, the pure contract), plus `agent`. The root `vitest.config.ts` only lists `projects` and holds coverage.
+- One config per package plus a root aggregator: `apps/server/vitest.config.ts` (`server`, node, `apps/server/test/**/*.test.ts`), `apps/web/vitest.config.ts` (`client`, jsdom + `vue` plugin + `@/`, `apps/web/src/test/**/*.test.ts`), `packages/shared/vitest.config.ts` (`shared`, node, the pure contract), plus `agent`, `server-kit` and one per `packages/mod-*` (node, no DB). The root `vitest.config.ts` only lists `projects` and holds coverage; a new package needs an entry there.
 - **Hermetic**: server and client setup files replace `globalThis.fetch` with a stub that *rejects* — a test needing the network must `vi.stubGlobal('fetch', …)`.
 
 ## Backend

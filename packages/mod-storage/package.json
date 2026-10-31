@@ -1,0 +1,25 @@
+{
+  "name": "@shadecn/mod-storage",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./s3": "./src/s3.ts",
+    "./keys": "./src/keys.ts",
+    "./variants": "./src/variants.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "sharp": "0.35.5"
+  },
+  "devDependencies": {
+    "@shadecn/server-kit": "workspace:*",
+    "@shadecn/shared": "workspace:*",
+    "@types/node": "^24.10.1",
+    "sharp": "0.35.5",
+    "typescript": "~5.9.3"
+  }
+}

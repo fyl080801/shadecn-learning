@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { assetKeyOfUrl, buildAssetKey } from '../../storage/keys.ts'
-import { createS3Client, encodeS3Path, signS3Request } from '../../storage/s3.ts'
+import { assetKeyOfUrl, buildAssetKey } from '../src/keys.ts'
+import { createS3Client, encodeS3Path, signS3Request } from '../src/s3.ts'
 
 describe('S3 SigV4 签名', () => {
   it('与 AWS 文档的 GetObject 样例逐字一致', () => {

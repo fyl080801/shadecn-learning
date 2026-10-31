@@ -1,5 +1,4 @@
-import type { ServerType } from '@hono/node-server'
-import type { ServerApp } from '../app.ts'
+import type { Server } from 'node:http'
 import type { ServerRole } from './roles.ts'
 
 /**
@@ -8,10 +7,13 @@ import type { ServerRole } from './roles.ts'
  * 底座（HTTP、鉴权、数据库、共享层、日志）不是模块；协同、对象存储、agent 这些**可开关、可按角色拆开部署**的能力才是。
  * 模块之间只经 `ctx.service()` 拿对方声明过的服务，**不 import 对方的内部文件**（`.claude/rules/server-modules.md`）。
  *
- * 第 1 期：模块还住在 `apps/server/modules/`，只把生命周期（装配、收尾顺序、上限）收进来；路由仍由 `app.ts` 静态挂，
- * 配置仍由 `config.ts` 解析。成包、路由随模块走、各自的配置 schema 在第 4 期（docs/28 §7）。
+ * **`App` 是宿主的 Hono 应用类型**：这个包不认识宿主的会话变量、bindings，所以只做类型参数 ——
+ * 宿主（apps/server）用自己的 `ServerApp` 实例化，模块包需要挂路由时在自己的工厂函数上约束它。
+ *
+ * 模块只经两条路拿底座的东西：构造时宿主交进来的端口（`createXxxModule(ports)`），和 `setup(ctx)` 的 `ctx`。
+ * 模块包**永远不 import `apps/server`**（docs/28 §3.1.2）。
  */
-export interface ServerModule {
+export interface ServerModule<App = unknown> {
   /** 唯一名，也是 `/api/features` 里的键 */
   readonly name: string
   /** 随哪些角色启动：当前进程的角色集和它有交集才加载 */
@@ -28,16 +30,16 @@ export interface ServerModule {
    */
   enabled?(): boolean | string
   /** 装配：挂路由、挂 upgrade、注册服务、起定时器。返回的句柄交给内核按逆序收尾 */
-  setup(ctx: ModuleContext): Promise<ModuleHandle | void> | ModuleHandle | void
+  setup(ctx: ModuleContext<App>): Promise<ModuleHandle | void> | ModuleHandle | void
 }
 
 /** `setup` 交给模块的东西。模块不读 `process.env`：环境相关的决定在配置层做 */
-export interface ModuleContext {
+export interface ModuleContext<App = unknown> {
   /** 这个进程启用的角色 */
   readonly roles: ReadonlySet<ServerRole>
-  readonly app: ServerApp
+  readonly app: App
   /** 原始的 node server：协同层要挂 `upgrade` 事件 */
-  readonly server: ServerType
+  readonly server: Server
   readonly isDev: boolean
   /** 拿别的模块注册的服务；没加载（软依赖）= undefined */
   service<T>(name: string): T | undefined
@@ -59,6 +61,6 @@ export interface ModuleHandle {
 export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10_000
 
 /** 只做类型约束，让模块定义处拿到完整的提示 */
-export function defineModule(module: ServerModule): ServerModule {
+export function defineModule<App = unknown>(module: ServerModule<App>): ServerModule<App> {
   return module
 }

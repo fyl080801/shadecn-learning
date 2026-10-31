@@ -1,6 +1,7 @@
 import { startAgentReconciler } from '../agent/authority.ts'
 import { abortAgentRuns, startAgentSandboxReaper } from '../agent/index.ts'
-import { defineModule } from '../kernel/module.ts'
+import { defineModule } from '@shadecn/server-kit/kernel'
+import type { ServerApp } from '../app.ts'
 
 /**
  * 画布 agent 模块（REQ-AGENT / REQ-AGENT-SANDBOX）。
@@ -12,7 +13,7 @@ import { defineModule } from '../kernel/module.ts'
  * 房间随 collab 的落库一起存；这一轮的对话和运行日志要赶在关数据库之前写进去。中止是立刻的，收尾只是几次写库，
  * 上限 5 秒，和 collab 的 20 秒一起仍在 60 秒宽限期之内。
  */
-export const agentModule = defineModule({
+export const agentModule = defineModule<ServerApp>({
   name: 'agent',
   roles: ['agent'],
   dependsOn: ['collab'],

@@ -156,7 +156,7 @@ export type FlowUserState = InferEntity<typeof FlowUserState>
  * 画布资源的上传记录：**哪个对象键是在哪张画布上传的**。上传接口（`routes/assets.ts`）在对象写进 S3 之后、
  * 回包之前写一行（分片上传在 complete 时写）。
  *
- * 对象键本身看不出归属（所有素材进同一个 `assets/` 目录，`storage/keys.ts`），所以凡是「客户端递来一个键，
+ * 对象键本身看不出归属（所有素材进同一个 `assets/` 目录，`@shadecn/mod-storage/keys`），所以凡是「客户端递来一个键，
  * 要确认它属于这张画布」的地方都查这里 —— 现在是 agent 消息的附件（docs/20 §3.10.12），
  * 以后私有访问判权（docs/25 §3.3）也从它出发。
  *
@@ -167,7 +167,7 @@ export const FlowAsset = defineEntity({
   name: 'FlowAsset',
   properties: {
     id: idColumn(),
-    /** 对象键（`storage/keys.ts` 拼出来的），全局唯一 */
+    /** 对象键（`@shadecn/mod-storage/keys` 拼出来的），全局唯一 */
     key: p.text().unique(),
     flow: () => p.manyToOne(Flow).deleteRule('cascade'),
     contentType: p.text(),

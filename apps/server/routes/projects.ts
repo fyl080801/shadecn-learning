@@ -8,7 +8,7 @@ import {
   requireProjectMember,
   type ProjectVariables,
 } from '../auth/project.ts'
-import { revokeCollabAccess } from '../collab/index.ts'
+import { revokeAccess } from '@shadecn/server-kit/access'
 import { originOf } from '../auth/origin.ts'
 import {
   DEFAULT_INVITE_EXPIRY_DAYS,
@@ -163,7 +163,7 @@ export const projects = new Hono<Env>()
   .delete('/:projectId', rejectPersonalSpace, requireProjectAdmin, async (c) => {
     await store.softDelete(c.req.param('projectId'))
     // 项目没了，它下面画布的房间也就没人有权待着 —— 当场断掉，别等轮询
-    await revokeCollabAccess()
+    await revokeAccess()
     return c.body(null, 204)
   })
 
@@ -187,7 +187,7 @@ export const projects = new Hono<Env>()
      * 并且**其他人撤销不回来**（撤销只跟踪自己的 origin）。
      * 返回 204 之前 await：接口说成功了，人就真的已经不在画布上了。
      */
-    await revokeCollabAccess()
+    await revokeAccess()
     return c.body(null, 204)
   })
 

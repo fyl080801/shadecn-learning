@@ -1,5 +1,6 @@
 import { attachCollabServer, flushAllRoomsToDatabase, flushCollabWrites } from '../collab/index.ts'
-import { defineModule } from '../kernel/module.ts'
+import { defineModule } from '@shadecn/server-kit/kernel'
+import type { ServerApp } from '../app.ts'
 
 /**
  * 协同模块（REQ-COLLAB）：把 Hocuspocus 挂到应用自己的 http server 上。
@@ -11,7 +12,7 @@ import { defineModule } from '../kernel/module.ts'
  *
  * agent 角色也带它（第 3 期起以 headless 选项启动，docs/28 §3.4.2）：agent 经 direct connection 开的房间就在这里。
  */
-export const collabModule = defineModule({
+export const collabModule = defineModule<ServerApp>({
   name: 'collab',
   roles: ['collab', 'agent'],
   async setup(ctx) {

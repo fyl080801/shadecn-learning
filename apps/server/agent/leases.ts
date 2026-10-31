@@ -1,5 +1,5 @@
 import { leaseAgentOf, leaseKey, type NodeLease, type NodeLeaseRegistry } from '@shadecn/agent/occupancy'
-import { sharedMap, stringCodec, type SharedMap } from '../cluster/index.ts'
+import { sharedMap, stringCodec, type SharedMap } from '@shadecn/server-kit/cluster'
 import { agentConfig, instanceId } from '../config.ts'
 
 /**

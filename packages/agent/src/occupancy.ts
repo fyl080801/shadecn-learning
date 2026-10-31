@@ -1,7 +1,7 @@
 import type { AgentUserView } from '@shadecn/shared/agent'
 
 /**
- * 节点占用的登记表（docs/20 §3.10.8）—— **服务端**接口，本包只认这个抽象，不认识 `apps/server/cluster`。
+ * 节点占用的登记表（docs/20 §3.10.8）—— **服务端**接口，本包只认这个抽象，不认识 `@shadecn/server-kit/cluster`。
  *
  * - 键 `<flowId>:<nodeId>`，值 {@link NodeLease}（哪一轮、哪个会话、谁、哪个副本、从什么时候），带 TTL；
  * - **占用** = {@link NodeLeaseRegistry.claim}（不存在才写，原子）；

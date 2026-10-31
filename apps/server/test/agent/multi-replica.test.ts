@@ -14,8 +14,8 @@ import { createInlineDriver, registerScriptedModel, type ScriptedModel, type Scr
 import { AGENT_GATEWAY_PATH } from '@shadecn/agent/protocol'
 import { createSharedLeaseRegistry } from '../../agent/leases.ts'
 import { createSharedRunRegistry, type RunRegistryTables } from '../../agent/runs.ts'
-import { stringCodec, type ClusterBackend } from '../../cluster/index.ts'
-import { createMemoryBackend } from '../../cluster/memory.ts'
+import { stringCodec, type ClusterBackend } from '@shadecn/server-kit/cluster'
+import { createMemoryBackend } from '@shadecn/server-kit/cluster/memory'
 
 /**
  * 多副本（docs/20 §3.10.10，F14，验收 20）：两个 runtime 共用同一个内存共享后端（任务登记、会话槽位、补发日志、停止频道、
@@ -172,7 +172,7 @@ if (redisUrl) {
   candidates.push({
     name: 'Redis 共享后端',
     create: async () => {
-      const { createRedisBackend } = await import('../../cluster/redis.ts')
+      const { createRedisBackend } = await import('@shadecn/server-kit/cluster/redis')
       return createRedisBackend({ url: redisUrl, prefix: `test-${randomUUID().slice(0, 8)}` })
     },
   })

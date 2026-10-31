@@ -1,4 +1,3 @@
-import { clusterMode, isClustered, redisKeyPrefix, redisUrl } from '../config.ts'
 import { createMemoryBackend } from './memory.ts'
 import {
   SharedChannel,
@@ -34,19 +33,22 @@ function swapBackend(next: ClusterBackend) {
   generation += 1
 }
 
+/** `initCluster` 的参数：环境变量的解析在宿主（apps/server/config.ts），这个包不读 `process.env` */
+export type ClusterOptions = { mode: 'single' } | { mode: 'redis'; url: string; prefix: string }
+
 /**
- * 挑实现。`apps/server/index.ts` 在监听端口之前 await 它一次。
+ * 挑实现。宿主在监听端口之前 await 它一次（`apps/server/boot.ts`）。
  *
  * 单副本模式下这函数什么也不做 —— Redis 那半连 import 都不会发生，
  * 所以构建产物里也不会出现 ioredis（`apps/server/scripts/build-server.mjs` 从
  * esbuild 的 external 反推依赖，动态 import 才有资格被摘掉）。
  */
-export async function initCluster(): Promise<void> {
-  if (!isClustered) return
+export async function initCluster(options: ClusterOptions): Promise<void> {
+  if (options.mode !== 'redis') return
 
   const { createRedisBackend } = await import('./redis.ts')
-  swapBackend(await createRedisBackend({ url: redisUrl, prefix: redisKeyPrefix }))
-  console.log(`[cluster] 多副本模式，共享状态走 Redis（键前缀 ${redisKeyPrefix}:）`)
+  swapBackend(await createRedisBackend({ url: options.url, prefix: options.prefix }))
+  console.log(`[cluster] 多副本模式，共享状态走 Redis（键前缀 ${options.prefix}:）`)
 }
 
 /**
@@ -71,8 +73,6 @@ export function useBackendForTesting(next: ClusterBackend): () => void {
   swapBackend(next)
   return () => swapBackend(previous)
 }
-
-export { clusterMode }
 
 // ---------------------------------------------------------------- 懒代理
 

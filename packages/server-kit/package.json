@@ -1,0 +1,25 @@
+{
+  "name": "@shadecn/server-kit",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./kernel": "./src/kernel/index.ts",
+    "./cluster": "./src/cluster/index.ts",
+    "./cluster/memory": "./src/cluster/memory.ts",
+    "./cluster/redis": "./src/cluster/redis.ts",
+    "./bus": "./src/bus.ts",
+    "./access": "./src/access.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "ioredis": "^5.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "ioredis": "^5.6.1",
+    "typescript": "~5.9.3"
+  }
+}

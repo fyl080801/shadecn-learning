@@ -1,13 +1,16 @@
 import { defineConfig } from 'vitest/config'
 
 /**
- * 四个 project，各自的配置跟着各自的包走：
+ * 每个包一个 project，各自的配置跟着各自的包走：
  *   server —— apps/server/vitest.config.ts：Node 环境，测后端（apps/server/test/**）
  *   client —— apps/web/vitest.config.ts：jsdom 环境，测前端（apps/web/src/test/**）
  *   shared —— packages/shared/vitest.config.ts：Node 环境，测前后端共用的契约（packages/shared/test/**）
  *   agent  —— packages/agent/vitest.config.ts：Node 环境，测画布 Agent（编排、画布工具、沙箱，packages/agent/test/**）
+ *   server-kit —— packages/server-kit/vitest.config.ts：Node 环境，测服务端底座的运行时库（模块内核、共享层契约、总线、权限撤销信号）
+ *   mod-collab —— packages/mod-collab/vitest.config.ts：Node 环境，测协同能力包
+ *   mod-storage —— packages/mod-storage/vitest.config.ts：Node 环境，测对象存储能力包（签名、对象键、缩略图）
  *
- * 单独跑：`pnpm test:server` / `pnpm test:client` / `pnpm test:shared` / `pnpm test:agent`（= vitest --project=xxx）
+ * 单独跑：`pnpm test:server` / `test:client` / `test:shared` / `test:agent` / `test:server-kit` / `test:mod-*`（= vitest --project=xxx）
  *
  * 覆盖率在这里统一配置，汇总到仓库根的 coverage/。
  */
@@ -18,6 +21,9 @@ export default defineConfig({
       'apps/web/vitest.config.ts',
       'packages/shared/vitest.config.ts',
       'packages/agent/vitest.config.ts',
+      'packages/server-kit/vitest.config.ts',
+      'packages/mod-collab/vitest.config.ts',
+      'packages/mod-storage/vitest.config.ts',
     ],
 
     coverage: {
@@ -30,6 +36,8 @@ export default defineConfig({
         'apps/web/src/**/*.vue',
         'packages/shared/src/**/*.ts',
         'packages/agent/src/**/*.ts',
+        'packages/server-kit/src/**/*.ts',
+        'packages/mod-*/src/**/*.ts',
       ],
       exclude: [
         'apps/server/test/**',

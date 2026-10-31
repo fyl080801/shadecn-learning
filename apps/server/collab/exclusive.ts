@@ -1,4 +1,4 @@
-import { sharedMap, stringCodec } from '../cluster/index.ts'
+import { sharedMap, stringCodec } from '@shadecn/server-kit/cluster'
 import { CLOSE_SUPERSEDED, closeForGood, type ClosableConnection } from './close.ts'
 import type { CollabContext } from './hocuspocus.ts'
 import { scopedSocketId } from './socket-id.ts'

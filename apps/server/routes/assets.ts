@@ -11,11 +11,11 @@ import {
 import type { AuthVariables } from '../auth/middleware.ts'
 import { currentUserId, type ProjectVariables } from '../auth/project.ts'
 import { s3Config } from '../config.ts'
-import { assetStorage } from '../storage/index.ts'
+import { assetStorage } from '@shadecn/mod-storage'
 import { flowAssets } from '../store/assets.ts'
-import { assetCategory, assetKeyOfUrl, buildAssetKey, isAssetKey } from '../storage/keys.ts'
-import { backfillAssetVariants, storeAssetVariants, storeVariantsFromStorage } from '../storage/variants.ts'
-import type { S3Client } from '../storage/s3.ts'
+import { assetCategory, assetKeyOfUrl, buildAssetKey, isAssetKey } from '@shadecn/mod-storage/keys'
+import { backfillAssetVariants, storeAssetVariants, storeVariantsFromStorage } from '@shadecn/mod-storage/variants'
+import type { S3Client } from '@shadecn/mod-storage/s3'
 import { INVALID_JSON, readJson } from './params.ts'
 
 type Env = { Variables: AuthVariables & ProjectVariables }
@@ -84,10 +84,10 @@ function parseParts(value: unknown): AssetUploadPart[] | null {
 
 /**
  * 画布资源上传，挂在 `flows` 的 `/:flowId/*` 之下（鉴权口径同画布：非成员 404）。
- * 文件经后端转存到 S3（浏览器不碰 AK/SK），对象键的目录分层见 `storage/keys.ts`。
+ * 文件经后端转存到 S3（浏览器不碰 AK/SK），对象键的目录分层见 `@shadecn/mod-storage/keys`。
  * 只负责「存下来、记下归属、给地址」；把地址写进哪个节点是前端经 `store.mutate` 的事。
  * 每次成功的上传都在回包之前记一行 `FlowAsset`（键 → 这张画布 + 服务端看到的类型），见 {@link recordAsset}。
- * 图片在记录之前同步生成 `icon` / `low` 两档缩略图（`storage/variants.ts`，docs/27）；生成失败不影响上传结果。
+ * 图片在记录之前同步生成 `icon` / `low` 两档缩略图（`@shadecn/mod-storage/variants`，docs/27）；生成失败不影响上传结果。
  *
  * **不超过一片（`ASSET_PART_SIZE`）的文件一次传完**（`POST /`）；**更大的分片上传**：
  *

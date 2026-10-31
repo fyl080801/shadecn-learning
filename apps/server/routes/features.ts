@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { loadedFeatures } from '../kernel/registry.ts'
+import { loadedFeatures } from '@shadecn/server-kit/kernel'
 
 /**
  * `GET /api/features`：这个进程开了哪些能力模块（docs/28 §3.3）。

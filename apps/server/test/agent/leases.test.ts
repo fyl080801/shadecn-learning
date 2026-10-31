@@ -3,8 +3,8 @@ import type { NodeLease } from '@shadecn/agent/occupancy'
 import { createSharedLeaseRegistry } from '../../agent/leases.ts'
 import { agentHostOptions } from '../../agent/index.ts'
 import { agentNodeLeases } from '../../agent/leases.ts'
-import { stringCodec } from '../../cluster/index.ts'
-import { createMemoryBackend } from '../../cluster/memory.ts'
+import { stringCodec } from '@shadecn/server-kit/cluster'
+import { createMemoryBackend } from '@shadecn/server-kit/cluster/memory'
 
 /**
  * 节点占用登记表的宿主实现（docs/20 §3.10.8）：共享层的 `SharedMap` 上，比较后写 / 比较后删按编码后的字符串比。

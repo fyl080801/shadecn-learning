@@ -13,7 +13,6 @@ export {
   COLLAB_PATH,
   flushAllRoomsToDatabase,
   flushRoomToDatabase,
-  revokeCollabAccess,
   type CollabContext,
 } from './hocuspocus.ts'
 export {

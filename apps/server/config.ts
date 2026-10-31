@@ -3,7 +3,7 @@ import { createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import path from 'node:path'
-import { parseRoles, type ServerRole } from './kernel/roles.ts'
+import { parseRoles, type ServerRole } from '@shadecn/server-kit/kernel'
 import { appRoot, isBundle, moduleDir } from './runtime.ts'
 
 /** 应用根目录：.env、data/、output/ 都以它为准 */
@@ -366,7 +366,7 @@ export const agentTextSkillsDir = isBundle
  *   （上传接口 503），和 agent 一样不影响启动；
  * - `S3_MAX_UPLOAD_MB`：单个文件上限，默认 100。
  * - `S3_KEY_PREFIX`：对象键的根目录，默认 `canvas`；几个环境共用一个桶时用它隔开（如 `dev/canvas`）。
- *   之下按项目 / 画布 / 类别 / uuid 分层，见 `storage/keys.ts`。
+ *   之下按项目 / 画布 / 类别 / uuid 分层，见 `@shadecn/mod-storage/keys`。
  *
  * **读资源直接用 S3 原始地址**（`<endpoint>/<bucket>/<key>`，写进节点 `data.src`），不经后端转发 ——
  * 所以桶要对匿名开放读（`s3:GetObject`），否则画布上的图都是裂的。

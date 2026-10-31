@@ -49,7 +49,7 @@ import { authorizeCollab, type CollabDenialReason } from '../auth/ws.ts'
  * 两件事的时效性完全不同：
  *
  * - **权限被收回**（移出项目、删项目、删画布）根本不需要靠时间发现 ——
- *   改权限的路由会 `await revokeCollabAccess()`，那条路汇进 `revalidateConnections`，
+ *   改权限的路由会 `await revokeAccess()`（`@shadecn/server-kit/access`），那条路汇进 `revalidateConnections`，
  *   而它开头就把这张表清空。于是下一个写帧必然重查，窗口 ≈ 0，不花任何轮询成本。
  * - **登录态过期**只能靠 TTL 兜底，而它的发现下限本来就受制于 access token 的寿命
  *   （`loadSession` 在 access token 进入 30 秒刷新窗口之前根本不问 Keycloak），

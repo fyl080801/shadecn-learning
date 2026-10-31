@@ -1,4 +1,4 @@
-import { sharedMap, stringCodec } from '../cluster/index.ts'
+import { sharedMap, stringCodec } from '@shadecn/server-kit/cluster'
 import type { CollabIdentity } from '../auth/ws.ts'
 
 /**

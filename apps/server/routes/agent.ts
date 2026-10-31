@@ -7,7 +7,7 @@ import { flowHasNode, openAgentCanvas } from '../agent/canvas-access.ts'
 import { agentRuntime } from '../agent/index.ts'
 import type { AuthVariables } from '../auth/middleware.ts'
 import { currentUserId, type ProjectVariables } from '../auth/project.ts'
-import { assetStorage } from '../storage/index.ts'
+import { assetStorage } from '@shadecn/mod-storage'
 import { flowAssets } from '../store/assets.ts'
 import { INVALID_JSON, readJson } from './params.ts'
 

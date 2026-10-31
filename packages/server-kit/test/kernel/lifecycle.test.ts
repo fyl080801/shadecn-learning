@@ -1,14 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ServerType } from '@hono/node-server'
-import type { ServerApp } from '../../app.ts'
-import { startModules, withDeadline } from '../../kernel/lifecycle.ts'
-import { defineModule, type ModuleContext, type ServerModule } from '../../kernel/module.ts'
-import { ALL_ROLES, type ServerRole } from '../../kernel/roles.ts'
+import type { Server } from 'node:http'
+import { startModules, withDeadline } from '../../src/kernel/lifecycle.ts'
+import { defineModule, type ModuleContext, type ServerModule } from '../../src/kernel/module.ts'
+import { ALL_ROLES, type ServerRole } from '../../src/kernel/roles.ts'
 
 const context = {
   roles: new Set<ServerRole>(ALL_ROLES),
-  app: {} as ServerApp,
-  server: {} as ServerType,
+  app: {},
+  server: {} as Server,
   isDev: true,
 }
 

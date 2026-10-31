@@ -52,7 +52,7 @@
 - `redis` 配着 SQLite —— 真多副本时不成立，但**本地拿 SQLite + Redis 单进程验证 Redis 那条链路
   是合理的调试姿势**，所以开发环境只警告，生产才拒绝。
 
-### 3.2 抽象层（`apps/server/cluster/`）
+### 3.2 抽象层（`packages/server-kit/src/cluster/`，`@shadecn/server-kit/cluster`）
 
 按**用途**分五个抽象类，不是按数据结构分：
 

@@ -1,9 +1,11 @@
+import type { Server } from 'node:http'
 import { createAdaptorServer } from '@hono/node-server'
+import { configureBus, bus } from '@shadecn/server-kit/bus'
+import { closeCluster, initCluster } from '@shadecn/server-kit/cluster'
 import { COLLAB_PATH } from '@shadecn/shared/collab'
-import { app } from './app.ts'
+import { app, type ServerApp } from './app.ts'
 import { enabledProviders } from './auth/providers/index.ts'
 import { sweepExpired } from './auth/session.ts'
-import { closeCluster, initCluster } from './cluster/index.ts'
 import {
   assertAuthConfig,
   assertClusterConfig,
@@ -14,15 +16,19 @@ import {
   isClustered,
   isDev,
   port,
+  redisKeyPrefix,
+  redisUrl,
   serverRoles,
   staticDir,
 } from './config.ts'
 import { disconnectDb } from './db.ts'
-import { startModules } from './kernel/lifecycle.ts'
-import type { ServerModule } from './kernel/module.ts'
-import { recordFeatures } from './kernel/registry.ts'
-import { resolveModules } from './kernel/resolve.ts'
-import { assertRolesSupported } from './kernel/roles.ts'
+import {
+  assertRolesSupported,
+  recordFeatures,
+  resolveModules,
+  startModules,
+  type ServerModule,
+} from '@shadecn/server-kit/kernel'
 
 /**
  * 底座的启动流程（docs/28 §3.1.3）。`index.ts`（生产）和 `dev.ts`（开发）都走这里，只是交进来的模块表不同。
@@ -36,7 +42,7 @@ import { assertRolesSupported } from './kernel/roles.ts'
  *
  * 返回 `shutdown`，给 `dev.ts` 的孤儿守卫用。
  */
-export async function boot(options: { modules: readonly ServerModule[] }): Promise<() => Promise<void>> {
+export async function boot(options: { modules: readonly ServerModule<ServerApp>[] }): Promise<() => Promise<void>> {
   assertAuthConfig()
   assertClusterConfig()
   assertRolesSupported(serverRoles, { clustered: isClustered })
@@ -44,13 +50,16 @@ export async function boot(options: { modules: readonly ServerModule[] }): Promi
   const resolved = resolveModules(options.modules, { roles: serverRoles })
   recordFeatures(resolved)
 
-  await initCluster()
+  await initCluster(isClustered ? { mode: 'redis', url: redisUrl, prefix: redisKeyPrefix } : { mode: 'single' })
+  // 跨角色 / 跨副本的请求-应答（docs/28 §3.7）。实例身份和共享层的一致；订阅要在 initCluster 之后
+  configureBus({ instanceId })
 
   // overrideGlobalObjects: false —— 默认会把 global.Response 换成带缓存的实现，
   // 那条快路径不认 RESPONSE_ALREADY_SENT 这个标记，前端中间件自己写完响应后会被重复 writeHead
   const server = createAdaptorServer({ fetch: app.fetch, overrideGlobalObjects: false })
 
-  const loaded = await startModules(resolved.ordered, { roles: serverRoles, app, server, isDev })
+  // ServerType 是 http/http2 的联合；createAdaptorServer 默认建的就是 http.Server
+  const loaded = await startModules(resolved.ordered, { roles: serverRoles, app, server: server as Server, isDev })
   await loaded.ready()
 
   // 过期会话和没用掉的授权请求：启动清一次，之后每小时清一次（鉴权是底座的，不是模块）
@@ -100,6 +109,7 @@ export async function boot(options: { modules: readonly ServerModule[] }): Promi
 
     clearInterval(sweepTimer)
     await loaded.shutdown()
+    await bus().close()
     await closeCluster().catch(() => undefined)
     await disconnectDb().catch(() => undefined)
     server.close()

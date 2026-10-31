@@ -1,5 +1,6 @@
 import { attachStaticFrontend } from '../frontend/static.ts'
-import { defineModule } from '../kernel/module.ts'
+import { defineModule } from '@shadecn/server-kit/kernel'
+import type { ServerApp } from '../app.ts'
 
 /**
  * 静态前端（生产）：后端直接吐 `vite build` 的产物 + SPA fallback（`frontend/static.ts`）。
@@ -9,7 +10,7 @@ import { defineModule } from '../kernel/module.ts'
  *
  * 装配必须排在所有 `/api` 路由之后（catch-all），`app.ts` 静态挂的路由在它之前，内核再按顺序 setup 模块。
  */
-export const frontendModule = defineModule({
+export const frontendModule = defineModule<ServerApp>({
   name: 'frontend',
   roles: ['web'],
   setup(ctx) {

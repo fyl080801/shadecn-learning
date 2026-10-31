@@ -32,6 +32,9 @@
   },
   "devDependencies": {
     "@shadecn/agent": "workspace:*",
+    "@shadecn/mod-collab": "workspace:*",
+    "@shadecn/mod-storage": "workspace:*",
+    "@shadecn/server-kit": "workspace:*",
     "@shadecn/shared": "workspace:*",
     "@types/node": "^24.10.1",
     "esbuild": "^0.28.2",

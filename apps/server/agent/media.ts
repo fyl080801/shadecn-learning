@@ -1,7 +1,7 @@
 import { MediaReadError, type MediaReader } from '@shadecn/agent/media'
 import { s3Config } from '../config.ts'
-import { assetStorage } from '../storage/index.ts'
-import { assetKeyOfUrl } from '../storage/keys.ts'
+import { assetStorage } from '@shadecn/mod-storage'
+import { assetKeyOfUrl } from '@shadecn/mod-storage/keys'
 
 /**
  * agent 看图（`view_node_media`，docs/20 §3.10.7）在本服务里的素材读取：**只读本服务自己的对象存储**。

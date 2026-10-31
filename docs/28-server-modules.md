@@ -1,6 +1,6 @@
 # REQ-MODULES 服务端模块化：底座 + 可开关能力，按角色独立部署
 
-> 状态：**部分实现** —— 第 1 期已落地（模块内核、角色解析、生命周期收口、dev 入口与构建断言、`/api/features`）；第 2～6 期规划中。
+> 状态：**部分实现** —— 第 1 期（模块内核、角色解析、生命周期收口、dev 入口与构建断言、`/api/features`）和第 2 期（包结构、总线、撤权与落库解耦、storage 成包）已落地；第 3～6 期规划中。
 >
 > 前置：[REQ-SERVER](03-server-runtime.md)（单进程单端口 —— 本篇把它收窄为"**每个角色**单进程单端口"）、
 > [REQ-CLUSTER](14-clustering.md)（共享层，跨角色通信全靠它）、[REQ-COLLAB](04-realtime-collab.md)、
@@ -55,8 +55,28 @@
 底座不是模块，每个角色都带：
 
 - HTTP（Hono + `@hono/node-server`）、请求日志与请求上下文、CORS、`withSession` / `requireAuth`、`/api/health`、`/api/auth`、`/api/avatars`；
-- 数据库（MikroORM 单例、`db:push`）、共享层（`cluster/`）、日志（`logger/`）；
-- 模块内核：加载、依赖校验、生命周期、`/api/features`。
+- 数据库（MikroORM 单例、`db:push`）、日志（`logger/`）、鉴权与权限（会话、成员关系、**权限撤销信号**）；
+- 运行时库 `@shadecn/server-kit`（见 §3.1.4）：模块内核、共享层、总线、权限撤销信号；
+- `/api/features`。
+
+#### 3.1.4 包结构：能力在 `packages/`，`apps/server` 只做底座和组装
+
+能力不集中在 `apps/server` 一个包里。每个能力一个 `packages/mod-<name>`，底座的公共运行时一个 `packages/server-kit`：
+
+| 包 | 内容 | 谁能 import 它 |
+|---|---|---|
+| `@shadecn/server-kit` | 模块内核（`./kernel`）、共享层（`./cluster`，内存 / Redis 两套实现）、总线（`./bus`）、权限撤销信号（`./access`） | 所有服务端包 |
+| `@shadecn/mod-storage` | S3 客户端、对象键、缩略图、`createStorageModule()` | 底座、其它能力包 |
+| `@shadecn/mod-collab` | 第 2 期只有对外契约（`./contract`：落库请求令牌 + `flushRoom()`）；实现第 4 期从 `apps/server/collab/` 搬入 | 契约：所有服务端包；实现：只有宿主 |
+| `@shadecn/mod-agent`（第 4 期） | agent 的宿主侧装配（编排引擎仍是 `@shadecn/agent`） | 只有宿主 |
+| `apps/server` | 底座（HTTP、鉴权、数据库与实体、底座路由）+ 组装点（`modules/*.ts` 把配置交给各能力包的工厂、`index.ts` / `dev.ts`） | — |
+
+规则：
+
+- **能力包永远不 import `apps/server`**，也不读 `process.env`。底座的东西只经两条路拿：`@shadecn/server-kit`，和宿主构造模块时交进来的参数 / 端口（`createStorageModule({ s3 })`）。
+- **能力包之间只 import 对方的契约入口**（`@shadecn/mod-collab/contract`），不 import 实现。契约入口只依赖 `@shadecn/server-kit`，所以没开协同的进程 import 它也不会把 Hocuspocus 拖进来。
+- 包都是 source-only TS，由 esbuild 内联进产物（和 `@shadecn/shared` / `@shadecn/agent` 一样）；包自己的第三方依赖写成 `peerDependencies`，运行时那份仍声明在 `apps/server` 的 `dependencies`（构建脚本据此核对）。
+- 新增一个包：根 `Dockerfile` 补一行 `COPY packages/<name>/package.json`，根 `vitest.config.ts` 的 `projects` 补一项。
 
 **项目 / 画布的元数据 REST（`/api/projects`、`/api/invites`、`/api/flows` 的非 Y.Doc 部分）属于底座**，因为 collab 的 `onConnect`
 和 agent 的判权都要查成员关系。
@@ -172,12 +192,15 @@ agent 进程等于一个不对外的 collab 副本。`canvas-access.ts` 里写�
 
 | 模式 | 用什么 | 用在哪 |
 |---|---|---|
-| **事件**（fire-and-forget，谁关心谁订阅） | `SharedChannel` | 成员移除 → collab 撤权 + agent 失权对账；画布删除；权限变更 |
-| **请求-应答**（要等结果） | `SharedChannel` 请求 + 带 `requestId` 的回执，调用方设超时 | web 要 collab"把这张画布现在落库"（`flushRoomToDatabase`） |
+| **权限撤销信号**（底座发、能力订阅） | `@shadecn/server-kit/access`：共享层里的世代号 + 本实例的订阅者 | 移除成员 / 删项目 / 删画布 → 路由 `await revokeAccess()`；协同订阅「复验并断掉失权连接」，agent 订阅「按当前权限对账」；别的实例由协同的巡检（3s）转成本实例的通知 |
+| **请求-应答**（要等结果，scatter-gather） | `@shadecn/server-kit/bus`：令牌 + 提供方登记表 + 每实例一个收件频道 | 复制画布前让**所有**协同实例落库（`@shadecn/mod-collab/contract` 的 `flushRoom()`） |
 
-- 进程内总线和跨进程总线是**同一个接口**：单进程时就是内存 `SharedChannel`，事件照发照收。模块之间**不直接 import 对方的内部文件**，只经 `ctx.service()` 拿声明过的服务、经总线收发事件。
-- 请求-应答必须有退路：`flush` 超时或无人应答 = 房间不在线 → 直接读库。`SharedChannel` 本就不保证送达（[REQ-CLUSTER](14-clustering.md)），不能把正确性押在它上。
-- 纯函数搬家：`applyFlowUpdate` / `readFlowUpdate` / `decodeStateVectorParam` 只碰数据库和 Yjs，不碰房间，移到 `@shadecn/shared/flow-doc` 旁边的服务端共享包，web 和 collab 都能用。
+- **scatter-gather**：请求发给所有登记了该令牌的实例（登记表在共享层，TTL 30s、按 1/3 续期），等它们**全部**回话或超时；回来的进 `replies`，抛错的进 `failures`，没回的进 `missing`。没有任何提供方时立刻返回空结果，不白等一个超时。本实例的处理函数直接调，单进程时整个请求不碰共享层。
+- 这比改造前好一点：以前 `flushRoomToDatabase` 只落本进程的房间，多副本下房间开在别的副本上就读到旧内容；现在每个协同副本都落。
+- 请求-应答必须有退路：`flushRoom()` **从不抛错**，超时 / 失败 / 没有协同实例都只记一笔，按库里现有内容继续。`SharedChannel` 本就不保证送达（[REQ-CLUSTER](14-clustering.md)），不能把正确性押在它上。
+- 撤权**不**走总线：它已经有「世代号 + 巡检」这条跨实例的路，总线只是更快，不是更对；路由要的「204 = 本实例上的人已经被踢」由 `revokeAccess()` 等本实例订阅者做完来保证，跨实例仍是最迟一个巡检周期。
+- 模块之间**不直接 import 对方的内部文件**，只经契约入口、`ctx.service()`、总线、撤权信号。
+- ~~纯函数搬家：`applyFlowUpdate` / `readFlowUpdate` 移到共享包~~ —— 改为随协同模块走：它们是个人画布 / 离线补推的 REST 写入路径，属于「直接碰 Y.Doc 的接口」，第 4 期和 `/doc` 路由一起进 `@shadecn/mod-collab`，由 ingress 按路径分给协同角色（§3.4.1）。
 
 ### 3.8 前端 dev 中间件只存在于开发入口
 
@@ -229,8 +252,8 @@ agent 进程等于一个不对外的 collab 副本。`canvas-access.ts` 里写�
 | 期 | 内容 | 可独立合入 | 立刻拿到的收益 |
 |---|---|---|---|
 | 1 | **已做**：内核（`apps/server/kernel/`）+ 角色解析（`SERVER_ROLES`，非全角色暂拒绝）+ 模块收口生命周期（`apps/server/modules/`，路由仍静态挂、配置仍在 `config.ts`）；dev 入口 `apps/server/dev.ts` + 构建断言；`GET /api/features` | ✓ | 生产产物无 Vite |
-| 2 | 事件总线；拆掉 web → collab 的三个直接调用；flow-writer 移到共享包 | ✓ | — |
+| 2 | **已做**：`@shadecn/server-kit`（内核、共享层、总线、撤权信号从 `apps/server` 搬入）；`@shadecn/mod-storage`（整个 storage 搬入，宿主只交配置）；`@shadecn/mod-collab` 契约入口；撤权改走 `revokeAccess()`、复制画布前的落库改走 `flushRoom()`（scatter-gather）。**剩余**：`routes/flows.ts` 的 `/doc` 读写仍直接 import `collab/flow-writer.ts` 和 `COLLAB_LIMITS`，第 4 期随路由一起进协同包 | ✓ | 能力开始离开 `apps/server` |
 | 3 | **spike**：collab headless + agent `canvasHost`，在 `dev:cluster` 下跑 §4.5 | ✓（spike 结论决定是否继续） | — |
-| 4 | storage / collab / agent 依次成包；agent 入口改队列 | 每个包一次 | 可按角色启动 |
+| 4 | collab / agent 成包（实现搬进 `packages/mod-*`，底座的东西经端口交进去），路由随模块走；agent 入口改队列 | 每个包一次 | 可按角色启动 |
 | 5 | `dev:cluster` 按角色；补 §4 的测试 | ✓ | — |
 | 6 | k8s 按角色拆 Deployment、ingress 分流、HPA | ✓ | 协同独立扩容 |

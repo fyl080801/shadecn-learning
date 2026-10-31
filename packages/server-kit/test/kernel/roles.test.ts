@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ALL_ROLES, assertRolesSupported, isAllRoles, parseRoles } from '../../kernel/roles.ts'
+import { ALL_ROLES, assertRolesSupported, isAllRoles, parseRoles } from '../../src/kernel/roles.ts'
 
 describe('parseRoles：SERVER_ROLES 的解析', () => {
   it('没配 / 空串 / 只有分隔符 → 全部角色', () => {
