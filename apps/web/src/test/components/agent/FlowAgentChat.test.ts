@@ -672,6 +672,33 @@ describe("画布 Agent 对话框", () => {
     expect(send).toHaveBeenLastCalledWith("f1", { text: "第二条", conversationId: "c-new" }, expect.anything())
   })
 
+  it("新会话：标题先是首条消息，收到服务端生成的标题事件后换掉；别的会话的标题事件不影响当前会话", async () => {
+    let titleShown = ""
+    send.mockImplementation(async (_id: string, _body: unknown, options: SendOptions) => {
+      options.onOpen?.()
+      options.onEvent({ type: "RUN_STARTED", threadId: "c-new", runId: "r1" })
+      await flushPromises()
+      titleShown = document.querySelector('[data-testid="agent-title"]')?.textContent ?? ""
+      options.onEvent({ type: "CUSTOM", name: "agent.conversation-title", value: { conversationId: "c-other", title: "别人的标题" } })
+      options.onEvent({ type: "CUSTOM", name: "agent.conversation-title", value: { conversationId: "c-new", title: "整理画布布局" } })
+      options.onEvent({
+        type: "RUN_FINISHED",
+        threadId: "c-new",
+        runId: "r1",
+        outcome: { type: "success" },
+        result: { id: "a-1", role: "assistant", text: "好", toolCalls: [], createdAt: 2 }
+      })
+    })
+    const wrapper = await mountOpened()
+    await type(wrapper, "帮我把节点重新排一下")
+    await wrapper.get('[data-testid="agent-send"]').trigger("click")
+    await flushPromises()
+
+    expect(titleShown).toContain("帮我把节点重新排一下")
+    expect(wrapper.get('[data-testid="agent-title"]').text()).toContain("整理画布布局")
+    expect(wrapper.get('[data-testid="agent-title"]').text()).not.toContain("别人的标题")
+  })
+
   it("当前会话在跑也能新建 / 切走：只断本地的读、不调 abort；那一轮留在任务列表里，切回来接上", async () => {
     session.mockResolvedValue(sessionView({ latest: view("c1") }))
     conversations.mockResolvedValue([summary("c1"), summary("c2")])

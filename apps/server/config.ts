@@ -110,6 +110,8 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  *   正常情况下一轮先撞上自己的时长上限（cancelled）；Grant 到期（expired）是兜底。
  * - `AGENT_LEASE_TTL_MS`：任务登记、会话槽位、节点占用这些共享表条目的 TTL（默认 30 秒），持有者按它的一部分续期；
  * - `AGENT_RUN_IDLE_TIMEOUT_MS`：一个 run 的空闲上限（默认 120 秒）：网关上既没有在途请求、也这么久没有新请求就停下；
+ * - `AGENT_TITLE_MODEL`：生成会话标题（docs/20 §3.9「会话标题」）用模型表里的哪一项，默认 `default`；可以指向模型表文件里一个更便宜的模型。
+ *   `off` = 不生成，标题一直是首条消息的开头。写了表里没有的键启动即失败；
  * - `AGENT_MAX_OUTPUT_TOKENS`：每次模型请求的输出 token 上限（docs/22 §4.3）。模型请求由服务端发、参数完全由服务端定，
  *   实际取 min(模型的 maxTokens, 它)；不配按 16384。它也决定了工具参数最长能有多长（pi #9265 的缓解之一）；
  * - `AGENT_RUN_TOTAL_TIMEOUT_MS`：一轮含它全部被调用的 agent 的总时长上限（墙钟，默认 30 分钟，docs/20 §3.10.11）：等被调用的 agent 的时间不算进单轮上限，
@@ -161,7 +163,16 @@ export const agentConfig = {
   runTotalTimeoutMs: Math.floor(positive(Number(process.env.AGENT_RUN_TOTAL_TIMEOUT_MS ?? 1_800_000), 1_800_000)),
   /** 没配 / 不是正数 = undefined（`@shadecn/agent` 按 min(模型的 maxTokens, 16384)） */
   maxOutputTokens: positiveInteger(process.env.AGENT_MAX_OUTPUT_TOKENS),
+  /** 生成会话标题用的模型表键；不配 = `default`，`off` = 不生成（标题只取首条消息的开头） */
+  titleModel: resolveTitleModel(process.env.AGENT_TITLE_MODEL),
 } as const
+
+/** `AGENT_TITLE_MODEL` → 模型表键；`off` / `none` / `0` / `false` = 不生成（undefined） */
+function resolveTitleModel(raw: string | undefined): string | undefined {
+  const value = raw?.trim()
+  if (!value) return 'default'
+  return ['off', 'none', '0', 'false'].includes(value.toLowerCase()) ? undefined : value
+}
 
 /**
  * 没配 `AGENT_API_KEY` 时，按 `AGENT_PROVIDER` 退回的环境变量（按顺序取第一个非空的）。

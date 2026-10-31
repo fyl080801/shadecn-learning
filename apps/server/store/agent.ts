@@ -153,6 +153,11 @@ export const agentConversations: AgentConversationStore = {
     return count > 0
   },
 
+  async rename(flowId, userId, id, title) {
+    // 不写 updatedAt：改标题不算会话有新内容（nativeUpdate 也不会触发 onUpdate）
+    return (await db().nativeUpdate(AgentConversation, { id, flow: flowId, user: userId }, { title })) > 0
+  },
+
   async remove(flowId, userId, id) {
     return (await db().nativeDelete(AgentConversation, { id, flow: flowId, user: userId })) > 0
   },

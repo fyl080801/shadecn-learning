@@ -264,6 +264,8 @@ function buildRuntime(): AgentRuntime {
     // 空闲上限（docs/20 §3.10.8）：网关上既没有在途请求、也这么久没有新请求就停下这一轮；
     // 总时长上限（§3.10.11）：含被调用的 agent 的墙钟上限，沙箱硬期限与 Grant 的绝对过期按它算
     limits: { idleTimeoutMs: agentConfig.runIdleTimeoutMs, totalTimeoutMs: agentConfig.runTotalTimeoutMs },
+    // 会话标题（docs/20 §3.9）：不放进 agentHostOptions —— 测试复用那份接线，脚本化上游按顺序出步，多一次请求会打乱脚本
+    ...(agentConfig.titleModel !== undefined ? { titleModel: agentConfig.titleModel } : {}),
     ...agentHostOptions,
   })
   if (!created.enabled) return disabled(created.disabledReason ?? '模型不可用')

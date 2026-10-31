@@ -792,7 +792,10 @@ export function parseAgentRunsMessage(payload: string): { flowId: string; runs: 
  */
 export interface AgentConversationSummary {
   id: string
-  /** 第一条用户消息的开头（原文，可含 `@{node:<id>}`，前端按提及渲染），最多 `AGENT_TITLE_MAX_LENGTH` 字 */
+  /**
+   * 会话标题，最多 `AGENT_TITLE_MAX_LENGTH` 字：建会话时是第一条用户消息的开头（原文，可含 `@{node:<id>}`，前端按提及渲染），
+   * 第一轮里模型生成出标题后换成生成的那个（纯文本，docs/20 §3.9「会话标题」）
+   */
   title: string
   /** 最近一条 assistant 回复的开头（纯文本），最多 `AGENT_SUMMARY_MAX_LENGTH` 字；还没有回复时为空串 */
   summary: string
@@ -912,6 +915,27 @@ export const AGENT_SUBTASK_EVENT = 'agent.subtask'
  */
 export const AGENT_SUBTASK_UPDATE_EVENT = 'agent.subtask-update'
 
+/**
+ * CUSTOM 事件的名字：会话标题定下来了（docs/20 §3.9「会话标题」）—— 新会话的第一轮里，服务端用模型生成的标题
+ * 替换掉先用的「首条消息开头」。前端先 {@link parseAgentConversationTitle}，`conversationId` 对得上当前会话才换标题
+ */
+export const AGENT_CONVERSATION_TITLE_EVENT = 'agent.conversation-title'
+
+export interface AgentConversationTitleUpdate {
+  conversationId: string
+  /** 新标题（纯文本，最多 `AGENT_TITLE_MAX_LENGTH` 字） */
+  title: string
+}
+
+/** 防御性解析 {@link AGENT_CONVERSATION_TITLE_EVENT} 的 `value`：形状不对返回 null */
+export function parseAgentConversationTitle(value: unknown): AgentConversationTitleUpdate | null {
+  if (!isObject(value)) return null
+  const { conversationId, title } = value
+  if (typeof conversationId !== 'string' || !conversationId) return null
+  if (typeof title !== 'string' || !title.trim()) return null
+  return { conversationId, title: Array.from(title.trim()).slice(0, AGENT_TITLE_MAX_LENGTH).join('') }
+}
+
 export type AgentStreamEvent =
   | (AgentBaseEvent & {
       type: typeof AgentEventType.RUN_STARTED
@@ -946,6 +970,11 @@ export type AgentStreamEvent =
       type: typeof AgentEventType.CUSTOM
       name: typeof AGENT_SUBTASK_UPDATE_EVENT
       value: AgentSubtaskUpdate
+    })
+  | (AgentBaseEvent & {
+      type: typeof AgentEventType.CUSTOM
+      name: typeof AGENT_CONVERSATION_TITLE_EVENT
+      value: AgentConversationTitleUpdate
     })
   | (AgentBaseEvent & {
       type: typeof AgentEventType.TEXT_MESSAGE_START

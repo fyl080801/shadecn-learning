@@ -89,6 +89,11 @@ export interface AgentConversationStore {
   create(input: NewConversationInput): Promise<StoredConversationMeta>
   /** 返回 false = 这一行已经不在了（被删了 / 不属于这个人） */
   save(flowId: string, userId: string, id: string, patch: ConversationPatch): Promise<boolean>
+  /**
+   * 只改标题（docs/20 §3.9「会话标题」：模型生成的标题定下来时）。**不动 `updatedAt`**：改标题不算会话有新内容，
+   * 列表的先后不该因它变。返回 false = 这一行已经不在了（被删了 / 不属于这个人）
+   */
+  rename(flowId: string, userId: string, id: string, title: string): Promise<boolean>
   /** 返回 false = 本来就没有（或不是这个人的） */
   remove(flowId: string, userId: string, id: string): Promise<boolean>
 }
@@ -268,6 +273,12 @@ export function createMemoryConversationStore(now: () => number = Date.now): Mem
       if (patch.canvasDigest !== undefined) row.canvasDigest = patch.canvasDigest ? structuredClone(patch.canvasDigest) : null
       if (patch.skills) row.skills = [...patch.skills]
       row.updatedAt = tick()
+      return true
+    },
+    async rename(flowId, userId, id, title) {
+      const row = owned(flowId, userId, id)
+      if (!row) return false
+      row.title = title
       return true
     },
     async remove(flowId, userId, id) {

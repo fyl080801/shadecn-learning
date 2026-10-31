@@ -13,6 +13,7 @@ import {
   AGENT_PROMPT_MAX_LENGTH,
   AGENT_RUN_TOOL_NAME,
   AGENT_SUMMARY_MAX_LENGTH,
+  AGENT_CONVERSATION_TITLE_EVENT,
   AGENT_TITLE_MAX_LENGTH,
   AgentEventType,
   canonicalSkillIds,
@@ -76,6 +77,7 @@ import {
   systemPromptFor,
 } from './prompt.ts'
 import { ENTRY_AGENT_ID } from './protocol.ts'
+import { generateConversationTitle } from './title.ts'
 import { createTextSkillRegistry, NO_TEXT_SKILLS, type TextSkill, type TextSkillRegistry } from './text-skills.ts'
 import type {
   AgentTaskStartRequest,
@@ -451,6 +453,12 @@ export interface AgentRuntimeOptions {
    */
   mediaReader?: MediaReader
   /**
+   * 会话标题用哪个模型生成（docs/20 §3.9「会话标题」）：模型表里的键（`default` 或模型表文件里的项）。
+   * 不给 = 不生成，标题一直是首条消息的开头（测试默认如此：脚本化上游按顺序出步，多一次请求会打乱脚本）。
+   * 键不在模型表里 → 抛错（启动时就该发现）；在表里但不可用 → 只警告，不生成
+   */
+  titleModel?: string
+  /**
    * 技能注册表（docs/23）。不给用内置的 {@link BUILTIN_SKILLS}；测试注册自己的技能时给，
    * 并且**必须**把同一个注册表交给 runner（进程内驱动的 `skills`）—— 两侧从同一份构造工具。
    */
@@ -825,6 +833,12 @@ const RUNNER_EXIT_GRACE_MS = 5000
  * 走到这里令牌已作废、上游请求已掐断，正常几毫秒就交回；过了就不等，那几次的用量不计（打一行警告）
  */
 const USAGE_SETTLE_MS = 5000
+
+/**
+ * 收尾前最多等标题生成多久（docs/20 §3.9「会话标题」）：等到了，标题事件排在收尾帧之前、用量也算进这一轮；
+ * 等不到就先收尾 —— 标题照样在后台生成、落库，界面下次拉列表 / 会话时看到
+ */
+const TITLE_SETTLE_MS = 3000
 /** 沙箱存活的兜底上限比一轮的总时长上限多这么多 */
 const SANDBOX_DEADLINE_MARGIN_MS = 30_000
 
@@ -1134,6 +1148,18 @@ function conversationAttachments(chat: readonly AgentChatMessage[]): AgentAttach
   return [...byKey.values()]
 }
 
+/**
+ * 交给模型起标题的那段文字：首条用户消息，提及换成节点名（「名字」，找不到的写「某个节点」），带了附件就在末尾列出文件名
+ */
+function titleSource(doc: Parameters<typeof readNodeById>[0], text: string, attachments: readonly AgentAttachment[]): string {
+  const named = text.replace(NODE_MENTION_PATTERN, (_match, id: string) => {
+    const label = readNodeById(doc, id)?.metadata.label.trim()
+    return label ? `「${label}」` : '某个节点'
+  })
+  const files = attachments.length > 0 ? `\n（附件：${attachments.map((item) => item.name).join('、')}）` : ''
+  return `${named.trim()}${files}`.trim()
+}
+
 export function conversationTitle(text: string): string {
   return clipText(text.replace(/\s+/g, ' ').trim(), AGENT_TITLE_MAX_LENGTH)
 }
@@ -1224,6 +1250,13 @@ export function addRunUsage(totals: AgentRunUsage, usage: AssistantMessage['usag
   if (totals.costUsd !== null) totals.costUsd += usageNumber(usage.cost?.total)
 }
 
+/** 等标题生成最多 {@link TITLE_SETTLE_MS}；等不到不算错（它在后台接着做） */
+async function settleTitle(task: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([task, new Promise<void>((resolve) => (timer = setTimeout(resolve, TITLE_SETTLE_MS)))])
+  clearTimeout(timer)
+}
+
 /** 等还在途的模型请求交回定稿，最多 {@link USAGE_SETTLE_MS}；等不到的只打警告（它们的用量不计） */
 async function settleRequests(runId: string, pending: ReadonlySet<Promise<void>>): Promise<void> {
   if (pending.size === 0) return
@@ -1300,6 +1333,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         : agentModelKey(entryDefinition) === DEFAULT_AGENT_MODEL
           ? entryModel.reason
           : `入口 agent ${entryDefinition.name} 的模型「${agentModelKey(entryDefinition)}」不可用：${entryModel.reason}`
+  /** 生成会话标题用的模型；null = 不生成（没配 / 不可用） */
+  const titleModel = ((): ResolvedAgentModel | null => {
+    if (options.titleModel === undefined) return null
+    const entry = modelTable.get(options.titleModel)
+    if (!entry) throw new Error(`会话标题的模型「${options.titleModel}」不在模型表里（现有：${[...modelTable.keys()].join('、')}）`)
+    if (!entry.ok) {
+      console.warn(`[agent] 会话标题的模型「${options.titleModel}」不可用，标题只取首条消息的开头：${entry.reason}`)
+      return null
+    }
+    return entry.value
+  })()
   const gateway = createAgentGateway({
     secret: options.gateway.secret,
     ...(options.gateway.upstreamFetch ? { fetch: options.gateway.upstreamFetch } : {}),
@@ -2203,6 +2247,41 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     let contextTokens = 0
     /** 已经开流、还没交回定稿的模型请求：收尾写运行日志前等它们（被掐断的请求报的部分用量也要算进来） */
     const unsettledRequests = new Set<Promise<void>>()
+    /** 新会话的标题生成（docs/20 §3.9「会话标题」）；没在生成为 null。收尾前最多等它 {@link TITLE_SETTLE_MS} */
+    let titleTask: Promise<void> | null = null
+    /**
+     * 和这一轮并行地问模型要标题：判 `llm:invoke` → 读画布换掉提及 → 生成 → 落库（只改标题）→
+     * 这一轮还没收尾就发 CUSTOM `agent.conversation-title`，并重推任务列表（列表里的会话标题跟着换）。
+     * 不跟 `runAbort`：这一轮结束了标题也该生成完；生成自己有超时。任何一步失败都只记一笔，标题保持首条消息的开头
+     */
+    const startTitle = (opened: OpenedCanvas, gate: RunAuthority, model: ResolvedAgentModel, id: string): Promise<void> =>
+      (async () => {
+        await gate.authorize('llm:invoke')
+        const source = await opened.read((doc) => titleSource(doc, text, attachments))
+        const generated = await generateConversationTitle({
+          model: model.model,
+          apiKey: model.apiKey,
+          text: source,
+          ...(options.gateway.upstreamFetch ? { fetch: options.gateway.upstreamFetch } : {}),
+        })
+        if (!generated) return
+        addRunUsage(usage, generated.usage, model.model)
+        if (!(await store.rename(flowId, userId, id, generated.title))) return
+        run.conversationTitle = generated.title
+        if (!run.finished) {
+          send([
+            {
+              type: AgentEventType.CUSTOM,
+              name: AGENT_CONVERSATION_TITLE_EVENT,
+              value: { conversationId: id, title: generated.title },
+              timestamp: Date.now(),
+            },
+          ])
+        }
+        if (run.listed && runs.has(run.runId)) void notifyRunsChange(flowId)
+      })().catch((err: unknown) => {
+        console.warn(`[agent] run=${run.runId} conversation=${id} 会话标题没能生成，保留首条消息的开头`, err)
+      })
     /** 已经计过数的 runner 执行的调用（上报重复的开始不重复计） */
     const countedLocal = new WeakSet<TranscriptCall>()
     /**
@@ -2307,6 +2386,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
       canvas = await input.openCanvas(run.runId, gate)
       const opened = canvas
+      // 新会话：和这一轮并行地生成标题（docs/20 §3.9「会话标题」）
+      if (input.conversationId === null && titleModel) titleTask = startTitle(opened, gate, titleModel, conversationId)
 
       // —— 这一轮的技能（docs/23 §3.2）：提供哪些、一开始就加载哪些 ——
       const mentionedNodeTypes = await opened.read((doc) =>
@@ -3551,6 +3632,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     }
 
     // —— 4. 一次 save 落定这一轮 ——
+    // 标题还在生成：等一小会儿，让标题事件排在收尾帧之前（等不到的在后台继续）
+    if (titleTask) await settleTitle(titleTask)
     // 用量取收尾这一刻的（被叫停时还在途的那次请求在下面才结算，只进运行日志）
     const finishing = mapper.finish(outcome, {
       ...usage,

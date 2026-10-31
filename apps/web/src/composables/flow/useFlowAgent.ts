@@ -1,7 +1,9 @@
 import { computed, onBeforeUnmount, reactive, ref, watch, type Ref } from "vue"
 import {
+  AGENT_CONVERSATION_TITLE_EVENT,
   AGENT_PROMPT_MAX_LENGTH,
   AGENT_TITLE_MAX_LENGTH,
+  parseAgentConversationTitle,
   parseAgentRunsMessage,
   type AgentActiveRunView,
   type AgentAttachment,
@@ -9,6 +11,7 @@ import {
   type AgentConversationView,
   type AgentRunEntry,
   type AgentSessionView,
+  type AgentStreamEvent,
   type AgentUserView
 } from "@shadecn/shared/agent"
 import { AGENT_RUNS_MESSAGE } from "@shadecn/shared/collab"
@@ -170,6 +173,22 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
     mine.value = view ? view.mine : true
     if (view?.mine) learnSelf(view.owner.id)
     Object.assign(conversation, emptyConversation(view ? [...view.messages] : []))
+  }
+
+  /**
+   * 服务端生成的会话标题（docs/20 §3.9「会话标题」，CUSTOM `agent.conversation-title`）：
+   * 是当前会话就换掉头部的标题；任务列表里那个会话的一项也换（推送晚到时先显示新的）
+   */
+  function applyTitleEvent(event: AgentStreamEvent) {
+    if (event.type !== "CUSTOM" || event.name !== AGENT_CONVERSATION_TITLE_EVENT) return
+    const update = parseAgentConversationTitle(event.value)
+    if (!update) return
+    if (conversationId.value === update.conversationId) title.value = update.title
+    if (runList.value.some((run) => run.conversationId === update.conversationId && run.conversationTitle !== update.title)) {
+      runList.value = runList.value.map((run) =>
+        run.conversationId === update.conversationId ? { ...run, conversationTitle: update.title } : run
+      )
+    }
   }
 
   // —— 任务列表 ——
@@ -374,6 +393,7 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
             controller.abort()
             return
           }
+          applyTitleEvent(event)
           applyAgentEvent(conversation, event)
         }
       })
@@ -540,6 +560,7 @@ export function useFlowAgent(flowId: Ref<string>, options: FlowAgentOptions = {}
               conversationId.value = event.threadId
               title.value ??= titleText.slice(0, AGENT_TITLE_MAX_LENGTH)
             }
+            applyTitleEvent(event)
             applyAgentEvent(conversation, event)
           }
         }
