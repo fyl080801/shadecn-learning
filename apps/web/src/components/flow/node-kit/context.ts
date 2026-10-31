@@ -2,7 +2,8 @@ import { inject, provide, watch, type InjectionKey, type Ref } from "vue"
 
 import { createNodeActionRunner, type NodeActionRunner } from "./actions"
 import { createNodeModeController, type NodeModeController } from "./modes"
-import type { NodePartContext } from "./protocol"
+import { FALLBACK_NODE_TYPE } from "../node-constants"
+import type { NodePartContext, NodeTypeView } from "./protocol"
 import { createNodeKit, type NodeKit } from "./registry"
 
 /**
@@ -65,6 +66,22 @@ export function useNodeKitRuntime(): NodeKitRuntime {
   if (provided) return provided
   if (!emptyRuntime) emptyRuntime = createNodeKitRuntime(createNodeKit())
   return emptyRuntime
+}
+
+/**
+ * 按 type 取**另一个**节点的外观（图标、兜底名）—— 比如输入框里的提及 badge、上游预览格子。
+ *
+ * 节点子树里的组件（部件、body，以及它们引到的组件）**不要** import `node-types.ts` 的 `flowNodeTypeOf`：
+ * 注册表要 import 这些组件，反过来引就成环（`node-types` → `composer-part` → `PromptComposer` → `node-types`），
+ * 生产构建直接拒绝（`vite.config.ts` 的 onwarn）。注册表已经由编辑器注入（`provideNodeKit`），从这里查。
+ * 没登记的 type 按兜底类型 —— 和 `flowNodeTypeOf` 同一条规则。
+ */
+export function useNodeTypeView(): (type: string) => NodeTypeView {
+  const { kit } = useNodeKitRuntime()
+  return (type) => {
+    const view = kit.viewOf(type)
+    return view.icon || view.fallbackLabel ? view : kit.viewOf(FALLBACK_NODE_TYPE)
+  }
 }
 
 /** 部件组件、动作按钮取节点上下文；不在宿主里用会直接报错 */

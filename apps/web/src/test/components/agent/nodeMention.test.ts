@@ -15,6 +15,8 @@ import {
   useNodeMentionMenu
 } from "@/components/flow/agent/nodeMention"
 import FlowAgentMention from "@/components/flow/agent/FlowAgentMention.vue"
+import { NODE_KIT_KEY, createNodeKitRuntime } from "@/components/flow/node-kit/context"
+import { createDefaultNodeKit } from "@/components/flow/node-kit/install"
 
 /**
  * 「提及节点」插件。守两件事：
@@ -150,9 +152,14 @@ describe("提及候选", () => {
 })
 
 describe("提及 badge", () => {
+  // 类型的图标 / 兜底名从编辑器注入的注册表里查（badge 不 import `node-types`，否则成环）
+  const kitRuntime = createNodeKitRuntime(createDefaultNodeKit())
+  const mountBadge = (nodeId: string) =>
+    mount(FlowAgentMention, { props: { nodeId }, global: { provide: { [NODE_KIT_KEY]: kitRuntime } } })
+
   it("显示节点当前的名字，改名后跟着变", async () => {
     nodes.value = [node("a", "text", "旧名字")]
-    const wrapper = mount(FlowAgentMention, { props: { nodeId: "a" } })
+    const wrapper = mountBadge("a")
     expect(wrapper.text()).toBe("旧名字")
 
     nodes.value = [node("a", "text", "新名字")]
@@ -162,13 +169,13 @@ describe("提及 badge", () => {
 
   it("节点被删了 → 「已删除的节点」灰态", () => {
     nodes.value = []
-    const wrapper = mount(FlowAgentMention, { props: { nodeId: "gone" } })
+    const wrapper = mountBadge("gone")
     expect(wrapper.text()).toBe("已删除的节点")
     expect(wrapper.attributes("data-mention-missing")).toBe("true")
   })
 
   it("没起名的节点按类型称呼", () => {
     nodes.value = [node("g", "group", "")]
-    expect(mount(FlowAgentMention, { props: { nodeId: "g" } }).text()).toBe("未命名分组")
+    expect(mountBadge("g").text()).toBe("未命名分组")
   })
 })

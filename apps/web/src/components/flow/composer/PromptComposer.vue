@@ -9,8 +9,7 @@ import { PromptInput, createEditor, type CustomInline } from "@/components/promp
 
 import FlowAgentMention from "@/components/flow/agent/FlowAgentMention.vue"
 import { NODE_MENTION, nodeMentionIdOf, useNodeMentionMenu } from "@/components/flow/agent/nodeMention"
-import { useNodePart } from "@/components/flow/node-kit/context"
-import { flowNodeTypeOf } from "@/components/flow/node-types"
+import { useNodePart, useNodeTypeView } from "@/components/flow/node-kit/context"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
 import { suspendCanvasShortcuts } from "@/composables/flow/shortcut-layer"
@@ -228,9 +227,11 @@ const INPUT_CLASS =
 const EXPANDED_INPUT_CLASS =
   "[&_[data-slate-editor]]:min-h-[max(60vh,320px)] [&_[data-slate-editor]]:max-h-[max(60vh,320px)] [&_[data-slate-editor]]:overflow-y-auto [&_[data-slate-editor]]:p-0 [&_[data-slate-editor]]:text-sm [&_[data-slate-editor]]:leading-6 [&_[data-slate-editor]]:before:left-0 [&_[data-slate-editor]]:before:top-0 [&_[data-slate-editor]]:before:leading-6"
 
+const viewOf = useNodeTypeView()
+
 function iconOf(nodeId: string) {
   const node = store.nodeById.get(nodeId)
-  return node ? flowNodeTypeOf(node.type ?? "").icon : null
+  return node ? (viewOf(node.type ?? "").icon ?? null) : null
 }
 </script>
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue"
 import { CircleSlash } from "@lucide/vue"
-import { flowNodeTypeOf } from "@/components/flow/node-types"
+import { useNodeTypeView } from "@/components/flow/node-kit/context"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 import { cn } from "@/lib/utils"
 
@@ -14,15 +14,16 @@ import { cn } from "@/lib/utils"
 const props = defineProps<{ nodeId: string }>()
 
 const { store } = useFlowEditor()
+const viewOf = useNodeTypeView()
 
 const node = computed(() => store.nodeById.get(props.nodeId) ?? null)
 
-const typeDef = computed(() => (node.value ? flowNodeTypeOf(node.value.type ?? "") : null))
+const view = computed(() => (node.value ? viewOf(node.value.type ?? "") : null))
 
 const label = computed(() => {
   if (!node.value) return "已删除的节点"
   const name = node.value.metadata.label.trim()
-  return name || `未命名${typeDef.value?.label ?? "节点"}`
+  return name || `未命名${view.value?.fallbackLabel ?? "节点"}`
 })
 </script>
 
@@ -40,7 +41,7 @@ const label = computed(() => {
     :data-mention-id="props.nodeId"
     :data-mention-missing="node ? undefined : 'true'"
   >
-    <component :is="typeDef.icon" v-if="typeDef" class="size-3 shrink-0 opacity-70" />
+    <component :is="view.icon" v-if="view?.icon" class="size-3 shrink-0 opacity-70" />
     <CircleSlash v-else class="size-3 shrink-0" />
     <span class="truncate">{{ label }}</span>
   </span>

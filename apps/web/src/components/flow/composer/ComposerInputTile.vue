@@ -2,10 +2,9 @@
 import { computed } from "vue"
 
 import AssetImage from "@/components/flow/AssetImage.vue"
-import { flowNodeTypeOf } from "@/components/flow/node-types"
 import { nodeUploadById } from "@/components/flow/node-upload"
 import { Spinner } from "@/components/ui/spinner"
-import { useNodePart } from "@/components/flow/node-kit/context"
+import { useNodePart, useNodeTypeView } from "@/components/flow/node-kit/context"
 
 /**
  * 连入预览里的一格：一个上游节点的缩略样子（固定 56 × 56）。
@@ -22,9 +21,10 @@ const ctx = useNodePart()
 const store = ctx.editor.store
 
 const node = computed(() => store.nodeById.get(props.nodeId) ?? null)
-const typeDef = computed(() => flowNodeTypeOf(node.value?.type ?? ""))
+const viewOf = useNodeTypeView()
+const view = computed(() => viewOf(node.value?.type ?? ""))
 
-const label = computed(() => node.value?.metadata.label.trim() || typeDef.value.view.fallbackLabel || typeDef.value.label)
+const label = computed(() => node.value?.metadata.label.trim() || view.value.fallbackLabel || "节点")
 
 function str(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
@@ -64,13 +64,13 @@ const uploading = computed(() => nodeUploadById(ctx.editor.flowId.value, props.n
       v-else-if="excerpt"
       class="line-clamp-3 px-1 text-[10px] leading-3 break-all text-muted-foreground"
     >{{ excerpt }}</span>
-    <component :is="typeDef.icon" v-else class="size-5 text-muted-foreground" />
+    <component :is="view.icon" v-else class="size-5 text-muted-foreground" />
 
     <span
       v-if="image || excerpt"
       class="absolute bottom-0.5 left-0.5 flex size-4 items-center justify-center rounded-sm bg-background/80 text-muted-foreground"
     >
-      <component :is="typeDef.icon" class="size-3" />
+      <component :is="view.icon" class="size-3" />
     </span>
 
     <span

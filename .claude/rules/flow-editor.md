@@ -63,6 +63,7 @@ Collaboration (sync transport, persistence, presence, close codes) is in `collab
 - Rules that are bugs to break:
   - **Features never import each other**; they cooperate through events and the shared context (composer emits `composer:submit`, `runnable` turns it into `node:run`).
   - **`protocol.ts` is a type-only leaf; only `install.ts` lists features** (it imports node components, so nothing a node imports may import it — same cycle rule as `editor-context.ts`).
+  - **Nothing in a node's import graph imports `node-types.ts`** (parts, bodies, and what they pull in — e.g. `PromptComposer` → `FlowAgentMention`): the registry imports them, so the build refuses the cycle. To show *another* node's icon / name, use `useNodeTypeView()` (`node-kit/context.ts`, reads the injected kit, falls back like `flowNodeTypeOf`).
   - **The host knows no concrete type or feature** (no `if (type === 'group')`, no `has('runnable')`).
   - Parts take **no props** — they call `useNodePart()` (`id` / `type` / `node` = `useFlowNode` / `label` / `editor` / `selected` / `mode` / `slots` / `emit`), because half are teleported.
 - Events: a typed editor-level bus (`FlowNodeEventMap`, extended by module augmentation in each feature's file). Synchronous broadcast, each handler try/catch'd, depth-capped; **never a write channel** — handlers write via `ctx.node.write` / `store.mutate`.
