@@ -1,6 +1,6 @@
 # REQ-MODULES 服务端模块化：底座 + 可开关能力，按角色独立部署
 
-> 状态：**部分实现** —— 第 1 期（模块内核、角色解析、生命周期收口、dev 入口与构建断言、`/api/features`）和第 2 期（包结构、总线、撤权与落库解耦、storage 成包）已落地；第 3～6 期规划中。
+> 状态：**已实现**（第 1～6 期，见 §7）。按角色拆分的 k8s 清单在 `k8s/variants/roles/`，尚未切到线上（要先备好 Redis + PostgreSQL）。
 >
 > 前置：[REQ-SERVER](03-server-runtime.md)（单进程单端口 —— 本篇把它收窄为"**每个角色**单进程单端口"）、
 > [REQ-CLUSTER](14-clustering.md)（共享层，跨角色通信全靠它）、[REQ-COLLAB](04-realtime-collab.md)、
@@ -218,7 +218,7 @@ web 角色不跑 agent。`POST /api/flows/:flowId/agent/messages` 在 web 上做
 - **路由归属是一张表、三处实现**：服务端的 `apps/server/routes/ownership.ts`（不归本进程的路由 404）、本地代理的 `apps/server/scripts/dev-route.mjs`、生产的 `k8s/ingress.yaml`。前两份由测试逐条对比。
 - k8s：每个角色一个 Deployment + Service；`web` 可保留 `Recreate` 与 PVC（SQLite 单副本部署仍然允许，但那时只能全角色一个 Pod），`collab` 用 `RollingUpdate` + HPA（指标：连接数或 CPU），`agent` 按运行中的轮次数扩容。
   ingress 按路径分流：`/ws/collaboration` 与 collab 模块的那几条 REST → collab Service，其余 → web。agent Service 只在集群内。
-  `k8s/variants/` 那套"复制覆盖"的切换方式退役，由角色 Deployment 取代。
+  清单在 `k8s/variants/roles/`（docs/12 §3.7）。
 - 健康检查：每个角色的 `/api/health` 只报自己加载的模块；`collab` 的 `/api/collab/health` 随模块走。
 
 ## 4. 验收标准
@@ -259,4 +259,4 @@ web 角色不跑 agent。`POST /api/flows/:flowId/agent/messages` 在 web 上做
 | 3 | **已做**：collab headless（只有 agent 角色的进程挂 Hocuspocus 不接 WebSocket）+ agent 只经 `@shadecn/mod-collab/canvas-host` 拿活房间 | ✓ | — |
 | 4 | **已做**：collab 成包（`CollabPorts`、headless）、agent 成包（`AgentPorts`、惰性单例）、发起一轮改成 web 派发 / agent 执行（§3.6）。路由随模块走、按角色启动见第 5 期 | 每个包一次 | — |
 | 5 | **已做**：路由按角色归属（`routes/ownership.ts` 的 `roleGate`），解除「非全角色拒绝启动」（单副本仍拒绝）；`dev:cluster` 按角色起进程 + 前置代理 | ✓ | 本地可按角色跑 |
-| 6 | k8s 按角色拆 Deployment、ingress 分流、HPA | ✓ | 协同独立扩容 |
+| 6 | **已做**：`k8s/variants/roles/`（三个 Deployment、两个 Service、按路径分流的 ingress、collab 的 HPA），测试钉住角色 / 标签 / 探针和 ingress 与路由归属表一致。**没切到线上**：要先在集群里备好 Redis + PostgreSQL，再按 docs/12 §3.7 切换 | ✓ | 协同独立扩容 |

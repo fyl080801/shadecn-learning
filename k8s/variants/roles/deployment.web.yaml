@@ -1,0 +1,121 @@
+# 按角色拆分部署（REQ-MODULES，docs/28 §3.9）—— 同一个镜像，三个 Deployment，只差 SERVER_ROLES。
+#
+# ⚠️ 在 variants/ 下、不在 k8s/ 下：ArgoCD 只同步 k8s/ 这一层（没开 recurse）。现在线上是 k8s/deployment.yaml 的
+# 单副本 + SQLite 形态；这一套要求集群里**有 Redis 和 PostgreSQL**（SERVER_ROLES 拆开时 CLUSTER_MODE 必须是 redis，
+# 单副本下拆角色服务端会拒绝启动）。切换：把这个目录的五个文件放进 k8s/（替换 deployment.yaml / service.yaml / ingress.yaml），
+# 删掉 PVC，提交。带外 apply 会被 ArgoCD 的 selfHeal 刷回去。
+#
+# 连接串在 Secret shadecn-learning-auth 里（DATABASE_URL / REDIS_URL / SESSION_SECRET / KEYCLOAK_CLIENT_SECRET），
+# agent 的模型配置和对象存储照旧走带外的 ConfigMap + Secret（envFrom，optional）—— 三种角色用**同一份**：
+# web 进程按自己的配置算 agent 面板的「已启用 / 模型名」，和 agent 进程对不上就会显示错（docs/28 §3.6 已知限制）。
+#
+# web：底座接口、页面、上传、agent 的发起（派给 agent 副本）与只读接口。无状态，2 个副本只为滚动发布不中断。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shadecn-learning-web
+  namespace: dev
+  labels:
+    app: shadecn-learning
+    shadecn/role: web
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: shadecn-learning
+      shadecn/role: web
+  template:
+    metadata:
+      labels:
+        # app 标签所有角色都要有：沙箱的 NetworkPolicy（k8s/agent-sandbox.yaml）按它放行回连网关
+        app: shadecn-learning
+        shadecn/role: web
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      containers:
+        - name: shadecn-learning
+          image: 192.168.68.95:31443/apps/shadecn-learning:b29783f
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: "3000"
+            - name: SERVER_ROLES
+              value: web
+            - name: CLUSTER_MODE
+              value: redis
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: REDIS_KEY_PREFIX
+              value: shadecn-dev
+            - name: DB_PROVIDER
+              value: postgresql
+            - name: APP_ORIGIN
+              value: https://demo.fyl080801.uk
+            - name: KEYCLOAK_ISSUER
+              value: https://keycloak.fyl080801.uk/realms/master
+            - name: KEYCLOAK_CLIENT_ID
+              value: sample
+            - name: KEYCLOAK_SCOPE
+              value: openid profile email
+            - name: S3_MAX_UPLOAD_MB
+              value: "500"
+          envFrom:
+            - secretRef:
+                name: shadecn-learning-auth
+            - configMapRef:
+                name: shadecn-learning-agent
+                optional: true
+            - secretRef:
+                name: shadecn-learning-agent
+                optional: true
+            - configMapRef:
+                name: shadecn-learning-s3
+                optional: true
+            - secretRef:
+                name: shadecn-learning-s3
+                optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: 3000
+            periodSeconds: 10
+            timeoutSeconds: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ['sh', '-c', 'sleep 5']
+      terminationGracePeriodSeconds: 60
+      imagePullSecrets:
+        - name: harbor-pull-secret

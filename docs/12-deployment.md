@@ -327,6 +327,18 @@ CMD ["sh", "-c", "node server/db-sync.js && exec node server/index.js"]
 那句拒绝是唯一的守门人；加上之后，以后每一次 rename / drop / retype 都会在生产库上静默执行。
 用一个长期护栏换一次性的方便，不划算。
 
+### 3.7 按角色拆分部署（REQ-MODULES）
+
+`k8s/variants/roles/`：同一个镜像，三个 Deployment（`shadecn-learning-web` / `-collab` / `-agent`，只差 `SERVER_ROLES`），
+web 和 collab 各一个 Service，ingress 按路径分流（`/ws/collaboration`、`/api/collab`、`/api/flows/<id>/doc` → collab，其余 → web），
+collab 由 HPA 按 CPU 扩（2～6）。agent 不对外：发起经总线派发，沙箱直连 agent Pod 的 IP。详见 [REQ-MODULES §3.9](28-server-modules.md)。
+
+- **前提**：集群里有 Redis 和 PostgreSQL（拆角色时必须 `CLUSTER_MODE=redis`，单副本下服务端拒绝拆角色启动）。连接串放 Secret `shadecn-learning-auth`。
+- **在 `variants/` 不在 `k8s/`**：ArgoCD 只同步 `k8s/` 这一层。切换 = 把这个目录的文件放进 `k8s/`（替换 `deployment.yaml` / `service.yaml` / `ingress.yaml`，去掉 PVC），提交。
+- 所有角色的 Pod 都带 `app: shadecn-learning`（沙箱 NetworkPolicy 按它放行回连），Service 另按 `shadecn/role` 选。
+- 三种角色用**同一份** agent / S3 的带外配置：web 进程按它显示 agent 面板的「已启用 / 模型名」。
+- 镜像 tag 的自动回写（§4）只改 `k8s/deployment.yaml` 的两行；切到这套之后回写步骤要跟着改成改三个 Deployment 的 `image:` 和 agent 的沙箱镜像。
+
 ## 4. CI/CD 需求：Argo Workflows 构建 + ArgoCD 部署
 
 集群里跑的是两段式 GitOps，**分界线是「谁改 `k8s/deployment.yaml` 里的 image tag」**：Argo
