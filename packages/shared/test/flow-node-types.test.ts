@@ -359,6 +359,29 @@ describe('连线规则：resolveConnection 的其余规则', () => {
   })
 })
 
+describe('分组不参与连线', () => {
+  const group: [string, Record<string, unknown>] = ['group', {}]
+  const fallback: [string, Record<string, unknown>] = [FALLBACK_NODE_TYPE, {}]
+
+  it('分组连不出去，也连不进来（和兜底类型、可新建类型都一样拒绝）', () => {
+    for (const other of [fallback, ...Object.values(STATES)]) {
+      const out = resolveConnection({ source: 'src', target: 'dst' }, contextOf({ src: group, dst: other }))
+      const into = resolveConnection({ source: 'src', target: 'dst' }, contextOf({ src: other, dst: group }))
+      expect(out.ok).toBe(false)
+      expect(into.ok).toBe(false)
+      expect(!into.ok && into.reason).toContain('不能连线')
+    }
+  })
+
+  it('两侧都没有连接点，从分组长不出任何节点；兜底类型照旧左右各一个', () => {
+    expect(hasSide('group', 'inputs', {})).toBe(false)
+    expect(hasSide('group', 'outputs', {})).toBe(false)
+    expect(connectableNodeTypes('src', contextOf({ src: group }))).toEqual([])
+    expect(hasSide(FALLBACK_NODE_TYPE, 'inputs', {})).toBe(true)
+    expect(hasSide(FALLBACK_NODE_TYPE, 'outputs', {})).toBe(true)
+  })
+})
+
 describe('connectableNodeTypes：从一个出口能长出哪些类型', () => {
   const types = (nodeId: string, fixture: Fixture = STATES, edges: FlowEdge[] = []) =>
     connectableNodeTypes(nodeId, contextOf(fixture, edges)).map((item) => item.type)

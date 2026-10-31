@@ -137,7 +137,7 @@ describe("assistant 消息（ai-elements）", () => {
     expect(wrapper.get('[data-role="assistant-waiting"]').text()).toBe("思考中…")
   })
 
-  it("用量：脚注里是上下文占比；没有价格信息的费用写「未知」", () => {
+  it("用量：脚注里只有上下文占比", () => {
     const usage: AgentUsageView = {
       inputTokens: 12_000,
       outputTokens: 800,
@@ -151,7 +151,7 @@ describe("assistant 消息（ai-elements）", () => {
     const wrapper = mount(FlowAgentMessage, { props: { message: assistant({ text: "好", usage }) } })
     const trigger = wrapper.get('[data-role="usage"]')
     expect(trigger.text()).toBe("10% 上下文")
-    expect(trigger.attributes("aria-label")).toBe("上下文已用 10%，这一轮费用 未知")
+    expect(trigger.attributes("aria-label")).toBe("上下文已用 10%")
     // 旧记录没有用量：不画
     expect(mount(FlowAgentMessage, { props: { message: assistant({ text: "好" }) } }).find('[data-role="usage"]').exists()).toBe(false)
   })

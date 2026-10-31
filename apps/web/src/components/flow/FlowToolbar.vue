@@ -5,8 +5,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
 import { Separator } from "@/components/ui/separator"
@@ -101,8 +99,6 @@ const { canvas } = useFlowEditor()
                 :side-offset="12"
                 class="w-44"
               >
-                <DropdownMenuLabel class="text-xs text-muted-foreground">添加节点</DropdownMenuLabel>
-                <DropdownMenuSeparator />
                 <DropdownMenuItem
                   v-for="def in ADDABLE_NODE_TYPES"
                   :key="def.type"

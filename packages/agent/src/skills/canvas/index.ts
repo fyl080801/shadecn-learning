@@ -22,7 +22,7 @@ export const canvasSkill = defineSkill({
 - 节点类型：text = 文本（正文 data.text）；image = 图片（素材地址 data.src）；video = 视频（素材地址 data.src、预览图 data.poster）；director = 导演台（3D 场景与动画存在 data 的 dc.* 字段里，这里只给摘要；读写导演台内容用 director 技能）；还可能有 group（分组框）和认不出类型的老节点。端口和数据类型见 read_canvas 的 nodeTypes。
 - 读：read_canvas 读取全部内容；get_node 只读一个节点（只关心一个节点时用它，别为一个节点读整张画布）；check_connection 只检查两个节点能不能连、会连哪对端口，不写。
 - 要用到某个节点的 id、端口之前，先用 read_canvas 拿到真实的值；工具报「不存在」时重新读取再决定。
-- 你能新建的类型只有四种：text、image（素材地址 data.src 只能在 add_node 时给）、video、director（新建的导演台是空场景；导演台内容用 director 技能，update_node / add_node 不能写 data 里的 dc.* 字段）。group 和认不出类型的老节点可以读、改名、连线、删除，但不能新建。
+- 你能新建的类型只有四种：text、image（素材地址 data.src 只能在 add_node 时给）、video、director（新建的导演台是空场景；导演台内容用 director 技能，update_node / add_node 不能写 data 里的 dc.* 字段）。认不出类型的老节点可以读、改名、连线、删除；group 可以读、改名、删除，但不能连线（连不进也连不出）。两者都不能新建。
 - 内容：add_node 新建节点（可顺带从已有节点连过来）；update_node 修改节点的 metadata 或 data；duplicate_node 复制一个节点（不带连线、不带产出）。
 - 连线与删除：connect 连线（端口自动选，也可以用 sourcePort / targetPort 指定）；delete_elements 删除节点或连线。
 - 布局：move_nodes 挪位置；resize_node 改宽高；group_nodes 把几个顶层节点圈进一个新分组；ungroup 解散分组（组员留在原地）；auto_layout 按连线从左到右整体重排。
@@ -33,7 +33,8 @@ export const canvasSkill = defineSkill({
 3. 只改用户要求的部分。update_node 只传要改的字段。
 4. 连线要端口类型兼容（图片连图片、文本连文本）。text 只能连出去、不能被连入；image / video 都能被连入（带着素材的「素材」形态节点被连入后会自动变回「生成」形态，data.form 由画布维护，不要自己写）；同一个上游、同一对端口不连第二条；一般不用指定端口，工具会按声明顺序自动选，需要连到特定端口时先 read_canvas 看 nodeTypes 再用 sourcePort / targetPort 指定。
 5. 删除要克制：一轮最多删 ${TOOL_LIMITS.deletePerRun} 个元素（ungroup 拆掉的分组框也算一个），超出会被拒绝；大规模删除请让用户自己操作。
-6. 布局：新建了一批节点并连好线后，用一次 auto_layout 收拾版面，不要逐个 move_nodes；用户没要求时不要重排已有的画布。组内节点的坐标相对它所在的分组框；分组不能嵌套，已在分组里的节点要先 ungroup 才能圈进新分组。`,
+6. 布局：新建了一批节点并连好线后，用一次 auto_layout 收拾版面，不要逐个 move_nodes；用户没要求时不要重排已有的画布。组内节点的坐标相对它所在的分组框；分组不能嵌套，已在分组里的节点要先 ungroup 才能圈进新分组。
+7. 分组归属按节点中心点定：顶层节点挪进 / 建在分组框里就加入分组，组员挪出自己的框就移出分组，只探出一截时分组框自动长大；分组框自己挪到别的节点上不改归属。往分组里加新内容可以直接用 add_node 的 group 参数。`,
   tools: (ctx) => createCanvasBaseTools(ctx),
   requires: ['flow:read', 'flow:write', 'flow:delete'],
   offeredWith: ['flow:read'],

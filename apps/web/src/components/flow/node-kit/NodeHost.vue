@@ -125,6 +125,7 @@ function actionsIn(slot: NodeActionSlot): NodeActionDef[] {
 
 const parts = computed(() => ({
   label: partsIn("label"),
+  "label-end": partsIn("label-end"),
   toolbar: partsIn("toolbar"),
   badge: partsIn("badge"),
   header: partsIn("header"),
@@ -164,10 +165,20 @@ function override(slot: NodeSlotName) {
 const toolbarVisible = computed(() => singleSelected.value && override("toolbar") !== "conceal")
 
 /**
+ * 名字那一行的宽度 = 节点的实测宽度（画布坐标），交给 CSS 乘上缩放折成屏幕像素（`flow-node-label-row`）。
+ * 读 Vue Flow 量出来的 `dimensions` 而不是文档里的 layout：拉伸过程中文档还没写，行宽要跟着手走；
+ * 还没量过（0）时不限宽，免得第一帧名字被挤成一个省略号。
+ */
+const labelRowStyle = computed(() => {
+  const width = props.dimensions?.width ?? 0
+  return width > 0 ? { "--flow-node-width": String(width) } : undefined
+})
+
+/**
  * 名字那一行贴节点上边的距离；操作栏 = 名字行的偏移 + 名字行自身的高度 + 一点间距。
  *
  * 两块是各自独立定位的（NodeToolbar 各管各的），没有文档流会把它们推开 ——
- * 所以「堆叠」是靠这个偏移量算出来的，名字行的高度变了就得跟着调。这是宿主里唯一保留的偏移计算。
+ * 所以「堆叠」是靠这个偏移量算出来的。20 = 名字行写死的高度（模板里的 h-5），改一处就得改另一处。这是宿主里唯一保留的偏移计算。
  */
 const LABEL_OFFSET = 4
 const TOOLBAR_OFFSET = LABEL_OFFSET + 20 + 6
@@ -232,7 +243,19 @@ const OUTER_OFFSET = 8
       align="start"
       :offset="LABEL_OFFSET"
     >
-      <div class="flex items-center gap-1.5" data-node-slot="label">
+      <!--
+        这一行和节点**在屏幕上一样宽**（`flow-node-label-row`，宽度 = 节点实测宽 × 缩放，见 vue-flow.css）：
+        名字放不下就省略号，缩小画布时跟着收。挤的顺序：图标、在场头像、`label-end` 都不让（shrink-0），
+        只有名字那一段让（min-w-0 + 部件自己 truncate）。`label-end` 贴着行尾（ml-auto），也就是节点的右上角。
+        整行 pointer-events-none、子元素再要回来：行比内容宽，空着的那段不该挡住下面的画布。
+        行高写死 h-5（= TOOLBAR_OFFSET 里的 20）：NodeToolbar 按行的底边贴着节点、往上长，
+        行高要是跟着内容走，改名时 20px 的输入框换下 16px 的名字，整行就会往上跳一下。
+      -->
+      <div
+        class="flow-node-label-row pointer-events-none flex h-5 items-center gap-1.5 *:pointer-events-auto"
+        :style="labelRowStyle"
+        data-node-slot="label"
+      >
         <!-- 类型图标：宿主内置，排在名字左边（外观 view.icon，类型没给就不画） -->
         <component
           :is="view.icon"
@@ -241,8 +264,23 @@ const OUTER_OFFSET = 8
           aria-hidden="true"
           data-node-type-icon
         />
-        <NodeSlot :parts="parts.label" />
-        <NodePresence />
+        <!-- 改名输入框在的时候（data-node-title-input）这一段撑满剩下的宽度，输入框才有地方放长名字 -->
+        <div
+          v-if="parts.label.length > 0"
+          class="flex min-w-0 items-center gap-1.5 has-[[data-node-title-input]]:flex-1"
+        >
+          <NodeSlot :parts="parts.label" />
+        </div>
+        <div class="flex shrink-0 items-center gap-1">
+          <NodePresence />
+        </div>
+        <div
+          v-if="parts['label-end'].length > 0"
+          class="ml-auto flex shrink-0 items-center gap-1"
+          data-node-slot="label-end"
+        >
+          <NodeSlot :parts="parts['label-end']" />
+        </div>
       </div>
     </NodeToolbar>
 
@@ -262,8 +300,9 @@ const OUTER_OFFSET = 8
         class="nodrag nopan flex items-center gap-1 rounded-full border bg-card/95 p-1.5 shadow-lg backdrop-blur"
         data-node-slot="toolbar"
       >
-        <ActionBar :actions="actions.toolbar" />
+        <!-- 部件（下拉之类有自己外观的）排在左边，动作按钮在右 -->
         <NodeSlot :parts="parts.toolbar" />
+        <ActionBar :actions="actions.toolbar" />
       </div>
     </NodeToolbar>
 

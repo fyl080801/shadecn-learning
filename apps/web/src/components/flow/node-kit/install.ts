@@ -6,7 +6,7 @@ import { connectableFeature, statusFeature } from "./features/display"
 import { downloadFeature } from "./features/download"
 import { directorChatFeature } from "./features/director-chat"
 import { editBodyFeature } from "./features/edit-body"
-import { dragStripFeature, resizableFeature, ungroupFeature } from "./features/frame"
+import { arrangeFeature, dragStripFeature, resizableFeature, ungroupFeature } from "./features/frame"
 import { outputPreviewFeature } from "./features/output-preview"
 import { renameFeature } from "./features/rename"
 import { runnableFeature } from "./features/runnable"
@@ -32,6 +32,7 @@ const FEATURES = [
   editBodyFeature,
   editPromptFeature,
   ungroupFeature,
+  arrangeFeature,
   resizableFeature,
   dragStripFeature,
   directorChatFeature,

@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   boundingRect,
+  fitGroupFrame,
   GROUP_HEADER,
+  groupUnderNode,
   GROUP_PADDING,
   groupFrameAround,
+  LAYOUT_NODE_GAP,
   LAYOUT_RANK_GAP,
   layoutHorizontal,
   planAutoLayout,
+  planGroupArrangement,
   type LayoutBox,
 } from '../src/flow-layout.ts'
 
@@ -133,5 +137,75 @@ describe('分组框', () => {
       width: 300 + GROUP_PADDING * 2,
       height: 200 + GROUP_PADDING * 2 + GROUP_HEADER,
     })
+  })
+})
+
+describe('分组边界', () => {
+  const frame = { x: 100, y: 100, width: 400, height: 300 }
+
+  it('fitGroupFrame：罩得住时原样不动，只长不缩', () => {
+    const fit = fitGroupFrame(frame, [{ x: GROUP_PADDING, y: GROUP_PADDING + GROUP_HEADER, width: 50, height: 50 }])
+    expect(fit).toEqual({ frame, shift: { x: 0, y: 0 } })
+    expect(fitGroupFrame(frame, [])).toEqual({ frame, shift: { x: 0, y: 0 } })
+  })
+
+  it('fitGroupFrame：超出右下往右下长（含留白），左上角不动', () => {
+    const fit = fitGroupFrame(frame, [{ x: 350, y: 250, width: 100, height: 100 }])
+    expect(fit.shift).toEqual({ x: 0, y: 0 })
+    expect(fit.frame).toEqual({ x: 100, y: 100, width: 450 + GROUP_PADDING, height: 350 + GROUP_PADDING })
+  })
+
+  it('fitGroupFrame：超出左上，框往左上长、给出组员相对坐标的补偿量', () => {
+    const fit = fitGroupFrame(frame, [{ x: -40, y: 0, width: 100, height: 100 }])
+    const shift = { x: 40 + GROUP_PADDING, y: GROUP_PADDING + GROUP_HEADER }
+    expect(fit.shift).toEqual(shift)
+    expect(fit.frame).toEqual({ x: 100 - shift.x, y: 100 - shift.y, width: 400 + shift.x, height: 300 + shift.y })
+  })
+
+  it('groupUnderNode：看节点中心点；蹭到框边不算；落在叠着的几个框里取最小的', () => {
+    const big = { id: 'big', rect: { x: 0, y: 0, width: 1000, height: 1000 } }
+    const small = { id: 'small', rect: { x: 100, y: 100, width: 300, height: 300 } }
+    expect(groupUnderNode({ x: 150, y: 150, width: 100, height: 100 }, [big, small])).toBe('small')
+    expect(groupUnderNode({ x: 500, y: 500, width: 100, height: 100 }, [big, small])).toBe('big')
+    // 右半截探进 small，中心在外面
+    expect(groupUnderNode({ x: 340, y: 150, width: 200, height: 100 }, [small])).toBeNull()
+  })
+})
+
+describe('planGroupArrangement（组内排列）', () => {
+  const L = GROUP_PADDING
+  const T = GROUP_PADDING + GROUP_HEADER
+  const G = LAYOUT_NODE_GAP
+  const member = (id: string, x: number, y: number, width = 100, height = 50) => ({ id, position: { x, y }, width, height })
+
+  it('横向：按现在的 x 从左到右排成一行、顶边对齐，框正好罩住', () => {
+    const plan = planGroupArrangement([member('b', 300, 0), member('a', 10, 200, 100, 80), member('c', 500, 90)], 'horizontal')
+    expect(plan.positions.get('a')).toEqual({ x: L, y: T })
+    expect(plan.positions.get('b')).toEqual({ x: L + 100 + G, y: T })
+    expect(plan.positions.get('c')).toEqual({ x: L + 2 * (100 + G), y: T })
+    expect(plan.size).toEqual({ width: 300 + 2 * G + 2 * L, height: 80 + 2 * GROUP_PADDING + GROUP_HEADER })
+  })
+
+  it('纵向：按现在的 y 从上到下排成一列、左边对齐', () => {
+    const plan = planGroupArrangement([member('b', 0, 300), member('a', 400, 10)], 'vertical')
+    expect(plan.positions.get('a')).toEqual({ x: L, y: T })
+    expect(plan.positions.get('b')).toEqual({ x: L, y: T + 50 + G })
+  })
+
+  it('宫格：列数 ceil(√n)，按阅读顺序逐行填，列宽取该列最宽、行高取该行最高', () => {
+    const plan = planGroupArrangement(
+      [member('a', 0, 0, 200, 50), member('b', 100, 0), member('c', 0, 100, 100, 120), member('d', 100, 100), member('e', 0, 200)],
+      'grid',
+    )
+    // 5 个 → 3 列 2 行：a b c / d e
+    expect(plan.positions.get('a')).toEqual({ x: L, y: T })
+    expect(plan.positions.get('b')).toEqual({ x: L + 200 + G, y: T })
+    expect(plan.positions.get('c')).toEqual({ x: L + 300 + 2 * G, y: T })
+    expect(plan.positions.get('d')).toEqual({ x: L, y: T + 120 + G })
+    expect(plan.positions.get('e')).toEqual({ x: L + 200 + G, y: T + 120 + G })
+  })
+
+  it('没有组员：不排、没有尺寸', () => {
+    expect(planGroupArrangement([], 'grid')).toEqual({ positions: new Map(), size: null })
   })
 })

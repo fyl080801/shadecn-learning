@@ -47,7 +47,8 @@ export const NODE_KIT_KEY: InjectionKey<NodeKitRuntime> = Symbol("node-kit")
 export const NODE_PART_KEY: InjectionKey<NodePartContext> = Symbol("node-part")
 
 /**
- * 编辑器根组件 setup 里调一次。选中态一变，正在编辑的节点若不再是被选中的那个，它的编辑就取消。
+ * 编辑器根组件 setup 里调一次。选中态一变，变成的若不是正在编辑的节点，它的编辑就取消
+ * （进入编辑不选中节点，所以只在选中态变化时判，不要求编辑中的节点一直是被选中的那个）。
  */
 export function provideNodeKit(kit: NodeKit, selectedNodeId: Readonly<Ref<string | null>>): NodeKitRuntime {
   const runtime = createNodeKitRuntime(kit)

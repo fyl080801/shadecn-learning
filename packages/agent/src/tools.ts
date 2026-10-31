@@ -4,6 +4,7 @@ import * as Y from 'yjs'
 import { DIRECTOR_NODE_TYPE, msToSeconds, readDirectorScene } from '@shadecn/shared/director-doc'
 import { edgesMap, fromYEdge, nodeGroupMap, nodesMap, readNodes, type FlowNodeGroup } from '@shadecn/shared/flow-doc'
 import { type FlowEdge, type FlowNode } from '@shadecn/shared/flow-graph'
+import { nextSlotInGroup } from '@shadecn/shared/flow-layout'
 import {
   buildNodeRecord,
   CREATABLE_NODE_TYPES,
@@ -366,6 +367,20 @@ function overlaps(a: Rect, b: Rect, margin: number): boolean {
  * 没给坐标时给新节点找个地方：有 `near`（`connectFrom` 的那个节点）就放它右边，
  * 否则放在现有内容的右侧；撞上别的节点就往下挪，直到不重叠。
  */
+/**
+ * 建进分组又没给坐标时放哪（相对分组框左上角）：shared 的 `nextSlotInGroup`，组员尺寸按 `nodeSizeOf` 估。
+ * 分组不存在 / 不是分组的情况留给 `ops.createNode` 报（同一套错误）。
+ */
+function slotInGroup(ctx: ops.FlowOpContext, groupId: string) {
+  const children = []
+  for (const id of ctx.nodes.keys()) {
+    const record = ops.readNodeRecord(ctx, id)
+    if (record?.layout.parentNode === groupId) children.push({ ...record.layout.position, ...nodeSizeOf(record) })
+  }
+  const slot = nextSlotInGroup(children)
+  return { x: Math.round(slot.x), y: Math.round(slot.y) }
+}
+
 export function placeNewNode(nodes: readonly PlacedNode[], type: string, nearId?: string) {
   const rects = absoluteRects(nodes)
   if (rects.size === 0) return { x: 0, y: 0 }
@@ -544,8 +559,14 @@ const addNodeParams = Type.Object(
           x: Type.Number({ minimum: -COORD_LIMIT, maximum: COORD_LIMIT }),
           y: Type.Number({ minimum: -COORD_LIMIT, maximum: COORD_LIMIT }),
         },
-        { additionalProperties: false, description: '左上角的画布坐标；不给则自动找空位' },
+        {
+          additionalProperties: false,
+          description: '左上角坐标；给了 group 时相对分组框左上角，否则是画布坐标。不给则自动找空位',
+        },
       ),
+    ),
+    group: Type.Optional(
+      Id('建进哪个分组（分组框的 id），坐标相对分组框；分组框会自动长大罩住新节点。不给 group 但画布坐标落在某个分组框里（节点中心点在框内），也会建进那个分组'),
     ),
     connectFrom: Type.Optional(Id('给了就同时从这个已有节点连一条线到新节点')),
     sourcePort: Type.Optional(Port('connectFrom 那个节点的输出端口 id；不给则自动选第一个能连的')),
@@ -790,7 +811,8 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
     capability: 'flow:write',
     label: '新建节点',
     description:
-      '在画布上新建一个节点（metadata 给名字，data 给业务字段）；可以顺带从一个已有节点连线过来。返回新节点的 id。',
+      '在画布上新建一个节点（metadata 给名字，data 给业务字段）；可以顺带从一个已有节点连线过来。' +
+      '给 group 就建进那个分组（坐标相对分组框，分组框自动长大）；画布坐标落在分组框里也会建进那个分组。返回新节点的 id。',
     parameters: addNodeParams,
     executionMode: 'sequential',
     describe: (args) => `新建节点${quote(args.metadata.label)}`,
@@ -809,6 +831,7 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
       const withForms = nodeTypeDefaultsOf(args.type).forms === true
       if (withForms && data.src !== undefined && typeof data.src !== 'string') throw new Error('data.src 必须是字符串')
       if (args.connectFrom !== undefined) assertId(args.connectFrom, 'connectFrom')
+      if (args.group !== undefined) assertId(args.group, 'group')
       if (args.connectFrom === undefined && (args.sourcePort !== undefined || args.targetPort !== undefined)) {
         throw new Error('只有给了 connectFrom 才能指定端口')
       }
@@ -816,13 +839,19 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
       const created = await canvas.write((doc) =>
         runOps(() => {
           const ctx = ops.opContext(doc)
-          const position = args.position ?? placeNewNode(readNodes(doc), args.type, args.connectFrom)
+          const position =
+            args.position ??
+            (args.group !== undefined
+              ? slotInGroup(ctx, args.group)
+              : placeNewNode(readNodes(doc), args.type, args.connectFrom))
           const node = buildNodeRecord({
             id: createId(NODE_ID_PREFIX),
             type: args.type,
             label: args.metadata.label,
             position: { x: position.x, y: position.y },
           })
+          // 建进分组：parentNode + 相对坐标；extent 和「框长大罩住它」由 ops.createNode 在同一个事务里补
+          if (args.group !== undefined) node.layout.parentNode = args.group
           if (args.metadata.description !== undefined) node.metadata.description = args.metadata.description
           // 图片 / 视频带着素材地址：先按没有素材建（和连线），再在同一个事务里 `attachAsset` ——
           // 和人「先建节点、再上传」是同一条形态规则（有连入保持 generate，没有就成 asset）
@@ -841,12 +870,13 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
           // 节点和那条线同一个事务：在线的人看到的要么一起出现，要么都没有
           const created =
             args.connectFrom === undefined
-              ? { node: ops.createNode(ctx, node), edge: null }
-              : ops.createConnectedNode(ctx, node, {
-                  source: args.connectFrom,
-                  sourcePort: args.sourcePort,
-                  targetPort: args.targetPort,
-                })
+              ? { node: ops.createNode(ctx, node, { reparent: true }), edge: null }
+              : ops.createConnectedNode(
+                  ctx,
+                  node,
+                  { source: args.connectFrom, sourcePort: args.sourcePort, targetPort: args.targetPort },
+                  { reparent: true },
+                )
           if (asset) ops.attachAsset(ctx, node.id, asset)
           return created
         }),
@@ -857,6 +887,7 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
         JSON.stringify({
           id: created.node.id,
           position: created.node.layout.position,
+          ...(created.node.layout.parentNode ? { group: created.node.layout.parentNode } : {}),
           ...(created.edge
             ? {
                 edgeId: created.edge.id,
@@ -1074,7 +1105,9 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
     label: '移动节点',
     description:
       `把一批节点挪到新位置（左上角坐标），一次最多 ${TOOL_LIMITS.movePerCall} 个。` +
-      '组内节点的坐标相对它所在的分组框（read_canvas 里带 parentNode 的那些）。整片重排请用 auto_layout。',
+      '组内节点的坐标相对它所在的分组框（read_canvas 里带 parentNode 的那些）。按节点中心点定归属：顶层节点挪进分组框就加入分组，' +
+      '组员挪出自己的框就移出分组（挪进另一个框就换过去），只探出一截时分组框自动长大罩住它；分组框自己挪到别的节点上不改归属。' +
+      '返回里的 joined / left 说明谁加入 / 移出了哪个分组。整片重排请用 auto_layout。',
     parameters: moveNodesParams,
     executionMode: 'sequential',
     describe: (args) => `移动 ${args.moves.length} 个节点`,
@@ -1090,12 +1123,24 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
         // 有一个不存在就整个拒绝：模型多半是猜错了 id，不该只挪一半
         const missing = ids.filter((id) => !ops.readNodeRecord(ctx, id))
         if (missing.length > 0) throw new Error(`这些节点不存在：${missing.join(', ')}；先 read_canvas 确认`)
-        return ops.moveNodes(
-          ctx,
-          args.moves.map((move): [string, ops.Point] => [move.id, { x: move.x, y: move.y }]),
+        return runOps(() =>
+          ops.settleLayout(
+            ctx,
+            { positions: args.moves.map((move): [string, ops.Point] => [move.id, { x: move.x, y: move.y }]) },
+            { reparent: true },
+          ),
         )
       })
-      return result(JSON.stringify({ moved }), { summary: `移动 ${moved.length} 个节点`, elementIds: moved })
+      const pairs = (list: [string, string][]) => list.map(([id, group]) => ({ id, group }))
+      return result(
+        JSON.stringify({
+          moved: moved.moved,
+          ...(moved.joined.length > 0 ? { joined: pairs(moved.joined) } : {}),
+          ...(moved.left.length > 0 ? { left: pairs(moved.left) } : {}),
+          ...(moved.grown.length > 0 ? { grownGroups: moved.grown } : {}),
+        }),
+        { summary: `移动 ${moved.moved.length} 个节点`, elementIds: [...moved.moved, ...moved.grown] },
+      )
     },
   }
 
@@ -1105,7 +1150,8 @@ function buildCanvasTools(options: CanvasToolsOptions): CanvasTool[] {
     label: '调整尺寸',
     description:
       `改一个节点的宽高（像素，${TOOL_LIMITS.sizeMin}–${TOOL_LIMITS.sizeMax}），左上角不动。` +
-      '主要用于分组框（放不下组员时拉大）；图片 / 视频的尺寸画布会按素材比例自己记，一般不用改。',
+      '分组框拉得比组员小会自动长回罩得住组员；组员变大分组框跟着长。' +
+      '图片 / 视频的尺寸画布会按素材比例自己记，一般不用改。',
     parameters: resizeNodeParams,
     executionMode: 'sequential',
     describe: (args) => `调整节点 ${args.id} 的尺寸`,

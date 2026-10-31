@@ -20,8 +20,8 @@ export const FLOW_HANDLE_BOX = 8
 /** 圆的内沿离节点边框的距离，屏幕像素 */
 export const FLOW_HANDLE_GAP = 10
 
-/** 圆的半径，屏幕像素（伪元素按 16px 画、平时缩一半） */
-export const FLOW_HANDLE_RADIUS = 4
+/** 圆的半径，屏幕像素（伪元素按 16px 画、平时缩到 0.625 —— 改这里要同步 vue-flow.css 的 `--flow-handle-scale`） */
+export const FLOW_HANDLE_RADIUS = 5
 
 /** 加号放大后的半径，屏幕像素 */
 export const FLOW_HANDLE_PLUS_RADIUS = 8

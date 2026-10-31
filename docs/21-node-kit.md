@@ -57,7 +57,7 @@ useFlowNode(id)   = 读四组 + 按组写 + draft
 
 | 概念 | 是什么 | 开放 / 封闭 | 例子 |
 |---|---|---|---|
-| **区域 Slot** | 节点上一个固定的挂载位置，**几何与露出规则由宿主决定** | **封闭**（宿主定义） | `label` `toolbar` `header` `body` `footer` `composer` `side` `badge` `overlay` |
+| **区域 Slot** | 节点上一个固定的挂载位置，**几何与露出规则由宿主决定** | **封闭**（宿主定义） | `label` `label-end` `toolbar` `header` `body` `footer` `composer` `side` `badge` `overlay` |
 | **部件 Part** | 挂到某个区域里的一个组件 | 开放 | 名字标签、状态角标、错误行、拉伸手柄、prompt 输入框、产出预览 |
 | **动作 Action** | 一个可触发的「工具」：图标 + 名字 + `run` + 可用条件 + 快捷键 | 开放 | 复制、删除、解组、运行、下载 |
 | **模式 Mode** | 节点的一种编辑状态：互斥、进入 / 退出钩子、可改变区域露出 | 开放 | `rename`、`edit-body`、`edit-prompt` |
@@ -156,7 +156,8 @@ export const FLOW_NODE_TYPES = {
 
 | 区域 | 位置 | 定位方式 | 默认露出规则（宿主决定） |
 |---|---|---|---|
-| `label` | 框外左上 | `NodeToolbar` Top / start | 常开 |
+| `label` | 框外左上 | `NodeToolbar` Top / start；整行与节点屏幕宽度相同，名字超出省略号 | 常开 |
+| `label-end` | `label` 那一行的最右端（节点右上角之上） | 同一个 `NodeToolbar` 里，行尾 `ml-auto`、不被挤 | 常开（部件自己 `when`）；没注册就不渲染 |
 | `toolbar` | 框外上方居中，`label` 之上 | `NodeToolbar` Top / center | **单独选中 + 不在拉框**（即现在 `FlowNodeChrome` 的 `showToolbar`） |
 | `badge` | 卡片内右上角 | 卡片内 absolute（节点自身外观，不是画布定位） | 常开（部件自己 `when`） |
 | `header` | 卡片内，body 之上 | 文档流 | 常开 |
@@ -235,6 +236,7 @@ export const duplicateAction = defineNodeAction({
 
 - 动作**不是部件**：每个区域里由宿主内置的一个 `ActionBar` 部件统一渲染该区域的动作（圆按钮、`title`、`loading`），
   所以新加一个工具只写数据，不写模板，按钮长一个样。需要特殊外观的（下拉选模型）就别做成动作，做成部件。
+  `toolbar` 区里**部件排在左、动作按钮在右**（分组的「布局」下拉在「解组」左边）。
 - **异步动作**统一走编辑器级的一个执行器（`node-kit/actions.ts`，内部是 `useAsyncAction`，key = 节点 id × 动作 id）：
   按钮和快捷键共用它，「一次点击一次请求」对两条入口都成立，按钮的 `loading` 由它驱动。`run` 不需要自己 try/catch。
 - **快捷键**由 `useFlowShortcuts` 统一分发：只对**当前单独选中的节点**、只在非输入态（`isEditableTarget`）下，
@@ -259,8 +261,9 @@ export const editPromptMode = defineNodeMode({
 - **整张画布同一时刻只有一个节点可编辑**（已定，§10.2）：模式状态是**编辑器级的一个值**
   `{ nodeId, mode } | null`，不是每个节点各存一份，`ctx.mode` 只是它在本节点上的视图。
   由此两条：
-  - **选中另一个节点，上一个节点的编辑就取消**（以 `'preempted'` 退出）。编辑中的节点一定是被选中的那个，
-    快捷键分发、将来的 awareness 上报都只需要看这一个值。
+  - **选中另一个节点，上一个节点的编辑就取消**（以 `'preempted'` 退出）。
+    反过来**进入编辑不等于选中**：双击名字改名不会把选中态切过去（原来选中的还是选中的），
+    所以编辑中的节点不一定是被选中的那个；选中态再变、且变成的不是它时，它的编辑才取消。
   - 同一节点上进入新模式，旧模式同样以 `'preempted'` 退出（改名时双击正文，改名先退出）。
 - `'preempted'` 退出时草稿**提交**（与现在一致：点别处 → 输入框 blur → `useDraftField.commit()`；
   `useDraftField` 已经处理了 Enter 与 blur 双发）。只有 Esc 这类显式 `'cancel'` 才丢草稿。
@@ -344,7 +347,7 @@ export const runnable = defineNodeFeature({
 | `GroupNode` 的 `#actions` 换成解组 | 能力 `ungroup`：一个动作。分组不启用 `delete`，所以没有「替换」要写 |
 | `FlowNodeHandles` | 能力 `connectable`（`handles` 区）；`connectable=false` 这个 prop 消失 |
 | `runtime.status` 角标 / 错误行 | 能力 `status`：`badge` 区一个部件、`footer` 区一个部件 |
-| `GroupNode` 的 `NodeResizer` | 能力 `resizable`：`overlay` 区一个部件，`resize-end` 写 `store.resizeNode` |
+| `GroupNode` 的 `NodeResizer` | 能力 `resizable`：`overlay` 区一个部件（右下角单个 `NodeResizeControl`），约束读类型外观的 `view.resize`（`minWidth` / `minHeight` / `keepAspectRatio`；自由拉伸时 Shift 锁比例），`resize-end` 写 `store.resizeNode`；文本也启用 |
 | `GroupNode` 的顶部拖动把手 | 能力 `drag-strip`：`overlay` 区一个部件 |
 | `TextNode` 的双击编辑正文 | 能力 `edit-body`：模式 `edit-body` + 订阅 `node:dblclick`；`TextBody` 读 `ctx.mode` 决定渲染 textarea 还是段落；该模式 `conceal: ['composer']`，改正文期间底部输入框收起 |
 | `GenericNode` 的输出预览 | body 里那段拆成能力 `output-preview`（`footer` 区），同一个部件之后可以搬到 `side` 区做大预览 |
@@ -377,7 +380,8 @@ export const runnable = defineNodeFeature({
 5. 给所有带 `runnable` 的节点加一个工具栏按钮，只新增一个动作文件并在 `runnable` 能力里列出，不碰任何节点或宿主文件。
 6. 外部 composable 能订阅某类节点的事件，组件卸载后处理函数自动注销（测试可验证注销后不再被调用）。
 7. 拉框期间任何框外区域都不出现；进入 `edit-prompt` 模式时 `composer` 露出、`toolbar` 照常显示（节点选中期间工具栏一直在）；
-   整张画布同时最多一个节点处于编辑态，选中另一个节点时上一个节点的编辑取消（以 `preempted` 退出，草稿按 blur 提交）。
+   整张画布同时最多一个节点处于编辑态，选中另一个节点时上一个节点的编辑取消（以 `preempted` 退出，草稿按 blur 提交）；
+   双击名字改名不改变选中态。
 10. 每个节点都显示在场头像，任何类型声明都无法去掉它。
 11. 没有注册 `composer` 部件的类型（`process` / `group`）选中后**没有**底部输入框，DOM 里也没有对应的 `NodeToolbar`；
     给某个类型加底部输入框只改它自己的声明（或一个 `match.types` 指向它的部件），其他类型不受影响。
@@ -418,7 +422,7 @@ export const runnable = defineNodeFeature({
 
 1. **`composer` 和 `side` 放在节点框外**（`NodeToolbar`）。节点尺寸是布局数据，随选中出现的输入框 / 预览不能让节点变高、
    盖住下方节点或让分组外框失准；它们也不参与框选、不出现在小地图里。
-2. **整张画布同一时刻只有一个节点可编辑；选中另一个节点，上一个节点的编辑取消**（§4.6）。
+2. **整张画布同一时刻只有一个节点可编辑；选中另一个节点，上一个节点的编辑取消**（§4.6）。进入编辑本身不选中节点。
    「取消」指退出编辑态；草稿按现有 blur 行为提交，只有 Esc 丢弃。
 3. **事件名不带固定的前缀规则**，注册时不校验格式（§4.7）。
 4. **在场头像一律显示**：宿主内置，不做成可选能力（§5）。

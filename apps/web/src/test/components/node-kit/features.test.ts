@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { defineComponent, h, nextTick, ref } from "vue"
+import { defineComponent, h, nextTick, ref, shallowRef } from "vue"
 import { mount, type VueWrapper } from "@vue/test-utils"
 import { createPinia, setActivePinia } from "pinia"
 import * as Y from "yjs"
@@ -31,6 +31,7 @@ vi.mock("@/composables/flow/editor-context", () => ({
       addConnectedNode: vi.fn(),
       deleteNode,
       duplicateNode,
+      growMenu: shallowRef(null),
       isValidConnection: () => true,
       boxSelecting: ref(false),
       zoomLevel: ref(1)
@@ -283,7 +284,7 @@ describe("改名是一个编辑模式", () => {
 
   it("双击名字进入 rename 模式，回车提交后退出", async () => {
     const { store, w } = mountTwo()
-    await w.find('#a span[title="双击改名"]').trigger("dblclick")
+    await w.find('#a [data-node-title]').trigger("dblclick")
     expect(runtime.modes.current.value).toEqual({ nodeId: "a", mode: "rename" })
 
     await w.find("#a input").setValue("甲二")
@@ -293,12 +294,27 @@ describe("改名是一个编辑模式", () => {
     expect(runtime.modes.current.value).toBeNull()
   })
 
+  it("双击名字改名不选中节点：原来选中的节点照旧选中，改名照常进行", async () => {
+    const { store, w } = mountTwo()
+    selectedNodeId.value = "b"
+    await nextTick()
+
+    await w.find('#a [data-node-title]').trigger("dblclick")
+    expect(selectOnly).not.toHaveBeenCalled()
+    expect(runtime.modes.current.value).toEqual({ nodeId: "a", mode: "rename" })
+
+    await w.find("#a input").setValue("甲二")
+    await w.find("#a input").trigger("keydown", { key: "Enter" })
+    expect(store.nodeById.get("a")?.metadata.label).toBe("甲二")
+    expect(selectedNodeId.value).toBe("b")
+  })
+
   it("Esc 取消：不写文档，模式以 cancel 退出", async () => {
     const { store, w } = mountTwo()
     const exits: string[] = []
     runtime.kit.on("mode:exit", ({ reason }) => exits.push(reason))
 
-    await w.find('#a span[title="双击改名"]').trigger("dblclick")
+    await w.find('#a [data-node-title]').trigger("dblclick")
     await w.find("#a input").setValue("不要了")
     await w.find("#a input").trigger("keydown", { key: "Escape" })
 
@@ -308,10 +324,10 @@ describe("改名是一个编辑模式", () => {
 
   it("开始改另一个节点的名字：上一个的草稿按 blur 规矩提交，输入框收起", async () => {
     const { store, w } = mountTwo()
-    await w.find('#a span[title="双击改名"]').trigger("dblclick")
+    await w.find('#a [data-node-title]').trigger("dblclick")
     await w.find("#a input").setValue("甲二")
 
-    await w.find('#b span[title="双击改名"]').trigger("dblclick")
+    await w.find('#b [data-node-title]').trigger("dblclick")
 
     expect(store.nodeById.get("a")?.metadata.label).toBe("甲二")
     expect(w.find("#a input").exists()).toBe(false)
@@ -321,7 +337,7 @@ describe("改名是一个编辑模式", () => {
 
   it("选中别的节点：正在改的名字以 preempted 退出并提交", async () => {
     const { store, w } = mountTwo()
-    await w.find('#a span[title="双击改名"]').trigger("dblclick")
+    await w.find('#a [data-node-title]').trigger("dblclick")
     await w.find("#a input").setValue("甲二")
 
     selectedNodeId.value = "b"

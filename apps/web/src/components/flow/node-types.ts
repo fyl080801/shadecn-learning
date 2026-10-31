@@ -166,12 +166,23 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
   /**
    * 文本 —— body 是一个输入框样子的正文区（`TextBody`，双击进入编辑，失焦提交一次），正文在 `data.text`。
    * 只有输出：文本是源头。
+   *
+   * **可拉伸**（`resizable`，右下角一个手柄，自由拉伸、Shift 锁比例）。尺寸的三种情况都由这一串 class 接住：
+   * - 没拉过（布局里没有 width / height，Vue Flow 的外层不定宽高）：宽 320、高随内容、至少 120；
+   * - 拉过（外层被钉成 W × H）：`min-w-full max-w-full` 把 320 夹成 W，`h-full` 撑满 H，正文超出就裁掉（`TextBody`）；
+   * - 拉伸进行中：外层的尺寸由 Vue Flow 每帧改，根元素靠同一组 class 跟手，不等文档。
+   * 宽度不写成内联的 `layout.width`：那是文档里的值，拉伸中途不变，节点会等松手才跳过去。
    */
   text: defineNodeType("text", {
     label: "文本",
     icon: Type,
-    view: { body: TextBody, class: "flex min-h-[120px] w-[320px] flex-col", fallbackLabel: "文本" },
-    features: [...COMPOSER_FEATURES, "edit-body"],
+    view: {
+      body: TextBody,
+      class: "flex h-full min-h-[120px] w-[320px] min-w-full max-w-full flex-col",
+      fallbackLabel: "文本",
+      resize: { minWidth: 160, minHeight: 120 }
+    },
+    features: [...COMPOSER_FEATURES, "edit-body", "resizable"],
     parts: [whenEmpty({ id: "text.composer", placeholder: "描述想写的内容（Shift+回车换行）" })]
   }),
   /**
@@ -240,7 +251,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
    *
    * 差异全在这份声明里，宿主不认识「分组」：
    * - **能力**：不连线、不复制、不删除（不启用 `connectable` / `duplicate` / `delete`），
-   *   工具条上是「解组」（`ungroup`），可拉伸（`resizable`），有顶部拖动把手（`drag-strip`）；
+   *   工具条最左是「布局」下拉（`arrange`：横向 / 纵向 / 宫格重排组员），然后是「解组」（`ungroup`），可拉伸（`resizable`，和文本同一个右下角手柄），有顶部拖动把手（`drag-strip`）；
    * - **外观**：`frame` 外壳（不要卡片底）、虚线框、底色来自 `data.background`；
    *   **整块 `pointer-events-none`** —— 分组是一大片背景板，照单全收鼠标事件的话，框选、平移这些画布操作
    *   在分组范围内就全废了。点内部空白穿透到画布，拖顶部那条把手才是拖分组。
@@ -259,9 +270,11 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
         const background = ctx.node.data.value.background
         return { backgroundColor: typeof background === "string" ? background : GROUP_DEFAULT_BACKGROUND }
       },
-      fallbackLabel: "分组"
+      fallbackLabel: "分组",
+      // 再小就装不下一个节点
+      resize: { minWidth: 160, minHeight: 120 }
     },
-    features: ["rename", "status", "ungroup", "resizable", "drag-strip"]
+    features: ["rename", "status", "arrange", "ungroup", "resizable", "drag-strip"]
   })
 }
 

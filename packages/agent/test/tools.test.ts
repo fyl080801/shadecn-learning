@@ -483,6 +483,77 @@ describe('resize_node', () => {
   })
 })
 
+describe('分组边界', () => {
+  /** 400×300 的分组框 g 在 (0,0)，组员 a（200×100）在相对 (40,60)；组外节点 o 在 (600,0) */
+  function grouped() {
+    const group: FlowNodeRecord = {
+      ...typedNode('g', 'group', '分组'),
+      layout: { position: { x: 0, y: 0 }, width: 400, height: 300 },
+    }
+    const a: FlowNodeRecord = {
+      ...textNode('a', 'A'),
+      layout: { position: { x: 40, y: 60 }, width: 200, height: 100, parentNode: 'g', extent: 'parent' },
+    }
+    const o: FlowNodeRecord = { ...textNode('o', 'O'), layout: { position: { x: 600, y: 0 }, width: 100, height: 100 } }
+    return setup([group, a, o])
+  }
+
+  it('add_node 带 group：建进分组（相对坐标、extent），分组框同一个事务长大', async () => {
+    const { doc, origins, call } = grouped()
+    const res = await call('add_node', {
+      type: 'text',
+      metadata: { label: '新' },
+      group: 'g',
+      position: { x: 40, y: 220 },
+    })
+    const { id, group } = JSON.parse((res.content[0] as { text: string }).text) as { id: string; group: string }
+    expect(group).toBe('g')
+    expect(node(doc, id)!.layout).toMatchObject({ parentNode: 'g', extent: 'parent', position: { x: 40, y: 220 } })
+    expect(node(doc, 'g')!.layout.height!).toBeGreaterThan(300)
+    expect(origins).toHaveLength(1)
+  })
+
+  it('add_node 带 group 不给坐标：排在现有组员下面', async () => {
+    const { doc, call } = grouped()
+    const res = await call('add_node', { type: 'text', metadata: { label: '新' }, group: 'g' })
+    const { id } = JSON.parse((res.content[0] as { text: string }).text) as { id: string }
+    expect(node(doc, id)!.layout.position.x).toBe(40)
+    expect(node(doc, id)!.layout.position.y).toBeGreaterThan(160)
+  })
+
+  it('add_node 不给 group、画布坐标落在分组框里：建进那个分组；group 不是分组 → 拒绝、不写', async () => {
+    const { doc, origins, call } = grouped()
+    const res = await call('add_node', { type: 'text', metadata: { label: '新' }, position: { x: 100, y: 120 } })
+    const { id, group } = JSON.parse((res.content[0] as { text: string }).text) as { id: string; group: string }
+    expect(group).toBe('g')
+    expect(node(doc, id)!.layout).toMatchObject({ parentNode: 'g', position: { x: 100, y: 120 } })
+    expect(origins).toHaveLength(1)
+    await expect(call('add_node', { type: 'text', metadata: { label: '新' }, group: 'o' })).rejects.toThrow('不是顶层的分组框')
+    expect(origins).toHaveLength(1)
+  })
+
+  it('move_nodes：组员探出 → 框长大；组员拖出 → 移出；组外节点拖进 → 加入，框重新罩住', async () => {
+    const { doc, call } = grouped()
+    const grow = await call('move_nodes', { moves: [{ id: 'a', x: 250, y: 150 }] })
+    expect(JSON.parse((grow.content[0] as { text: string }).text)).toEqual({ moved: ['a'], grownGroups: ['g'] })
+
+    const out = await call('move_nodes', { moves: [{ id: 'a', x: 900, y: 500 }] })
+    expect(JSON.parse((out.content[0] as { text: string }).text)).toMatchObject({ left: [{ id: 'a', group: 'g' }] })
+    expect(node(doc, 'a')!.layout.parentNode).toBeUndefined()
+    expect(node(doc, 'a')!.layout.position).toEqual({ x: 900, y: 500 })
+
+    const into = await call('move_nodes', { moves: [{ id: 'o', x: 200, y: 150 }] })
+    expect(JSON.parse((into.content[0] as { text: string }).text)).toMatchObject({ joined: [{ id: 'o', group: 'g' }] })
+    expect(node(doc, 'o')!.layout).toMatchObject({ parentNode: 'g', extent: 'parent' })
+  })
+
+  it('resize_node：分组框拉小长回罩得住组员', async () => {
+    const { doc, call } = grouped()
+    await call('resize_node', { id: 'g', width: 100, height: 100 })
+    expect(node(doc, 'g')!.layout.width!).toBeGreaterThanOrEqual(240)
+  })
+})
+
 describe('duplicate_node', () => {
   it('副本错开默认步长，照抄 data、运行态清空、不复制连线', async () => {
     const { doc, call } = setup([

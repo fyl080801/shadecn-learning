@@ -27,7 +27,7 @@ import { useFlowEditor } from "@/composables/flow/editor-context"
  * **连线只有一个方向：从右边（出口）拉到左边（入口）。**
  * - 左边只是落点：`connectable-start=false`（Vue Flow 的官方开关），从它按下拉不出线；没有加号、点了也没反应。
  * - 右边只是起点：`connectable-end=false`，别的线落不到出口上。
- * - 右边是一枚加号：**悬停节点**时出现（不是空心的连接点）。手柄里套着一条看不见的感应区
+ * - 右边悬停节点时浮出一枚加号（`.flow-handle-plus`），**盖在**连接点上面，连接点本身照样在原处。手柄里套着一条看不见的感应区
  *   （`.flow-handle-zone`，节点右边框往外 `FLOW_HANDLE_ZONE` 屏幕像素、上下以手柄为中心同样的范围），鼠标进了这块方区，
  *   加号的圆心就跟着鼠标走（`flowHandleFollow`，夹在方区里）—— 不用瞄准那个小圆，方区里哪儿都点得中。
  *   感应区是手柄的**子元素**：在它上面按下 / 点击都冒泡到手柄，Vue Flow 认作按在这个连接点上；
@@ -71,6 +71,17 @@ const droppable = computed(() => {
   const start = connectionStartHandle.value
   if (!start || start.type !== "source" || start.nodeId === props.nodeId || !hasInput.value) return false
   return canvas.isValidConnection({ source: start.nodeId, target: props.nodeId, sourceHandle: null, targetHandle: null })
+})
+
+/**
+ * 本节点的出口是一条线的起点：正从它拉线，或拉到空白处松手后新建菜单还开着（那条线还留着）。
+ * 起点的连接点这时要露出来 —— Vue Flow 只给正被吸附的落点挂 `.connecting`，起点什么 class 都不给，得自己判。
+ */
+const lineOrigin = computed(() => {
+  const start = connectionStartHandle.value
+  if (start) return start.type === "source" && start.nodeId === props.nodeId
+  const menu = canvas.growMenu.value
+  return menu !== null && menu.via === "drop" && menu.sourceId === props.nodeId
 })
 
 watch([showInput, hasOutput], () => updateNodeInternals([props.nodeId]), { flush: "post" })
@@ -133,7 +144,7 @@ function openGrowMenu(event: MouseEvent) {
     type="source"
     :position="Position.Right"
     class="flow-handle"
-    :class="{ 'flow-handle--connected': sourceConnections.length > 0 }"
+    :class="{ 'flow-handle--connected': sourceConnections.length > 0, 'flow-handle--origin': lineOrigin }"
     title="点击或拖出连线，新建相连的节点"
     :connectable-end="false"
     :is-valid-connection="canvas.isValidConnection"
@@ -143,5 +154,7 @@ function openGrowMenu(event: MouseEvent) {
     @click.stop="openGrowMenu($event)"
   >
     <span class="flow-handle-zone" :style="zoneStyle" aria-hidden="true" />
+    <!-- 加号：盖在连接点上面、跟着鼠标走的那一层；连接点本身（手柄的 ::before）不动 -->
+    <span class="flow-handle-plus" aria-hidden="true" />
   </Handle>
 </template>

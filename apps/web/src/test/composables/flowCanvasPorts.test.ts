@@ -230,15 +230,25 @@ describe("从出口长出新节点：候选菜单", () => {
     wrapper?.unmount()
     wrapper = null
     vi.restoreAllMocks()
-    Reflect.deleteProperty(document, "elementFromPoint")
+    Reflect.deleteProperty(document, "elementsFromPoint")
   })
 
   const typesOf = (canvas: ReturnType<typeof useFlowCanvas>) => canvas.growCandidates.value.map((item) => item.type)
 
-  /** jsdom 没有 `document.elementFromPoint`：装一个返回指定元素的替身（`droppedOnPane` 靠它判落点） */
-  function stubElementFromPoint(element: Element) {
-    const fn = vi.fn((_x: number, _y: number): Element | null => element)
-    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: fn })
+  /**
+   * jsdom 没有 `document.elementsFromPoint`：装一个替身（`dropTargetAt` 靠它判落点），先由上到下返回给定的各层，
+   * 再是它们的祖先 —— 和浏览器一样，叠着的兄弟节点在前，画布容器、body 这些祖先垫在最后。
+   */
+  function stubElementFromPoint(...layers: Element[]) {
+    const stack = () => {
+      const out: Element[] = [...layers]
+      for (const layer of layers) {
+        for (let el = layer.parentElement; el; el = el.parentElement) if (!out.includes(el)) out.push(el)
+      }
+      return out
+    }
+    const fn = vi.fn((_x: number, _y: number): Element[] => stack())
+    Object.defineProperty(document, "elementsFromPoint", { configurable: true, value: fn })
     return fn
   }
 
@@ -317,6 +327,57 @@ describe("从出口长出新节点：候选菜单", () => {
     flow.emits.connectStart({ nodeId: "t1", handleId: null, handleType: "source" } as never)
     flow.emits.connectEnd(new MouseEvent("mouseup", { clientX: 1, clientY: 1 }))
     expect(store.edges).toHaveLength(1)
+    pane.remove()
+  })
+
+  it("落在分组框里（点加号 / 拉线松手）：分组不参与连线，透过它算空白画布 —— 弹菜单，不连、不提示", async () => {
+    const { toast } = await import("vue-sonner")
+    vi.mocked(toast.error).mockClear()
+    const { store, canvas, flow, syncToVueFlow } = setup()
+    store.addNode(record("g", "group"))
+    store.addNode(record("t1", "text"))
+    syncToVueFlow()
+    const pane = document.createElement("div")
+    const groupEl = document.createElement("div")
+    groupEl.className = "vue-flow__node"
+    groupEl.setAttribute("data-id", "g")
+    pane.append(groupEl)
+    document.body.append(pane)
+    flow.vueFlowRef.value = pane
+    stubElementFromPoint(groupEl)
+
+    flow.emits.connectStart({ nodeId: "t1", handleId: null, handleType: "source" } as never)
+    flow.emits.connectEnd(new MouseEvent("mouseup", { clientX: 1, clientY: 1 }))
+    expect(store.edges).toHaveLength(0)
+    expect(canvas.growMenu.value?.sourceId).toBe("t1")
+    expect(toast.error).not.toHaveBeenCalled()
+    pane.remove()
+  })
+
+  it("分组框底下压着别的节点：透过分组落到那个节点上", () => {
+    const { store, flow, syncToVueFlow } = setup()
+    store.addNode(record("g", "group"))
+    store.addNode(record("t1", "text"))
+    store.addNode(record("img", "image"))
+    syncToVueFlow()
+    const pane = document.createElement("div")
+    const make = (id: string) => {
+      const el = document.createElement("div")
+      el.className = "vue-flow__node"
+      el.setAttribute("data-id", id)
+      pane.append(el)
+      return el
+    }
+    const groupEl = make("g")
+    const imgEl = make("img")
+    document.body.append(pane)
+    flow.vueFlowRef.value = pane
+    stubElementFromPoint(groupEl, imgEl)
+
+    flow.emits.connectStart({ nodeId: "t1", handleId: null, handleType: "source" } as never)
+    flow.emits.connectEnd(new MouseEvent("mouseup", { clientX: 1, clientY: 1 }))
+    expect(store.edges).toHaveLength(1)
+    expect(store.edges[0]).toMatchObject({ source: "t1", target: "img" })
     pane.remove()
   })
 

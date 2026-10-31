@@ -14,6 +14,7 @@ import { Background } from "@vue-flow/background"
 import FlowConnectionLine from "@/components/flow/FlowConnectionLine.vue"
 import FlowEdge from "@/components/flow/FlowEdge.vue"
 import FlowPaneContextMenu from "@/components/flow/FlowPaneContextMenu.vue"
+import FlowPendingConnection from "@/components/flow/FlowPendingConnection.vue"
 import { flowHandleOffset } from "@/components/flow/flow-handle"
 import { flowScreenVars } from "@/components/flow/flow-screen"
 import FlowPresenceCursors from "@/components/flow/FlowPresenceCursors.vue"
@@ -123,6 +124,7 @@ const edgeTypes = { default: markRaw(FlowEdge) }
         </template>
 
         <template #zoom-pane>
+          <FlowPendingConnection />
           <FlowSnapGuides />
           <FlowPresenceCursors />
         </template>

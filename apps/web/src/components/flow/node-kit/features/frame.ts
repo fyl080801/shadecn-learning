@@ -1,6 +1,7 @@
 import { Ungroup } from "@lucide/vue"
 
 import { defineNodeAction, defineNodeFeature, defineNodePart } from "../protocol"
+import ArrangeMenu from "./ArrangeMenu.vue"
 import DragStrip from "./DragStrip.vue"
 import NodeResizerPart from "./NodeResizerPart.vue"
 
@@ -37,4 +38,10 @@ export const resizableFeature = defineNodeFeature({
 export const dragStripFeature = defineNodeFeature({
   id: "drag-strip",
   parts: [defineNodePart({ id: "drag-strip.handle", slot: "overlay", component: DragStrip })]
+})
+
+/** 组内排列：工具条最左边一枚「布局」下拉，横向 / 纵向 / 宫格重排组员（`ArrangeMenu.vue`） */
+export const arrangeFeature = defineNodeFeature({
+  id: "arrange",
+  parts: [defineNodePart({ id: "arrange.menu", slot: "toolbar", component: ArrangeMenu })]
 })

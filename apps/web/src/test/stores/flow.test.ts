@@ -283,9 +283,44 @@ describe("内容读写", () => {
     expect(store.edges).toHaveLength(1)
   })
 
+  it("建进分组：父节点不是分组 / 已被删 → 内容不丢，放回顶层", () => {
+    const { store } = setup()
+    store.addNode(node("plain"))
+    store.addNode({ ...node("n1"), layout: { position: { x: 5, y: 6 }, parentNode: "plain", extent: "parent" } })
+    store.addNode({ ...node("n2"), layout: { position: { x: 7, y: 8 }, parentNode: "ghost" } })
+
+    for (const id of ["n1", "n2"]) {
+      const projected = store.nodes.find((item) => item.id === id)!
+      expect(projected.layout.parentNode).toBeUndefined()
+      expect(projected.layout.extent).toBeUndefined()
+    }
+  })
+
+  it("拖动落定（reparent）：组外节点拖进框 → 加入、框重新罩住；组员拖出框 → 移出；同一笔一条撤销", () => {
+    const { store } = setup()
+    store.addNode({ ...node("g"), type: "group", layout: { position: { x: 0, y: 0 }, width: 400, height: 300 } })
+    store.addNode({ ...node("a"), layout: { position: { x: 40, y: 60 }, width: 100, height: 100, parentNode: "g" } })
+    store.addNode({ ...node("o"), layout: { position: { x: 600, y: 0 }, width: 100, height: 100 } })
+    const byId = (id: string) => store.nodes.find((item) => item.id === id)!
+
+    store.separateUndo()
+    store.moveNodes(new Map([["o", { x: 330, y: 220 }]]), "移动节点", { reparent: true })
+    expect(byId("o").layout).toMatchObject({ parentNode: "g", extent: "parent", position: { x: 330, y: 220 } })
+    expect(byId("g").layout.width).toBeGreaterThan(400)
+    expect(byId("g").layout.height).toBeGreaterThan(300)
+
+    store.separateUndo()
+    store.moveNodes(new Map([["a", { x: 900, y: 600 }]]), "移动节点", { reparent: true })
+    expect(byId("a").layout.parentNode).toBeUndefined()
+    expect(byId("a").layout.position).toEqual({ x: 900, y: 600 })
+
+    store.undo()
+    expect(byId("a").layout).toMatchObject({ parentNode: "g", position: { x: 40, y: 60 } })
+  })
+
   it("分组 / 层级字段（zIndex、parentNode、extent）写得进也读得出", () => {
     const { store } = setup()
-    store.addNode(node("group"))
+    store.addNode({ ...node("group"), type: "group", layout: { position: { x: 0, y: 0 }, width: 400, height: 300 } })
     store.addNode({
       ...node("n1"),
       layout: { position: { x: 0, y: 0 }, zIndex: 3, parentNode: "group", extent: "parent" }

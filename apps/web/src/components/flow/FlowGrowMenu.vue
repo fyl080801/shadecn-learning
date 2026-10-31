@@ -1,13 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue"
 
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator
-} from "@/components/ui/dropdown-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu"
 import { flowNodeTypeOf } from "@/components/flow/node-types"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 
@@ -56,8 +50,6 @@ function pick(type: string) {
       class="w-44"
       data-testid="flow-grow-menu"
     >
-      <DropdownMenuLabel class="text-xs text-muted-foreground">连接到新节点</DropdownMenuLabel>
-      <DropdownMenuSeparator />
       <DropdownMenuItem
         v-for="item in items"
         :key="item.type"

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ops from "@shadecn/shared/flow-ops";
-import { defineComponent, h, nextTick, ref } from "vue";
+import { defineComponent, h, nextTick, ref, shallowRef } from "vue";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import * as Y from "yjs";
@@ -63,6 +63,7 @@ vi.mock("@/composables/flow/editor-context", () => ({
       openGrowMenu,
       deleteNode,
       duplicateNode: vi.fn(),
+      growMenu: shallowRef(null),
       isValidConnection: (connection: { source: string; target: string }) =>
         isValidConnection(connection),
       boxSelecting: ref(false),
@@ -123,8 +124,22 @@ vi.mock("@vue-flow/node-toolbar", () => ({
 }));
 
 vi.mock("@vue-flow/node-resizer", () => ({
-  NodeResizer: defineComponent({
-    setup: () => () => h("div", { "data-stub": "resizer" }),
+  NodeResizeControl: defineComponent({
+    props: { nodeId: String, position: String, keepAspectRatio: Boolean, minWidth: Number, minHeight: Number },
+    setup(props, { slots }) {
+      return () =>
+        h(
+          "div",
+          {
+            "data-stub": "resizer",
+            "data-node-id": props.nodeId,
+            "data-position": props.position,
+            "data-keep-ratio": String(props.keepAspectRatio),
+            "data-min-width": String(props.minWidth),
+          },
+          slots.default?.(),
+        );
+    },
   }),
 }));
 
@@ -462,6 +477,32 @@ describe("画布节点", () => {
     expect(wrapper.text()).toContain("节点 g1");
   });
 
+  it("文本可拉伸：只有右下角一个手柄，自由拉伸（不锁比例），最小宽 160", () => {
+    setup(record("t1", "text"));
+    wrapper = mount(NodeHost, {
+      global: nodeKitGlobal(),
+      props: nodeProps("t1", "text"),
+    });
+
+    const resizers = wrapper.findAll('[data-stub="resizer"]');
+    expect(resizers).toHaveLength(1);
+    expect(resizers[0]!.attributes("data-position")).toBe("bottom-right");
+    // NodeResizeControl 不自己注入节点 id，没传就拖不动
+    expect(resizers[0]!.attributes("data-node-id")).toBe("t1");
+    expect(resizers[0]!.attributes("data-keep-ratio")).toBe("false");
+    expect(resizers[0]!.attributes("data-min-width")).toBe("160");
+  });
+
+  it("图片 / 视频不可拉伸：没有拉伸手柄", () => {
+    setup(record("i1", "image"));
+    wrapper = mount(NodeHost, {
+      global: nodeKitGlobal(),
+      props: nodeProps("i1", "image"),
+    });
+
+    expect(wrapper.find('[data-stub="resizer"]').exists()).toBe(false);
+  });
+
   it("双击名字改名：经 useFlowNode 写到 metadata.label，data 不受影响", async () => {
     const { store, doc } = setup(
       record("n1", "image", { data: { prompt: "一只猫" } }),
@@ -471,8 +512,9 @@ describe("画布节点", () => {
       props: nodeProps("n1", "image"),
     });
 
-    await wrapper.find('span[title="双击改名"]').trigger("dblclick");
-    expect(selectOnly).toHaveBeenCalledWith("n1");
+    await wrapper.find('[data-node-title]').trigger("dblclick");
+    // 改名不选中节点
+    expect(selectOnly).not.toHaveBeenCalled();
     const input = wrapper.find("input");
     await input.setValue("  新名字  ");
     await input.trigger("keydown", { key: "Enter" });
@@ -491,7 +533,7 @@ describe("画布节点", () => {
       props: nodeProps("n1", "process"),
     });
 
-    await wrapper.find('span[title="双击改名"]').trigger("dblclick");
+    await wrapper.find('[data-node-title]').trigger("dblclick");
     const input = wrapper.find("input");
     await input.setValue("   ");
     await input.trigger("blur");
@@ -505,10 +547,10 @@ describe("画布节点", () => {
       global: nodeKitGlobal(),
       props: nodeProps("n1", "process"),
     });
-    expect(wrapper.find('span[title="双击改名"]').text()).toBe("流程节点");
+    expect(wrapper.find('[data-node-title]').text()).toBe("流程节点");
   });
 
-  it("分组：工具条上只有「解组」，点了走画布的 deleteNode（组内节点由 store 解开）", async () => {
+  it("分组：工具条最左是「布局」下拉，然后是「解组」；解组走画布的 deleteNode（组内节点由 store 解开）", async () => {
     setup(record("g1", "group"));
     selectedNodeId.value = "g1";
     deleteNode.mockClear();
@@ -520,9 +562,10 @@ describe("画布节点", () => {
 
     const buttons = wrapper.findAll('[data-node-slot="toolbar"] button');
     expect(buttons.map((item) => item.attributes("title"))).toEqual([
+      "布局（重新排列组内节点）",
       "解组（拆掉分组框，组内节点保留）（Mod+Shift+G）",
     ]);
-    await buttons[0]?.trigger("click");
+    await buttons[1]?.trigger("click");
     expect(deleteNode).toHaveBeenCalledWith("g1");
   });
 

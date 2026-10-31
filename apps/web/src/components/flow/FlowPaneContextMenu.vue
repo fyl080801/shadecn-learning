@@ -12,7 +12,7 @@ import {
   ContextMenuTrigger
 } from "@/components/ui/context-menu"
 import { addNodesFromFiles, FILE_NODE_ACCEPT } from "@/components/flow/file-nodes"
-import { ADDABLE_NODE_TYPES } from "@/components/flow/node-types"
+import { ADDABLE_NODE_TYPES, GROUP_NODE_TYPE } from "@/components/flow/node-types"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
@@ -48,9 +48,16 @@ const point = ref({ x: 0, y: 0 })
 let uploadPoint = { x: 0, y: 0 }
 const input = ref<HTMLInputElement | null>(null)
 
+/**
+ * 分组框里的空白也算「空白处」：右键在那里「添加」，新节点就建进这个分组（`canvas.addNode` 按落点判归属）——
+ * 组外的节点拖不进分组，往分组里加内容靠的就是这一下。只放行分组框自己的元素，组员照旧不弹。
+ */
+const GROUP_FRAME_SELECTOR = `.vue-flow__node-${GROUP_NODE_TYPE}`
+
 function onContextMenu(event: MouseEvent) {
   const target = event.target as Element | null
-  if (target?.closest(SKIP_SELECTOR)) {
+  const skip = target?.closest(SKIP_SELECTOR)
+  if (skip && !skip.matches(GROUP_FRAME_SELECTOR)) {
     event.stopPropagation()
     return
   }

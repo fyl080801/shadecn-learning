@@ -13,6 +13,7 @@ import {
   type FlowNodeGroup
 } from "@shadecn/shared/flow-doc"
 import { NODE_FORM_KEY, nodeFormOf } from "@shadecn/shared/flow-node-types"
+import type { GroupArrangement } from "@shadecn/shared/flow-layout"
 import * as ops from "@shadecn/shared/flow-ops"
 import { FlowOpError, type ConnectFrom, type FlowOpContext, type NodeFieldChanges } from "@shadecn/shared/flow-ops"
 import type { FlowDetail, FlowSummary } from "@shadecn/shared/canvas"
@@ -480,8 +481,18 @@ export const useFlowStore = defineStore("flow", () => {
     }
   }
 
-  function addNode(node: FlowNodeRecord) {
-    mutate((ctx) => ops.createNode(ctx, node), "新增节点")
+  /** 新建一个节点；`layout.parentNode` 指着分组时建进分组，框同一个事务长大（`ops.createNode`）；分组不在了就建在顶层 */
+  function addNode(node: FlowNodeRecord, options: ops.LayoutOptions = {}) {
+    mutate((ctx) => {
+      try {
+        ops.createNode(ctx, node, options)
+      } catch (error) {
+        if (!(error instanceof FlowOpError) || !node.layout.parentNode) throw error
+        // 点下去那一刻分组还在、写的时候被别人删了：内容不能丢，放回顶层（位置已是相对坐标，偏一点总比没了强）
+        const { parentNode: _parent, extent: _extent, ...layout } = node.layout
+        ops.createNode(ctx, { ...node, layout })
+      }
+    }, "新增节点")
   }
 
   /** 原样放进一条已经定好端口的边（不选端口、不校验）；新连一条线用 {@link connect} */
@@ -543,7 +554,7 @@ export const useFlowStore = defineStore("flow", () => {
    * 打组：新建一个分组框，并把一批节点挂到它下面 —— 同一个事务（理由见 `ops.groupNodes`）。
    *
    * `children` 里的位置是**相对分组框左上角**的，调用方负责换算（见 `groupSelection`）。
-   * `extent: 'parent'` 渲染层的时机问题在 `useFlowCanvas` 的 `extentReady` 挡，不靠晚写文档。
+   * `extent: 'parent'` 只存在文档里，从不交给 Vue Flow（`useFlowCanvas` 的 nodes 适配层摘掉）；「出不去」靠 `ops.settleLayout`。
    */
   function groupNodes(
     group: FlowNodeRecord,
@@ -553,17 +564,42 @@ export const useFlowStore = defineStore("flow", () => {
     mutate((ctx) => ops.groupNodes(ctx, group, children), label)
   }
 
-  function moveNodes(positions: Map<string, { x: number; y: number }>, label = "移动节点") {
-    mutate((ctx) => ops.moveNodes(ctx, positions), label)
+  /**
+   * 移动一批节点（`ops.moveNodes` → `settleLayout`）：组员探出框边时分组框同一个事务长大；
+   * 人拖的传 `reparent`（按落点加入 / 移出分组，同一个事务）；`sizeOf` 传实测尺寸。
+   */
+  function moveNodes(
+    positions: Map<string, { x: number; y: number }>,
+    label = "移动节点",
+    options: ops.LayoutOptions = {}
+  ) {
+    mutate((ctx) => lenient(() => ops.moveNodes(ctx, positions, options)), label)
   }
 
-  /** 改一个节点的尺寸，顺带改位置（同一个事务，见 `ops.resizeNode`）；节点不在就什么都不做 */
+  /**
+   * 分组内排列（横向 / 纵向 / 宫格）：组员新位置 + 分组框收放到正好罩住它们，一个事务、一步撤销（`ops.arrangeGroup`）。
+   * 分组不在就什么都不做。
+   */
+  function arrangeGroup(
+    groupId: string,
+    arrangement: GroupArrangement,
+    label = "排列分组",
+    options: { sizeOf?: ops.NodeSizeOf } = {}
+  ) {
+    mutate((ctx) => lenient(() => ops.arrangeGroup(ctx, groupId, arrangement, options)), label)
+  }
+
+  /**
+   * 改一个节点的尺寸，顺带改位置（同一个事务，见 `ops.resizeNode`）；节点不在就什么都不做。
+   * 分组框拉得比组员小会长回去，组员拉大框跟着长。
+   */
   function resizeNode(
     nodeId: string,
     size: { width: number; height: number; x?: number; y?: number },
-    label = "调整大小"
+    label = "调整大小",
+    options: ops.LayoutOptions = {}
   ) {
-    mutate((ctx) => lenient(() => ops.resizeNode(ctx, nodeId, size)), label)
+    mutate((ctx) => lenient(() => ops.resizeNode(ctx, nodeId, size, options)), label)
   }
 
   /**
@@ -812,6 +848,7 @@ export const useFlowStore = defineStore("flow", () => {
     attachAsset,
     groupNodes,
     moveNodes,
+    arrangeGroup,
     resizeNode,
     recordNodeSize,
     writeNode,

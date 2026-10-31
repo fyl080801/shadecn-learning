@@ -60,16 +60,87 @@
 }
 
 /*
+ * 右下角那一个拉伸手柄（NodeResizerPart.vue）：平时透明，指针移上去才在**节点框外**浮出一段弧线 ——
+ * 相当于比节点大一圈的那个圆角矩形的右下角（和缩放 100% 时的节点圆角同心）。
+ *
+ * 盖掉官方 `.handle` 那个蓝色小方块（底色、边框）。感应区 24 × 24，**往框外扩**：左上角在节点角点内侧 8px，
+ * 框内只占 8 × 8 一小块（不抢正文的点击），其余 16px 都在框外。
+ *
+ * **整块按屏幕尺寸**：手柄先平移到位，再以**节点角点**（手柄里的 (8px, 8px)）为原点 `scale(--flow-zoom-inv)`，
+ * 里面的感应区、弧线半径、间距、线宽于是都是屏幕像素，任何缩放下形状和离角点的距离都一样。
+ * **别只把线宽 / 间距换成 `--flow-px` 而让半径留在画布长度**：半径随缩放变、间距不变，
+ * 弧线在缩放时会变长变短，看上去像在挪位置。（官方的 autoScale 关掉了：它只放大不缩小，原点也不是角点。）
+ *
+ * 间距 6px：节点选中时边框 + 描边环一共往外占屏幕 3px（`.flow-node-selected`），弧线要离开最粗的那一圈
+ * 还留出空隙；间距固定不随选中变，免得 hover 着点一下弧线跳一下。
+ *
+ * 弧线画法是一个**四边等宽的整圆环**（圆心 = 节点圆角的圆心，外半径 = 圆角 + 间距），再用 `clip-path`
+ * 只留右下四分之一。**别改成「只留右、下两条边 + 单角圆角」**：宽度为 0 的上 / 左边在圆角交界处会被
+ * 抗锯齿渗出一道淡线。半径取 `--flow-resize-radius`（卡片 rounded-md，分组框 rounded-lg，下面按外壳写）。
+ */
+.vue-flow__resize-control.handle.flow-resize-corner {
+  --flow-resize-radius: calc(var(--radius) - 2px); /* rounded-md */
+  --flow-resize-gap: 6px;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  transform-origin: 8px 8px;
+  transform: translate(-8px, -8px) scale(var(--flow-zoom-inv, 1));
+}
+
+.flow-node-frame .vue-flow__resize-control.handle.flow-resize-corner {
+  --flow-resize-radius: var(--radius); /* rounded-lg */
+}
+
+.flow-resize-corner-arc {
+  --flow-resize-outer: calc(var(--flow-resize-radius) + var(--flow-resize-gap));
+  position: absolute;
+  /* 外圈的角点 = 节点角点 (8, 8) 再往外 gap：离感应区右 / 下边 24 - 8 - gap */
+  right: calc(16px - var(--flow-resize-gap));
+  bottom: calc(16px - var(--flow-resize-gap));
+  box-sizing: border-box;
+  width: calc(2 * var(--flow-resize-outer));
+  height: calc(2 * var(--flow-resize-outer));
+  border: 2px solid var(--muted-foreground);
+  border-radius: 50%;
+  clip-path: inset(50% 0 0 50%);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms;
+}
+
+.flow-resize-corner:hover .flow-resize-corner-arc,
+.flow-resize-corner:active .flow-resize-corner-arc {
+  opacity: 1;
+}
+
+/*
  * 画布上的「界面」按屏幕像素画（换算和为什么见 components/flow/flow-screen.ts）。
  * `--flow-zoom-inv`（缩放倒数）/ `--flow-px`（一个屏幕像素的画布长度）由 FlowCanvas.vue 写在画布根上；
  * 画布外（测试、别处复用节点）没有这两个变量时退回 1 / 1px，也就是原来的样子。
  * 这些值每个缩放帧都在变，**别给它们加 transition**，否则缩放时拖影。
  */
 
-/* 连线、拉线中的线：屏幕上 1px；看不见的点击热区（Vue Flow 默认 20）也按屏幕 20px */
+/*
+ * 节点框外名字那一行（NodeHost.vue 的 `label` 区）：和节点在屏幕上一样宽。
+ * 行在 NodeToolbar 里，NodeToolbar 是按屏幕像素定位、不被缩放的，所以宽度 = 节点画布宽度 × 缩放
+ * = `--flow-node-width`（宿主写的实测宽度，无单位）÷ `--flow-zoom-inv`。没写宽度时（还没量过）不限宽。
+ */
+.flow-node-label-row {
+  width: calc(var(--flow-node-width) * 1px / var(--flow-zoom-inv, 1));
+}
+
+/* 连线、拉线中的线：屏幕上 1.5px；看不见的点击热区（Vue Flow 默认 20）也按屏幕 20px */
 .vue-flow__edge-path,
 .vue-flow__connection-path {
-  stroke-width: var(--flow-px, 1px);
+  stroke-width: calc(1.5 * var(--flow-px, 1px));
+}
+
+/* 拉线中的线（含松手后新建菜单还开着时留着的那条，FlowPendingConnection.vue）是虚线：还没连上；虚线疏密也按屏幕像素 */
+.vue-flow__connection-path {
+  stroke-dasharray: calc(5 * var(--flow-px, 1px)) calc(4 * var(--flow-px, 1px));
 }
 
 .vue-flow__edge-interaction {
@@ -151,29 +222,33 @@
 .vue-flow__edge:focus .vue-flow__edge-path,
 .vue-flow__edge:focus-visible .vue-flow__edge-path {
   stroke: var(--primary);
-  stroke-width: calc(2 * var(--flow-px, 1px));
+  stroke-width: calc(2.5 * var(--flow-px, 1px));
 }
 
 /*
  * 节点的连接点（FlowNodeHandles.vue 里的 `<Handle class="flow-handle">`）。
  *
- * 小号空心圆：填充用卡片底色、描边用主题色。手柄元素本身留在 Vue Flow 默认的位置、透明；
- * 看得见的圆是 `::before`，加号是 `::after`（一张 mask），两者都用 `translate` 往外推
- * `--flow-handle-offset`（FlowCanvas.vue 按缩放算好写进来，几何见 flow-handle.ts），
- * 再用 `transform: scale(--flow-zoom-inv)` 缩回屏幕尺寸 —— 圆、加号、离边框的距离都不随缩放变。
+ * 两层，各管各的：
+ * - **连接点**：手柄的 `::before`，小号空心圆（填充卡片底色、描边主题色），钉在默认位置 ——
+ *   `translate` 往外推 `--flow-handle-offset`（FlowCanvas.vue 按缩放算好写进来，几何见 flow-handle.ts）。
+ *   连线的端点永远接在它上面，所以它**不跟鼠标走**。
+ * - **加号**：出口手柄里的子元素 `.flow-handle-plus`，实心圆 + 加号（`::after` 一张 mask），悬停节点时浮在连接点上面，
+ *   跟着鼠标走（`--flow-handle-follow-x/y`）。它只是盖在上面的一层，挪开时底下的连接点照样在。
+ * 两层都再用 `transform: scale(--flow-zoom-inv)` 缩回屏幕尺寸 —— 圆、加号、离边框的距离都不随缩放变。
  *
  * 几条为什么：
  * - 只用 transform 系属性（`translate` / `scale`），缩放和悬停都不触发布局。
- * - 用伪元素不用子元素：伪元素的命中算在手柄自己身上，按住圆拉线、松手落在圆上，
- *   Vue Flow 认到的都是这个手柄；换成子元素，命中的就成了它。（出口的感应区 `.flow-handle-zone`
- *   是唯一的子元素：出口只是起点、从不当落点，按下认的是 `currentTarget`，所以不受影响。）
- * - 圆按 16px 画、平时 `scale(.5)`，悬停时放回 1 —— 放大后的加号是清晰的，不是 8px 放糊的。
+ * - 连接点用伪元素不用子元素：伪元素的命中算在手柄自己身上，按住圆拉线、松手落在圆上，
+ *   Vue Flow 认到的都是这个手柄；换成子元素，命中的就成了它。（出口的感应区 `.flow-handle-zone` 和加号是子元素：
+ *   出口只是起点、从不当落点，按下认的是 `currentTarget`，所以不受影响；加号还是 `pointer-events: none`。）
+ * - 两层都按 16px 画：连接点固定 `scale(.625)`（10px，半径见 flow-handle.ts 的 `FLOW_HANDLE_RADIUS`，两处要同步）；
+ *   加号平时同样大小、悬停放回 1 —— 放大后的加号是清晰的，不是 10px 放糊的。
  * - 悬停的放大用 `scale`，抵消缩放用 `transform`：两个属性分开，`transition` 只给前者。
  *   `translate` 和 `transform` 每个缩放帧都在变，带过渡就会拖影。
  */
 .vue-flow__handle.flow-handle {
   --flow-handle-dir: 1;
-  --flow-handle-scale: 0.5;
+  --flow-handle-scale: 0.625;
   width: 8px;
   height: 8px;
   border: none;
@@ -185,7 +260,7 @@
 }
 
 .vue-flow__handle.flow-handle::before,
-.vue-flow__handle.flow-handle::after {
+.flow-handle-plus {
   content: "";
   position: absolute;
   top: 50%;
@@ -195,25 +270,37 @@
   margin: -8px;
   box-sizing: border-box;
   border-radius: 100%;
-  /* 出口加号跟随鼠标时由 FlowNodeHandles 写 `--flow-handle-follow-x/y`，没写就停在默认位置 */
-  translate:
-    var(--flow-handle-follow-x, calc(var(--flow-handle-dir) * var(--flow-handle-offset, 14px)))
-    var(--flow-handle-follow-y, 0);
-  scale: var(--flow-handle-scale);
   transform: scale(var(--flow-zoom-inv, 1));
   opacity: 0;
+}
+
+.vue-flow__handle.flow-handle::before {
+  translate: calc(var(--flow-handle-dir) * var(--flow-handle-offset, 14px)) 0;
+  scale: 0.625;
+  border: 2.5px solid var(--primary);
+  background: var(--card);
   transition:
-    scale 150ms,
     opacity 150ms,
     background-color 150ms;
 }
 
-.vue-flow__handle.flow-handle::before {
-  border: 2px solid var(--primary);
-  background: var(--card);
+/* 出口加号跟随鼠标时由 FlowNodeHandles 写 `--flow-handle-follow-x/y`，没写就停在连接点上（正好盖住它） */
+.flow-handle-plus {
+  translate:
+    var(--flow-handle-follow-x, calc(var(--flow-handle-dir) * var(--flow-handle-offset, 14px)))
+    var(--flow-handle-follow-y, 0);
+  scale: var(--flow-handle-scale);
+  background: var(--primary);
+  pointer-events: none;
+  transition:
+    scale 150ms,
+    opacity 150ms;
 }
 
-.vue-flow__handle.flow-handle::after {
+.flow-handle-plus::after {
+  content: "";
+  position: absolute;
+  inset: 0;
   background: var(--primary-foreground);
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='M12 7v10M7 12h10'/%3E%3C/svg%3E")
     center / 100% no-repeat;
@@ -222,19 +309,23 @@
 /*
  * 没接线的连接点平时藏起来（选中节点也不露），满屏空心圆只是噪音；已经接了线的一侧一直画（`--connected`）。
  * 另外只在拉线过程中露出**能接这条线**的入口（FlowNodeHandles 按 `canvas.isValidConnection` 挂
- * `flow-handle--droppable`），以及这次拉线的起点 / 正被吸附的那个（Vue Flow 的 `.connecting`）。
+ * `flow-handle--droppable`），正被吸附的那个（Vue Flow 的 `.connecting`），以及线的起点（`flow-handle--origin`：
+ * 正从它拉线，或松手后新建菜单还开着、那条线还留着 —— Vue Flow 不给起点挂 class，FlowNodeHandles 自己判）。
+ * 没有线就没有连接点：悬停一个没接线的节点只浮出加号，不露连接点；接了线的出口悬停时加号盖在连接点上，挪开后连接点照样在。
+ * 不论哪种情形都是同一个空心圆，不另换填充。
  * 只动 opacity —— 手柄元素一直在，热区不变。
  */
 .vue-flow__handle.flow-handle--connected::before,
 .vue-flow__handle.flow-handle--droppable::before,
+.vue-flow__handle.flow-handle--origin::before,
 .vue-flow__handle.flow-handle.connecting::before {
   opacity: 1;
 }
 
 /*
- * 悬停节点时，**出口**（右边，`.source`）放大、填满，露出加号 —— 点它或从它拉线都弹出新建节点的菜单。
+ * 悬停节点时，**出口**（右边，`.source`）上浮出加号 —— 点它或从它拉线都弹出新建节点的菜单。
  * 鼠标进了出口的感应区（`.flow-handle-zone`），加号的圆心跟着鼠标走（FlowNodeHandles 写变量），
- * 方区里哪儿都点得中。拉线过程中不放大，回到连接点的样子。
+ * 方区里哪儿都点得中。拉线过程中加号收起，线从连接点出发。
  * 入口（左边，`.target`）只是落点：不能从它起拉（`connectable-start=false`），所以没有加号。
  */
 .vue-flow__node:hover .vue-flow__handle.flow-handle.source,
@@ -244,27 +335,22 @@
   cursor: pointer;
 }
 
-.vue-flow__node:hover .vue-flow__handle.flow-handle.source::before,
-.vue-flow__handle.flow-handle.source:hover::before {
-  opacity: 1;
-  background: var(--primary);
-}
-
-.vue-flow__node:hover .vue-flow__handle.flow-handle.source::after,
-.vue-flow__handle.flow-handle.source:hover::after {
+.vue-flow__node:hover .vue-flow__handle.flow-handle.source .flow-handle-plus,
+.vue-flow__handle.flow-handle.source:hover .flow-handle-plus {
   opacity: 1;
 }
 
 .flow-canvas-connecting .vue-flow__handle.flow-handle.source {
-  --flow-handle-scale: 0.5;
+  --flow-handle-scale: 0.625;
 }
 
-.flow-canvas-connecting .vue-flow__handle.flow-handle.source::after {
+.flow-canvas-connecting .vue-flow__handle.flow-handle.source .flow-handle-plus {
   opacity: 0;
 }
 
-/* 拉线时悬停到别的节点上，它没接线的出口不露 —— 出口不是落点 */
-.flow-canvas-connecting .vue-flow__handle.flow-handle.source:not(.connecting, .flow-handle--connected)::before {
+/* 拉线时悬停到别的节点上，它没接线的出口不露 —— 出口不是落点（这次拉线的起点除外） */
+.flow-canvas-connecting
+  .vue-flow__handle.flow-handle.source:not(.connecting, .flow-handle--connected, .flow-handle--origin)::before {
   opacity: 0;
 }
 
@@ -288,11 +374,6 @@
 
 .vue-flow__handle.flow-handle.target {
   cursor: default;
-}
-
-/* 拉线时作为起点 / 正被吸附的那个，填满但不放大 */
-.vue-flow__handle.flow-handle.connecting::before {
-  background: var(--primary);
 }
 
 .vue-flow__minimap {

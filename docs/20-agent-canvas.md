@@ -451,17 +451,19 @@ ffmpeg、生成图片 / 视频可能跑几分钟，比发起它的那一轮活�
 |---|---|---|---|
 | 读 | 投影 / `readNodeRecord(id)` | store 投影 | `read_canvas`、`get_node`（单个节点，形状同 `read_canvas` 的节点条目，另附端口） |
 | 读 | `connectableNodeTypes(sourceId)` / `resolveConnection` + `docConnectionContext` | 候选菜单 / `isValidConnection` | `check_connection`（只给逻辑门的裁决和会连的端口对，不写） |
-| 内容 | `createNode` / `createConnectedNode` | `addNode` / `addConnectedNode` | `add_node`（含 `connectFrom`） |
+| 内容 | `createNode` / `createConnectedNode`（`layout.parentNode` 指着分组 = 建进分组，框同一事务长大） | `addNode` / `addConnectedNode`（落点在分组框里就建进去） | `add_node`（含 `connectFrom`；`group` 建进分组，坐标相对分组框，不给坐标就排在组员下面；不给 `group` 但画布坐标的中心点落在分组框里也建进那个分组） |
 | 内容 | `duplicateNode(id, offset)` | `duplicateNode`（运行态清空、不复制连线） | `duplicate_node`（默认错开 24px；分组框不能复制，同编辑器） |
 | 内容 | `writeNodeFields(id, group, set, remove)` | `writeNode` | `update_node`（只开放 metadata / data，`runtime` 留给运行器） |
 | 连线 | `connect(source, target, ports?)` | `connectNodes` | `connect` |
 | 删除 | `removeElements(nodeIds, edgeIds)` | `removeElements` | `delete_elements` |
-| 布局 | `moveNodes` / `resizeNode` | 拖动 / 拉伸 | `move_nodes`（一次 ≤ 50 个，有一个不存在整个拒绝）/ `resize_node`（宽高 40–4000） |
+| 布局 | `moveNodes` / `resizeNode`（都经 `settleLayout`：`reparent` 按中心点加入 / 移出分组，组员探出时框长大） | 拖动 / 拉伸（实测尺寸） | `move_nodes`（一次 ≤ 50 个，有一个不存在整个拒绝；返回 `joined` / `left` / `grownGroups`）/ `resize_node`（宽高 40–4000） |
 | 布局 | `groupFrameFor(memberIds)` + `groupNodes` / `ungroup(groupId)` | `groupSelection` / 解组 | `group_nodes`（≤ 50 个）/ `ungroup` |
 | 布局 | `autoLayout(ctx, { sizeOf? })`（`planAutoLayout`） | `canvas.autoLayout()`（实测尺寸直接调 `planAutoLayout`） | `auto_layout`（整张画布，≤ 500 个节点；范围参数以后再加） |
 | 集合 | `collectionSet` / `collectionRemove(id, prefix, items)` | `@shadecn/shared/flow-collection` | 后期（导演台） |
 
 - 打组资格同编辑器的选区规则：至少两个、都是顶层节点、不是分组本身。编辑器把不合格的从选区里滤掉；agent 是点名的，有一个不合格整个拒绝。
+- **分组归属（docs/13 §4.4「拖动决定归属」）对 agent 一样成立**，规则是 shared 的同一份（`flow-layout` 的 `groupUnderNode` / `fitGroupFrame` + `flow-ops` 的 `settleLayout`），工具里不另写：
+  `move_nodes` 把顶层节点挪到分组框里（中心点）= 加入，组员挪出自己的框 = 移出，只探出一截 = 框长大；`add_node` 的画布坐标落在框里 = 建进分组。分组框自己挪到别的节点上不改归属。和编辑器只差在尺寸来源（`nodeSizeOf` 估）。
 - `ungroup` 拆掉的分组框**计入每轮删除预算**（每次 1 个，§3.9 ②）：它和 `delete_elements` 删分组效果相同，不计的话就能绕过上限；
   组员留在原地，不算删除。
 
@@ -885,8 +887,8 @@ agent 只能猜。现在加一个只读工具，把图本身交给模型。
      嵌套任务、最终回复、改过的节点。**需要确认**的任务用 Confirmation 的卡片样子（琥珀色，「需要你确认」+ 问题）—— 只读：回答它就是在对话里再发一条消息（审批按钮见 docs/24）。
 2. **正文**：流式 Markdown（F16）；什么都还没有时一行流光的「思考中…」。
 3. **收尾原因**：失败 / 中止时一行红字（同前）。
-4. **用量（Context）**：脚注里一个小按钮「N% 上下文」= 入口 agent 最后一次请求占的上下文（输入 + 缓存 + 输出）/ 模型窗口；悬停看这一轮全部请求（含被调用的 agent）
-   的输入 / 输出 / 缓存读写 token、模型名和费用（模型没有价格信息显示「未知」）。数是收尾那一刻的：被叫停时还在途的那次请求不算进显示（运行日志里算）。
+4. **用量（Context）**：脚注里一个小按钮「N% 上下文」= 入口 agent 最后一次请求占的上下文（输入 + 缓存 + 输出）/ 模型窗口；悬停只显示「上下文 已用 / 窗口」token 数和一条用量条，
+   输入 / 输出 / 缓存读写 token、模型名和费用不显示（数据照样随对话保存）。数是收尾那一刻的：被叫停时还在途的那次请求不算进显示（运行日志里算）。
    随对话保存；这个功能之前的记录没有用量就不显示。
 
 用户消息是靠右的气泡（附件缩略图在气泡上方）；画布改动通知、技能加载是时间线样式的一行（前者有条目时可展开）。

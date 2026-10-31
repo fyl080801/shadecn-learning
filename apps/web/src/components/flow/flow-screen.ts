@@ -17,6 +17,7 @@
  * | 节点边框 / 选中描边 / 阴影 | 宿主的 `.flow-node` 自带；状态换样子写语义类（`flow-node-selected` / `-processing` / `-error`），颜色走 `--flow-node-*-color` 变量 |
  * | 连线粗细、热区 | 用 Vue Flow 的 `.vue-flow__edge-path` 画就自动有 |
  * | 单个长度（CSS） | `calc(N * var(--flow-px, 1px))` |
+ * | 和节点在屏幕上等宽（框外元素） | 写 `--flow-node-width`（画布宽度，无单位），CSS `calc(var(--flow-node-width) * 1px / var(--flow-zoom-inv, 1))`（名字行 `.flow-node-label-row`） |
  * | 单个长度（TS / SVG 属性） | `screenToCanvas(N, zoom)` |
  *
  * 这些都只改 transform / 阴影 / 描边，不改盒子尺寸：Vue Flow 量好的节点尺寸、连接点位置不会失效。

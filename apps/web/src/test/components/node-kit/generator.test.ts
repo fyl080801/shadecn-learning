@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as ops from "@shadecn/shared/flow-ops"
-import { defineComponent, h, nextTick, ref } from "vue"
+import { defineComponent, h, nextTick, ref, shallowRef } from "vue"
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils"
 import { createPinia, setActivePinia } from "pinia"
 import * as Y from "yjs"
@@ -40,6 +40,7 @@ vi.mock("@/composables/flow/editor-context", () => ({
       addConnectedNode: vi.fn(),
       deleteNode: vi.fn(),
       duplicateNode: vi.fn(),
+      growMenu: shallowRef(null),
       isValidConnection: () => true,
       boxSelecting: ref(false),
       zoomLevel: ref(1)

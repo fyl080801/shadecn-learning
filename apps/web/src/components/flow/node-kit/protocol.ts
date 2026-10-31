@@ -18,6 +18,7 @@ import type { FlowNodeHandle } from "@/composables/flow/useFlowNode"
 /** 节点上可以挂部件的位置。**封闭集合**：加一个区域就是改宿主，不是注册一条东西 */
 export const NODE_SLOTS = [
   "label",
+  "label-end",
   "toolbar",
   "badge",
   "header",
@@ -233,6 +234,22 @@ export interface NodeTypeView {
    * `node-types.ts` 的 `defineNodeType` 把类型的 `icon` 抄进来；不给就不画
    */
   icon?: Component
+  /**
+   * 拉伸的约束（能力 `resizable` 读它；没启用 `resizable` 的类型写了也没用）。
+   * 不给就是自由拉伸、最小 160 × 120
+   */
+  resize?: NodeResizeSpec
+}
+
+/** 拉伸约束：最小尺寸（画布坐标）和是否锁定宽高比 */
+export interface NodeResizeSpec {
+  minWidth?: number
+  minHeight?: number
+  /**
+   * 锁定宽高比：`true` = 按拉伸开始时的比例；不给 / `false` = 自由拉伸，**按住 Shift 临时锁定**。
+   * 内容有固有比例的类型（图片 / 视频这类）以后启用拉伸时应写 `true`
+   */
+  keepAspectRatio?: boolean
 }
 
 /**

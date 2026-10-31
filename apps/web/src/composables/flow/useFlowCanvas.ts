@@ -21,19 +21,20 @@ import {
   connectableNodeTypes,
   DEFAULT_EDGE_TYPE,
   interactionGate,
+  isConnectableType,
+  nodeSizeOf,
   resolveConnection,
   type ConnectionCandidate,
   type ConnectionContext,
   type GrowCandidate
 } from "@shadecn/shared/flow-node-types"
-import { groupFrameAround, planAutoLayout } from "@shadecn/shared/flow-layout"
-import { FlowOpError } from "@shadecn/shared/flow-ops"
+import { groupFrameAround, planAutoLayout, type GroupArrangement } from "@shadecn/shared/flow-layout"
+import { FlowOpError, type NodeSizeOf } from "@shadecn/shared/flow-ops"
 import { isEditableTarget } from "./editable"
 import type { FlowPresence } from "./useFlowPresence"
 import type { FlowSelection } from "./useFlowSelection"
 import { useFlowSnapping } from "./useFlowSnapping"
 import type { useFlowStore } from "@/stores/flow"
-import { type FlowNode } from "@shadecn/shared/flow-graph"
 
 type FlowStore = ReturnType<typeof useFlowStore>
 
@@ -64,6 +65,13 @@ const CASCADE_COUNT = 6
 
 /** 视图控件按钮触发的缩放 / 全览过渡时长（ms） */
 const VIEW_TRANSITION_MS = 200
+
+/** 分组内排列进撤销栈时的名字 */
+const ARRANGE_LABELS: Record<GroupArrangement, string> = {
+  horizontal: "横向排列分组",
+  vertical: "纵向排列分组",
+  grid: "宫格排列分组"
+}
 
 /**
  * Vue Flow、store、协同三者之间的那层胶水 —— 也是**唯一**同时认识这三者的地方。
@@ -161,36 +169,18 @@ export function useFlowCanvas(
     return store.nodes.map((node) => {
       const view = toVueFlowNode(node)
       const at = remote.get(node.id)
-      const holdExtent = !extentReady(node)
-      if (!at && !holdExtent) return view
+      const withheld = node.layout.extent !== undefined
+      if (!at && !withheld) return view
 
       return {
         ...view,
         ...(at ? { position: { ...at } } : {}),
         // 显式写 undefined，不能只是「不给这个键」：Vue Flow 合并节点用的是
         // Object.assign(它内部那份, 传进来的这份)，键不出现的话上一次那个 'parent' 会留着
-        ...(holdExtent ? { extent: undefined } : {})
+        ...(withheld ? { extent: undefined } : {})
       }
     })
   })
-
-  /**
-   * 「不许拖出分组」这条现在能不能交给 Vue Flow —— **父节点量出尺寸了才算能**。
-   *
-   * Vue Flow 是拿父节点的 `dimensions` 算这个边界的，而分组框刚出现在画布上时
-   * 尺寸还是 0：边界退化成一个点，每个子节点当场被夹到「父节点左上角减去自己的宽高」，
-   * 一片节点全叠到框外面去 —— 文档里的坐标始终是对的，坏的只是本地视图。
-   *
-   * 这道门必须开在**交给 Vue Flow 之前**、而不是写文档的时候：打组的人可以等自己
-   * 这边渲染完再写，收到同步的人没有这个机会 —— 他是从文档里读到 `extent` 的，
-   * 读到就立刻夹。协同画布上「别人打的组，在我这儿散了一地」就是这么来的。
-   * 放在这里，本地、远端、刷新走的是同一条路。
-   */
-  function extentReady(node: FlowNode): boolean {
-    const { extent, parentNode } = node.layout
-    if (extent !== "parent" || !parentNode) return true
-    return (findNode(parentNode)?.dimensions.width ?? 0) > 0
-  }
 
   /**
    * 老数据里可能存着 smoothstep 之类的折线类型，渲染时统一按曲线走。
@@ -389,13 +379,50 @@ export function useFlowCanvas(
     localDragging.value = false
 
     if (moved.size > 0) {
-      // 一次拖动 = 一条撤销（框选一起拖也算一条）
+      // 一次拖动 = 一条撤销（框选一起拖也算一条）。分组归属在 ops 里按落点定（settleLayout 的 reparent）：
+      // 中心点拖进分组框 → 加入，框重新罩住它；组员中心点拖出框 → 移出；只探出一截 → 框长大。都在这一笔里
       store.separateUndo()
-      store.moveNodes(moved, moved.size > 1 ? `移动 ${moved.size} 个节点` : "移动节点")
+      store.moveNodes(moved, moved.size > 1 ? `移动 ${moved.size} 个节点` : "移动节点", {
+        sizeOf: measuredSizeOf,
+        reparent: true
+      })
       store.separateUndo()
     }
     presence.clearTransform()
   })
+
+  /**
+   * 交给 `flow-ops` 的尺寸：Vue Flow 量出来的（还没量出来就按 shared 的 `nodeSizeOf` 估）——
+   * 归属判定和扩框都按画面上真实的大小算，agent 那边同一套规则用的是估的尺寸。
+   */
+  const measuredSizeOf: NodeSizeOf = (record) => {
+    const rendered = findNode(record.id)
+    if (rendered && rendered.dimensions.width > 0 && rendered.dimensions.height > 0) {
+      return { width: rendered.dimensions.width, height: rendered.dimensions.height }
+    }
+    return nodeSizeOf(record)
+  }
+
+  /**
+   * 拉伸松手：写尺寸（`resizable` 能力调它）。分组框拉得比组员小会长回罩得住组员的大小、组员拉大框跟着长 ——
+   * 按实测尺寸算，所以从这里走，不直接调 store。
+   */
+  function resizeNode(nodeId: string, size: { width: number; height: number; x?: number; y?: number }) {
+    store.separateUndo()
+    store.resizeNode(nodeId, size, "调整大小", { sizeOf: measuredSizeOf })
+    store.separateUndo()
+  }
+
+  /**
+   * 分组内排列（分组工具栏的「布局」菜单调它）：横向 / 纵向 / 宫格，分组框跟着收放到正好罩住组员 ——
+   * 规则在 shared 的 `planGroupArrangement` / `ops.arrangeGroup`，这里只供实测尺寸。一次排列 = 一条撤销。
+   */
+  function arrangeGroup(groupId: string, arrangement: GroupArrangement) {
+    if (localDragging.value) return
+    store.separateUndo()
+    store.arrangeGroup(groupId, arrangement, ARRANGE_LABELS[arrangement], { sizeOf: measuredSizeOf })
+    store.separateUndo()
+  }
 
   /**
    * 拖动过程中 Vue Flow 会不断派发 position 变化。
@@ -475,16 +502,25 @@ export function useFlowCanvas(
    * - `node`：某个节点身上（Vue Flow 节点根元素的 `data-id`）；
    * - `pane`：空白画布；
    * - `none`：画布外，或浮在画布上的控件（缩放按钮、小地图、节点工具栏）。
+   *
+   * **不参与连线的节点（分组，shared 的 `isConnectableType`）是透明的**：透过它往下看，下面没有节点就算空白画布 ——
+   * 在分组里点加号 / 拉线松手照样弹候选菜单（新节点建进这个分组），而不是「连到分组」再提示连不上。
    */
   function dropTargetAt(point: {
     clientX: number
     clientY: number
   }): { kind: "node"; nodeId: string } | { kind: "pane" } | { kind: "none" } {
-    const element = document.elementFromPoint(point.clientX, point.clientY)
-    if (!element || !vueFlowRef.value?.contains(element)) return { kind: "none" }
-    if (element.closest(".vue-flow__panel, .vue-flow__node-toolbar")) return { kind: "none" }
-    const nodeId = element.closest(".vue-flow__node")?.getAttribute("data-id")
-    if (nodeId) return { kind: "node", nodeId }
+    const elements = document.elementsFromPoint(point.clientX, point.clientY)
+    const top = elements[0]
+    if (!top || !vueFlowRef.value?.contains(top)) return { kind: "none" }
+    for (const element of elements) {
+      if (!vueFlowRef.value.contains(element)) break
+      if (element.closest(".vue-flow__panel, .vue-flow__node-toolbar")) return { kind: "none" }
+      const nodeId = element.closest(".vue-flow__node")?.getAttribute("data-id")
+      if (!nodeId) return { kind: "pane" }
+      const type = typeOfNode(nodeId)
+      if (type === undefined || isConnectableType(type)) return { kind: "node", nodeId }
+    }
     return { kind: "pane" }
   }
 
@@ -538,6 +574,9 @@ export function useFlowCanvas(
    * 连不上它抛 `FlowOpError`，这里提示原因。
    */
   function connectNodes(source: string, target: string) {
+    // 不参与连线的节点（分组）连不上是理所当然的，不提示
+    const targetType = typeOfNode(target)
+    if (targetType !== undefined && !isConnectableType(targetType)) return
     const gate = interactionGate({ target }, connectionContext())
     if (!gate.ok) {
       toast.error(gate.reason)
@@ -769,6 +808,21 @@ export function useFlowCanvas(
 
   // —— 新增节点 ——
 
+  /** 画布上这一点落在哪个分组框里（分组不嵌套，只看顶层的；叠着的取最上面那个） */
+  function groupAt(point: XYPosition): GraphNode | undefined {
+    const hits = getNodes.value.filter(
+      (node) =>
+        node.type === GROUP_NODE_TYPE &&
+        !node.parentNode &&
+        node.dimensions.width > 0 &&
+        point.x >= node.computedPosition.x &&
+        point.x <= node.computedPosition.x + node.dimensions.width &&
+        point.y >= node.computedPosition.y &&
+        point.y <= node.computedPosition.y + node.dimensions.height
+    )
+    return hits[hits.length - 1]
+  }
+
   let cascadeIndex = 0
 
   /**
@@ -792,17 +846,22 @@ export function useFlowCanvas(
       screen = { x: bounds.left + bounds.width / 2 + offset, y: bounds.top + bounds.height / 2 + offset }
     }
     const center = screenToFlowCoordinate(screen)
+    // 点在分组框里 = 建进这个分组（组外的节点进不了分组，内容只能这样「加」进去）；位置换成相对框左上角
+    const group = groupAt(center)
+    const origin = group ? group.computedPosition : { x: 0, y: 0 }
+    const local = { x: center.x - origin.x, y: center.y - origin.y }
 
     const node = buildFlowNode({
       id,
       type,
-      position: center,
+      position: local,
       label: options.label || `${flowNodeTypeOf(type).label} ${store.nodes.length + 1}`
     })
+    if (group) node.layout.parentNode = group.id
     if (options.data) node.data = { ...node.data, ...options.data }
     // 连点两次「添加节点」应该是两条撤销，不是一条
     store.separateUndo()
-    store.addNode(node)
+    store.addNode(node, { sizeOf: measuredSizeOf })
 
     // position 是左上角，要等渲染量出尺寸后才能真正居中
     const rendered = findNode(id)
@@ -815,12 +874,13 @@ export function useFlowCanvas(
         [
           id,
           {
-            x: center.x - rendered.dimensions.width / 2,
-            y: center.y - rendered.dimensions.height / 2
+            x: local.x - rendered.dimensions.width / 2,
+            y: local.y - rendered.dimensions.height / 2
           }
         ]
       ]),
-      "居中新节点"
+      "居中新节点",
+      { sizeOf: measuredSizeOf }
     )
     store.separateUndo()
 
@@ -836,10 +896,14 @@ export function useFlowCanvas(
    * 两个入口弹同一个菜单：点出口上的加号（锚在那个连接点上），拉线到空白处松手（锚在落点）。
    * 菜单里只列 shared 的 `connectableNodeTypes` 认可的类型 —— 按「全新的空节点」去试 `resolveConnection`，
    * 和真连线是同一套规则；选一种才建节点。Esc / 点别处关掉，什么都不建。
+   * 拉线松手弹出的那一路，菜单开着时那条线先留着（`FlowPendingConnection.vue` 画，起点到落点）：
+   * 选了一种就由真的边接上，关掉菜单才随之消失。
    */
   interface GrowMenuState {
     /** 从哪个节点的出口长 */
     sourceId: string
+    /** 怎么弹出来的：点加号（`plus`）或拉线到空白处松手（`drop`，菜单开着时线留着） */
+    via: "plus" | "drop"
     /** 新节点入口（左边中点）落在哪（画布坐标） */
     at: XYPosition
     /** 菜单贴着谁：连接点元素，或松手那一点（reka-ui 的虚拟参照元素） */
@@ -868,6 +932,7 @@ export function useFlowCanvas(
       const { clientX, clientY } = place.drop
       growMenu.value = {
         sourceId,
+        via: "drop",
         at: screenToFlowCoordinate({ x: clientX, y: clientY }),
         reference: { getBoundingClientRect: () => new DOMRect(clientX, clientY, 0, 0) }
       }
@@ -875,6 +940,7 @@ export function useFlowCanvas(
     }
     growMenu.value = {
       sourceId,
+      via: "plus",
       at: {
         x: from.computedPosition.x + from.dimensions.width + CONNECTED_NODE_GAP,
         y: from.computedPosition.y + from.dimensions.height / 2
@@ -907,7 +973,10 @@ export function useFlowCanvas(
    */
   async function addConnectedNode(sourceId: string, type: string, at: XYPosition): Promise<string | null> {
     if (typeOfNode(sourceId) === undefined) return null
-    const place = (height: number) => ({ x: at.x, y: at.y - height / 2 })
+    // 落点在分组框里就建进这个分组（和 addNode 同一条规则），坐标换成相对框左上角
+    const group = groupAt(at)
+    const origin = group ? group.computedPosition : { x: 0, y: 0 }
+    const place = (height: number) => ({ x: at.x - origin.x, y: at.y - origin.y - height / 2 })
 
     const id = createId("n")
     const node = buildFlowNode({
@@ -916,6 +985,7 @@ export function useFlowCanvas(
       position: place(0),
       label: `${flowNodeTypeOf(type).label} ${store.nodes.length + 1}`
     })
+    if (group) node.layout.parentNode = group.id
 
     store.separateUndo()
     try {
@@ -929,7 +999,7 @@ export function useFlowCanvas(
     const rendered = findNode(id)
     if (rendered) {
       await until(() => rendered.dimensions.width).toBeTruthy({ timeout: 1000 })
-      store.moveNodes(new Map([[id, place(rendered.dimensions.height)]]), "摆放新节点")
+      store.moveNodes(new Map([[id, place(rendered.dimensions.height)]]), "摆放新节点", { sizeOf: measuredSizeOf })
       selectOnly(id)
     }
     store.separateUndo()
@@ -1053,6 +1123,7 @@ export function useFlowCanvas(
     fitAll,
     canAutoLayout,
     autoLayout,
+    arrangeGroup,
     miniMapVisible,
     onPointerMove,
     onPointerLeave,
@@ -1061,6 +1132,7 @@ export function useFlowCanvas(
     selectedNodeIds,
     canGroupSelection,
     groupSelection,
+    resizeNode,
     addNode,
     addConnectedNode,
     growMenu,

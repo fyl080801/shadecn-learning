@@ -130,7 +130,7 @@ function hostCtx(): NodePartContext {
 let wrapper: VueWrapper | null = null
 let runtime: NodeKitRuntime
 
-function mountHost(kit: NodeKit, id = "n1", type = "image") {
+function mountHost(kit: NodeKit, id = "n1", type = "image", dimensions?: { width: number; height: number }) {
   const store = useFlowStore()
   store.load(detail())
   store.attachDoc(new Y.Doc())
@@ -139,7 +139,7 @@ function mountHost(kit: NodeKit, id = "n1", type = "image") {
   const Root = defineComponent({
     setup() {
       runtime = provideNodeKit(kit, selectedNodeId)
-      return () => h(NodeHost, { id, type, selected: false, data: {} } as never)
+      return () => h(NodeHost, { id, type, selected: false, data: {}, dimensions } as never)
     }
   })
   wrapper = mount(Root)
@@ -230,9 +230,44 @@ describe("NodeHost 的区域", () => {
     const label = mountHost(kit, "n1", "text").find('[data-node-slot="label"]')
     const children = label.element.children
     expect(children[0]?.getAttribute("data-icon")).toBe("text")
-    expect(children[1]?.getAttribute("data-marker")).toBe("title")
+    expect(children[1]?.querySelector("[data-marker]")?.getAttribute("data-marker")).toBe("title")
 
     expect(mountHost(kit, "n2", "image").find("[data-node-type-icon]").exists()).toBe(false)
+  })
+
+  it("名字那一行按节点实测宽度限宽（交给 CSS 乘缩放）；还没量过就不限", () => {
+    const kit = createNodeKit()
+    kit.registerType({ type: "text", features: [] })
+
+    const measured = mountHost(kit, "n1", "text", { width: 320, height: 120 }).find('[data-node-slot="label"]')
+    expect(measured.classes()).toContain("flow-node-label-row")
+    expect(measured.attributes("style")).toContain("--flow-node-width: 320")
+
+    wrapper?.unmount()
+    const unmeasured = mountHost(kit, "n2", "text", { width: 0, height: 0 }).find('[data-node-slot="label"]')
+    expect(unmeasured.attributes("style") ?? "").not.toContain("--flow-node-width")
+  })
+
+  it("label-end 区排在名字行的最后（名字、在场头像之后），没注册就不渲染", () => {
+    const kit = createNodeKit()
+    kit.registerType({
+      type: "text",
+      features: [],
+      parts: [
+        defineNodePart({ id: "title", slot: "label", component: marker("title") }),
+        defineNodePart({ id: "end", slot: "label-end", component: marker("end") })
+      ]
+    })
+    kit.registerType({ type: "image", features: [] })
+
+    const label = mountHost(kit, "n1", "text").find('[data-node-slot="label"]')
+    const end = label.find('[data-node-slot="label-end"]')
+    expect(end.exists()).toBe(true)
+    expect(label.element.lastElementChild).toBe(end.element)
+    expect(end.text()).toBe("end")
+
+    wrapper?.unmount()
+    expect(mountHost(kit, "n2", "image").find('[data-node-slot="label-end"]').exists()).toBe(false)
   })
 
   it("能力给根元素加的 class 合到宿主根上", () => {

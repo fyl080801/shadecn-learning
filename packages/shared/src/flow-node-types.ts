@@ -77,6 +77,14 @@ export interface PortDef {
  */
 export type NodeForm = 'generate' | 'asset'
 
+/**
+ * 这个类型参不参与连线。`connectable: false` 的（分组）不参与：拉线落在它身上等于落在它下面的东西上
+ * （编辑器的落点判定透过它看），不提示「不能连线」。
+ */
+export function isConnectableType(type: string): boolean {
+  return FLOW_NODE_TYPE_DEFAULTS[type]?.connectable !== false
+}
+
 /** 形态存在 `data` 上的键 */
 export const NODE_FORM_KEY = 'form'
 
@@ -94,6 +102,11 @@ export interface FlowNodeTypeDefaults {
    */
   inputs?: PortDef[]
   outputs?: PortDef[]
+  /**
+   * `false` = 这个类型**完全不参与连线**：两边都没有连接点，连不进也连不出（分组 —— 它是背景板，不是数据的一环）。
+   * 不写就按端口声明算（一个都不声明的是「和谁都能连」）。
+   */
+  connectable?: false
   /**
    * 这个节点「有没有内容 / 资源」—— 文本有正文、图片 / 视频有资源地址。只是「有没有素材」，
    * **不决定形态、不决定能不能连**。不给 = 永远没有（导演台、分组）。统一经 `hasNodeResource` 调。
@@ -171,7 +184,7 @@ export const FLOW_NODE_TYPE_DEFAULTS: Record<string, FlowNodeTypeDefaults> = {
     // 正文单独占一个 key（平铺在 data 上）：两个人一个改标题一个改正文才不会互相盖掉
     defaultData: () => ({ text: '' }),
     hasResource: (data) => filled(data.text),
-    // view.class：w-[320px] min-h-[120px]
+    // view.class：w-[320px] min-h-[120px]（没拉伸过时；可拉伸，拉过就是 layout 里的尺寸）
     defaultSize: { width: 320, height: 120 },
     // 文本是源头：只往外给，不接收
     outputs: [{ id: 'text', dataType: 'text', label: '文本' }],
@@ -227,6 +240,7 @@ export const FLOW_NODE_TYPE_DEFAULTS: Record<string, FlowNodeTypeDefaults> = {
     defaultData: () => ({ background: GROUP_DEFAULT_BACKGROUND }),
     defaultLayout: () => ({ ...GROUP_DEFAULT_SIZE, zIndex: GROUP_Z_INDEX }),
     defaultSize: GROUP_DEFAULT_SIZE,
+    connectable: false,
   },
 }
 
@@ -315,18 +329,19 @@ export function portsOf(type: string, side: PortSide): PortDef[] {
 
 /**
  * 这个类型声明过端口没有（任一侧）。声明过的类型**只有**声明了的那些端口：只声明了输出的
- * （text）就没有输入、谁也连不进去；一个都没声明的（兜底的 process、group）
- * 是「左右各一个、和谁都能连」。
+ * （text）就没有输入、谁也连不进去；一个都没声明的（兜底的 process）
+ * 是「左右各一个、和谁都能连」。不参与连线的类型（`connectable: false`，分组）另由 {@link declaresSide} 拦。
  */
 export function hasPorts(type: string): boolean {
   return portsOf(type, 'inputs').length + portsOf(type, 'outputs').length > 0
 }
 
 /**
- * 这个类型在这一侧**声明**过端口没有（不看节点数据）。没声明端口的类型两边都算有。
- * 「此刻能不能连」要用带数据的 `hasSide`。
+ * 这个类型在这一侧**声明**过端口没有（不看节点数据）。没声明端口的类型两边都算有；
+ * `connectable: false` 的类型（分组）两边都没有。「此刻能不能连」要用带数据的 `hasSide`。
  */
 export function declaresSide(type: string, side: PortSide): boolean {
+  if (!isConnectableType(type)) return false
   return !hasPorts(type) || portsOf(type, side).length > 0
 }
 
@@ -453,6 +468,8 @@ export function resolveConnection(
   if (targetType === undefined) return { ok: false, reason: `终点节点 ${candidate.target} 不存在` }
   if (candidate.source === candidate.target) return { ok: false, reason: '起点和终点不能是同一个节点' }
 
+  if (!isConnectableType(sourceType)) return { ok: false, reason: `${sourceType} 不能连线` }
+  if (!isConnectableType(targetType)) return { ok: false, reason: `${targetType} 不能连线` }
   if (!declaresSide(sourceType, 'outputs')) return { ok: false, reason: `${sourceType} 没有输出端口` }
   if (!declaresSide(targetType, 'inputs')) return { ok: false, reason: `${targetType} 没有输入端口` }
 

@@ -64,12 +64,15 @@ function cancel() {
 
     nodrag / nopan：在文本框里拖选文字不该变成拖节点或拖画布。
     Esc 退出、失焦提交；回车留给换行 —— 这是一块多行文本，不是一行标题。
+
+    高度：节点根元素保证至少 120、拉伸过就是拉成的高度，这里 flex-1 填满、min-h-0 允许比内容矮 ——
+    拉矮了正文裁掉（展示态），编辑时 textarea 自己滚动。
   -->
   <textarea
     v-if="body.editing.value"
     ref="inputRef"
     v-model="body.draft.value"
-    class="nodrag nopan nowheel min-h-[120px] w-full flex-1 resize-none rounded-[inherit] border-0 bg-background px-3 py-2 text-sm outline-none ring-0"
+    class="nodrag nopan nowheel min-h-0 w-full flex-1 resize-none rounded-[inherit] border-0 bg-background px-3 py-2 text-sm outline-none ring-0"
     data-testid="text-body-input"
     @blur="commit()"
     @keydown.esc.prevent="cancel()"
@@ -77,7 +80,7 @@ function cancel() {
   />
   <div
     v-else
-    class="min-h-[120px] flex-1 cursor-text whitespace-pre-wrap break-words rounded-[inherit] bg-background px-3 py-2 text-sm"
+    class="min-h-0 flex-1 overflow-hidden whitespace-pre-wrap break-words rounded-[inherit] bg-background px-3 py-2 text-sm"
     :class="text ? '' : 'text-muted-foreground'"
     title="双击编辑文本"
     data-testid="text-body"

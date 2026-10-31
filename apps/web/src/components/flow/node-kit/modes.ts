@@ -17,6 +17,7 @@ import type { NodeKit } from "./registry"
  * 由此：
  * - 进入新模式（同一节点或别的节点）→ 旧的以 `'preempted'` 退出；
  * - 选中了别的节点（`syncSelection`）→ 正在编辑的那个以 `'preempted'` 退出。
+ *   进入模式本身不改选中态，所以编辑中的节点不一定是被选中的那个；只有选中态**变了**才判这一条。
  *
  * `'preempted'` 时草稿怎么办由模式的 `exit` 钩子决定，约定是**提交**（与现在点别处 → blur → commit 一致），
  * 只有 `'cancel'`（Esc）丢草稿。
@@ -77,7 +78,7 @@ export function createNodeModeController(kit: Pick<NodeKit, "findMode">) {
     finish(prev, reason)
   }
 
-  /** 选中态变了：编辑中的节点不再是被选中的那个，它的编辑就取消（以 preempted 退出） */
+  /** 选中态变了、变成的不是编辑中的节点：它的编辑就取消（以 preempted 退出） */
   function syncSelection(selectedNodeId: string | null) {
     const prev = active.value
     if (prev && prev.nodeId !== selectedNodeId) finish(prev, "preempted")

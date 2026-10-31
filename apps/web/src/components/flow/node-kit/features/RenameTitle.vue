@@ -19,6 +19,7 @@ import { useNodePart } from "../context"
  *
  * 改名是一个**编辑模式**：整张画布同时只有一个节点可编辑。别处顶掉这个模式（选中了别的节点、
  * 同一节点进了别的模式）时，草稿按 blur 的规矩提交。
+ * 改名**不选中**节点（REQ-NODEKIT §4.6）：原来选中的节点照旧选中，工具栏也不会因为改名冒出来。
  */
 const ctx = useNodePart()
 
@@ -40,15 +41,8 @@ const title = ctx.node.draft<string>("metadata", "label", {
   }
 })
 
-/**
- * 双击标题就地改名。
- *
- * 先把选中态切到它身上：名字这一行是 teleport 出节点 DOM 的（NodeToolbar），
- * 点它不会冒泡成 `node-click`，所以得自己切；切了才会上报到 awareness，
- * 别人也就看得到「有人在动这个节点」。
- */
+/** 双击标题就地改名 */
 function startEdit() {
-  ctx.editor.canvas.selectOnly(ctx.id)
   if (ctx.mode.enter(RENAME_MODE)) void title.start()
 }
 
@@ -69,21 +63,31 @@ watch(ctx.mode.current, (mode) => {
 </script>
 
 <template>
-  <!-- nodrag / nopan：在输入框里拖选文字不该变成拖节点或拖画布 -->
+  <!--
+    nodrag / nopan：在输入框里拖选文字不该变成拖节点或拖画布。
+    不画框、不留内边距、字号字重和名字一样：进出编辑时文字原地不动，只多一个光标。
+    w-full + data-node-title-input：宿主的名字区见到它就撑满这一行剩下的宽度（NodeHost.vue）
+  -->
   <Input
     v-if="title.editing.value"
     ref="inputRef"
     v-model="title.draft.value"
-    class="nodrag nopan h-5 w-32 rounded border-primary bg-card px-1 py-0 text-xs shadow-none focus-visible:border-primary focus-visible:ring-0 md:text-xs dark:bg-card"
+    class="nodrag nopan h-5 w-full min-w-0 rounded-none border-0 bg-transparent px-0 py-0 text-xs font-medium shadow-none focus-visible:ring-0 md:text-xs dark:bg-transparent"
+    data-node-title-input
     @blur="commit()"
     @keydown.enter.prevent="commit()"
     @keydown.esc.prevent="cancel()"
     @dblclick.stop
   />
+  <!--
+    名字超出节点宽度时省略号（宿主把这一行限成节点在屏幕上的宽度，这里 min-w-0 + truncate 才让得出来）；
+    悬停提示带上全名，省略掉的部分在那里能看到
+  -->
   <span
     v-else
-    class="cursor-text text-xs font-medium text-muted-foreground hover:text-foreground"
-    title="双击改名"
+    class="min-w-0 cursor-text truncate text-xs font-medium text-muted-foreground hover:text-foreground"
+    :title="`${ctx.label.value}（双击改名）`"
+    data-node-title
     @dblclick.stop="startEdit"
   >
     {{ ctx.label.value }}

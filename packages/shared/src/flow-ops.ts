@@ -1,7 +1,19 @@
 import * as Y from 'yjs'
 import { fromYEdge, fromYNode, toYEdge, toYNode } from './flow-doc.ts'
 import type { FlowEdge, FlowNodeRecord } from './flow-graph.ts'
-import { boundingRect, groupFrameAround, planAutoLayout, type LayoutLink, type LayoutNode } from './flow-layout.ts'
+import {
+  boundingRect,
+  fitGroupFrame,
+  groupFrameAround,
+  groupUnderNode,
+  planAutoLayout,
+  planGroupArrangement,
+  type GroupArrangement,
+  type GroupFit,
+  type LayoutLink,
+  type LayoutNode,
+  type LayoutRect,
+} from './flow-layout.ts'
 import {
   connectionEdgeData,
   DEFAULT_EDGE_TYPE,
@@ -154,10 +166,36 @@ export function buildEdge(
 /**
  * 新建一个节点（记录由调用方按注册表拼好：`buildNodeRecord` / 前端的 `buildFlowNode`）。
  * id 已被占用时照旧覆盖（和 `Y.Map.set` 同义）—— id 都出自 `createId()`，不会撞。
+ *
+ * **建进分组**：记录的 `layout.parentNode` 指着一个分组框时，`position` 按相对框左上角解释，
+ * `extent: 'parent'` 由这里补上，并在同一个事务里把框长到罩得住它（{@link settleLayout}）——
+ * 别人不会先看到一个支棱在框外的组员。父节点不存在抛 `NODE_NOT_FOUND`，不是（顶层的）分组框抛 `NOT_A_GROUP`
+ * （分组不嵌套）。
+ *
+ * 建在**顶层**且 `reparent` 时（agent 点了画布坐标），中心点落在分组框里就**加入**那个分组
+ * （和把节点拖进分组同一条规则，{@link settleLayout}），返回的记录带着 `parentNode` 和相对坐标。
  */
-export function createNode(ctx: FlowOpContext, record: FlowNodeRecord): FlowNodeRecord {
-  ctx.nodes.set(record.id, toYNode(record))
-  return record
+export function createNode(ctx: FlowOpContext, record: FlowNodeRecord, options: LayoutOptions = {}): FlowNodeRecord {
+  const parentId = record.layout.parentNode
+  if (!parentId) {
+    if (options.reparent && record.type !== GROUP_NODE_TYPE) {
+      // 落点（中心）在分组框里就直接建成组员 —— settleLayout 判归属、换算相对坐标、扩框，同一个事务
+      return settleLayout(ctx, { added: [record] }, options).added[0] ?? record
+    }
+    ctx.nodes.set(record.id, toYNode(record))
+    return record
+  }
+  const parent = requireNodeRecord(ctx, parentId, '分组')
+  if (parent.type !== GROUP_NODE_TYPE || parent.layout.parentNode) {
+    throw new FlowOpError('NOT_A_GROUP', `节点 ${parentId} 不是顶层的分组框，不能往里放节点`)
+  }
+  if (record.type === GROUP_NODE_TYPE) {
+    throw new FlowOpError('NOT_A_GROUP', '分组框不能放进另一个分组')
+  }
+  const inGroup: FlowNodeRecord = { ...record, layout: { ...record.layout, extent: 'parent' } }
+  // 交给 settleLayout 一起「先算、后写」：节点和扩框同一笔
+  settleLayout(ctx, { added: [inGroup] }, options)
+  return inGroup
 }
 
 /** 这个节点现在有没有连进来的线（`target` 是它、起点还在的边；从它连出去的不算） */
@@ -265,6 +303,7 @@ export function createConnectedNode(
   ctx: FlowOpContext,
   record: FlowNodeRecord,
   from: ConnectFrom,
+  options: LayoutOptions = {},
 ): { node: FlowNodeRecord; edge: FlowEdge } {
   requireNodeRecord(ctx, from.source, '起点节点')
   const context = docConnectionContext(ctx)
@@ -277,9 +316,9 @@ export function createConnectedNode(
     },
   )
   const edge = buildEdge(from.source, record.id, ports, context.edges, { id: from.edgeId, label: from.label })
-  createNode(ctx, record)
+  const node = createNode(ctx, record, options)
   insertEdge(ctx, edge)
-  return { node: record, edge }
+  return { node, edge }
 }
 
 /** plain JSON 的深拷贝（shared 的 lib 只有 ES2020，没有 `structuredClone`） */
@@ -306,7 +345,7 @@ function cloneJson<T>(value: T): T {
 export function duplicateNode(
   ctx: FlowOpContext,
   sourceId: string,
-  options: { id: string; offset: Point; createdAt?: number },
+  options: { id: string; offset: Point; createdAt?: number; sizeOf?: NodeSizeOf },
 ): FlowNodeRecord {
   const source = requireNodeRecord(ctx, sourceId)
   const clone: FlowNodeRecord = {
@@ -323,7 +362,8 @@ export function duplicateNode(
     data: cloneJson(source.data),
     runtime: { status: 'idle' },
   }
-  return createNode(ctx, clone)
+  // 组内节点的副本留在同一个分组里（`parentNode` 照抄），框按需长大 —— createNode 里同一个事务
+  return createNode(ctx, clone, { sizeOf: options.sizeOf })
 }
 
 // —— 删除 ——
@@ -422,31 +462,230 @@ export function ungroup(ctx: FlowOpContext, groupId: string): UngroupResult {
 /** 不量 DOM 时每个节点按多大算；编辑器有实测尺寸时走自己的（见 `useFlowCanvas`） */
 export type NodeSizeOf = (record: FlowNodeRecord) => NodeSize
 
-/** 移动一批节点（只写 `position`）。不存在的跳过，返回真正移动了的 id */
-export function moveNodes(ctx: FlowOpContext, positions: Iterable<[string, Point]>): string[] {
+export interface LayoutOptions {
+  /** 每个节点按多大算（默认 `nodeSizeOf`；编辑器传实测尺寸） */
+  sizeOf?: NodeSizeOf
+  /**
+   * 按落点重定归属（{@link groupUnderNode}，看节点中心点）：顶层节点拖进分组框 → 加入；组员拖出自己的框 →
+   * 移出（落进另一个框就加入那个），坐标在画布坐标 / 相对框左上角之间换算。分组框自己不参与。
+   * 「人拖的 / agent 挪的 / agent 点了坐标新建的」要开；程序自己摆的（新建后居中、自动布局）不开 ——
+   * 不开时组员挪到框外就是把框撑大。
+   */
+  reparent?: boolean
+}
+
+export interface LayoutChange {
+  /** 这一笔里新建的节点（还不在文档里；校验通过后和位置 / 尺寸一起写） */
+  added?: readonly FlowNodeRecord[]
+  /** 新位置（组员是相对分组框左上角的） */
+  positions?: Iterable<[string, Point]>
+  /** 新尺寸 */
+  sizes?: Iterable<[string, NodeSize]>
+}
+
+export interface SettledLayout {
+  /** 真正写了位置的（点名的，不含因分组长大被连带补偿的组员） */
+  moved: string[]
+  /** 这一笔里加入了分组的节点 → 加入的分组 */
+  joined: [string, string][]
+  /** 这一笔里移出了分组的节点 → 原来的分组（移进另一个分组的两边都记） */
+  left: [string, string][]
+  /** 新建的节点，按最终写进去的样子（加入分组的带着 `parentNode` 和相对坐标） */
+  added: FlowNodeRecord[]
+  /** 真正写了尺寸的 */
+  resized: string[]
+  /** 因此长大了的分组框 */
+  grown: string[]
+}
+
+/**
+ * 布局变化的**唯一落定点**：写位置 / 尺寸，并在同一个事务里处理分组的边界（docs/13 §4.4）——
+ *
+ * - **按落点重定归属**（`reparent`）：顶层节点中心点落进分组框 → 加入；组员中心点拖出自己的框 → 移出
+ *   （落进另一个框就加入那个）。分组框自己挪到 / 长到别的节点上**不**算，什么都不发生。
+ *   移出的那个分组不缩（只长不缩），留下的组员不动。
+ * - **框罩住组员**：动到的组员（挪了、改了尺寸、刚加入、或没拖出中心的探出一截）的框、改了尺寸的分组框按
+ *   `fitGroupFrame` 只长不缩到罩得住全部组员；往左 / 往上长时框的左上角挪了，组员的相对坐标一起补上，
+ *   画面上谁都不跳。
+ *
+ * 编辑器和 agent 都经这里：尺寸是参数（`sizeOf`），这里不量 DOM。不存在的节点跳过；
+ * 先算完再写第一笔（Yjs 的事务不回滚）。
+ */
+export function settleLayout(ctx: FlowOpContext, change: LayoutChange, options: LayoutOptions = {}): SettledLayout {
+  const sizeOf = options.sizeOf ?? nodeSizeOf
+  const records = new Map<string, FlowNodeRecord>()
+  for (const id of ctx.nodes.keys()) {
+    const record = readNodeRecord(ctx, id)
+    if (record) records.set(id, record)
+  }
+  const added = change.added ?? []
+  for (const record of added) records.set(record.id, record)
+  const positions = new Map<string, Point>()
+  for (const [id, position] of change.positions ?? []) {
+    if (nodeMapOf(ctx, id)) positions.set(id, { x: position.x, y: position.y })
+  }
+  const sizes = new Map<string, NodeSize>()
+  for (const [id, size] of change.sizes ?? []) {
+    if (nodeMapOf(ctx, id)) sizes.set(id, { width: size.width, height: size.height })
+  }
+
+  const sizeAfter = (record: FlowNodeRecord) => sizes.get(record.id) ?? sizeOf(record)
+  const positionAfter = (record: FlowNodeRecord) => positions.get(record.id) ?? record.layout.position
+  const rectAfter = (record: FlowNodeRecord): LayoutRect => ({ ...positionAfter(record), ...sizeAfter(record) })
+  const isTopGroup = (record: FlowNodeRecord | undefined): record is FlowNodeRecord =>
+    record !== undefined && record.type === GROUP_NODE_TYPE && !record.layout.parentNode
+
+  // 先定归属（各自落定后的画布矩形），再按新归属扩框：
+  // 顶层节点中心点落进分组框 → 加入；组员中心点出了自己的框 → 移出（落进另一个框就加入那个）
+  const joined: [string, string][] = []
+  const left: [string, string][] = []
+  const addedOut = [...added]
+  const reparented = new Set<string>()
+  if (options.reparent) {
+    const groups = [...records.values()].filter(isTopGroup).map((group) => ({ id: group.id, rect: rectAfter(group) }))
+    const rectOf = new Map(groups.map((group) => [group.id, group.rect]))
+    for (const id of new Set([...positions.keys(), ...added.map((record) => record.id)])) {
+      const record = records.get(id)
+      if (!record || record.type === GROUP_NODE_TYPE) continue
+      const parentId = record.layout.parentNode
+      const parentRect = parentId ? rectOf.get(parentId) : undefined
+      if (parentId && !parentRect) continue // 父节点读不出来：不动归属，免得把它算丢
+      const local = rectAfter(record)
+      const absolute = parentRect ? { ...local, x: local.x + parentRect.x, y: local.y + parentRect.y } : local
+      if (parentId && parentRect && groupUnderNode(absolute, [{ id: parentId, rect: parentRect }])) continue // 还在自己的框里
+      const targetId = groupUnderNode(
+        absolute,
+        groups.filter((group) => group.id !== parentId),
+      )
+      if (!targetId && !parentId) continue
+      const target = targetId ? rectOf.get(targetId) : undefined
+      const layout = { ...record.layout }
+      if (target && targetId) {
+        layout.parentNode = targetId
+        layout.extent = 'parent'
+        layout.position = { x: absolute.x - target.x, y: absolute.y - target.y }
+        joined.push([id, targetId])
+      } else {
+        delete layout.parentNode
+        delete layout.extent
+        layout.position = { x: absolute.x, y: absolute.y }
+      }
+      if (parentId) left.push([id, parentId])
+      const member: FlowNodeRecord = { ...record, layout }
+      records.set(id, member)
+      reparented.add(id)
+      const index = addedOut.findIndex((item) => item.id === id)
+      if (index >= 0) addedOut[index] = member
+      else positions.set(id, layout.position)
+    }
+  }
+
+  // 哪些分组框要重新罩一遍：组员动了（挪了 / 改了尺寸），或分组框自己改了尺寸。
+  // 整框平移不算 —— 组员的相对坐标没变（老画布上贴着边的组员不因为挪了一下框而被改动）
+  const affected = new Set<string>()
+  for (const id of sizes.keys()) if (isTopGroup(records.get(id))) affected.add(id)
+  for (const id of new Set([...positions.keys(), ...sizes.keys(), ...addedOut.map((record) => record.id)])) {
+    const record = records.get(id)
+    if (!record) continue
+    const parent = record.layout.parentNode ? records.get(record.layout.parentNode) : undefined
+    if (isTopGroup(parent)) affected.add(parent.id)
+  }
+  const childrenOf = new Map<string, FlowNodeRecord[]>()
+  for (const record of records.values()) {
+    const parentId = record.layout.parentNode
+    if (!parentId || !affected.has(parentId)) continue
+    const list = childrenOf.get(parentId) ?? []
+    list.push(record)
+    childrenOf.set(parentId, list)
+  }
+  const fits = new Map<string, GroupFit>()
+  for (const groupId of affected) {
+    const group = records.get(groupId)
+    if (!group) continue
+    fits.set(groupId, fitGroupFrame(rectAfter(group), (childrenOf.get(groupId) ?? []).map(rectAfter)))
+  }
+
+  // —— 动手 ——
   const moved: string[] = []
+  const resized: string[] = []
+  const grown: string[] = []
+  for (const record of addedOut) ctx.nodes.set(record.id, toYNode(record))
   for (const [id, position] of positions) {
     const node = nodeMapOf(ctx, id)
     if (!node) continue
-    node.set('position', { x: position.x, y: position.y })
+    if (reparented.has(id)) {
+      const parentNode = records.get(id)?.layout.parentNode
+      if (parentNode) {
+        node.set('parentNode', parentNode)
+        node.set('extent', 'parent')
+      } else {
+        node.delete('parentNode')
+        node.delete('extent')
+      }
+    }
+    node.set('position', position)
     moved.push(id)
   }
-  return moved
+  for (const [id, size] of sizes) {
+    const node = nodeMapOf(ctx, id)
+    node?.set('width', size.width)
+    node?.set('height', size.height)
+    resized.push(id)
+  }
+  for (const [groupId, fit] of fits) {
+    const group = records.get(groupId)
+    if (!group) continue
+    const before = rectAfter(group)
+    const { frame, shift } = fit
+    if (frame.width === before.width && frame.height === before.height && shift.x === 0 && shift.y === 0) continue
+    const node = nodeMapOf(ctx, groupId)
+    if (!node) continue
+    node.set('position', { x: frame.x, y: frame.y })
+    node.set('width', frame.width)
+    node.set('height', frame.height)
+    grown.push(groupId)
+    if (shift.x === 0 && shift.y === 0) continue
+    for (const child of childrenOf.get(groupId) ?? []) {
+      const at = positionAfter(child)
+      nodeMapOf(ctx, child.id)?.set('position', { x: at.x + shift.x, y: at.y + shift.y })
+    }
+  }
+  return { moved, joined, left, added: addedOut, resized, grown }
+}
+
+/**
+ * 移动一批节点（写 `position`，组员的框按需长大 —— {@link settleLayout}）。不存在的跳过，返回真正移动了的 id。
+ * 人拖的、agent 挪的传 `reparent: true`（按落点加入 / 移出分组）。
+ */
+export function moveNodes(
+  ctx: FlowOpContext,
+  positions: Iterable<[string, Point]>,
+  options: LayoutOptions = {},
+): string[] {
+  return settleLayout(ctx, { positions }, options).moved
 }
 
 /**
  * 改一个节点的尺寸，顺带改位置（从左上角往外拉时锚点在对角，`x` / `y` 也变）——
  * 同一个事务，别人不会看到位置变了但尺寸没变的中间态。
+ *
+ * 分组框拉得比组员还小会长回罩得住组员的大小；组员变大，框跟着长（{@link settleLayout}）。
  */
 export function resizeNode(
   ctx: FlowOpContext,
   nodeId: string,
   size: { width: number; height: number; x?: number; y?: number },
-): void {
-  const node = requireNodeMap(ctx, nodeId)
-  node.set('width', size.width)
-  node.set('height', size.height)
-  if (size.x !== undefined && size.y !== undefined) node.set('position', { x: size.x, y: size.y })
+  options: LayoutOptions = {},
+): SettledLayout {
+  requireNodeMap(ctx, nodeId)
+  return settleLayout(
+    ctx,
+    {
+      sizes: [[nodeId, { width: size.width, height: size.height }]],
+      positions: size.x !== undefined && size.y !== undefined ? [[nodeId, { x: size.x, y: size.y }]] : [],
+    },
+    options,
+  )
 }
 
 /**
@@ -454,7 +693,7 @@ export function resizeNode(
  * `parentNode` 指着还不存在的节点的孤儿，整片跳到原点；撤销也会撤出半拉）。
  *
  * 分组框的位置和尺寸、`children` 里**相对分组框左上角**的位置都由调用方算好传进来（编辑器按实测尺寸算）。
- * `extent: 'parent'` 也在这一笔里写（渲染时机的问题在编辑器的 `extentReady` 挡，不靠晚写文档）。
+ * `extent: 'parent'` 也在这一笔里写（编辑器从不把它交给 Vue Flow；「出不去」由 {@link settleLayout} 落定时守）。
  * 不存在的成员跳过，返回真正挂上去的 id。
  */
 export function groupNodes(
@@ -473,6 +712,48 @@ export function groupNodes(
     attached.push(id)
   }
   return attached
+}
+
+/**
+ * 分组内排列（横向 / 纵向 / 宫格，规则在 {@link planGroupArrangement}）：组员的新位置和分组框**正好罩住它们的尺寸**
+ * 一笔经 {@link settleLayout} 写进去 —— 一条撤销。框的左上角不动；这里框可以缩（不同于拖动时的只长不缩），
+ * 因为组员是整体重排、框跟着排出来的样子走。没有组员什么都不写。
+ *
+ * 不存在抛 `NODE_NOT_FOUND`，不是（顶层的）分组抛 `NOT_A_GROUP`。返回真正移动了的组员 id。
+ */
+export function arrangeGroup(
+  ctx: FlowOpContext,
+  groupId: string,
+  arrangement: GroupArrangement,
+  options: { sizeOf?: NodeSizeOf } = {},
+): string[] {
+  const sizeOf = options.sizeOf ?? nodeSizeOf
+  const group = requireNodeRecord(ctx, groupId, '分组')
+  if (group.type !== GROUP_NODE_TYPE || group.layout.parentNode) {
+    throw new FlowOpError('NOT_A_GROUP', `节点 ${groupId} 不是顶层的分组框，不能排列`)
+  }
+  const members: FlowNodeRecord[] = []
+  for (const id of ctx.nodes.keys()) {
+    const record = readNodeRecord(ctx, id)
+    if (record?.layout.parentNode === groupId) members.push(record)
+  }
+  const plan = planGroupArrangement(
+    members.map((record) => ({ id: record.id, position: record.layout.position, ...sizeOf(record) })),
+    arrangement,
+  )
+  if (!plan.size) return []
+  const positions = [...plan.positions].filter(([id, at]) => {
+    const before = members.find((record) => record.id === id)?.layout.position
+    return !before || before.x !== at.x || before.y !== at.y
+  })
+  const before = sizeOf(group)
+  const resize = before.width !== plan.size.width || before.height !== plan.size.height
+  if (positions.length === 0 && !resize) return []
+  return settleLayout(
+    ctx,
+    { positions, sizes: resize ? [[groupId, plan.size]] : [] },
+    { sizeOf },
+  ).moved
 }
 
 export interface GroupFrame {

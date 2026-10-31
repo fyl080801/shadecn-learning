@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { edgesMap, fromYEdge, fromYNode, nodeGroup, nodesMap, toYEdge, toYNode } from '../src/flow-doc.ts'
 import { defaultEdgeData, type FlowEdge, type FlowNodeRecord } from '../src/flow-graph.ts'
-import { GROUP_HEADER, GROUP_PADDING, LAYOUT_RANK_GAP } from '../src/flow-layout.ts'
+import { GROUP_HEADER, GROUP_PADDING, LAYOUT_NODE_GAP, LAYOUT_RANK_GAP } from '../src/flow-layout.ts'
 import { buildNodeRecord } from '../src/flow-node-types.ts'
 import * as ops from '../src/flow-ops.ts'
 import { FlowOpError, type FlowOpContext } from '../src/flow-ops.ts'
@@ -255,6 +255,132 @@ describe('布局', () => {
   })
 })
 
+describe('分组边界（settleLayout）', () => {
+  /** 一个 400×300 的分组框在 (0,0)，组员 a（200×100）在相对 (40,60) */
+  function grouped(extra: FlowNodeRecord[] = []) {
+    const group: FlowNodeRecord = {
+      ...record('g', 'group'),
+      layout: { position: { x: 0, y: 0 }, width: 400, height: 300 },
+    }
+    const a: FlowNodeRecord = {
+      ...record('a'),
+      layout: { position: { x: 40, y: 60 }, width: 200, height: 100, parentNode: 'g', extent: 'parent' },
+    }
+    return setup([group, a, ...extra])
+  }
+
+  it('组员探出框边（中心还在框里）：分组框同一个事务长到罩住它（含留白），左上角不动', () => {
+    const { run, node, transactions } = grouped()
+    run((ctx) => ops.moveNodes(ctx, new Map([['a', { x: 250, y: 160 }]]), { reparent: true }))
+    expect(transactions).toHaveLength(1)
+    expect(node('a')!.layout).toMatchObject({ parentNode: 'g', position: { x: 250, y: 160 } })
+    expect(node('g')!.layout).toMatchObject({
+      position: { x: 0, y: 0 },
+      width: 450 + GROUP_PADDING,
+      height: 300,
+    })
+  })
+
+  it('组员往左上探出：框往左上长，所有组员的相对坐标一起补偿，画布上谁都不跳', () => {
+    const b: FlowNodeRecord = {
+      ...record('b'),
+      layout: { position: { x: 100, y: 180 }, width: 100, height: 50, parentNode: 'g', extent: 'parent' },
+    }
+    const { run, node } = grouped([b])
+    run((ctx) => ops.moveNodes(ctx, new Map([['a', { x: -50, y: 60 }]]), { reparent: true }))
+    const g = node('g')!.layout
+    const dx = 50 + GROUP_PADDING
+    expect(g.position).toEqual({ x: -dx, y: 0 })
+    expect(g.width).toBe(400 + dx)
+    expect(node('a')!.layout.position).toEqual({ x: -50 + dx, y: 60 })
+    expect(node('b')!.layout.position).toEqual({ x: 100 + dx, y: 180 })
+  })
+
+  it('组员中心拖出框：移出分组（清掉 parentNode / extent，换回画布坐标），分组框不缩', () => {
+    const { run, node } = grouped()
+    const result = run((ctx) =>
+      ops.settleLayout(ctx, { positions: [['a', { x: 500, y: 60 }]] }, { reparent: true }),
+    )
+    expect(result.left).toEqual([['a', 'g']])
+    expect(result.joined).toEqual([])
+    expect(node('a')!.layout).toEqual({ position: { x: 500, y: 60 }, width: 200, height: 100 })
+    expect(node('g')!.layout).toMatchObject({ position: { x: 0, y: 0 }, width: 400, height: 300 })
+  })
+
+  it('组外节点中心拖进框：加入分组（相对坐标 + extent），框重新罩住它', () => {
+    const outsider: FlowNodeRecord = { ...record('o'), layout: { position: { x: 600, y: 0 }, width: 100, height: 100 } }
+    const { run, node, transactions } = grouped([outsider])
+    const result = run((ctx) =>
+      ops.settleLayout(ctx, { positions: [['o', { x: 330, y: 200 }]] }, { reparent: true }),
+    )
+    expect(result.joined).toEqual([['o', 'g']])
+    expect(transactions).toHaveLength(1)
+    expect(node('o')!.layout).toMatchObject({ parentNode: 'g', extent: 'parent', position: { x: 330, y: 200 } })
+    expect(node('g')!.layout).toMatchObject({ width: 430 + GROUP_PADDING, height: 300 + GROUP_PADDING })
+  })
+
+  it('组员从一个分组拖进另一个：换到那个分组，坐标按新框换算', () => {
+    const other: FlowNodeRecord = {
+      ...record('h', 'group'),
+      layout: { position: { x: 1000, y: 0 }, width: 400, height: 300 },
+    }
+    const { run, node } = grouped([other])
+    run((ctx) => ops.moveNodes(ctx, new Map([['a', { x: 1100, y: 100 }]]), { reparent: true }))
+    expect(node('a')!.layout).toMatchObject({ parentNode: 'h', extent: 'parent', position: { x: 100, y: 100 } })
+  })
+
+  it('分组框挪到 / 盖住组外节点：什么都不发生（不加入、不拦）；不开 reparent 时组外节点挪进框也只是挪', () => {
+    const outsider: FlowNodeRecord = { ...record('o'), layout: { position: { x: 450, y: 0 }, width: 100, height: 100 } }
+    const { run, node } = grouped([outsider])
+    run((ctx) => ops.moveNodes(ctx, new Map([['g', { x: 300, y: 0 }]]), { reparent: true }))
+    expect(node('g')!.layout.position).toEqual({ x: 300, y: 0 })
+    expect(node('o')!.layout.parentNode).toBeUndefined()
+
+    run((ctx) => ops.moveNodes(ctx, new Map([['o', { x: 400, y: 100 }]])))
+    expect(node('o')!.layout.parentNode).toBeUndefined()
+  })
+
+  it('分组框拉得比组员小：长回罩得住组员的大小', () => {
+    const { run, node } = grouped()
+    run((ctx) => ops.resizeNode(ctx, 'g', { width: 100, height: 100 }))
+    expect(node('g')!.layout).toMatchObject({ width: 240 + GROUP_PADDING, height: 160 + GROUP_PADDING })
+  })
+
+  it('createNode 建进分组：补上 extent，框同一个事务长大；父节点不是分组 → NOT_A_GROUP', () => {
+    const { run, node, transactions } = grouped([record('p', 'process', { x: 900, y: 900 })])
+    const child = { ...record('c'), layout: { position: { x: 380, y: 60 }, width: 100, height: 100, parentNode: 'g' } }
+    run((ctx) => ops.createNode(ctx, child))
+    expect(transactions).toHaveLength(1)
+    expect(node('c')!.layout).toMatchObject({ parentNode: 'g', extent: 'parent' })
+    expect(node('g')!.layout.width).toBe(480 + GROUP_PADDING)
+
+    const stray = { ...record('d'), layout: { position: { x: 0, y: 0 }, parentNode: 'p' } }
+    expect(codeOf(() => run((ctx) => ops.createNode(ctx, stray)))).toBe('NOT_A_GROUP')
+    const ghost = { ...record('e'), layout: { position: { x: 0, y: 0 }, parentNode: 'ghost' } }
+    expect(codeOf(() => run((ctx) => ops.createNode(ctx, ghost)))).toBe('NODE_NOT_FOUND')
+  })
+
+  it('createNode 建在顶层 + reparent：中心点在分组框里就建成组员（相对坐标），否则照常建在顶层', () => {
+    const { run, node } = grouped()
+    const inside = run((ctx) =>
+      ops.createNode(ctx, { ...record('c'), layout: { position: { x: 300, y: 150 }, width: 100, height: 100 } }, { reparent: true }),
+    )
+    expect(inside.layout).toMatchObject({ parentNode: 'g', extent: 'parent', position: { x: 300, y: 150 } })
+    expect(node('c')!.layout.parentNode).toBe('g')
+    const outside = run((ctx) =>
+      ops.createNode(ctx, { ...record('d'), layout: { position: { x: 900, y: 0 }, width: 100, height: 100 } }, { reparent: true }),
+    )
+    expect(outside.layout.parentNode).toBeUndefined()
+  })
+
+  it('duplicateNode 复制组员：副本留在同一分组，框按需长大', () => {
+    const { run, node } = grouped()
+    const copy = run((ctx) => ops.duplicateNode(ctx, 'a', { id: 'a2', offset: { x: 200, y: 0 } }))
+    expect(copy.layout.parentNode).toBe('g')
+    expect(node('g')!.layout.width).toBe(440 + GROUP_PADDING)
+  })
+})
+
 describe('duplicateNode', () => {
   it('照抄类型 / 布局（错开）/ metadata / data，运行态重置为空闲且不带产出，连线一条都不复制', () => {
     const source: FlowNodeRecord = {
@@ -453,5 +579,45 @@ describe('autoLayout', () => {
     expect(run((ctx) => ops.autoLayout(ctx)).length).toBeGreaterThan(0)
     expect(run((ctx) => ops.autoLayout(ctx))).toEqual([])
     expect(transactions).toHaveLength(1)
+  })
+})
+
+describe('arrangeGroup（组内排列）', () => {
+  function grouped() {
+    const group: FlowNodeRecord = { ...record('g', 'group'), layout: { position: { x: 500, y: 500 }, width: 900, height: 900 } }
+    const member = (id: string, x: number, y: number): FlowNodeRecord => ({
+      ...record(id),
+      layout: { position: { x, y }, width: 100, height: 50, parentNode: 'g', extent: 'parent' },
+    })
+    const outside: FlowNodeRecord = { ...record('o'), layout: { position: { x: 0, y: 0 }, width: 100, height: 50 } }
+    return setup([group, member('b', 300, 40), member('a', 60, 400), outside])
+  }
+
+  it('横向：组员一行排开，分组框同一个事务收到正好罩住（左上角不动），组外节点不动', () => {
+    const { run, node, transactions } = grouped()
+    run((ctx) => ops.arrangeGroup(ctx, 'g', 'horizontal'))
+    expect(transactions).toHaveLength(1)
+    const top = GROUP_PADDING + GROUP_HEADER
+    expect(node('a')!.layout.position).toEqual({ x: GROUP_PADDING, y: top })
+    expect(node('b')!.layout.position).toEqual({ x: GROUP_PADDING + 100 + LAYOUT_NODE_GAP, y: top })
+    expect(node('g')!.layout).toMatchObject({
+      position: { x: 500, y: 500 },
+      width: 200 + LAYOUT_NODE_GAP + 2 * GROUP_PADDING,
+      height: 50 + 2 * GROUP_PADDING + GROUP_HEADER,
+    })
+    expect(node('o')!.layout.position).toEqual({ x: 0, y: 0 })
+  })
+
+  it('已经排好再排一次：什么都不写', () => {
+    const { run, transactions } = grouped()
+    run((ctx) => ops.arrangeGroup(ctx, 'g', 'vertical'))
+    run((ctx) => ops.arrangeGroup(ctx, 'g', 'vertical'))
+    expect(transactions).toHaveLength(1)
+  })
+
+  it('点名的不是分组 → NOT_A_GROUP，不存在 → NODE_NOT_FOUND', () => {
+    const { run } = grouped()
+    expect(codeOf(() => run((ctx) => ops.arrangeGroup(ctx, 'o', 'grid')))).toBe('NOT_A_GROUP')
+    expect(codeOf(() => run((ctx) => ops.arrangeGroup(ctx, 'nope', 'grid')))).toBe('NODE_NOT_FOUND')
   })
 })
