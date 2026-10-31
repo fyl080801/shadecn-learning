@@ -91,7 +91,7 @@ Collaboration (sync transport, persistence, presence, close codes) is in `collab
 
 ## State — `stores/flow/` is a projection of a Y.Doc
 
-- The canvas content **is** the Yjs doc (shape in `@shadecn/shared/flow-doc`, shared by browser and server). The frontend's incremental projection (`changedTopLevelKeys` / `projectMap` / `createNodeProjector` / `readFallbackViewport`) is `lib/flow-projection.ts`; server-side `apps/server/collab/flow-doc.ts` keeps only `readGraphFromDoc` and `pruneDanglingEdges`.
+- The canvas content **is** the Yjs doc (shape in `@shadecn/shared/flow-doc`, shared by browser and server). The frontend's incremental projection (`changedTopLevelKeys` / `projectMap` / `createNodeProjector` / `readFallbackViewport`) is `lib/flow-projection.ts`; server-side `packages/mod-collab/src/flow-doc.ts` keeps only `readGraphFromDoc` and `pruneDanglingEdges`.
 - `nodes` / `edges` are `Y.Map<id, Y.Map>` because Y.Map merges **per key** — a node as one JSON blob would let the later write clobber the earlier wholesale.
 - **Node = five groups (schema v3): `type` / `layout` / `metadata` / `data` / `runtime`, plus derived, never-stored `inputs`** (`docs/13` §3.7).
   - `layout` (position, size, zIndex, parentNode, extent, handle positions) is **flat on the node's top level** (drag hot path, Vue Flow's shape). `metadata` (label, description, icon, createdAt, createdBy, ui), `data`, `runtime` (status, error, taskId, `outputs.<portId>` flat keys) are nested `Y.Map`s.

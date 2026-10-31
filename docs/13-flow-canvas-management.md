@@ -29,7 +29,7 @@
 | 分享链接 / Invite | 一个带随机 token 的链接，是加入项目的唯一入口；一个项目只有一条 |
 | 画布 / Flow | 一张图，列表里的一行，编辑器里的一个文档 |
 | 图内容 / Graph | 画布的全量内容：`nodes` + `edges` + `viewport`。现在它是 **Y.Doc 的只读投影**，不再是事实源 |
-| 文档 / Y.Doc | 画布内容的唯一事实源，形状见 `@shadecn/shared/flow-doc`（`packages/shared`，前后端共用一份；前端增量投影在 `apps/web/src/lib/flow-projection.ts`，服务端专属操作在 `apps/server/collab/flow-doc.ts`） |
+| 文档 / Y.Doc | 画布内容的唯一事实源，形状见 `@shadecn/shared/flow-doc`（`packages/shared`，前后端共用一份；前端增量投影在 `apps/web/src/lib/flow-projection.ts`，服务端专属操作在 `packages/mod-collab/src/flow-doc.ts`） |
 | 更新 / Update | Yjs 的一段增量二进制。它是可交换、可结合、幂等的 —— 这正是不需要乐观锁的原因 |
 | 事务 / Transaction | 一次 `Y.Doc.transact()`。带 `LOCAL_ORIGIN` 的才进撤销栈，别人同步过来的不进 |
 | 修订号 / revision | 服务端写过多少次全量状态的计数。**不是乐观锁**，没有人拿它做冲突判断 |
@@ -177,7 +177,7 @@ interface FlowGraph {
 > **v3 不迁移、不升级老数据，但读老数据绝不抛错。** v1 把业务种类放在 `data.kind`、业务字段裹在 `data.config` 里；v2 把业务字段平铺到 `data` 上，但 `label` / `status` / `createdAt` 这些框架字段也混在 `data` 里；v3 把节点拆成 `type` / `layout` / `metadata` / `data` / `runtime` 五组（见 3.7）。**存量数据先不管**是产品决定：不写迁移、不做握手版本拒连、不加 `meta.schemaVersion`，v1→v2 的就地升级代码（`upgradeNodeData` / `STRICT_UPGRADE` 那套）也一并删掉了。老数据照 v3 的规范化读（`nodeRecordFromParts`，Y.Doc 和 `Flow.graph` 走同一个函数）：布局字段本来就在节点顶层，原样读得出；没有 `metadata` / `runtime` 的退化成缺省值 —— 名字读出来是空串（界面上显示类型的兜底名）、状态 idle；原来混在 `data` 上的 `label` / `status` / `kind` / `config` 留在 `data` 里当普通业务字段。形状不对（没有合法 `position`）的节点照旧整条跳过。**`parseGraph()` 仍然收 v1 / v2**，不拒收是硬要求：老画布进 Yjs 的唯一入口 `loadFlowState()` 靠 `readGraph()` —— 那里读不出内容就返回 `null`，等于第一次打开老画布就把它清空；v1 / v2 的 `Flow.graph` 行布局是平铺在节点顶层的，`parseGraph` 两处都认。
 
 **这个形状还在，但它的地位变了。** 原本 `graph` 是画布内容的事实源，客户端算好整份快照 `POST` 上来覆盖。
-现在事实源是 `Flow.ydoc`，`graph` 由服务端在写状态时**从文档里派生**出来（`apps/server/collab/flow-doc.ts` 的 `readGraphFromDoc`），
+现在事实源是 `Flow.ydoc`，`graph` 由服务端在写状态时**从文档里派生**出来（`packages/mod-collab/src/flow-doc.ts` 的 `readGraphFromDoc`），
 只服务于三件事：列表页的节点/连线计数、缩略图、将来的只读预览。**编辑器一行都不读它**，
 任何写接口也都不接受它 —— 客户端手里那份始终只是某一时刻的快照，拿它覆盖就会抹掉并发的编辑。
 
@@ -795,7 +795,7 @@ store 的职责边界：
 
 - **状态**：`meta`（FlowSummary 部分）、`nodes` / `edges` / `graphMeta`（**Y.Doc 的只读投影**，`observeDeep` 一变就重算）、`viewport`、`userState`、`canUndo` / `canRedo`、`lastLabel`。
 - **唯一写入口**：所有内容变更都通过 `mutate(change, label?)`，它把改动包进一个带 `LOCAL_ORIGIN` 的 `doc.transact()`。组件**不许直接碰 Y.Map** —— 绕过去的改动既不进撤销、也不同步、更不落库。`label` 只给界面反馈用，CRDT 不需要它。
-- **文档形状**（`@shadecn/shared/flow-doc`，前后端共用一份；服务端专属的只有 `apps/server/collab/flow-doc.ts` 里的 `readGraphFromDoc` / `pruneDanglingEdges`）：`nodes` / `edges` 是 `Y.Map<id, Y.Map>`，每个节点的 `data` 又是一层嵌套的 `Y.Map`。**这样分层是为了让 Y.Map 按 key 合并** —— 一个人改标题、另一个人同时拖位置能干净地合并；整个节点存成一个 JSON blob 的话，后写的那次会把先写的整体盖掉。
+- **文档形状**（`@shadecn/shared/flow-doc`，前后端共用一份；服务端专属的只有 `packages/mod-collab/src/flow-doc.ts` 里的 `readGraphFromDoc` / `pruneDanglingEdges`）：`nodes` / `edges` 是 `Y.Map<id, Y.Map>`，每个节点的 `data` 又是一层嵌套的 `Y.Map`。**这样分层是为了让 Y.Map 按 key 合并** —— 一个人改标题、另一个人同时拖位置能干净地合并；整个节点存成一个 JSON blob 的话，后写的那次会把先写的整体盖掉。
 - **撤销 / 重做**：`Y.UndoManager`，`trackedOrigins: [LOCAL_ORIGIN]`。就是这一个选项让 `Ctrl+Z` **只撤自己的**，不碰协作者的改动。`separateUndo()`（`stopCapturing`）把本会并进 400ms 捕获窗口的两次操作拆成两条记录。
 - **历史仍然只在内存里**：刷新即清空，撤销不跨会话；内容本身当然不丢。
 - **没有保存、没有 revision、没有 409、没有 dirty state**：改动即刻广播，服务端订阅同一个文档并落库（[REQ-COLLAB §3.7](04-realtime-collab.md)）。

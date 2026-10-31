@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { edgesMap, nodesMap } from '@shadecn/shared/flow-doc'
-import { pruneDanglingEdges } from '../../collab/flow-doc.ts'
+import { pruneDanglingEdges } from '@shadecn/mod-collab/flow-doc'
 import {
   BYTES_CHECK_INTERVAL_OVERSIZED,
   COLLAB_LIMITS,
@@ -10,13 +10,13 @@ import {
   forgetQuota,
   quotaLocked,
   quotaViolation,
-} from '../../collab/quota.ts'
+} from '@shadecn/mod-collab/quota'
 import {
   dropForeignClients,
   enforceIdentity,
   forgetClaims,
   releaseSocket,
-} from '../../collab/awareness.ts'
+} from '@shadecn/mod-collab/awareness'
 
 /**
  * 二期补上的三道防线。前两道靠的是 Hocuspocus 的 hook，这里测的是它们背后的纯逻辑；

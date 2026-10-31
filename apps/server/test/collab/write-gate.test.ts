@@ -5,7 +5,7 @@ import {
   isWriteSync,
   type AuthorizeWrite,
   type WriteVerdict,
-} from '../../collab/write-gate.ts'
+} from '@shadecn/mod-collab/write-gate'
 
 /**
  * 写操作的认证闸门（`beforeSync` 背后的纯逻辑；hook 本身只是把它接上去）。

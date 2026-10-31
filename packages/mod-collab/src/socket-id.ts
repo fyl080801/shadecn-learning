@@ -1,4 +1,4 @@
-import { instanceId } from '../config.ts'
+import { collabPorts } from './ports.ts'
 
 /**
  * 给 socketId 加上实例前缀，得到一条连接的**全局唯一标识**。
@@ -11,5 +11,5 @@ import { instanceId } from '../config.ts'
  * 单独成一个模块只是为了让这两处共用同一个定义，别各写各的。
  */
 export function scopedSocketId(socketId: string): string {
-  return `${instanceId}:${socketId}`
+  return `${collabPorts().instanceId}:${socketId}`
 }

@@ -135,7 +135,7 @@ Hocuspocus 之后就不存在了。）
   `value instanceof Y.Map` 判断结构 —— 静默失效的话画布会变成一张空图。
 - 画布房间（`flow:*`）已持久化到应用自己的库；其余房间仍是纯内存的，重启即丢。
 
-### 3.7 持久化（`apps/server/collab/persistence.ts`）
+### 3.7 持久化（`packages/mod-collab/src/persistence.ts`）
 
 **不用 y-leveldb**（原生模块），也**不用 `@hocuspocus/extension-database`` ——
 后者只是 `onLoadDocument` / `onStoreDocument` 的一层薄封装，直接实现这两个 hook 更直白。
@@ -217,7 +217,7 @@ ydoc
 编辑器不读（编辑器的内容直接来自 Y.Doc）。它由服务端在写状态时派生，客户端再也不提交它。
 
 Y.Doc 的结构（键名、嵌套、读写、v1 读时升级）现在只有**一份**，在 `packages/shared`（`@shadecn/shared/flow-doc`），
-前端和服务端 import 的是同一份实现，不再有「改一处记得改另一处」。服务端只剩 `apps/server/collab/flow-doc.ts` 里
+前端和服务端 import 的是同一份实现，不再有「改一处记得改另一处」。服务端只剩 `packages/mod-collab/src/flow-doc.ts` 里
 只有它才做的 `readGraphFromDoc`（派生只读投影）和 `pruneDanglingEdges`。
 ⚠️ 前提是整个 bundle 里只有一份 yjs（`instanceof Y.Map` 跨副本恒为 false），见上文 `resolve.dedupe`，
 以及 `apps/server/test/collab/shared-yjs.test.ts` / `apps/web/src/test/lib/sharedYjs.test.ts`。
@@ -339,7 +339,7 @@ Vue Flow 靠 `:nodes` 的**数组引用**判断要不要重新同步节点。一
 
 awareness 的内容本来完全由客户端自己写、服务端只转发 —— 同房间的人可以把自己的 `user`
 改成别人的名字和头像。现在服务端在转发前把 `user` 覆盖成 `onConnect` 认定的那一份
-（`apps/server/collab/awareness.ts` 的 `enforceIdentity`）。
+（`packages/mod-collab/src/awareness.ts` 的 `enforceIdentity`）。
 
 只覆盖身份三件套（`id` / `name` / `avatarUrl`），**不动** `cursor` / `selection` / `transform` ——
 那些不是身份，报错了也只是画面不准，而且每帧都在变。
@@ -479,7 +479,7 @@ HTTP 请求：握手本身算一次，此后由编辑触发的视图状态 PATCH
 落库前清一次（`pruneDanglingEdges`），用 `'gc'` 这个 origin —— 客户端的 `UndoManager`
 只跟踪自己的 `LOCAL_ORIGIN`，所以清理不会跑进任何人的撤销栈。
 
-**④ 写入闸门（`beforeSync`，`apps/server/collab/write-gate.ts`）**
+**④ 写入闸门（`beforeSync`，`packages/mod-collab/src/write-gate.ts`）**
 
 前面三道守的是「内容本身可不可信」，这一道守的是「**这一帧还该不该被写进来**」。
 
@@ -549,7 +549,7 @@ access token 进入 30 秒刷新窗口之前根本不问 Keycloak），TTL 取 2
 
 同一个人开了第二个浏览器（或第二个标签页）连同一张画布时，**新的赢**：新连接接进来的
 那一刻，他自己那些旧连接全部被顶下线，旧窗口弹出不可关闭的「协作会话已过期，请刷新页面」
-（`FlowConnectionEndedDialog.vue`），并且**不再自动重连**。实现在 `apps/server/collab/exclusive.ts`。
+（`FlowConnectionEndedDialog.vue`），并且**不再自动重连**。实现在 `packages/mod-collab/src/exclusive.ts`。
 
 **为什么是新的赢**：人在哪个窗口，哪个窗口就是新开的那个。反过来「老的赢、新的连不上」
 会让用户对着一张打不开的画布发呆，而他根本不知道自己在哪儿还开着一份。
@@ -615,7 +615,7 @@ access token 进入 30 秒刷新窗口之前根本不问 Keycloak），TTL 取 2
 #### 服务端有两条路送这个信号，形状完全不同
 
 **① 连接已经建起来之后被关掉**（顶下线、复验没过）—— **两条腿一起关**
-（`apps/server/collab/close.ts` 的 `closeForGood`）。只调 Hocuspocus 的 `connection.close()` 不够 ——
+（`packages/mod-collab/src/close.ts` 的 `closeForGood`）。只调 Hocuspocus 的 `connection.close()` 不够 ——
 它把连接从文档上摘掉、给客户端发一条带原因的 CLOSE 消息，但**不关 socket**；
 客户端下一条消息（awareness 心跳 15 秒一次）会被服务端当成一次新的文档连接重新鉴权接回来。
 顶下线的那种最典型：旧窗口自己复活，回头把新窗口顶掉，两个窗口就此互相踢。
@@ -635,7 +635,7 @@ socket 继续开着；provider 收到后 `emit('authenticationFailed')` 就完�
 
 **所以 reason 才是判据，code 不是**：CLOSE 消息里只有 reason，code 被 provider 填成 `1000`；
 
-**服务端要两条腿一起关**（`apps/server/collab/close.ts` 的 `closeForGood`）。只调 Hocuspocus 的
+**服务端要两条腿一起关**（`packages/mod-collab/src/close.ts` 的 `closeForGood`）。只调 Hocuspocus 的
 `connection.close()` 不够 —— 它把连接从文档上摘掉、给客户端发一条带原因的 CLOSE 消息，
 但**不关 socket**；客户端下一条消息（awareness 心跳约 30 秒一次）会被服务端当成一次新的
 文档连接重新鉴权接回来。顶下线的那种最典型：旧窗口自己复活，回头把新窗口顶掉，两个窗口

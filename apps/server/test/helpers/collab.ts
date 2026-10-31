@@ -6,7 +6,7 @@ import {
   loadFlowState,
   roomOf,
   storeFlowState,
-} from '../../collab/persistence.ts'
+} from '@shadecn/mod-collab/persistence'
 import type { FlowGraph } from '@shadecn/shared/flow-graph'
 
 /**

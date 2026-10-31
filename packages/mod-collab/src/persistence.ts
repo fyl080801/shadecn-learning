@@ -2,10 +2,9 @@ import * as Y from 'yjs'
 import { applyGraphToDoc } from '@shadecn/shared/flow-doc'
 import { FLOW_ROOM_PREFIX } from '@shadecn/shared/collab'
 import { bytesCodec, sharedMap } from '@shadecn/server-kit/cluster'
-import { db } from '../db.ts'
-import { Flow } from '../db/entities/index.ts'
-import { GRAPH_LIMITS, readGraph } from '../store/flow-types.ts'
+import type { FlowGraph } from '@shadecn/shared/flow-graph'
 import { readGraphFromDoc } from './flow-doc.ts'
+import { collabPorts, type FlowDocRow } from './ports.ts'
 
 /**
  * 把画布房间的 Yjs 状态落到应用自己的库里（SQLite / PostgreSQL 都行）。
@@ -98,11 +97,7 @@ export async function loadFlowState(documentName: string): Promise<Uint8Array | 
   const flowId = flowIdOf(documentName)
   if (!flowId) return null
 
-  const row = await db().findOne(
-    Flow,
-    { id: flowId, deletedAt: null, project: { deletedAt: null } },
-    { fields: ['ydoc', 'graph'] },
-  )
+  const row = await collabPorts().flowDocs.read(flowId, { liveProject: true, legacy: true })
   if (!row) return null
 
   return stateFromRow(row)
@@ -115,11 +110,11 @@ export async function loadFlowState(documentName: string): Promise<Uint8Array | 
  * 自己查过那一行了 —— 老数据的迁移规则只能有一份，不然两条通道打开同一张老画布
  * 会得到不一样的东西。
  */
-export function stateFromRow(row: { ydoc: Uint8Array | null; graph: string }): Uint8Array | null {
+export function stateFromRow(row: Pick<FlowDocRow, 'ydoc' | 'legacy'>): Uint8Array | null {
   if (row.ydoc && row.ydoc.length > 0) return new Uint8Array(row.ydoc)
 
-  const graph = readGraph(row.graph)
-  if (graph.nodes.length === 0 && graph.edges.length === 0 && Object.keys(graph.meta).length === 0) {
+  const graph = row.legacy
+  if (!graph || (graph.nodes.length === 0 && graph.edges.length === 0 && Object.keys(graph.meta).length === 0)) {
     return null
   }
 
@@ -318,11 +313,8 @@ function storeTask(
 ): () => Promise<void> {
   return async () => {
     for (let attempt = 1; attempt <= MAX_STORE_ATTEMPTS; attempt += 1) {
-      const row = await db().findOne(
-        Flow,
-        { id: flowId, deletedAt: null },
-        { fields: ['ydoc', 'revision'] },
-      )
+      // 只读原样的 ydoc（legacy: false）：这里要合并的是库里那份字节本身，现场迁移出来的新文档 clientID 全新，合进来会重复内容
+      const row = await collabPorts().flowDocs.read(flowId, { liveProject: false, legacy: false })
       // 画布已经被删了：没什么可写的，也不算失败
       if (!row) return
 
@@ -334,23 +326,15 @@ function storeTask(
         Y.applyUpdate(doc, new Uint8Array(row.ydoc), MERGE_ORIGIN)
       }
 
-      const count = await db().nativeUpdate(
-        Flow,
-        { id: flowId, deletedAt: null, revision: row.revision },
-        {
-          ydoc: Buffer.from(Y.encodeStateAsUpdate(doc)),
-          // CAS：新值显式给出（读到的 + 1），where 里带着读到的那个
-          revision: row.revision + 1,
-          // 直接发 SQL 的更新不触发 onUpdate —— Prisma 的 @updatedAt 是自动带上的，这里得自己写，
-          // 不然列表页按「最近修改」排序时，编辑过的画布纹丝不动
-          updatedAt: new Date(),
-          ...(options.projection ? (deriveProjection(doc, documentName) ?? {}) : {}),
-        },
-      )
+      // CAS：where 带着读到的 revision，写成读到的 + 1（实现见宿主 store/flow-docs.ts，它负责写 updatedAt）
+      const written = await collabPorts().flowDocs.compareAndWrite(flowId, row.revision, {
+        ydoc: Y.encodeStateAsUpdate(doc),
+        ...(options.projection ? { projection: deriveProjection(doc) } : {}),
+      })
 
       // 被别的实例抢先写了（或这张画布刚被删）—— 重读重来。
       // 重放同一份内容是幂等的，所以重试永远安全
-      if (count === 0) continue
+      if (!written) continue
 
       /*
        * 记下「库里现在是这个版本」。这一步写的是**共享层缓存**，失败不影响
@@ -368,32 +352,13 @@ function storeTask(
   }
 }
 
-/** 写库时能直接铺进 `data` 的那几个派生字段 */
-export interface FlowProjection {
-  graph: string
-  nodeCount: number
-  edgeCount: number
-}
-
 /**
  * 从文档派生出 `graph` 投影 —— 列表页的计数、缩略图、将来的只读预览读它，编辑器不读。
- *
- * 超过 `readGraph` 那道字节关的投影**不写**（返回 `null`）：写了也会在读的那头降级成空图，
- * 反而把「detail 空图、复制出空画布」这种坑埋进去。留着上一份还能看。
+ * 这里只出图；序列化和字节上限由宿主在写库时判（`FlowDocWrite.projection`）：
+ * 超过上限的投影**不写**，留着上一份还能看（docs/04 §4.2）。
  */
-export function deriveProjection(doc: Y.Doc, label: string): FlowProjection | null {
-  const graph = readGraphFromDoc(doc)
-  const serialized = JSON.stringify(graph)
-  const bytes = Buffer.byteLength(serialized)
-
-  if (bytes > GRAPH_LIMITS.bytes) {
-    console.warn(
-      `[collab] ${label} 的投影 ${bytes} 字节超过 GRAPH_LIMITS.bytes，跳过本次投影写入`,
-    )
-    return null
-  }
-
-  return { graph: serialized, nodeCount: graph.nodes.length, edgeCount: graph.edges.length }
+export function deriveProjection(doc: Y.Doc): FlowGraph {
+  return readGraphFromDoc(doc)
 }
 
 /**

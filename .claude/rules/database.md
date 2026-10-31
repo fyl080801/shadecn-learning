@@ -3,8 +3,9 @@ paths:
   - "apps/server/db/**"
   - "apps/server/db.ts"
   - "apps/server/store/**"
-  - "apps/server/collab/persistence.ts"
-  - "apps/server/collab/flow-writer.ts"
+  - "packages/mod-collab/src/persistence.ts"
+  - "apps/server/store/flow-docs.ts"
+  - "packages/mod-collab/src/flow-writer.ts"
 ---
 
 # Database — MikroORM 7, SQLite *or* PostgreSQL (`docs/05-data-persistence.md`)

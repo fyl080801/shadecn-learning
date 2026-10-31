@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { applyGraphToDoc, outputKey } from '@shadecn/shared/flow-doc'
-import { readGraphFromDoc } from '../../collab/flow-doc.ts'
+import { readGraphFromDoc } from '@shadecn/mod-collab/flow-doc'
 import { emptyGraph, type FlowNodeRecord } from '@shadecn/shared/flow-graph'
 
 /**

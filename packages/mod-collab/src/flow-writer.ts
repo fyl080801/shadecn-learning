@@ -1,7 +1,6 @@
 import * as Y from 'yjs'
-import { db } from '../db.ts'
-import { Flow } from '../db/entities/index.ts'
 import { pruneDanglingEdges } from './flow-doc.ts'
+import { collabPorts } from './ports.ts'
 import {
   deriveProjection,
   enqueueFlowWrite,
@@ -112,11 +111,7 @@ async function merge(
   update: Uint8Array,
 ): Promise<FlowUpdateResult> {
   for (let attempt = 1; attempt <= MAX_WRITE_ATTEMPTS; attempt += 1) {
-    const row = await db().findOne(
-      Flow,
-      { id: flowId, deletedAt: null, project: { deletedAt: null } },
-      { fields: ['ydoc', 'graph', 'revision'] },
-    )
+    const row = await collabPorts().flowDocs.read(flowId, { liveProject: true, legacy: true })
     if (!row) return { ok: false, reason: 'not-found', message: '画布不存在' }
 
     const doc = new Y.Doc()
@@ -145,13 +140,7 @@ async function merge(
         return { ok: true, stateVector: after, revision: row.revision, noop: true }
       }
 
-      const data = {
-        ydoc: Buffer.from(Y.encodeStateAsUpdate(doc)),
-        revision: row.revision + 1,
-        // 直接发 SQL 的更新不触发 onUpdate（Prisma 的 @updatedAt 会自动带上），得自己写
-        updatedAt: new Date(),
-        ...(deriveProjection(doc, room) ?? {}),
-      }
+      const data = { ydoc: Y.encodeStateAsUpdate(doc), projection: deriveProjection(doc) }
 
       /*
        * 写回时把读到的 `revision` 带进 where —— 一次 CAS。
@@ -164,13 +153,9 @@ async function merge(
        * 幂等的，合并两次结果一样），客户端永远看不到 409 —— 那套东西在协同上来之后
        * 就作废了，不要从这里把它复活。
        */
-      const count = await db().nativeUpdate(
-        Flow,
-        { id: flowId, deletedAt: null, revision: row.revision },
-        data,
-      )
+      const written = await collabPorts().flowDocs.compareAndWrite(flowId, row.revision, data)
 
-      if (count === 0) {
+      if (!written) {
         // 要么被人抢先写了（重来），要么这张画布刚被删掉（重来时 findFirst 会返回 null）
         continue
       }
@@ -232,11 +217,7 @@ export async function readFlowUpdate(
   flowId: string,
   since?: Uint8Array,
 ): Promise<{ update: Uint8Array; stateVector: Uint8Array } | null> {
-  const row = await db().findOne(
-    Flow,
-    { id: flowId, deletedAt: null, project: { deletedAt: null } },
-    { fields: ['ydoc', 'graph'] },
-  )
+  const row = await collabPorts().flowDocs.read(flowId, { liveProject: true, legacy: true })
   if (!row) return null
 
   const doc = new Y.Doc()

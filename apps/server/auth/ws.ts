@@ -1,3 +1,9 @@
+import type {
+  CollabAuthorization,
+  CollabAuthorizeOptions,
+  CollabDenialReason,
+  CollabIdentity,
+} from '@shadecn/mod-collab/ports'
 import { FLOW_ROOM_PREFIX } from '@shadecn/shared/collab'
 import { authConfig, authEnabled, isAllowedOrigin } from '../config.ts'
 import { flows } from '../store/flows.ts'
@@ -52,56 +58,12 @@ export function isAllowedCollabOrigin(
   }
 }
 
-/**
- * 服务端认定的身份。
- *
- * 两个用途，都要求它**不能由客户端提供**：
- * - 审计日志的 `actorId`（Yjs 自己只认 clientID，不知道那是哪个登录用户）；
- * - 覆盖 awareness 里客户端自报的 `user` 字段，杜绝同房间内冒名。
- *
- * 字段和前端 `PresenceUser` 对齐（少一个 `color` —— 那个由 id 在本地哈希出来，
- * 不走网络，也就没法伪造）。
- */
-export interface CollabIdentity {
-  id: string
-  name: string
-  avatarUrl: string | null
-}
-
-/**
- * 拒绝的原因 —— **必须区分**，因为两者的出路完全不同：
- * - `unauthorized`：会话没了（过期、登出、被踢）。重新登录就能回来。
- * - `forbidden`：人是登着的，只是不该进这个房间（不是项目成员、画布已删）。
- *   让他去登录毫无意义，登了还是进不来。
- *
- * 以前这里只答「不行」，于是一个只看不编辑、会话空闲超时的人被复验踢下线时，
- * 界面告诉他「你已不是这个项目的成员」—— 完全错误的提示。
- */
-export type CollabDenialReason = 'unauthorized' | 'forbidden'
-
-/** 放行时带上是谁；没启用登录时 identity 为 null */
-export type CollabAuthorization =
-  | { ok: false; reason: CollabDenialReason }
-  | {
-      ok: true
-      identity: CollabIdentity | null
-      /** 个人画布的房间（只有所有者进得来）：没有协作者，在场层整个关掉 —— 见 `hocuspocus.ts` 的 awareness 钩子 */
-      personal?: boolean
-    }
+// 类型的定义在协同包（`@shadecn/mod-collab/ports`）：它是协同向底座要的端口，这里是实现
+export type { CollabAuthorization, CollabAuthorizeOptions, CollabDenialReason, CollabIdentity }
 
 const UNAUTHORIZED: CollabAuthorization = { ok: false, reason: 'unauthorized' }
 const FORBIDDEN: CollabAuthorization = { ok: false, reason: 'forbidden' }
 
-export interface CollabAuthorizeOptions {
-  /**
-   * 允不允许顺手续期会话。默认 true —— 握手本身就是一次真实的 HTTP 请求，
-   * 和调接口一样该给会话续命。
-   *
-   * 定期复验传 `false`：那趟检查背后没有任何用户动作，让它续期等于
-   * 「标签页开着就永不登出」。细节见 `session.ts` 的 `LoadSessionOptions`。
-   */
-  refresh?: boolean
-}
 
 /**
  * 协同连接的鉴权。

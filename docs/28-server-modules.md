@@ -67,7 +67,7 @@
 |---|---|---|
 | `@shadecn/server-kit` | 模块内核（`./kernel`）、共享层（`./cluster`，内存 / Redis 两套实现）、总线（`./bus`）、权限撤销信号（`./access`） | 所有服务端包 |
 | `@shadecn/mod-storage` | S3 客户端、对象键、缩略图、`createStorageModule()` | 底座、其它能力包 |
-| `@shadecn/mod-collab` | 第 2 期只有对外契约（`./contract`：落库请求令牌 + `flushRoom()`）；实现第 4 期从 `apps/server/collab/` 搬入 | 契约：所有服务端包；实现：只有宿主 |
+| `@shadecn/mod-collab` | 第 2 期只有对外契约（`./contract`：落库请求令牌 + `flushRoom()`）；实现第 4 期从 `packages/mod-collab/src/` 搬入 | 契约：所有服务端包；实现：只有宿主 |
 | `@shadecn/mod-agent`（第 4 期） | agent 的宿主侧装配（编排引擎仍是 `@shadecn/agent`） | 只有宿主 |
 | `apps/server` | 底座（HTTP、鉴权、数据库与实体、底座路由）+ 组装点（`modules/*.ts` 把配置交给各能力包的工厂、`index.ts` / `dev.ts`） | — |
 

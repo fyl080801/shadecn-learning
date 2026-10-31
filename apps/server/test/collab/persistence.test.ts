@@ -10,7 +10,7 @@ import {
   retryFailedStores,
   roomOf,
   storeFlowState,
-} from '../../collab/persistence.ts'
+} from '@shadecn/mod-collab/persistence'
 import { db, resetDb } from '../helpers/db.ts'
 import { EntityManager } from '@mikro-orm/core'
 import { Flow } from '../../db/entities/index.ts'

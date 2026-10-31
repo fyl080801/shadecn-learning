@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { CLOSE_SUPERSEDED } from '../../collab/close.ts'
+import { CLOSE_SUPERSEDED } from '@shadecn/mod-collab/close'
 import {
   claimExclusive,
   enforceExclusive,
@@ -7,7 +7,7 @@ import {
   releaseExclusive,
   type ExclusiveConnection,
   type ExclusiveDocument,
-} from '../../collab/exclusive.ts'
+} from '@shadecn/mod-collab/exclusive'
 
 /**
  * 单连接互斥：一个用户、一张画布、一条连接，新开的赢。

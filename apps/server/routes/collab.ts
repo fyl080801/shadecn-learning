@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
-import { collabStats } from '../collab/index.ts'
-import { failedStoreCount, pendingWriteCount } from '../collab/persistence.ts'
+import { collabStats } from '@shadecn/mod-collab'
+import { failedStoreCount, pendingWriteCount } from '@shadecn/mod-collab/persistence'
 import { clusterHealth } from '@shadecn/server-kit/cluster'
 import { instanceId } from '../config.ts'
 import { collabLogStats } from '../logger/collab.ts'

@@ -125,7 +125,7 @@ interface ProjectSummary {
 ### 4.1 服务端：一个写入口
 
 今天「收到一段 Yjs update 之后要做的事」散在 `hocuspocus.ts` 的 hooks 和 `persistence.ts` 里。
-把它抽成一个函数（`apps/server/collab/flow-writer.ts`）：
+把它抽成一个函数（`packages/mod-collab/src/flow-writer.ts`）：
 
 ```ts
 applyFlowUpdate(flowId, update: Uint8Array) → { stateVector: Uint8Array } | { denied: 'too-large' }

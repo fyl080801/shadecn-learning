@@ -23,8 +23,8 @@ import { agentApiPath, AgentEventType, type AgentStreamEvent } from '@shadecn/sh
 import { nodesMap } from '@shadecn/shared/flow-doc'
 import { agentHostOptions, replaceAgentRuntime } from '../../agent/index.ts'
 import { app } from '../../app.ts'
-import { attachCollabServer } from '../../collab/hocuspocus.ts'
-import { flushCollabWrites, loadFlowState, roomOf } from '../../collab/persistence.ts'
+import { attachCollabServer } from '@shadecn/mod-collab/hocuspocus'
+import { flushCollabWrites, loadFlowState, roomOf } from '@shadecn/mod-collab/persistence'
 import { resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject } from '../helpers/project.ts'
 

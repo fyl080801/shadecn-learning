@@ -1,6 +1,6 @@
 ---
 paths:
-  - "apps/server/collab/**"
+  - "packages/mod-collab/**"
   - "apps/server/auth/ws.ts"
   - "apps/web/src/composables/flow/sync/**"
   - "apps/web/src/composables/flow/useFlowPresence.ts"
@@ -24,7 +24,10 @@ paths:
 - **`vite.config.ts` must keep `resolve.dedupe: ['yjs', 'y-protocols']`** — two yjs copies make `instanceof Y.Map` false and the canvas blank.
 - Dependency order is a straight line, `selection`/`sync` → `presence` → `canvas`; `useFlowCanvas` is the only thing that knows all three. `useFlowPresence` imports neither selection nor Vue Flow — it offers "publish" and "read others", so a new feedback signal costs one setter + one computed.
 
-## Server — `apps/server/collab/`
+## Server — `packages/mod-collab/src/` (`@shadecn/mod-collab`)
+
+- **The package never imports `apps/server`.** Everything core comes through `CollabPorts` (`ports.ts`), handed over by `createCollabModule(ports)` in `apps/server/modules/collab.ts` (which also configures them at import — the test setup imports it): `auth` (`auth/ws.ts`), `flowDocs` (`apps/server/store/flow-docs.ts`: the `Flow` reads and the CAS write — it writes `updatedAt` and judges `GRAPH_LIMITS` for the projection), `instanceId`, `redis`, `extensions` (the host's `collabLogging()`). **The store merge reads raw `ydoc` (`legacy: false`)**: a legacy graph migrated on the fly gets fresh clientIDs and would duplicate content if merged into a live doc.
+- **Headless** (`attachCollabServer(server, { headless: true })`, chosen by the module when the process has the `agent` role but not `collab`): no `upgrade` listener, everything else (persistence, quota, revalidation, the access subscription, the bus flush handler) unchanged — rooms opened there by direct connection must still persist and answer `flushRoom`.
 
 - `hocuspocus.ts` mounts Hocuspocus on our own HTTP server. Never call `listen()` (second port). We own the `upgrade` listener, take **only `/ws/collaboration`** and hand it to crossws → `handleConnection()`; everything else (Vite HMR, protocol `vite-hmr`, path `/`) is left untouched for Node's other `upgrade` listeners. The room name travels in the message, so the wire protocol is not y-websocket's — the frontend must use `@hocuspocus/provider`.
 - `index.ts` — `attachCollabServer(server, { destroyUnmatchedUpgrades, authorize })`; `destroyUnmatchedUpgrades` is `false` in dev (HMR). `authorize` (`auth/ws.ts`) answers `401` + destroy for anonymous handshakes.

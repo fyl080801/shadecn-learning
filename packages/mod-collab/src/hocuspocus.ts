@@ -1,17 +1,15 @@
-import type { ServerType } from '@hono/node-server'
+import type { Server } from 'node:http'
 import { Hocuspocus, type Connection, type Document, type Extension } from '@hocuspocus/server'
 import crossws from 'crossws/adapters/node'
 import * as Y from 'yjs'
 import { COLLAB_PATH, STORE_STATE_MESSAGE } from '@shadecn/shared/collab'
 
 import {
-  authorizeCollab,
-  isAllowedCollabOrigin,
+  collabPorts,
   type CollabAuthorization,
   type CollabDenialReason,
   type CollabIdentity,
-} from '../auth/ws.ts'
-import { instanceId, isClustered, redisKeyPrefix, redisUrl } from '../config.ts'
+} from './ports.ts'
 import { dropForeignClients, enforceIdentity, forgetClaims, releaseSocket } from './awareness.ts'
 import {
   CLOSE_QUOTA_LOCKED,
@@ -37,7 +35,6 @@ import {
 } from '@shadecn/server-kit/access'
 import { bus } from '@shadecn/server-kit/bus'
 import { COLLAB_FLUSH_ROOM } from '@shadecn/mod-collab/contract'
-import { collabLogging } from '../logger/collab.ts'
 import {
   flowIdOf,
   forgetFlow,
@@ -84,6 +81,8 @@ export interface CollabContext {
 }
 
 export interface CollabOptions {
+  /** 不接 WebSocket upgrade（见 `attachCollabServer` 里的说明）。默认 false */
+  headless?: boolean
   /**
    * 非 `/ws/collaboration` 的 upgrade 要不要直接断开。
    * dev 下必须是 false —— Vite 的 HMR 走同一个事件，掐了就没有热更新了。
@@ -219,7 +218,7 @@ async function revalidateDocument(document: Document): Promise<void> {
     const cookie = connection.request?.headers?.get?.('cookie') ?? ''
     let verdict = verdicts.get(cookie)
     if (!verdict) {
-      verdict = authorizeCollab(cookie, document.name, { refresh: false }).catch(
+      verdict = collabPorts().auth.authorize(cookie, document.name, { refresh: false }).catch(
         // 抛异常 = 基础设施出问题，证明不了任何事：当作通过，下一轮再查
         (): CollabAuthorization => ({ ok: true, identity: null }),
       )
@@ -306,13 +305,14 @@ async function collabExtensions(): Promise<Extension[]> {
    * 那些 hook 写的是配额、鉴权、互斥这些规则，掺进日志就读不出规则本身了。
    * 它带 `priority`，所以永远第一个跑；而业务 hook（`new Hocuspocus({...})` 里的那些）
    * 被 Hocuspocus 固定排在最后。一头一尾正好夹住落库，于是「开始」和「完成」两个
-   * 计数的差就是失败次数 —— 详见 apps/server/logger/collab.ts。
+   * 计数的差就是失败次数 —— 详见宿主的 apps/server/logger/collab.ts（经 `CollabPorts.extensions` 交进来）。
    */
-  const extensions: Extension[] = [collabLogging()]
-  if (!isClustered) return extensions
+  const ports = collabPorts()
+  const extensions: Extension[] = ports.extensions?.() ?? []
+  if (!ports.redis) return extensions
 
   const { Redis } = await import('@hocuspocus/extension-redis')
-  const url = new URL(redisUrl)
+  const url = new URL(ports.redis.url)
 
   return [
     ...extensions,
@@ -324,8 +324,8 @@ async function collabExtensions(): Promise<Extension[]> {
         db: Number(url.pathname.slice(1)) || 0,
       },
       // 实例名要真的唯一 —— 它是「这条消息是不是我自己发的」的判据
-      identifier: instanceId,
-      prefix: `${redisKeyPrefix}:hp`,
+      identifier: ports.instanceId,
+      prefix: `${ports.redis.prefix}:hp`,
       /*
        * 落库那把 redlock 的持有时长。**默认只有 1 秒**，而一次落库要读一遍
        * 现有 `ydoc`、合并、再写回去 —— 文档大一点、库慢一点就超过一秒，
@@ -340,7 +340,7 @@ async function collabExtensions(): Promise<Extension[]> {
   ]
 }
 
-export async function attachCollabServer(server: ServerType, options: CollabOptions = {}) {
+export async function attachCollabServer(server: Server, options: CollabOptions = {}) {
   const { destroyUnmatchedUpgrades = true } = options
 
   const hocuspocus = new Hocuspocus({
@@ -353,7 +353,7 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
      * 抛异常就是拒绝；返回值成为 context，后面的 hook 都能读到。
      */
     async onConnect(data) {
-      const result = await authorizeCollab(
+      const result = await collabPorts().auth.authorize(
         data.requestHeaders.get('cookie'),
         data.documentName,
       )
@@ -604,51 +604,58 @@ export async function attachCollabServer(server: ServerType, options: CollabOpti
     maxDebounce: 10000,
   })
 
-  const ws = crossws({
-    hooks: {
-      open(peer) {
-        const connection = hocuspocus.handleConnection(
-          peer.websocket as never,
-          peer.request as never,
-        )
-        ;(peer as unknown as { _collab?: unknown })._collab = connection
+  /*
+   * headless（只有 agent 角色、没有 collab 角色的进程，docs/28 §3.4.2）：不接 WebSocket。
+   * 房间只经 direct connection 打开（agent 写画布），改动经 redis 扩展广播给各协同副本，落库走同一条读-合并-CAS。
+   * 其余（落库、配额、复验、撤权订阅、总线上的落库请求）照常 —— 这个进程上开着的房间同样要落库、要能被叫去落库。
+   */
+  if (!options.headless) {
+    const ws = crossws({
+      hooks: {
+        open(peer) {
+          const connection = hocuspocus.handleConnection(
+            peer.websocket as never,
+            peer.request as never,
+          )
+          ;(peer as unknown as { _collab?: unknown })._collab = connection
+        },
+        message(peer, message) {
+          const connection = (
+            peer as unknown as { _collab?: { handleMessage(data: Uint8Array): void } }
+          )._collab
+          connection?.handleMessage(message.uint8Array())
+        },
+        close(peer, event) {
+          const connection = (
+            peer as unknown as {
+              _collab?: { handleClose(event: { code: number; reason: string }): void }
+            }
+          )._collab
+          connection?.handleClose({ code: event.code ?? 1000, reason: event.reason ?? '' })
+        },
       },
-      message(peer, message) {
-        const connection = (
-          peer as unknown as { _collab?: { handleMessage(data: Uint8Array): void } }
-        )._collab
-        connection?.handleMessage(message.uint8Array())
-      },
-      close(peer, event) {
-        const connection = (
-          peer as unknown as {
-            _collab?: { handleClose(event: { code: number; reason: string }): void }
-          }
-        )._collab
-        connection?.handleClose({ code: event.code ?? 1000, reason: event.reason ?? '' })
-      },
-    },
-  })
+    })
 
-  server.on('upgrade', (req, socket, head) => {
-    if (!isCollabUpgrade(req.url ?? '/')) {
-      // 不是我们的：dev 下留给 Vite 的 HMR 监听器，prod 下没人要就断开
-      if (destroyUnmatchedUpgrades) socket.destroy()
-      return
-    }
-    /*
-     * 跨站握手在这里就挡掉，进不到 `onConnect`。
-     * upgrade 是裸的 node 事件，Hono 那条中间件链（CORS、页面守卫）一个都没经过，
-     * 所以 CSWSH 这道只能自己判 —— 见 `auth/ws.ts` 的 `isAllowedCollabOrigin`。
-     * 回一行 403 再断开：配错 `APP_ORIGIN` 时，这比一个 TCP reset 好查得多。
-     */
-    if (!isAllowedCollabOrigin(req.headers.origin, req.headers.host)) {
-      console.warn(`[collab] 拒绝来自 ${req.headers.origin} 的跨站握手`)
-      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
-      return
-    }
-    void ws.handleUpgrade(req, socket, head)
-  })
+    server.on('upgrade', (req, socket, head) => {
+      if (!isCollabUpgrade(req.url ?? '/')) {
+        // 不是我们的：dev 下留给 Vite 的 HMR 监听器，prod 下没人要就断开
+        if (destroyUnmatchedUpgrades) socket.destroy()
+        return
+      }
+      /*
+       * 跨站握手在这里就挡掉，进不到 `onConnect`。
+       * upgrade 是裸的 node 事件，Hono 那条中间件链（CORS、页面守卫）一个都没经过，
+       * 所以 CSWSH 这道只能自己判 —— 见宿主 `auth/ws.ts` 的 `isAllowedCollabOrigin`（经 `CollabPorts.auth` 交进来）。
+       * 回一行 403 再断开：配错 `APP_ORIGIN` 时，这比一个 TCP reset 好查得多。
+       */
+      if (!collabPorts().auth.isAllowedOrigin(req.headers.origin, req.headers.host)) {
+        console.warn(`[collab] 拒绝来自 ${req.headers.origin} 的跨站握手`)
+        socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+        return
+      }
+      void ws.handleUpgrade(req, socket, head)
+    })
+  }
 
   // 成员资格复验：被移出项目 / 会话已灭的人不能靠一条不断的 WebSocket 一直留在房间里
   const reauthTimer = setInterval(() => {

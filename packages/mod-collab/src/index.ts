@@ -24,4 +24,6 @@ export {
   storeFlowState,
 } from './persistence.ts'
 export { readGraphFromDoc } from './flow-doc.ts'
+export { createCollabModule } from './module.ts'
+export { configureCollab, collabPorts, type CollabPorts } from './ports.ts'
 export { applyGraphToDoc } from '@shadecn/shared/flow-doc'

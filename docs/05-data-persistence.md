@@ -213,7 +213,7 @@ Prisma 时代的 `db:generate`（没有生成物了）和 `db:studio`（MikroORM
 
 - `notes` 是继续当纯样板，还是作为第一个真实持久化业务落库。
 - SQLite 单写入者模型在协同场景下是否够用。协同**已经在落盘**了（`Flow.ydoc`），
-  目前靠 `apps/server/collab/persistence.ts` 里的按房间串行队列避开并发写，单进程下够用；
+  目前靠 `packages/mod-collab/src/persistence.ts` 里的按房间串行队列避开并发写，单进程下够用；
   多副本就是切 PG 的时候（Yjs 的跨进程问题已经解掉了，见 [REQ-CLUSTER](14-clustering.md)）。
 - **没有任何历史了**。移除操作日志之后，误删、被移出项目的人清空画布、协作者的破坏性编辑，
   都无法恢复 —— `Y.UndoManager` 只跟踪本地来源，别人的改动进不了你的撤销栈。

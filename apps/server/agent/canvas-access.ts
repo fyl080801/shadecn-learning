@@ -5,10 +5,10 @@ import { nodesMap } from '@shadecn/shared/flow-doc'
 import { agentOrigin, observeDocTransactions, type CanvasActor } from '@shadecn/agent/canvas'
 import type { RunAuthority } from '@shadecn/agent/authority'
 import type { OpenedCanvas } from '@shadecn/agent/session'
-import { collabInstance, type CollabContext } from '../collab/hocuspocus.ts'
-import { roomOf } from '../collab/persistence.ts'
-import { quotaLocked } from '../collab/quota.ts'
-import { readFlowUpdate } from '../collab/flow-writer.ts'
+import { collabInstance, type CollabContext } from '@shadecn/mod-collab/hocuspocus'
+import { roomOf } from '@shadecn/mod-collab/persistence'
+import { quotaLocked } from '@shadecn/mod-collab/quota'
+import { readFlowUpdate } from '@shadecn/mod-collab/flow-writer'
 
 /**
  * agent 够得着画布的那一层：用 Hocuspocus 的 **direct connection** 打开活房间，

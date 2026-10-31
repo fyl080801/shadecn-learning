@@ -1,5 +1,5 @@
 import { sharedMap, stringCodec } from '@shadecn/server-kit/cluster'
-import type { CollabIdentity } from '../auth/ws.ts'
+import type { CollabIdentity } from './ports.ts'
 
 /**
  * clientID 的归属登记：`<房间>:<clientID>` → 首次发布它的 socketId。

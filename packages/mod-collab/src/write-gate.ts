@@ -1,4 +1,4 @@
-import { authorizeCollab, type CollabDenialReason } from '../auth/ws.ts'
+import { collabPorts, type CollabDenialReason } from './ports.ts'
 
 /**
  * 写操作的认证闸门 —— 「登录态没了 / 已经不是成员了」之后的编辑，**在进 Y.Doc 之前**拦住。
@@ -210,7 +210,7 @@ export function createWriteGate(options: WriteGateOptions): WriteGate {
  * （编辑触发的那次视图状态 PATCH 就是干这个的）。
  */
 export const collabWriteAuthorize: AuthorizeWrite = async (cookie, room) => {
-  const result = await authorizeCollab(cookie, room, { refresh: false })
+  const result = await collabPorts().auth.authorize(cookie, room, { refresh: false })
   return result.ok ? null : result.reason
 }
 
@@ -235,6 +235,6 @@ export const collabWriteAuthorize: AuthorizeWrite = async (cookie, room) => {
 export const sessionWriteAuthorize: AuthorizeWrite = async (cookie) => {
   // 空房间名：`authorizeCollab` 只有在房间名以 `flow:` 开头时才去查画布和成员，
   // 传空串就正好停在「会话有效吗」这一步
-  const result = await authorizeCollab(cookie, '', { refresh: false })
+  const result = await collabPorts().auth.authorize(cookie, '', { refresh: false })
   return result.ok ? null : result.reason
 }
