@@ -2,6 +2,7 @@ import type { ProxyAssistantMessageEvent } from '@earendil-works/pi-agent-core'
 import type { Api, AssistantMessage, Model, TranscriptContext } from '@earendil-works/pi-ai'
 import { isRunAuthorityError } from './authority.ts'
 import { BUILD_ID, buildsDiffer } from './build-id.ts'
+import type { AgentThinkingLevel } from './model.ts'
 import { AGENT_CLIENT_IDENTITY, outputTokenLimit, proxyFramesOf, streamUpstream, type ModelTurnResult } from './model-stream.ts'
 import {
   AGENT_GATEWAY_PATH,
@@ -177,6 +178,8 @@ export interface GatewayRun {
 export interface ModelUpstream {
   model: Model<Api>
   apiKey: string
+  /** 请模型思考的等级（服务端模型表里那一项的）；没有 = 不请求 */
+  thinking?: AgentThinkingLevel
 }
 
 export interface AgentGatewayOptions {
@@ -530,6 +533,7 @@ export function createAgentGateway(options: AgentGatewayOptions): AgentGateway {
               apiKey: upstream.apiKey,
               signal,
               maxTokens: outputTokenLimit(upstream.model, options.maxOutputTokens),
+              ...(upstream.thinking ? { reasoning: upstream.thinking } : {}),
               sessionId: decision.sessionId,
               identity: AGENT_CLIENT_IDENTITY,
               maxRetries: options.maxRetries ?? DEFAULT_MAX_RETRIES,

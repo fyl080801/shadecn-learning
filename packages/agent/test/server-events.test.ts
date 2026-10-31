@@ -153,7 +153,12 @@ const shapeOf = (events: AgentStreamEvent[]) =>
     delete copy.runId
     delete copy.parentMessageId
     if (typeof copy.toolCallId === 'string') copy.toolCallId = '*'
-    if (event.type === AgentEventType.TOOL_CALL_RESULT) copy.content = String(copy.content).replace(/"id":"[^"]+"/, '"id":"*"')
+    if (event.type === AgentEventType.TOOL_CALL_RESULT) {
+      copy.content = String(copy.content).replace(/"id":"[^"]+"/, '"id":"*"')
+      // 条目上的结果文本同一份（含新建节点的随机 id）
+      const metadata = copy.metadata as { output?: string } | undefined
+      if (metadata?.output) metadata.output = metadata.output.replace(/"id":"[^"]+"/, '"id":"*"')
+    }
     if (event.type === AgentEventType.CUSTOM || event.type === AgentEventType.RUN_FINISHED) return { type: event.type }
     return copy
   })
@@ -379,5 +384,53 @@ describe('事件流从服务端来', () => {
     const { events, last } = await finished
     expect(last).toMatchObject({ type: AgentEventType.RUN_FINISHED })
     expect(streamedText(events)).toBe(reply)
+  })
+})
+
+describe('思考、工具详情与用量（ai-elements 面板要的）', () => {
+  it('入口 agent 的思考：服务端自己的流里来的 thinking → REASONING_MESSAGE_* 帧，落定 / 落库的消息带 reasoning（位置在工具调用之间）', async () => {
+    const thinkThen = (thinking: string, message: AssistantMessage): AssistantMessage => ({
+      ...message,
+      content: [{ type: 'thinking', thinking }, ...message.content],
+    })
+    const context = setup((turn) =>
+      turn.step === 1
+        ? thinkThen('先加一个节点', calls(['add_node', { type: 'text', metadata: { label: 'A' } }]))
+        : thinkThen('加好了，收尾', say('完成')),
+    )
+    const { events, last, assistant } = await run(context, new Y.Doc())
+
+    const reasoning = events
+      .filter((event) => event.type === AgentEventType.REASONING_MESSAGE_CONTENT)
+      .map((event) => (event as Extract<AgentStreamEvent, { type: 'REASONING_MESSAGE_CONTENT' }>).delta)
+      .join('')
+    expect(reasoning).toBe('先加一个节点加好了，收尾')
+    const starts = events.filter((event) => event.type === AgentEventType.REASONING_MESSAGE_START)
+    expect(starts.map((event) => (event as { position: number }).position)).toEqual([0, 1])
+    // 思考不进正文
+    expect(streamedText(events)).toBe('完成')
+
+    expect(last?.type).toBe(AgentEventType.RUN_FINISHED)
+    const result = (last as Extract<AgentStreamEvent, { type: 'RUN_FINISHED' }>).result
+    expect(result.reasoning?.map(({ text, position }) => [text, position])).toEqual([
+      ['先加一个节点', 0],
+      ['加好了，收尾', 1],
+    ])
+    expect(result.reasoning?.every((item) => typeof item.finishedAt === 'number')).toBe(true)
+    // 落库的那条和收尾帧里的是同一份
+    expect(assistant?.reasoning).toEqual(result.reasoning)
+  })
+
+  it('工具条目带服务端那份参数和结果文本；收尾帧和落库的消息带这一轮的用量（上下文窗口取入口 agent 的模型）', async () => {
+    const context = setup((turn) => (turn.step === 1 ? calls(['add_node', { type: 'text', metadata: { label: 'A' } }]) : say('好')))
+    const { last, assistant } = await run(context, new Y.Doc())
+    const call = assistant?.toolCalls[0]
+    expect(call?.status).toBe('done')
+    expect(JSON.parse(call?.input ?? '')).toEqual({ type: 'text', metadata: { label: 'A' } })
+    expect(call?.output).toMatch(/"id":"n_/)
+
+    const result = (last as Extract<AgentStreamEvent, { type: 'RUN_FINISHED' }>).result
+    expect(result.usage).toMatchObject({ contextWindow: 128_000, model: 'Faux', costUsd: null })
+    expect(assistant?.usage).toEqual(result.usage)
   })
 })

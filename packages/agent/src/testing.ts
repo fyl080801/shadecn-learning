@@ -141,6 +141,9 @@ function chunksOf(message: AssistantMessage, model: string): string[] {
   for (const part of message.content) {
     if (part.type === 'text') {
       for (let at = 0; at < part.text.length; at += CHUNK) out.push(chunk({ content: part.text.slice(at, at + CHUNK) }))
+    } else if (part.type === 'thinking') {
+      // 思考块：llama.cpp / DeepSeek 的写法（`reasoning_content`），pi-ai 解析成 thinking
+      for (let at = 0; at < part.thinking.length; at += CHUNK) out.push(chunk({ reasoning_content: part.thinking.slice(at, at + CHUNK) }))
     } else if (part.type === 'toolCall') {
       out.push(
         chunk({

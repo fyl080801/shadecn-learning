@@ -60,6 +60,16 @@ describe('resolveAgentModel', () => {
     expect(again.ok && again.value.model.contextWindow).toBe(window)
   })
 
+  it('思考等级：给了就带上并把模型标成支持思考（自建端点的元数据默认不支持）；不给 = 不请求；不认识的等级 → 未启用', () => {
+    const custom = { provider: 'my-proxy', model: 'qwen-max', baseUrl: 'http://llm.internal/v1', api: 'openai-completions', apiKey: 'k' }
+    const plain = resolveAgentModel(custom)
+    expect(plain.ok && plain.value.thinking).toBeUndefined()
+    expect(plain.ok && plain.value.model.reasoning).toBe(false)
+    const thinking = resolveAgentModel({ ...custom, thinking: 'high' })
+    expect(thinking).toMatchObject({ ok: true, value: { thinking: 'high', model: { reasoning: true } } })
+    expect(resolveAgentModel({ ...custom, thinking: 'off' as never })).toMatchObject({ ok: false, reason: expect.stringContaining('thinking 只能是') })
+  })
+
   it('上下文窗口 / 单次输出不是正整数，或单次输出不小于窗口 → 未启用并说明原因', () => {
     const custom = { provider: 'my-proxy', model: 'qwen-max', baseUrl: 'http://llm.internal/v1', api: 'openai-completions', apiKey: 'k' }
     expect(resolveAgentModel({ ...custom, contextWindow: 0 })).toMatchObject({ ok: false, reason: expect.stringContaining('contextWindow 必须是正整数') })

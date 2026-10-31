@@ -70,6 +70,8 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  * - `AGENT_CONTEXT_WINDOW` / `AGENT_MAX_TOKENS`：模型的上下文窗口、单次最多输出多少 token（正整数）。不配按 pi 注册表的元数据，
  *   自建端点和 ollama 按 128000 / 8192。窗口决定跨轮历史留多少、什么时候算超长；`AGENT_MAX_TOKENS` 是模型的能力，
  *   每次请求实际的输出上限是 min(它, `AGENT_MAX_OUTPUT_TOKENS` ?? 16384)；
+ * - `AGENT_THINKING`：请模型思考的等级（`minimal` | `low` | `medium` | `high` | `xhigh`）。不配 = 不请求思考（有的端点不请求也会吐思考，照样显示）；
+ *   配了不认识的值等于没配，并在启动时警告。思考随对话流显示、落库（docs/20 §3.10.13）；
  * - `AGENT_API_KEY`：显式的 key，优先于按提供方的环境变量（{@link AGENT_PROVIDER_KEY_ENV}）。**只在服务端**：沙箱里的 runner 拿到的是 run 短令牌，
  *   真实 key 由网关的模型代理注入（docs/22 §4.1）；
  * - 以上几项是模型表里的 `default`（docs/26 §3.4）。其余的项在模型表文件里（{@link agentModelsFile}，`AGENT_MODELS_FILE` 可换路径），
@@ -122,6 +124,8 @@ export const agentConfig = {
   imageInput: flag(process.env.AGENT_IMAGE_INPUT),
   contextWindow: positiveInteger(process.env.AGENT_CONTEXT_WINDOW),
   maxTokens: positiveInteger(process.env.AGENT_MAX_TOKENS),
+  /** 原样的字符串；合法性由 `@shadecn/agent/model` 判（`agent/index.ts` 里不合法就警告并当没配） */
+  thinking: process.env.AGENT_THINKING?.trim() || undefined,
   sandbox: resolveSandboxDriver(process.env.AGENT_SANDBOX),
   sandboxExec: isOn(process.env.AGENT_SANDBOX_EXEC) || process.env.AGENT_SANDBOX?.trim() === 'local',
   allowProcessInProduction: isOn(process.env.AGENT_SANDBOX_ALLOW_PROCESS),

@@ -471,7 +471,13 @@ function isolateKeys(event: KeyboardEvent) {
                   />
                 </MessageScrollerItem>
 
-                <p v-if="waitingFirstWord" class="text-sm text-muted-foreground">思考中…</p>
+                <p
+                  v-if="waitingFirstWord"
+                  class="shimmer text-sm text-muted-foreground motion-reduce:shimmer-none"
+                  data-testid="agent-waiting"
+                >
+                  思考中…
+                </p>
               </MessageScrollerContent>
             </MessageScrollerViewport>
             <MessageScrollerButton size="icon-xs" class="data-[direction=end]:bottom-3">

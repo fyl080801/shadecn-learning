@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
-import { Plus, SendHorizontal, Square } from "@lucide/vue"
+import { ArrowUp, Paperclip, Square } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { PromptInput, createEditor, type CustomInline } from "@/components/prompt-input"
 import AssetUploadList from "@/components/flow/asset-upload/AssetUploadList.vue"
@@ -14,7 +14,10 @@ import { NODE_MENTION, nodeMentionIdOf, syncSelectionMentions, useNodeMentionMen
 /**
  * 对话面板底部的输入区：附件 + PromptInput + 「提及节点」插件 + 发送 / 停止。
  *
- * - **附件**（docs/20 §3.10.12）：发送按钮同一行最左边一个加号图标按钮选文件；传着的、传完的附件以缩略图排在输入框上方
+ * 外围按 shadcn ai-elements 的 Prompt Input 排：左下一个圆形的「添加附件」，右下一个圆形的发送（↑）/ 停止（■）图标按钮。
+ * 输入框本身仍是自己的 `PromptInput`（富文本 + `@` 提及节点）—— ai-elements 的 `InputGroupTextarea` 是纯文本，没有提及。
+ *
+ * - **附件**（docs/20 §3.10.12）：发送按钮同一行最左边一个回形针图标按钮选文件；传着的、传完的附件以缩略图排在输入框上方
  *   （`AssetUploadList`，不画它自己的加号方框），没有附件时这一排不占位。附件列表的状态由父组件建（`useAssetUploadList`）传进来：发送时摘走、没发出去还回来是父组件的事。
  *   有附件在传或传失败了不能发；只有附件、没写字也能发。不给 `attachments` 就没有这一排。
  * - **Enter 发送、Shift+Enter 换行**。提及列表开着时 Enter / Tab 是「选中这一项」，
@@ -185,16 +188,16 @@ defineExpose({
           <template v-if="props.attachments">
             <!-- 满了（一条消息最多 AGENT_ATTACHMENT_MAX_COUNT 个）就点不了 -->
             <Button
-              variant="ghost"
+              variant="outline"
               size="icon-sm"
-              class="-ml-1.5 text-muted-foreground"
+              class="rounded-full text-muted-foreground"
               aria-label="添加附件"
               :title="props.attachments.remaining > 0 ? '添加附件' : '附件已满'"
               :disabled="props.attachments.remaining === 0"
               data-testid="asset-upload-add"
               @click="fileInput?.click()"
             >
-              <Plus class="size-4" />
+              <Paperclip class="size-4" />
             </Button>
             <input
               ref="fileInput"
@@ -210,24 +213,28 @@ defineExpose({
         </div>
         <Button
           v-if="props.running"
-          variant="outline"
-          size="sm"
+          size="icon-sm"
+          class="shrink-0 rounded-full"
           :loading="props.aborting"
+          aria-label="停止"
+          title="停止"
           data-testid="agent-stop"
           @click="emit('stop')"
         >
-          <Square class="size-3 fill-current" />
-          停止
+          <!-- 停着的时候按钮自己转圈（loading），不再叠一个方块 -->
+          <Square v-if="!props.aborting" class="size-3 fill-current" />
         </Button>
         <Button
           v-else
-          size="sm"
+          size="icon-sm"
+          class="shrink-0 rounded-full"
           :disabled="!canSend"
+          aria-label="发送"
+          title="发送"
           data-testid="agent-send"
           @click="emit('send')"
         >
-          <SendHorizontal />
-          发送
+          <ArrowUp class="size-4" />
         </Button>
       </div>
     </div>

@@ -45,6 +45,20 @@ export interface AgentModelOptions {
    * 每次请求实际的输出上限还要再和宿主的上限取小（`model-stream.ts` 的 `outputTokenLimit`）
    */
   maxTokens?: number
+  /**
+   * 请模型思考的等级（pi-ai 的 `reasoning` 选项）。不给 = 不请求思考（同以前）——
+   * 有的端点（DeepSeek / Qwen / llama.cpp 的 `reasoning_content`）不请求也会吐思考，照样显示。
+   * 给了就把模型标成支持思考（自建端点的元数据默认不支持）；某个等级模型不支持时 pi-ai 就近取它支持的
+   */
+  thinking?: AgentThinkingLevel
+}
+
+/** 可配置的思考等级（pi-ai 的 `ThinkingLevel` 去掉 `off` —— 不配就是关） */
+export const AGENT_THINKING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const
+export type AgentThinkingLevel = (typeof AGENT_THINKING_LEVELS)[number]
+
+export function isAgentThinkingLevel(value: unknown): value is AgentThinkingLevel {
+  return typeof value === 'string' && (AGENT_THINKING_LEVELS as readonly string[]).includes(value)
 }
 
 export interface ResolvedAgentModel {
@@ -52,6 +66,8 @@ export interface ResolvedAgentModel {
   apiKey: string
   /** 给人看的模型名（`AgentSessionView.model`） */
   label: string
+  /** 每次请求带的思考等级；没有 = 不请求思考 */
+  thinking?: AgentThinkingLevel
 }
 
 export type ModelResolution =
@@ -182,6 +198,16 @@ export function resolveAgentModel(options: AgentModelOptions): ModelResolution {
   if (model.maxTokens >= model.contextWindow) {
     return { ok: false, reason: `maxTokens（${model.maxTokens}）必须小于 contextWindow（${model.contextWindow}）` }
   }
+  if (options.thinking !== undefined) {
+    if (!isAgentThinkingLevel(options.thinking)) {
+      return { ok: false, reason: `thinking 只能是 ${AGENT_THINKING_LEVELS.join(' / ')}（现在是 ${String(options.thinking)}）` }
+    }
+    // pi-ai 只给标了 reasoning 的模型发思考参数
+    if (!model.reasoning) model = { ...model, reasoning: true }
+  }
 
-  return { ok: true, value: { model, apiKey, label: model.name || modelId } }
+  return {
+    ok: true,
+    value: { model, apiKey, label: model.name || modelId, ...(options.thinking !== undefined ? { thinking: options.thinking } : {}) },
+  }
 }

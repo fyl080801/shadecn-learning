@@ -1,6 +1,13 @@
 import { readFileSync } from 'node:fs'
 import { DEFAULT_AGENT_MODEL } from '@shadecn/agent/agents'
-import { resolveAgentModel, type AgentModelOptions, type ModelResolution } from '@shadecn/agent/model'
+import {
+  AGENT_THINKING_LEVELS,
+  isAgentThinkingLevel,
+  resolveAgentModel,
+  type AgentModelOptions,
+  type AgentThinkingLevel,
+  type ModelResolution,
+} from '@shadecn/agent/model'
 import { agentModelsFile, agentProviderApiKey } from '../config.ts'
 
 /**
@@ -10,7 +17,7 @@ import { agentModelsFile, agentProviderApiKey } from '../config.ts'
  * ```json
  * { "fast":   { "provider": "anthropic", "model": "claude-haiku-5-5", "apiKey": "$AGENT_FAST_KEY" },
  *   "vision": { "provider": "my-proxy", "model": "qwen-vl", "baseUrl": "https://…", "api": "openai-completions",
- *               "apiKey": "$AGENT_VISION_KEY", "imageInput": true, "contextWindow": 32768, "maxTokens": 4096 } }
+ *               "apiKey": "$AGENT_VISION_KEY", "imageInput": true, "contextWindow": 32768, "maxTokens": 4096, "thinking": "low" } }
  * ```
  *
  * 解析文件、读环境变量是宿主的事（`@shadecn/agent/model` 只收显式的参数对象）。两类错误分开：
@@ -34,6 +41,8 @@ export interface AgentModelSpec {
   /** 上下文窗口 / 单次最多输出（正整数）；不写 = 按注册表元数据，自建端点按保守默认（同 `default` 的 `AGENT_CONTEXT_WINDOW` / `AGENT_MAX_TOKENS`） */
   contextWindow?: number
   maxTokens?: number
+  /** 请模型思考的等级；不写 = 不请求（同 `default` 的 `AGENT_THINKING`） */
+  thinking?: AgentThinkingLevel
 }
 
 /** 模型表的 key：同 agent 定义的 `name`（小写字母开头，小写字母、数字、`-`） */
@@ -43,8 +52,8 @@ const ENV_REF_REGEX = /^\$([A-Za-z_][A-Za-z0-9_]*)$/
 
 const STRING_FIELDS = ['provider', 'model', 'baseUrl', 'api', 'apiKey'] as const
 const INTEGER_FIELDS = ['contextWindow', 'maxTokens'] as const
-const KNOWN_FIELDS = new Set<string>([...STRING_FIELDS, 'imageInput', ...INTEGER_FIELDS])
-const FIELD_LIST = 'provider / model / baseUrl / api / apiKey / imageInput / contextWindow / maxTokens'
+const KNOWN_FIELDS = new Set<string>([...STRING_FIELDS, 'imageInput', ...INTEGER_FIELDS, 'thinking'])
+const FIELD_LIST = 'provider / model / baseUrl / api / apiKey / imageInput / contextWindow / maxTokens / thinking'
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -79,6 +88,9 @@ export function parseAgentModelTable(text: string, filePath: string): Record<str
       const raw = value[field]
       if (raw !== undefined && !(typeof raw === 'number' && Number.isInteger(raw) && raw > 0)) throw new Error(`${at}：${field} 必须是正整数`)
     }
+    if (value.thinking !== undefined && !isAgentThinkingLevel(value.thinking)) {
+      throw new Error(`${at}：thinking 只能是 ${AGENT_THINKING_LEVELS.join(' / ')}`)
+    }
     const provider = (value.provider as string | undefined)?.trim() ?? ''
     const model = (value.model as string | undefined)?.trim() ?? ''
     if (!provider) throw new Error(`${at}：缺少 provider`)
@@ -99,6 +111,7 @@ export function parseAgentModelTable(text: string, filePath: string): Record<str
       ...(typeof value.imageInput === 'boolean' ? { imageInput: value.imageInput } : {}),
       ...(typeof value.contextWindow === 'number' ? { contextWindow: value.contextWindow } : {}),
       ...(typeof value.maxTokens === 'number' ? { maxTokens: value.maxTokens } : {}),
+      ...(isAgentThinkingLevel(value.thinking) ? { thinking: value.thinking } : {}),
     }
   }
   return table
@@ -145,6 +158,7 @@ export function resolveAgentModelTable(
       ...(spec.imageInput !== undefined ? { imageInput: spec.imageInput } : {}),
       ...(spec.contextWindow !== undefined ? { contextWindow: spec.contextWindow } : {}),
       ...(spec.maxTokens !== undefined ? { maxTokens: spec.maxTokens } : {}),
+      ...(spec.thinking !== undefined ? { thinking: spec.thinking } : {}),
     }
     table[key] = resolveAgentModel(options)
   }

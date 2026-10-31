@@ -165,6 +165,64 @@ export interface AgentToolCallView {
   status: 'running' | 'done' | 'error'
   /** 出错时的原因 */
   error?: string
+  /**
+   * 调用参数（服务端校验过的那份，JSON 文本，截到 {@link AGENT_TOOL_VIEW_TEXT_LIMIT} 字）。给人展开查看，不回给模型。
+   * 这个字段出现之前存的记录没有它
+   */
+  input?: string
+  /** 回给模型的结果文本（截到 {@link AGENT_TOOL_VIEW_TEXT_LIMIT} 字；出错时原因在 `error`，这里不重复）。旧记录没有 */
+  output?: string
+}
+
+/** 对话记录里一条工具调用留多少字的参数 / 结果（落库、补发都带着它们，所以要小） */
+export const AGENT_TOOL_VIEW_TEXT_LIMIT = 2000
+
+/**
+ * 入口 agent 的一段思考（模型的 thinking 块，服务端自己调模型的流里来的）。
+ * 一条 assistant 消息里可能有几段（每次模型请求一段），各自按出现时的位置插在工具调用之间
+ */
+export interface AgentReasoningView {
+  id: string
+  /** 思考的文字（整条消息合计截到 {@link AGENT_REASONING_TEXT_LIMIT} 字） */
+  text: string
+  /** 出现在第几条工具调用之前（= 开始时这条消息已有的 `toolCalls` 条数）：界面按它把思考和工具调用排成一条时间线 */
+  position: number
+  /** 开始 / 结束的时刻（服务端时钟，UTC 毫秒）；还在想的没有 `finishedAt` */
+  startedAt: number
+  finishedAt?: number
+}
+
+/** assistant 消息里一段文字的位置 */
+export interface AgentTextSegmentView {
+  /** 这一段在 `text` 里的起点（含它开头和上一段之间的 `\n\n`） */
+  at: number
+  /** 出现在第几条工具调用之前（= 开始时这条消息已有的 `toolCalls` 条数），同 {@link AgentReasoningView.position} */
+  position: number
+}
+
+/** 一条 assistant 消息里全部思考合计留多少字（超出的不再推送，也不落库） */
+export const AGENT_REASONING_TEXT_LIMIT = 16000
+
+/**
+ * 一轮的模型用量（服务端调模型拿到的 `usage`，调用方与被调用的 agent 合计 —— 与运行日志同一个数，
+ * 只是在收尾帧那一刻取：被叫停时还在途的那次请求不在里面）
+ */
+export interface AgentUsageView {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  /** 美元；模型没有价格信息为 null（「不知道」不是「免费」） */
+  costUsd: number | null
+  /**
+   * 入口 agent 最后一次模型请求占了多少上下文（输入 + 缓存读写 + 输出 token）—— 下一轮带着的历史大约这么大。
+   * 没有发出过请求为 0
+   */
+  contextTokens: number
+  /** 入口 agent 模型的上下文窗口（token） */
+  contextWindow: number
+  /** 入口 agent 模型的名字（给人看） */
+  model: string
 }
 
 export type AgentChatMessage =
@@ -191,6 +249,15 @@ export type AgentChatMessage =
        * 嵌套的对得上父任务条目的 `toolCalls` 里那一条。没发起过任务就没有这个字段。
        */
       subtasks?: AgentSubtaskView[]
+      /** 入口 agent 的思考（按出现先后）；没有思考（模型不支持 / 没开）或这个字段出现之前的记录没有它 */
+      reasoning?: AgentReasoningView[]
+      /**
+       * `text` 里每一段文字从哪开始、出现在第几条工具调用之前（按出现先后）—— 界面据此把工具调用之间的话排进时间线。
+       * 这个字段出现之前的记录没有它：整段 `text` 当正文
+       */
+      textSegments?: AgentTextSegmentView[]
+      /** 这一轮的用量，收尾时写上；还在跑、或这个字段出现之前的记录没有它 */
+      usage?: AgentUsageView
     }
   | AgentCanvasChangeMessage
   | AgentSkillLoadedMessage
@@ -273,10 +340,19 @@ const SUBTASK_NODE_IDS_MAX = 200
 
 function parseToolCallView(value: unknown): AgentToolCallView | null {
   if (!isObject(value)) return null
-  const { id, name, summary, status, error } = value
+  const { id, name, summary, status, error, input, output } = value
   if (typeof id !== 'string' || !id || typeof name !== 'string' || typeof summary !== 'string') return null
   if (!TOOL_CALL_STATUSES.includes(status as AgentToolCallView['status'])) return null
-  return { id, name, summary, status: status as AgentToolCallView['status'], ...(typeof error === 'string' ? { error } : {}) }
+  return {
+    id,
+    name,
+    summary,
+    status: status as AgentToolCallView['status'],
+    ...(typeof error === 'string' ? { error } : {}),
+    // 服务端已截过；这里再按上限兜一次（截短的标记占几个字，留余量）
+    ...(typeof input === 'string' && input ? { input: input.slice(0, AGENT_TOOL_VIEW_TEXT_LIMIT + 64) } : {}),
+    ...(typeof output === 'string' && output ? { output: output.slice(0, AGENT_TOOL_VIEW_TEXT_LIMIT + 64) } : {}),
+  }
 }
 
 function stringIds(value: unknown, max: number): string[] {
@@ -766,12 +842,15 @@ export function agentConversationPath(flowId: string, conversationId?: string): 
 // 顺序：
 //   RUN_STARTED → CUSTOM(agent.user-message) → CUSTOM(agent.canvas-change, since-last-run)?
 //   → ( TEXT_MESSAGE_START → TEXT_MESSAGE_CONTENT* → TEXT_MESSAGE_END
+//     | REASONING_MESSAGE_START → REASONING_MESSAGE_CONTENT* → REASONING_MESSAGE_END
 //     | TOOL_CALL_START → TOOL_CALL_ARGS* → TOOL_CALL_END → TOOL_CALL_RESULT
 //     | CUSTOM(agent.canvas-change, live) | CUSTOM(agent.skill-loaded)
 //     | CUSTOM(agent.subtask) | CUSTOM(agent.subtask-update) )*
 //   → RUN_FINISHED | RUN_ERROR
 // 最后一帧之后服务端关流。同一轮里 assistant 的文字可能分几段（每次调工具前后各一段），
 // 它们共用一个 `messageId` —— 对应对话记录里的同一条 assistant 消息。
+// 思考（只有入口 agent 的）每段一个自己的 `messageId`（= {@link AgentReasoningView.id}），`parentMessageId` 指那条 assistant 消息；
+// 名字照 AG-UI 后来加的 reasoning 事件。
 //
 // **画布状态不走 AG-UI 的 STATE_SNAPSHOT / STATE_DELTA**：画布内容是 Y.Doc，
 // agent 的改动经协同层实时到达，这条流只讲「agent 在说什么、在做什么」。
@@ -784,6 +863,9 @@ export const AgentEventType = {
   TEXT_MESSAGE_START: 'TEXT_MESSAGE_START',
   TEXT_MESSAGE_CONTENT: 'TEXT_MESSAGE_CONTENT',
   TEXT_MESSAGE_END: 'TEXT_MESSAGE_END',
+  REASONING_MESSAGE_START: 'REASONING_MESSAGE_START',
+  REASONING_MESSAGE_CONTENT: 'REASONING_MESSAGE_CONTENT',
+  REASONING_MESSAGE_END: 'REASONING_MESSAGE_END',
   TOOL_CALL_START: 'TOOL_CALL_START',
   TOOL_CALL_ARGS: 'TOOL_CALL_ARGS',
   TOOL_CALL_END: 'TOOL_CALL_END',
@@ -803,6 +885,10 @@ export interface AgentToolCallMetadata {
   summary: string
   status: AgentToolCallView['status']
   error?: string
+  /** 条目上的 {@link AgentToolCallView.input}（START 带；截过的那份，前端照抄 —— 实时看到的和刷新后读回的一致） */
+  input?: string
+  /** 条目上的 {@link AgentToolCallView.output}（RESULT 带，同上） */
+  output?: string
 }
 
 /** CUSTOM 事件的名字：服务端回显用户消息（带服务端分配的 id），前端拿它替换乐观插入的那条 */
@@ -865,6 +951,8 @@ export type AgentStreamEvent =
       type: typeof AgentEventType.TEXT_MESSAGE_START
       messageId: string
       role: 'assistant'
+      /** 这一段出现在第几条工具调用之前（{@link AgentTextSegmentView.position}；AG-UI 之外的字段）。旧服务端不带 */
+      position?: number
     })
   | (AgentBaseEvent & {
       type: typeof AgentEventType.TEXT_MESSAGE_CONTENT
@@ -872,6 +960,22 @@ export type AgentStreamEvent =
       delta: string
     })
   | (AgentBaseEvent & { type: typeof AgentEventType.TEXT_MESSAGE_END; messageId: string })
+  | (AgentBaseEvent & {
+      type: typeof AgentEventType.REASONING_MESSAGE_START
+      /** 这段思考的 id（{@link AgentReasoningView.id}） */
+      messageId: string
+      role: 'reasoning'
+      /** 它属于的那条 assistant 消息 */
+      parentMessageId: string
+      /** {@link AgentReasoningView.position} */
+      position: number
+    })
+  | (AgentBaseEvent & {
+      type: typeof AgentEventType.REASONING_MESSAGE_CONTENT
+      messageId: string
+      delta: string
+    })
+  | (AgentBaseEvent & { type: typeof AgentEventType.REASONING_MESSAGE_END; messageId: string })
   | (AgentBaseEvent & {
       type: typeof AgentEventType.TOOL_CALL_START
       toolCallId: string

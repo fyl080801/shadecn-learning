@@ -122,6 +122,14 @@ function applyToolMetadata(call: AgentToolCallView, metadata: AgentToolCallMetad
     call.status = metadata.status
   }
   if (metadata.error) call.error = metadata.error
+  // 截过的参数 / 结果：服务端条目上的那份，照抄（刷新后读回来的也是它）
+  if (typeof metadata.input === "string" && metadata.input) call.input = metadata.input
+  if (typeof metadata.output === "string" && metadata.output) call.output = metadata.output
+}
+
+/** 本轮那条 assistant 消息里按 id 找一段思考 */
+function findReasoning(conversation: AgentConversation, id: string) {
+  return findAssistant(conversation, conversation.assistantId)?.reasoning?.find((item) => item.id === id) ?? null
 }
 
 /** 工具调用按 id 找；先看本轮那条 assistant，找不到再全表找（容错） */
@@ -139,6 +147,8 @@ function findToolCall(conversation: AgentConversation, toolCallId: string) {
 
 /** 还挂着「运行中」的工具调用 / 任务在一轮结束时一律算出错 —— 留着会是一个永远在转的圈 */
 function settleRunningTools(message: AssistantMessage | null) {
+  // 没等到 END 的思考段也收住：不然「思考中」一直闪
+  for (const item of message?.reasoning ?? []) item.finishedAt ??= Date.now()
   for (const call of message?.toolCalls ?? []) {
     if (call.status === "running") call.status = "error"
   }
@@ -234,13 +244,46 @@ export function applyAgentEvent(conversation: AgentConversation, event: AgentStr
       return
     }
 
-    case AgentEventType.TEXT_MESSAGE_START:
-      ensureAssistant(conversation, event.messageId)
+    case AgentEventType.TEXT_MESSAGE_START: {
+      const message = ensureAssistant(conversation, event.messageId)
+      // 这一段从哪开始（服务端同样按 START 那一刻的长度记）；旧服务端不带位置就不记，整段当正文
+      if (typeof event.position === "number" && event.position >= 0) {
+        const segments = (message.textSegments ??= [])
+        const at = message.text.length
+        if (!segments.some((item) => item.at === at)) segments.push({ at, position: event.position })
+      }
       return
+    }
 
     case AgentEventType.TEXT_MESSAGE_CONTENT:
       ensureAssistant(conversation, event.messageId).text += event.delta ?? ""
       return
+
+    case AgentEventType.REASONING_MESSAGE_START: {
+      const message = ensureAssistant(conversation, event.parentMessageId || conversation.assistantId || `local-${event.messageId}`)
+      const list = (message.reasoning ??= [])
+      if (!list.some((item) => item.id === event.messageId)) {
+        list.push({
+          id: event.messageId,
+          text: "",
+          position: typeof event.position === "number" && event.position >= 0 ? event.position : message.toolCalls.length,
+          startedAt: event.timestamp ?? Date.now()
+        })
+      }
+      return
+    }
+
+    case AgentEventType.REASONING_MESSAGE_CONTENT: {
+      const item = findReasoning(conversation, event.messageId)
+      if (item) item.text += event.delta ?? ""
+      return
+    }
+
+    case AgentEventType.REASONING_MESSAGE_END: {
+      const item = findReasoning(conversation, event.messageId)
+      if (item) item.finishedAt = event.timestamp ?? Date.now()
+      return
+    }
 
     case AgentEventType.TOOL_CALL_START: {
       const message = ensureAssistant(

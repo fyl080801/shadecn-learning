@@ -90,8 +90,9 @@ describe("任务条目", () => {
     const plain = wrapper.findAll("[data-tool-status]").filter((item) => item.text().includes("被拒的"))
     expect(plain).toHaveLength(1)
     expect(plain[0]!.attributes("data-tool-status")).toBe("error")
-    // 只读：条目里没有输入框 / 按钮
-    expect(items[0]!.find("textarea, input, button").exists()).toBe(false)
+    // 只读：条目里没有输入框；按钮只有折叠的开关（条目自己的和工具调用的）
+    expect(items[0]!.find("textarea, input").exists()).toBe(false)
+    expect(items[2]!.findAll("button").every((button) => button.attributes("data-slot") === "trace-collapsible-trigger")).toBe(true)
   })
 
   it("旧会话：工具名是 delegate_task、条目没有 agent（读出时按 canvas 补）—— 照样画成任务条目", () => {
@@ -121,8 +122,8 @@ describe("任务条目", () => {
     expect(nested.attributes("data-subtask-id")).toBe("sub_2")
     expect(nested.find('[data-role="subtask-agent"]').text()).toBe("reviewer")
     // 父条目里那条 run_agent 被条目替换，读节点那条照常
-    const plainCalls = top[0]!.findAll('[data-role="subtask-tools"] > li[data-tool-status]')
-    expect(plainCalls.map((item) => item.text())).toEqual(["读节点"])
+    const plainCalls = top[0]!.findAll('[data-role="subtask-tools"] > [data-role="tool-call"]')
+    expect(plainCalls.map((item) => item.get('[data-slot="trace-title"]').text())).toEqual(["读节点"])
   })
 
   it("任务列表：带任务的那一行显示「含 N 个任务进行中」，没有的不显示", () => {

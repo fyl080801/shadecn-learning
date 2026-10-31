@@ -5,6 +5,8 @@ import {
   AGENT_SUBTASK_EVENT,
   AGENT_SUBTASK_UPDATE_EVENT,
   AGENT_USER_MESSAGE_EVENT,
+  AGENT_REASONING_TEXT_LIMIT,
+  AGENT_TOOL_VIEW_TEXT_LIMIT,
   AgentEventType,
   type AgentCanvasChangeMessage,
   type AgentSkillLoadedMessage,
@@ -15,6 +17,7 @@ import {
   type AgentSubtaskView,
   type AgentToolCallMetadata,
   type AgentToolCallView,
+  type AgentUsageView,
 } from '@shadecn/shared/agent'
 import { createId } from '@shadecn/shared/id'
 import type { RunnerEventBody } from './protocol.ts'
@@ -43,7 +46,14 @@ import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/r
  *   所以「拼起来的 delta」和「存下来的 text」逐字相同。空段不发（AG-UI 要求 delta 非空）。
  * - 工具：START（metadata 带给人看的那句话，status=running）→ ARGS（参数 JSON 一次发完）
  *   → END → RESULT（messageId 是结果自己的新 id；content 是回给模型的文本）。
- * - 思考内容（thinking）不外发：那是模型的草稿，不是给人看的回复。
+ * - 思考（thinking，只有入口 agent 的）：每段 REASONING_MESSAGE_START / CONTENT* / END，进 assistant 消息的 `reasoning`
+ *   （带 `position` = 开始时已有几条工具调用，界面据此排时间线）。整条消息合计到 {@link AGENT_REASONING_TEXT_LIMIT} 字为止，
+ *   超出的不推也不存（补发缓冲和落库都带着它）。思考和文字互相关段：一段开始先关另一种没关的。
+ *   被调用的 agent 的思考不显示（它的文字也不逐帧显示，同理）。
+ * - 每段文字开始（TEXT_MESSAGE_START）带 `position`，消息的 `textSegments` 记每段在 `text` 里的起点和位置 —— 界面把工具调用之间的话排进时间线。
+ * - 工具调用条目带 `input`（服务端那份参数的 JSON）和 `output`（回给模型的结果文本），各截到
+ *   {@link AGENT_TOOL_VIEW_TEXT_LIMIT} 字，随条目落库 —— 给人展开查看；任务条目里的工具调用同样带。
+ * - 收尾帧的 `result.usage` 是编排层在收尾那一刻交进来的这一轮用量（{@link RunEventMapper.finish}）。
  * - 画布改动通知（docs/20 §3.10.2）：CUSTOM `agent.canvas-change`，`value` 就是对话里存的那条
  *   `canvas-change` 消息。什么时候发由编排层定（跨轮差异紧跟用户消息回显；运行中的那种在它真正进入
  *   模型上下文时 —— 服务端把它插进入口 agent 的 transcript、随下一次模型请求发出的那一刻），这里只管形状。
@@ -70,7 +80,14 @@ import { LOAD_SKILL_TOOL_NAME, REQUEST_CONFIRMATION_TOOL_NAME } from './skills/r
  * 工具的开始 / 结束和 runner 上报的同一个形状（`protocol.ts` 的 `RunnerEventBody`）
  */
 export type ServerAgentEvent =
-  | { type: 'message_update'; assistantMessageEvent: { type: 'text_delta'; delta: string } | { type: 'text_end' } }
+  | {
+      type: 'message_update'
+      assistantMessageEvent:
+        | { type: 'text_delta'; delta: string }
+        | { type: 'text_end' }
+        | { type: 'thinking_delta'; delta: string }
+        | { type: 'thinking_end' }
+    }
   | { type: 'message_end'; message: AgentMessage }
   | RunnerEventBody
 
@@ -144,6 +161,17 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…（已截断，共 ${text.length} 字）` : text
 }
 
+/** 工具调用条目上给人看的参数：JSON 缩进排版，截短 */
+function argsText(args: unknown): string {
+  let json: string
+  try {
+    json = JSON.stringify(args ?? {}, null, 2) ?? '{}'
+  } catch {
+    json = '{}'
+  }
+  return clip(json, AGENT_TOOL_VIEW_TEXT_LIMIT)
+}
+
 /** 一条消息 / 一个任务条目里工具调用的显示 id：没用过就是原始 id，用过了（上游复用 id）加 `#2`、`#3`… */
 function uniqueCallId(raw: string, used: Set<string>): string {
   let id = raw
@@ -188,8 +216,11 @@ export interface RunEventMapper {
   subtaskReply(agentId: string): string
   /** 原始调用 id 最近一次对应的那条工具调用（调用方的；给了 `taskAgentId` 就是那个被调用的 agent 的）；没有为 undefined */
   toolCall(toolCallId: string, taskAgentId?: string): AgentToolCallView | undefined
-  /** 收尾：关掉没关的文字段，还在跑的任务标成失败，再发 RUN_FINISHED / RUN_ERROR */
-  finish(outcome: RunOutcome): AgentStreamEvent[]
+  /**
+   * 收尾：关掉没关的文字 / 思考段，还在跑的任务标成失败，再发 RUN_FINISHED / RUN_ERROR。
+   * 给了 `usage` 就写进消息（RUN_FINISHED 的 `result` 和落库的那条都带着）
+   */
+  finish(outcome: RunOutcome, usage?: AgentUsageView): AgentStreamEvent[]
   /** 这一轮的 assistant 消息（随事件推进；`finish` 之后是最终态） */
   readonly message: AssistantChatMessage
   /** 模型自己报的错（`stopReason === 'error'` 那条 assistant 消息的 errorMessage） */
@@ -221,19 +252,68 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
   >()
   let textOpen = false
   let modelError: string | undefined
+  /** 正在推的那段思考（没有 = 没在想） */
+  let reasoningOpen: { id: string; view: { text: string; finishedAt?: number } } | null = null
+  /** 这条消息里思考已经用了多少字（到上限就不再推） */
+  let reasoningChars = 0
+  let reasoningClipped = false
 
   function closeText(out: AgentStreamEvent[]) {
+    closeReasoning(out)
     if (!textOpen) return
     textOpen = false
     out.push({ type: AgentEventType.TEXT_MESSAGE_END, messageId, timestamp: now() })
   }
 
+  function closeReasoning(out: AgentStreamEvent[]) {
+    if (!reasoningOpen) return
+    reasoningOpen.view.finishedAt = now()
+    out.push({ type: AgentEventType.REASONING_MESSAGE_END, messageId: reasoningOpen.id, timestamp: now() })
+    reasoningOpen = null
+  }
+
+  function reasoning(delta: string, out: AgentStreamEvent[]) {
+    if (!delta || reasoningClipped) return
+    // 思考开始：先关没关的文字段（不经 closeText —— 它会把这段思考也关掉）
+    if (textOpen) {
+      textOpen = false
+      out.push({ type: AgentEventType.TEXT_MESSAGE_END, messageId, timestamp: now() })
+    }
+    let chunk = delta
+    if (reasoningChars + chunk.length > AGENT_REASONING_TEXT_LIMIT) {
+      chunk = `${chunk.slice(0, Math.max(0, AGENT_REASONING_TEXT_LIMIT - reasoningChars))}…（思考内容过长，后面的不再显示）`
+      reasoningClipped = true
+    }
+    reasoningChars += chunk.length
+    if (!reasoningOpen) {
+      const view = { id: createId('rsn'), text: '', position: message.toolCalls.length, startedAt: now() }
+      message.reasoning ??= []
+      message.reasoning.push(view)
+      reasoningOpen = { id: view.id, view }
+      out.push({
+        type: AgentEventType.REASONING_MESSAGE_START,
+        messageId: view.id,
+        role: 'reasoning',
+        parentMessageId: messageId,
+        position: view.position,
+        timestamp: now(),
+      })
+    }
+    reasoningOpen.view.text += chunk
+    out.push({ type: AgentEventType.REASONING_MESSAGE_CONTENT, messageId: reasoningOpen.id, delta: chunk, timestamp: now() })
+  }
+
   function text(delta: string, out: AgentStreamEvent[]) {
     if (!delta) return
+    closeReasoning(out)
     let chunk = delta
     if (!textOpen) {
       textOpen = true
-      out.push({ type: AgentEventType.TEXT_MESSAGE_START, messageId, role: 'assistant', timestamp: now() })
+      const position = message.toolCalls.length
+      // 起点在拼上这一段（含分隔的空行）之前：前端按 START 那一刻的文字长度记，两边一致
+      message.textSegments ??= []
+      message.textSegments.push({ at: message.text.length, position })
+      out.push({ type: AgentEventType.TEXT_MESSAGE_START, messageId, role: 'assistant', position, timestamp: now() })
       // 新的一段：和上一段之间空一行，分隔符算在这一段里，拼起来才和存下来的一致
       if (message.text) chunk = `\n\n${delta}`
     }
@@ -246,6 +326,8 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
       summary: call.summary,
       status: call.status,
       ...(call.error !== undefined ? { error: call.error } : {}),
+      ...(call.input !== undefined ? { input: call.input } : {}),
+      ...(call.output !== undefined ? { output: call.output } : {}),
     }
   }
 
@@ -380,7 +462,13 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
           } catch {
             summary = event.toolName
           }
-          const call: AgentToolCallView = { id: uniqueCallId(event.toolCallId, entry.ids), name: event.toolName, summary, status: 'running' }
+          const call: AgentToolCallView = {
+            id: uniqueCallId(event.toolCallId, entry.ids),
+            name: event.toolName,
+            summary,
+            status: 'running',
+            input: argsText(event.args),
+          }
           entry.calls.set(event.toolCallId, call)
           view.toolCalls.push(call)
           return [updateFrame({ id: view.id, toolCalls: [call] })]
@@ -394,6 +482,8 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
           } else {
             call.status = 'done'
             call.summary = resultSummary(event.result) ?? call.summary
+            const body = resultText(event.result)
+            if (body) call.output = clip(body, AGENT_TOOL_VIEW_TEXT_LIMIT)
           }
           return [updateFrame({ id: view.id, toolCalls: [call] })]
         }
@@ -426,6 +516,8 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
           const inner = event.assistantMessageEvent
           if (inner.type === 'text_delta') text(inner.delta, out)
           else if (inner.type === 'text_end') closeText(out)
+          else if (inner.type === 'thinking_delta') reasoning(inner.delta, out)
+          else if (inner.type === 'thinking_end') closeReasoning(out)
           break
         }
         case 'message_end': {
@@ -449,6 +541,7 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
             name: event.toolName,
             summary,
             status: 'running',
+            input: argsText(event.args),
           }
           calls.set(event.toolCallId, call)
           message.toolCalls.push(call)
@@ -486,6 +579,7 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
           } else {
             call.status = 'done'
             call.summary = resultSummary(event.result) ?? call.summary
+            if (body) call.output = clip(body, AGENT_TOOL_VIEW_TEXT_LIMIT)
           }
           out.push({
             type: AgentEventType.TOOL_CALL_RESULT,
@@ -504,9 +598,10 @@ export function createRunEventMapper(options: RunEventMapperOptions): RunEventMa
       return out
     },
 
-    finish(outcome) {
+    finish(outcome, usage) {
       const out: AgentStreamEvent[] = []
       closeText(out)
+      if (usage) message.usage = { ...usage }
       // 还在跑的任务（这一轮被停 / 出错打断的）：标成失败，各发一帧（RUN_ERROR 不带落定的消息，前端靠这一帧收住它）
       for (const { view } of subtasks.values()) {
         if (view.status !== 'running') continue

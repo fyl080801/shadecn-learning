@@ -38,6 +38,7 @@ paths:
 ## UI components (shadcn-vue)
 
 - In `components/ui/`, added with `pnpm exec shadcn-vue add <name>` **from `apps/web`**; check that new packages landed in `devDependencies`.
+  - **Some registry items (`trace`, `bubble`, `hover-card` as of 2026-10) import `cn` from `"cn"`** and the CLI then adds an unrelated npm package `cn` to `dependencies`. Rewrite the import to `@/lib/utils` and revert the `package.json` / lockfile change — `apps/web` has no `dependencies` section. Items whose `.vue` files import their `cva` from `"."` (`bubble`) form a cycle the build refuses: move the `cva` into the dir's `variants.ts` and re-export it, like the existing components.
 - **Icons: `@lucide/vue` only.** Deprecated names (`Home`, `Loader2`, `MoreHorizontal`, `Grid3X3`) still resolve. v1 dropped all brand icons, so brands are inline SVG components like `components/icons/GithubMark.vue` (shared by settings and login) — never a new dependency.
 - `cn()` in `lib/utils.ts` = `clsx` + `tailwind-merge`. **Registry items can import `cn` from the bare package `"cn"`**, and the CLI then installs an unrelated npm package `cn` into `apps/web` `dependencies` (happened with `@shadecn/attachment`): rewrite the import to `@/lib/utils` and `pnpm --filter @shadecn/web remove cn`.
 - `ui/attachment` (`@shadecn/attachment`) is hand-fixed: `AttachmentTrigger` imports `Primitive`, `AttachmentAction` forwards `class` / `as` to `Button`; its `shimmer` / `scroll-fade-x` / `scrollbar-none` utilities live in `styles/tailwind.css`.

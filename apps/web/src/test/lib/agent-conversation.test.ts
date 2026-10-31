@@ -387,3 +387,79 @@ describe("任务条目（docs/20 §3.10.11）", () => {
     expect(conversation.messages[conversation.messages.length - 1]).toMatchObject({ id: "a1", subtasks: [{ id: "sub_1", status: "done", finishedAt: 30 }] })
   })
 })
+
+describe("思考与工具详情", () => {
+  it("REASONING_MESSAGE_*：按段挂进本轮 assistant 的 reasoning（带位置、起止时刻），文字照常拼进 text", () => {
+    const conversation = turn([
+      started,
+      echoed,
+      { type: "REASONING_MESSAGE_START", messageId: "rsn1", role: "reasoning", parentMessageId: "a1", position: 0, timestamp: 10 },
+      { type: "REASONING_MESSAGE_CONTENT", messageId: "rsn1", delta: "先读" },
+      { type: "REASONING_MESSAGE_CONTENT", messageId: "rsn1", delta: "画布" },
+      { type: "REASONING_MESSAGE_END", messageId: "rsn1", timestamp: 14 },
+      { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "好" }
+    ])
+    const assistant = conversation.messages[1] as Extract<AgentChatMessage, { role: "assistant" }>
+    expect(assistant.text).toBe("好")
+    expect(assistant.reasoning).toEqual([{ id: "rsn1", text: "先读画布", position: 0, startedAt: 10, finishedAt: 14 }])
+  })
+
+  it("断流时没等到 END 的思考段也收住（不再显示「思考中」）", () => {
+    const conversation = turn([
+      started,
+      { type: "REASONING_MESSAGE_START", messageId: "rsn1", role: "reasoning", parentMessageId: "a1", position: 0, timestamp: 10 },
+      { type: "REASONING_MESSAGE_CONTENT", messageId: "rsn1", delta: "想" }
+    ])
+    interruptTurn(conversation)
+    const assistant = conversation.messages[1] as Extract<AgentChatMessage, { role: "assistant" }>
+    expect(typeof assistant.reasoning?.[0]?.finishedAt).toBe("number")
+  })
+
+  it("TEXT_MESSAGE_START 带位置：按那一刻的文字长度记分段起点（与服务端一致）；不带位置的不记", () => {
+    const conversation = turn([
+      started,
+      { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant", position: 0 },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "先看" },
+      { type: "TEXT_MESSAGE_END", messageId: "a1" },
+      { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant", position: 1 },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "\n\n好了" },
+      { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" }
+    ])
+    const assistant = conversation.messages[1] as Extract<AgentChatMessage, { role: "assistant" }>
+    expect(assistant.textSegments).toEqual([
+      { at: 0, position: 0 },
+      { at: 2, position: 1 }
+    ])
+  })
+
+  it("工具帧 metadata 里的 input / output 照抄进条目（与落库的同一份）", () => {
+    const conversation = turn([
+      started,
+      {
+        type: "TOOL_CALL_START",
+        toolCallId: "t1",
+        toolCallName: "add_node",
+        parentMessageId: "a1",
+        metadata: { summary: "新建节点", status: "running", input: '{\n  "label": "X"\n}' }
+      },
+      {
+        type: "TOOL_CALL_RESULT",
+        messageId: "tr1",
+        toolCallId: "t1",
+        content: '{"id":"n1"}',
+        role: "tool",
+        metadata: { summary: "新建节点「X」", status: "done", input: '{\n  "label": "X"\n}', output: '{"id":"n1"}' }
+      }
+    ])
+    const assistant = conversation.messages[1] as Extract<AgentChatMessage, { role: "assistant" }>
+    expect(assistant.toolCalls[0]).toEqual({
+      id: "t1",
+      name: "add_node",
+      summary: "新建节点「X」",
+      status: "done",
+      input: '{\n  "label": "X"\n}',
+      output: '{"id":"n1"}'
+    })
+  })
+})

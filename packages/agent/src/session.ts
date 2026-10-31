@@ -1209,6 +1209,11 @@ const usageNumber = (value: unknown) => (typeof value === 'number' && Number.isF
  * `model` 是这次请求实际用的模型（发请求的 agent 的，docs/26 §3.4）：它没有价格信息，这一轮的费用就记 `null` 且不再回来 ——
  * 混用模型时只要有一次请求的价钱不知道，合计就不知道（报一个偏低的数比不报更糟）
  */
+/** 一次请求占的上下文：输入（含缓存读写）+ 输出 —— 下一次请求带着的历史大约这么大 */
+export function usageContextTokens(usage: NonNullable<AssistantMessage['usage']>): number {
+  return usageNumber(usage.input) + usageNumber(usage.cacheRead) + usageNumber(usage.cacheWrite) + usageNumber(usage.output)
+}
+
 export function addRunUsage(totals: AgentRunUsage, usage: AssistantMessage['usage'] | undefined, model: Pick<Model<Api>, 'cost'>): void {
   if (!modelHasPricing(model)) totals.costUsd = null
   if (!usage) return
@@ -2194,6 +2199,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
      * 调用方和被调用的 agent 都算进这一轮；失败 / 中止的请求里 pi 报了的那部分也算。收尾时写进运行日志
      */
     const usage = emptyRunUsage(resolved.model)
+    /** 入口 agent 最后一次模型请求占的上下文（输入 + 缓存读写 + 输出 token），给界面的用量显示（{@link AgentUsageView.contextTokens}） */
+    let contextTokens = 0
     /** 已经开流、还没交回定稿的模型请求：收尾写运行日志前等它们（被掐断的请求报的部分用量也要算进来） */
     const unsettledRequests = new Set<Promise<void>>()
     /** 已经计过数的 runner 执行的调用（上报重复的开始不重复计） */
@@ -2620,12 +2627,19 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         send(mapper.canvasChange(display))
       }
 
-      /** 入口 agent 模型流里的一帧 → 文字帧（攒成一批发，{@link sendText}）；思考、工具调用的帧不显示 */
+      /**
+       * 入口 agent 模型流里的一帧 → 文字 / 思考帧（攒成一批发，{@link sendText}）；工具调用的帧不显示
+       * （条目在对上调用时由服务端那条回复开，见 `display`）
+       */
       const streamFrame = (agent: RunAgent, frame: ProxyAssistantMessageEvent) => {
         if (frame.type === 'text_delta') {
           sendText(display(agent, { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: frame.delta } }))
         } else if (frame.type === 'text_end') {
           sendText(display(agent, { type: 'message_update', assistantMessageEvent: { type: 'text_end' } }))
+        } else if (frame.type === 'thinking_delta') {
+          sendText(display(agent, { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: frame.delta } }))
+        } else if (frame.type === 'thinking_end') {
+          sendText(display(agent, { type: 'message_update', assistantMessageEvent: { type: 'thinking_end' } }))
         }
       }
 
@@ -3336,7 +3350,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           sessionId: agent.sub ? `${run.runId}:${agent.id}` : conversationId,
           step: agent.turns,
           // 上游按发请求的 agent 的模型选（docs/26 §3.4）：地址、key 都是服务端模型表里它那一项的
-          upstream: { model: agent.model.model, apiKey: agent.model.apiKey },
+          upstream: {
+            model: agent.model.model,
+            apiKey: agent.model.apiKey,
+            ...(agent.model.thinking ? { thinking: agent.model.thinking } : {}),
+          },
           context: requestContext(transcript),
           // 调用方的文字流：服务端自己的流里的增量（被调用的 agent 的文字不逐帧显示，回复定稿时才更新条目，同以前）
           ...(agent.sub ? {} : { frame: (frame: ProxyAssistantMessageEvent) => streamFrame(agent, frame) }),
@@ -3346,6 +3364,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             agent.requesting = false
             // 用量先记（这一轮已停、回复不进上下文的也算：请求发出去了，钱就花了）
             addRunUsage(usage, result?.message.usage, agent.model.model)
+            if (!agent.sub && result?.message.usage) contextTokens = usageContextTokens(result.message.usage)
             unsettledRequests.delete(settling)
             settled()
             onReply(agent, result)
@@ -3532,7 +3551,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     }
 
     // —— 4. 一次 save 落定这一轮 ——
-    const finishing = mapper.finish(outcome)
+    // 用量取收尾这一刻的（被叫停时还在途的那次请求在下面才结算，只进运行日志）
+    const finishing = mapper.finish(outcome, {
+      ...usage,
+      contextTokens,
+      contextWindow: resolved.model.contextWindow,
+      model: resolved.label,
+    })
     const finalChat = trimChat(
       [...chat, ...(sinceLastRun ? [sinceLastRun] : []), mapper.message, ...liveChanges],
       limits.chatMessages,

@@ -88,6 +88,15 @@ describe('解析每一项（用不了 → 不可用，不抛）', () => {
     expect(resolveAgentModelTable({ local: { provider: 'ollama', model: 'qwen3' } }, {}).local).toMatchObject({ ok: true })
   })
 
+  it('thinking：合法的等级原样留下并交给解析（模型标成支持思考）；不认识的等级 → 启动失败', () => {
+    const table = parseAgentModelTable(JSON.stringify({ deep: { provider: 'ollama', model: 'qwen3', thinking: 'low' } }), '/data/agent-models.json')
+    expect(table.deep).toEqual({ provider: 'ollama', model: 'qwen3', thinking: 'low' })
+    const resolved = resolveAgentModelTable(table, {})
+    expect(resolved.deep).toMatchObject({ ok: true, value: { thinking: 'low', model: { reasoning: true } } })
+    expect(parse({ deep: { provider: 'ollama', model: 'qwen3', thinking: 'max' } })).toThrow(/thinking 只能是 minimal \/ low/)
+    expect(parse({ deep: { provider: 'ollama', model: 'qwen3', thinking: true } })).toThrow(/thinking 只能是/)
+  })
+
   it('contextWindow / maxTokens 交给解析：覆盖自定义端点的默认值；单次输出不小于窗口 → 不可用（不是启动错误）', () => {
     const table = resolveAgentModelTable(
       {

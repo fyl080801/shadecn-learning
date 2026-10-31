@@ -551,8 +551,8 @@ describe("画布 Agent 对话框", () => {
     const list = wrapper.get('[data-testid="agent-messages"]')
     const fromHistory = list.get('[data-role="canvas-change"][data-scope="since-last-run"]')
     expect(fromHistory.get('[data-role="canvas-change-summary"]').text()).toBe("自你上次运行以来画布有 2 处变化")
-    // 默认折叠，条目在 <details> 里
-    expect(fromHistory.get("details").attributes("open")).toBeUndefined()
+    // 默认折叠，条目在折叠区里（收起时也挂着）
+    expect(fromHistory.get('[data-slot="trace-collapsible"]').attributes("data-state")).toBe("closed")
     expect(fromHistory.findAll('[data-role="canvas-change-items"] li').map((item) => item.text())).toEqual([
       "删除节点 text「旧」（n9）",
       "移动了 1 个节点"
@@ -569,7 +569,7 @@ describe("画布 Agent 对话框", () => {
     const live = lines[1]!
     expect(live.attributes("data-scope")).toBe("live")
     // 没有条目：只有一行概括，不能展开
-    expect(live.find("details").exists()).toBe(false)
+    expect(live.find('[data-slot="trace-collapsible"]').exists()).toBe(false)
     expect(live.text()).toBe("爱丽丝 改动了画布（1 处）")
     // 顺序：…assistant(好) → 通知
     const roles = list.findAll("[data-role]").map((item) => item.attributes("data-role"))

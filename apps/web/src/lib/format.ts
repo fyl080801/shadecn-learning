@@ -125,3 +125,28 @@ export function formatDuration(ms: number | null | undefined): string {
   if (minutes > 0) return `${minutes} 分 ${String(seconds).padStart(2, "0")} 秒`
   return `${seconds} 秒`
 }
+
+/**
+ * token 数（agent 用量显示）：千以下原样，往上 `12.3K` / `1.2M`。不是日期，不吃偏好；非有限数 / 负数显示占位符。
+ */
+export function formatTokens(count: number | null | undefined): string {
+  if (typeof count !== "number" || !Number.isFinite(count) || count < 0) return PLACEHOLDER
+  if (count < 1000) return String(Math.round(count))
+  if (count < 1_000_000) return `${trimFixed(count / 1000)}K`
+  return `${trimFixed(count / 1_000_000)}M`
+}
+
+/** 一位小数，`.0` 去掉 */
+function trimFixed(value: number): string {
+  return value.toFixed(1).replace(/\.0$/, "")
+}
+
+/**
+ * 美元金额（agent 一轮的费用）：`null` = 模型没有价格信息，显示「未知」（不是 0）；不到一分按 4 位小数，不然 2 位。
+ */
+export function formatUsd(value: number | null | undefined): string {
+  if (value === null) return "未知"
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return PLACEHOLDER
+  if (value === 0) return "$0"
+  return `$${value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`
+}

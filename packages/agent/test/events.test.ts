@@ -4,6 +4,8 @@ import {
   AGENT_CANVAS_CHANGE_EVENT,
   AGENT_SUBTASK_EVENT,
   AGENT_SUBTASK_UPDATE_EVENT,
+  AGENT_REASONING_TEXT_LIMIT,
+  AGENT_TOOL_VIEW_TEXT_LIMIT,
   AGENT_USER_MESSAGE_EVENT,
   AgentEventType,
   applyAgentSubtaskUpdate,
@@ -158,6 +160,121 @@ describe('一轮完整的事件顺序', () => {
   })
 })
 
+const thinkingDelta = (delta: string) =>
+  ({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'thinking_delta', delta } }) as unknown as AgentEvent
+const thinkingEnd = () =>
+  ({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'thinking_end' } }) as unknown as AgentEvent
+
+describe('思考（入口 agent 的 thinking）', () => {
+  it('每段 REASONING_MESSAGE_START / CONTENT / END，带父消息和位置；进 assistant 消息的 reasoning，不进 text', () => {
+    const m = mapper()
+    const out: AgentStreamEvent[] = []
+    out.push(...m.handle(thinkingDelta('先看看')))
+    out.push(...m.handle(thinkingDelta('画布')))
+    out.push(...m.handle(thinkingEnd()))
+    out.push(...m.handle({ type: 'tool_execution_start', toolCallId: 'tc', toolName: 'read_canvas', args: {} }))
+    out.push(...m.handle(thinkingDelta('再改')))
+    out.push(...m.handle(textDelta('好了')))
+    const types = out.map((event) => event.type)
+    expect(types).toEqual([
+      AgentEventType.REASONING_MESSAGE_START,
+      AgentEventType.REASONING_MESSAGE_CONTENT,
+      AgentEventType.REASONING_MESSAGE_CONTENT,
+      AgentEventType.REASONING_MESSAGE_END,
+      AgentEventType.TOOL_CALL_START,
+      AgentEventType.TOOL_CALL_ARGS,
+      AgentEventType.TOOL_CALL_END,
+      AgentEventType.REASONING_MESSAGE_START,
+      AgentEventType.REASONING_MESSAGE_CONTENT,
+      // 文字开始先关思考段
+      AgentEventType.REASONING_MESSAGE_END,
+      AgentEventType.TEXT_MESSAGE_START,
+      AgentEventType.TEXT_MESSAGE_CONTENT,
+    ])
+    expect(out[0]).toMatchObject({ role: 'reasoning', parentMessageId: 'msg-a', position: 0 })
+    expect(out[7]).toMatchObject({ position: 1 })
+    expect(m.message.text).toBe('好了')
+    expect(m.message.reasoning?.map((item) => [item.text, item.position, item.finishedAt])).toEqual([
+      ['先看看画布', 0, 1000],
+      ['再改', 1, 1000],
+    ])
+  })
+
+  it('整条消息合计到上限为止：截断标记之后的不再推也不存', () => {
+    const m = mapper()
+    const huge = 'x'.repeat(AGENT_REASONING_TEXT_LIMIT + 10)
+    const first = m.handle(thinkingDelta(huge))
+    expect(first.map((event) => event.type)).toEqual([AgentEventType.REASONING_MESSAGE_START, AgentEventType.REASONING_MESSAGE_CONTENT])
+    expect(m.handle(thinkingDelta('更多'))).toEqual([])
+    expect(m.message.reasoning?.[0]?.text).toMatch(/^x+…（思考内容过长/)
+    expect(m.message.reasoning?.[0]?.text).not.toContain('更多')
+  })
+
+  it('收尾时还开着的思考段先关掉；给了用量就写进落定的消息', () => {
+    const m = mapper()
+    m.handle(thinkingDelta('想'))
+    const usage = {
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd: null,
+      contextTokens: 15,
+      contextWindow: 128000,
+      model: 'm',
+    }
+    const out = m.finish({ type: 'success' }, usage)
+    expect(out.map((event) => event.type)).toEqual([AgentEventType.REASONING_MESSAGE_END, AgentEventType.RUN_FINISHED])
+    const finished = out[1] as Extract<AgentStreamEvent, { type: 'RUN_FINISHED' }>
+    expect(finished.result.usage).toEqual(usage)
+    expect(m.message.usage).toEqual(usage)
+  })
+})
+
+describe('文字分段的位置', () => {
+  it('每段文字记下在 text 里的起点和「第几条工具调用之前」，TEXT_MESSAGE_START 带同一个位置', () => {
+    const m = mapper()
+    const first = m.handle(textDelta('先看看'))
+    m.handle(textEnd())
+    m.handle({ type: 'tool_execution_start', toolCallId: 'a', toolName: 'read_canvas', args: {} })
+    const second = m.handle(textDelta('好了'))
+    expect(first[0]).toMatchObject({ type: AgentEventType.TEXT_MESSAGE_START, position: 0 })
+    expect(second[0]).toMatchObject({ type: AgentEventType.TEXT_MESSAGE_START, position: 1 })
+    expect(m.message.text).toBe('先看看\n\n好了')
+    expect(m.message.textSegments).toEqual([
+      { at: 0, position: 0 },
+      { at: 3, position: 1 },
+    ])
+  })
+})
+
+describe('工具调用条目的参数与结果', () => {
+  it('input 是缩进的参数 JSON，output 是结果文本，都截到上限；出错时不带 output', () => {
+    const m = mapper()
+    m.handle({ type: 'tool_execution_start', toolCallId: 'a', toolName: 'add_node', args: { label: 'X' } })
+    m.handle({
+      type: 'tool_execution_end',
+      toolCallId: 'a',
+      toolName: 'add_node',
+      isError: false,
+      result: { content: [{ type: 'text', text: 'y'.repeat(AGENT_TOOL_VIEW_TEXT_LIMIT + 5) }], details: {} },
+    })
+    m.handle({ type: 'tool_execution_start', toolCallId: 'b', toolName: 'update_node', args: {} })
+    m.handle({
+      type: 'tool_execution_end',
+      toolCallId: 'b',
+      toolName: 'update_node',
+      isError: true,
+      result: { content: [{ type: 'text', text: '不存在' }], details: {} },
+    })
+    const [ok, failed] = m.message.toolCalls
+    expect(ok?.input).toBe('{\n  "label": "X"\n}')
+    expect(ok?.output).toMatch(/^y{2000}…（已截断/)
+    expect(failed).toMatchObject({ status: 'error', error: '不存在', input: '{}' })
+    expect(failed?.output).toBeUndefined()
+  })
+})
+
 describe('画布改动通知', () => {
   it('CUSTOM agent.canvas-change：value 就是对话里那条消息（拷贝），先关掉没关的文字段', () => {
     const m = mapper()
@@ -206,7 +323,7 @@ describe('任务条目（docs/20 §3.10.11）', () => {
     // 只带这一条工具调用：没有任务说明、节点、状态
     expect(valueOf(toolStart[0])).toEqual({
       id: 'sub_1',
-      toolCalls: [{ id: 't1', name: 'add_node', status: 'running', summary: 'add_node:{"type":"text"}' }],
+      toolCalls: [{ id: 't1', name: 'add_node', status: 'running', summary: 'add_node:{"type":"text"}', input: '{\n  "type": "text"\n}' }],
     })
     const toolEnd = m.subtaskEvent('sub_1', {
       type: 'tool_execution_end',
@@ -215,7 +332,7 @@ describe('任务条目（docs/20 §3.10.11）', () => {
       result: { content: [{ type: 'text', text: 'ok' }], details: { summary: '新建节点「A」' } },
       isError: false,
     })
-    expect(valueOf(toolEnd[0])).toEqual({ id: 'sub_1', toolCalls: [{ id: 't1', name: 'add_node', status: 'done', summary: '新建节点「A」' }] })
+    expect(valueOf(toolEnd[0])).toEqual({ id: 'sub_1', toolCalls: [{ id: 't1', name: 'add_node', status: 'done', summary: '新建节点「A」', input: '{\n  "type": "text"\n}', output: 'ok' }] })
     // load_skill / request_confirmation 不列进它的工具调用
     expect(m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 't2', toolName: 'load_skill', args: {} })).toEqual([])
     expect(m.subtaskEvent('sub_1', { type: 'tool_execution_start', toolCallId: 't3', toolName: 'request_confirmation', args: {} })).toEqual([])
@@ -298,7 +415,7 @@ describe('任务条目（docs/20 §3.10.11）', () => {
     ])
     // 嵌套的那项同样只发变化帧
     const update = m.subtaskEvent('sub_2', { type: 'tool_execution_start', toolCallId: 't1', toolName: 'get_node', args: {} })
-    expect(valueOf(update[0])).toEqual({ id: 'sub_2', toolCalls: [{ id: 't1', name: 'get_node', status: 'running', summary: 'get_node:{}' }] })
+    expect(valueOf(update[0])).toEqual({ id: 'sub_2', toolCalls: [{ id: 't1', name: 'get_node', status: 'running', summary: 'get_node:{}', input: '{}' }] })
   })
 
   it('收尾时还在跑的任务标成失败（原因随结局），先各发一帧变化再发最后一帧；落定的消息里带着完整条目', () => {
