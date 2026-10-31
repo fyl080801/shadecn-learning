@@ -3,6 +3,7 @@ import { Box, Clapperboard, Film, Frame, Image, Type } from "@lucide/vue"
 
 import { definePromptComposerPart } from "@/components/flow/composer/composer-part"
 import DirectorBody from "@/components/flow/DirectorBody.vue"
+import DirectorOpenButton from "@/components/flow/DirectorOpenButton.vue"
 import ImageBody from "@/components/flow/ImageBody.vue"
 import { mediaNodeStyle } from "@/components/flow/media-fit"
 import NodeHost from "@/components/flow/node-kit/NodeHost.vue"
@@ -14,6 +15,7 @@ import {
   type NodeTypeView
 } from "@/components/flow/node-kit/protocol"
 import NodeUploadBadge from "@/components/flow/NodeUploadBadge.vue"
+import NodeUploadButton from "@/components/flow/NodeUploadButton.vue"
 import { nodeUploadOf } from "@/components/flow/node-upload"
 import TextBody from "@/components/flow/TextBody.vue"
 import VideoBody from "@/components/flow/VideoBody.vue"
@@ -104,7 +106,13 @@ export function defineNodeType(
   render: Pick<FlowNodeTypeDef, "label" | "icon" | "view"> &
     Partial<Pick<FlowNodeTypeDef, "features" | "parts" | "modes">>
 ): FlowNodeTypeDef {
-  return { ...(FLOW_NODE_TYPE_DEFAULTS[type] ?? { type }), features: STANDARD_NODE_FEATURES, ...render }
+  // 图标抄一份进 view：宿主只看 view，名字左边那枚和菜单里的是同一个
+  return {
+    ...(FLOW_NODE_TYPE_DEFAULTS[type] ?? { type }),
+    features: STANDARD_NODE_FEATURES,
+    ...render,
+    view: { icon: render.icon, ...render.view }
+  }
 }
 
 /**
@@ -130,6 +138,19 @@ const uploadingBadge = (type: string) =>
     order: ORDER_TYPE,
     component: NodeUploadBadge,
     when: (ctx) => nodeUploadOf(ctx) !== undefined
+  })
+
+/**
+ * 图片 / 视频右上角的「上传」图标：只在**还没有资源、也没在传**时出现（传起来就换成上面的「上传中」角标）。
+ * 已有资源的节点不提供替换（docs/13 §3.7「资源上传」）。
+ */
+const uploadButton = (type: string) =>
+  defineNodePart({
+    id: `${type}.upload`,
+    slot: "badge",
+    order: ORDER_TYPE,
+    component: NodeUploadButton,
+    when: (ctx) => nodeUploadOf(ctx) === undefined && !hasNodeResource(ctx.type, ctx.node.data.value)
   })
 
 /**
@@ -163,7 +184,8 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     view: { body: ImageBody, class: "flex flex-col", style: mediaNodeStyle, fallbackLabel: "图片" },
     parts: [
       whenGenerate({ id: "image.composer", placeholder: "描述想要的画面（Shift+回车换行）" }),
-      uploadingBadge("image")
+      uploadingBadge("image"),
+      uploadButton("image")
     ],
     features: MEDIA_FEATURES
   }),
@@ -174,12 +196,14 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     view: { body: VideoBody, class: "flex flex-col", style: mediaNodeStyle, fallbackLabel: "视频" },
     parts: [
       whenGenerate({ id: "video.composer", placeholder: "描述想要的视频（Shift+回车换行）" }),
-      uploadingBadge("video")
+      uploadingBadge("video"),
+      uploadButton("video")
     ],
     features: MEDIA_FEATURES
   }),
   /**
-   * 导演台 —— body 是一个「打开导演台」按钮，点了全屏打开导演台（`FlowDirectorOverlay`）。底部输入框一直在，
+   * 导演台 —— body 是一块中间带图标的正方形；右上角（角标区）一枚「打开导演台」图标按钮，点了全屏打开导演台
+   * （`FlowDirectorOverlay`），和图片 / 视频的上传按钮同一个位置、同一套屏幕尺寸规则。底部输入框一直在，
    * 回车把这段话（开头补上这个节点的提及）交给导演台里的当前会话（能力 `director-chat`）。
    * 固定 240 × 240 的正方形（与方图同尺寸）：方块是 body（`aspect-square`），报错行接在它下面，方块不变形
    */
@@ -187,7 +211,10 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     label: "导演台",
     icon: Clapperboard,
     view: { body: DirectorBody, class: "flex w-[240px] flex-col", fallbackLabel: "导演台" },
-    parts: [definePromptComposerPart({ id: "director.composer", placeholder: "让助手搭场景、编排镜头（回车发送）" })],
+    parts: [
+      definePromptComposerPart({ id: "director.composer", placeholder: "让助手搭场景、编排镜头（回车发送）" }),
+      defineNodePart({ id: "director.open", slot: "badge", order: ORDER_TYPE, component: DirectorOpenButton })
+    ],
     // director-chat：输入框回车 = 打开导演台、在那里的当前会话里发出去，开头补上这个节点的提及（docs/07 §7.5）
     features: [...COMPOSER_FEATURES, "director-chat"]
   }),
@@ -225,7 +252,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     icon: Frame,
     view: {
       shell: "frame",
-      class: "pointer-events-none h-full w-full rounded-lg border-2 border-dashed transition-colors",
+      class: "flow-node-frame pointer-events-none h-full w-full rounded-lg border-dashed transition-colors",
       selectedClass: "border-primary/70",
       idleClass: "border-muted-foreground/30",
       style: (ctx) => {

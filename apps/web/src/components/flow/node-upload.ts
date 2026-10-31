@@ -79,8 +79,25 @@ export async function uploadVideoToNode(flowId: string, file: File, io: NodeUplo
   attach({ src: video.url, ...(cover ? { poster: cover.url } : {}) }, "上传视频")
 }
 
+/** 一种节点怎么上传：文件选择框接受什么、按钮上叫什么、选中文件后跑哪个任务 */
+export interface NodeUploadKind {
+  accept: string
+  label: string
+  task: (flowId: string, file: File, io: NodeUploadIo, attach: AttachNodeAsset) => Promise<void>
+}
+
+const NODE_UPLOAD_KINDS: Record<string, NodeUploadKind> = {
+  image: { accept: "image/*", label: "上传图片", task: uploadImageToNode },
+  video: { accept: "video/*", label: "上传视频", task: uploadVideoToNode }
+}
+
+/** 这种节点能不能上传、怎么传；不能就是 undefined */
+export function nodeUploadKindOf(type: string): NodeUploadKind | undefined {
+  return NODE_UPLOAD_KINDS[type]
+}
+
 /**
- * body 里用：`upload(file)` 开始一次上传（`runNodeUpload`），`task` 拿到 `signal` / `onProgress`。
+ * 上传按钮（`NodeUploadButton`）里用：`upload(file)` 开始一次上传（`runNodeUpload`），`task` 拿到 `signal` / `onProgress`。
  * 同一个节点正在传就不再开第二次（`useAsyncAction` 只锁本组件，登记表按节点再锁一层）。
  */
 export function useNodeUpload(ctx: NodePartContext, task: (file: File, io: NodeUploadIo) => Promise<void>) {

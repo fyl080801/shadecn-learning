@@ -217,6 +217,24 @@ describe("NodeHost 的区域", () => {
     expect(w.find('[data-node-slot="toolbar"]').exists()).toBe(false)
   })
 
+  it("类型图标画在名字左边；外观没给图标就不画", () => {
+    const kit = createNodeKit()
+    kit.registerType({
+      type: "text",
+      features: [],
+      view: { icon: defineComponent({ setup: () => () => h("svg", { "data-icon": "text" }) }) },
+      parts: [defineNodePart({ id: "title", slot: "label", component: marker("title") })]
+    })
+    kit.registerType({ type: "image", features: [] })
+
+    const label = mountHost(kit, "n1", "text").find('[data-node-slot="label"]')
+    const children = label.element.children
+    expect(children[0]?.getAttribute("data-icon")).toBe("text")
+    expect(children[1]?.getAttribute("data-marker")).toBe("title")
+
+    expect(mountHost(kit, "n2", "image").find("[data-node-type-icon]").exists()).toBe(false)
+  })
+
   it("能力给根元素加的 class 合到宿主根上", () => {
     const kit = createNodeKit()
     kit.registerFeature(defineNodeFeature({ id: "glow", rootClass: (ctx) => ctx.type === "image" && "ring-4" }))

@@ -2,6 +2,7 @@
 import { computed } from "vue"
 import { useVueFlow } from "@vue-flow/core"
 
+import { screenToCanvas } from "@/components/flow/flow-screen"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 
 /**
@@ -16,7 +17,8 @@ import { useFlowEditor } from "@/composables/flow/editor-context"
 const { canvas } = useFlowEditor()
 const { viewport } = useVueFlow()
 
-const counterScale = computed(() => 1 / (viewport.value.zoom || 1))
+/** 一个屏幕像素在画布里多长（公共换算 `flow-screen.ts`）：SVG 属性里的长度乘它就按屏幕像素画 */
+const counterScale = computed(() => screenToCanvas(1, viewport.value.zoom))
 
 /** 虚线的疏密也要反向缩放，否则缩小后一整条线糊成一根实线 */
 const dashArray = computed(() => `${4 * counterScale.value} ${3 * counterScale.value}`)

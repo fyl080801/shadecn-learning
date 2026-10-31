@@ -228,6 +228,11 @@ export interface NodeTypeView {
   style?: (ctx: NodePartContext) => CSSProperties | undefined
   /** 没起名时显示什么 */
   fallbackLabel?: string
+  /**
+   * 类型图标，宿主画在框外名字的左边（和菜单里那枚是同一个）。
+   * `node-types.ts` 的 `defineNodeType` 把类型的 `icon` 抄进来；不给就不画
+   */
+  icon?: Component
 }
 
 /**

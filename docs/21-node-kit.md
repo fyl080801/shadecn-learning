@@ -172,7 +172,7 @@ export const FLOW_NODE_TYPES = {
 - 「露出规则」分两层：**宿主决定这个区域此刻能不能出现**（几何与交互约定，比如拉框时任何工具条都不出现），
   **部件的 `when` 只能在此基础上再收窄**，不能放宽。这样不会有部件在拉框时偷偷冒出来。
 - 区域里一个部件都没有（或都 `when=false`）时，宿主**不渲染这个 `NodeToolbar`**，几十个节点不会挂着几十个空浮层。
-- **区域是「可以挂东西的位置」，不是「每个节点都有的东西」。** 除了 `body`（类型必填）和宿主内置的名字 / 在场头像，
+- **区域是「可以挂东西的位置」，不是「每个节点都有的东西」。** 除了 `body`（类型必填）和宿主内置的类型图标 / 在场头像，
   一个区域在某个节点上存不存在，完全取决于**这个节点的类型有没有注册部件到那里**。
   以底部输入框为例：`process` / `group` 没有注册任何 `composer` 部件，它们就没有底部输入框 ——
   不是「有但隐藏」，而是解析结果为空、宿主连 `NodeToolbar` 都不挂；进入任何模式、调用 `slots.open('composer')` 也变不出来。
@@ -338,6 +338,7 @@ export const runnable = defineNodeFeature({
 |---|---|
 | `FlowNodeBase.vue` | `NodeHost.vue`：外壳 + 九个区域 + provide 上下文；`variant` → 类型声明的 `shell` |
 | `FlowNodeChrome` 的名字 + 双击改名 | 能力 `rename`：部件 `label.title`（`label` 区）+ 模式 `rename` + 处理函数 |
+| 类型图标（名字左边） | **宿主内置**（`label` 区最前面），画外观里的 `view.icon` —— 就是 `node-types.ts` 里类型的 `icon`、菜单上那一枚，`defineNodeType` 抄进 `view`；类型没给就不画，不是能力 |
 | `FlowNodeChrome` 的在场头像 | **宿主内置**（`label` 区，`order` 在名字之后），所有节点强制显示，**不是能力、类型不能关**（§10.4）；个人画布上 presence 本来就不运行，自然为空 |
 | 复制 / 删除按钮 | 能力 `duplicate` / `delete`，各一个动作 |
 | `GroupNode` 的 `#actions` 换成解组 | 能力 `ungroup`：一个动作。分组不启用 `delete`，所以没有「替换」要写 |
@@ -395,7 +396,7 @@ export const runnable = defineNodeFeature({
 6. ✅ 第一批新能力：`image-config` 的底部输入框按类型注册（类型声明的 `parts` + `modes`；`NodeKitTypeDef` 为此多了 `modes`），外壳是 `components/flow/composer/PromptComposer.vue`（草稿写 `data.<field>`，回车提交并发 `composer:submit`、**输入法组字时的回车不算**、Shift+回车换行、Esc 丢草稿、失焦只写回；写字即进 `edit-prompt` 模式——露出输入框，工具条照常显示；浮层收起导致卸载时也按失焦写回）。`output-preview`：`footer` 区的产出列表（从 `GenericBody` 挪出来）+ `side` 区原图大预览 + 「展开 / 收起预览」两个按 `when` 出现的动作。`runnable`：只有一个处理函数，把非空的 `composer:submit` 转成 `node:run`——**不加「运行」按钮**，运行器没接上时点了没反应的按钮比没有更糟。`composer:submit` / `node:run` 两个事件都用模块扩充各自声明在自己的文件里。
 7. ✅ 文档：REQ-CANVAS §3.7.3 / §4.4（宿主 + 类型声明 + 能力、组件层清单、节点动作快捷键）、REQ-AGENT 里的占用标签、CLAUDE.md 的节点注册表与组件清单，并新增一条 node-kit 协议的说明。
 8. ✅ 节点类型收敛为四种：`text` / `image` / `video` / `director`（shared 的 `CREATABLE_NODE_TYPES`；七种样例业务类型下线，老画布里的按兜底 `process` 显示）。
-   - 每种类型往 `body` 区登记自己的内容：`TextBody`（输入框样子的正文区）/ `ImageBody`（`data.src` 的图，空时可上传）/ `VideoBody`（只画 `data.poster`，没视频时可上传）/ `DirectorBody`（「打开导演台」按钮，先空着）；`GenericBody` 删除。
+   - 每种类型往 `body` 区登记自己的内容：`TextBody`（输入框样子的正文区）/ `ImageBody`（`data.src` 的图，空时可上传）/ `VideoBody`（只画 `data.poster`，没视频时可上传）/ `DirectorBody`（中间一枚图标；「打开导演台」是 `badge` 区的图标按钮）；`GenericBody` 删除。
    - 底部输入框按类型登记（`composer/composer-part.ts` 的 `definePromptComposerPart`，写 `data.prompt`）：文本 / 图片 / 视频有了内容（shared 的 `hasNodeResource`）就收起，导演台一直有；`ImagePromptComposer` 删除。（后续：图片 / 视频改为看形态 `nodeFormOf`——generate 形态输入框常驻，asset 形态才收起，见 docs/13 §3.7；只有文本仍按有无内容收起）
      `edit-prompt` 模式改成**能力**（`composer/prompt.ts` 的 `editPromptFeature`）：模式 id 在注册表里全局唯一，四个类型不能各登记一份。
    - 提交只发 `composer:submit`，没有类型启用 `runnable`，所以眼下提交不触发运行；`runnable` / `output-preview` 仍在 `install.ts` 登记，作为通用能力留着。

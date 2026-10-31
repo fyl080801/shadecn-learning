@@ -3,6 +3,7 @@ import { computed } from "vue"
 import { getBezierPath, Position, useVueFlow } from "@vue-flow/core"
 
 import FlowPresenceAvatar from "@/components/flow/FlowPresenceAvatar.vue"
+import { screenToCanvas } from "@/components/flow/flow-screen"
 import { useFlowEditor } from "@/composables/flow/editor-context"
 import { FEEDBACK_THROTTLE } from "@/lib/presence"
 
@@ -21,7 +22,8 @@ import { FEEDBACK_THROTTLE } from "@/lib/presence"
 const { presence } = useFlowEditor()
 const { viewport } = useVueFlow()
 
-const counterScale = computed(() => 1 / (viewport.value.zoom || 1))
+/** 一个屏幕像素在画布里多长（公共换算 `flow-screen.ts`）：SVG 属性里的长度乘它就按屏幕像素画 */
+const counterScale = computed(() => screenToCanvas(1, viewport.value.zoom))
 
 /**
  * 别人正在拉的线：从他上报的起点画到他的光标。

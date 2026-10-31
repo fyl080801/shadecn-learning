@@ -40,8 +40,12 @@ import type {
  */
 const props = defineProps<FlowNodeViewProps>()
 
-/** 卡片选中时的默认高亮；外观给了 `selectedClass` 就用它的 */
-const DEFAULT_SELECTED_CLASS = "border-primary shadow-md ring-2 ring-primary/40"
+/**
+ * 卡片选中时的默认高亮；外观给了 `selectedClass` 就用它的。
+ * 边框 / 描边环 / 阴影都按屏幕像素画、不随缩放变，所以不用 Tailwind 的 `border` / `ring-2` / `shadow-*`，
+ * 走 vue-flow.css 的 `.flow-node` 一组（换算见 `flow-screen.ts`）
+ */
+const DEFAULT_SELECTED_CLASS = "flow-node-selected"
 
 const editor = useFlowEditor()
 const runtime = useNodeKitRuntime()
@@ -195,9 +199,8 @@ const status = computed(() => node.runtime.value.status)
 
 const rootClass = computed(() =>
   cn(
-    "relative",
-    view.value.shell !== "frame" &&
-      "rounded-md border bg-card text-sm text-card-foreground shadow-sm transition-shadow",
+    "flow-node relative",
+    view.value.shell !== "frame" && "rounded-md bg-card text-sm text-card-foreground",
     view.value.class,
     ...kit.rootClassesFor(props.type).map((rootClass) => rootClass(ctx)),
     props.selected ? (view.value.selectedClass ?? DEFAULT_SELECTED_CLASS) : view.value.idleClass
@@ -230,6 +233,14 @@ const OUTER_OFFSET = 8
       :offset="LABEL_OFFSET"
     >
       <div class="flex items-center gap-1.5" data-node-slot="label">
+        <!-- 类型图标：宿主内置，排在名字左边（外观 view.icon，类型没给就不画） -->
+        <component
+          :is="view.icon"
+          v-if="view.icon"
+          class="size-3.5 shrink-0 text-muted-foreground"
+          aria-hidden="true"
+          data-node-type-icon
+        />
         <NodeSlot :parts="parts.label" />
         <NodePresence />
       </div>
@@ -256,10 +267,16 @@ const OUTER_OFFSET = 8
       </div>
     </NodeToolbar>
 
-    <!-- 角标：节点内部的外观，贴着卡片自己的角，不是画布上的定位 -->
+    <!--
+      角标：节点内部的外观，贴着卡片自己的角，不是画布上的定位。
+      **登记到 badge 区的部件自动按屏幕尺寸画**（上传按钮、「上传中」、打开导演台…），部件自己不用管：
+      整块 `flow-screen-fixed`，以右上角为原点缩（`origin-top-right`）；离角的距离写成内边距 `p-1.5`，
+      内边距在被缩放的盒子里，天然也是屏幕像素。
+    -->
     <div
       v-if="parts.badge.length > 0"
-      class="pointer-events-none absolute right-1.5 top-1.5 flex items-center gap-1"
+      class="flow-screen-fixed pointer-events-none absolute right-0 top-0 flex origin-top-right items-center gap-1 p-1.5"
+      data-node-slot="badge"
     >
       <NodeSlot :parts="parts.badge" />
     </div>

@@ -855,12 +855,12 @@ export function useFlowCanvas(
   })
 
   /**
-   * 弹出候选菜单。`anchor`：点加号时那个连接点元素（新节点放在原节点右边隔一段）；
+   * 弹出候选菜单。`anchor`：点加号时菜单贴着的东西 —— 连接点元素，或加号此刻所在的虚拟元素（新节点放在原节点右边隔一段）；
    * `drop`：拉线松手的屏幕坐标（新节点的入口落在那一点）。
    */
   function openGrowMenu(
     sourceId: string,
-    place: { anchor: Element } | { drop: { clientX: number; clientY: number } }
+    place: { anchor: Element | { getBoundingClientRect: () => DOMRect } } | { drop: { clientX: number; clientY: number } }
   ) {
     const from = findNode(sourceId)
     if (!from) return

@@ -33,8 +33,9 @@ export const statusFeature = defineNodeFeature({
   ],
   rootClass: (ctx) => {
     const status = ctx.node.runtime.value.status
-    if (status === "processing") return "ring-2 ring-sky-500/50"
-    if (status === "error") return "border-destructive"
+    // 描边环 / 边框色按屏幕像素画，样式在 vue-flow.css 的 `.flow-node-processing` / `.flow-node-error`
+    if (status === "processing") return "flow-node-processing"
+    if (status === "error") return "flow-node-error"
     return null
   }
 })

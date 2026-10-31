@@ -9,7 +9,7 @@ import { Spinner } from "@/components/ui/spinner"
  * 节点 body 里的上传进度：分片上传有进度就画进度条 + 百分比；一次传完的（不分片）没有中间进度，只转圈。
  * 两种都能取消（`cancel` 出去，断开请求是 body 的事）。
  *
- * `nodrag nopan`、`@dblclick.stop`：同 `NodeUploadButton`。
+ * `nodrag nopan`：按下不拖节点 / 画布；`@dblclick.stop`：双击不算双击节点。
  */
 defineProps<{ progress: number | null }>()
 const emit = defineEmits<{ cancel: [] }>()

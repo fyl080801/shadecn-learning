@@ -14,7 +14,8 @@ import { Background } from "@vue-flow/background"
 import FlowConnectionLine from "@/components/flow/FlowConnectionLine.vue"
 import FlowEdge from "@/components/flow/FlowEdge.vue"
 import FlowPaneContextMenu from "@/components/flow/FlowPaneContextMenu.vue"
-import { flowHandleShift } from "@/components/flow/flow-handle"
+import { flowHandleOffset } from "@/components/flow/flow-handle"
+import { flowScreenVars } from "@/components/flow/flow-screen"
 import FlowPresenceCursors from "@/components/flow/FlowPresenceCursors.vue"
 import FlowSelectionToolbar from "@/components/flow/FlowSelectionToolbar.vue"
 import FlowSnapGuides from "@/components/flow/FlowSnapGuides.vue"
@@ -46,15 +47,17 @@ const { canvas } = useFlowEditor()
 const defaultEdgeOptions = { type: FLOW_EDGE_TYPE }
 
 /**
- * 连接点离节点的距离要「看上去」不随缩放变（`flow-handle.ts`）。
+ * 画布上的界面元素（连接点、加号和感应区、连线粗细、节点边框 / 选中描边 / 阴影、节点里的上传按钮）
+ * 按屏幕像素画、不随缩放变：缩放的倒数写成 CSS 变量挂在画布根上，下面的元素都继承（`flow-screen.ts`）。
  *
- * 位移以 `--flow-handle-shift` 交给 CSS，用在圆的 `translate` 上 —— 只动 transform，
- * 不动布局，Vue Flow 量好的连接点位置也就不会失效；连线两端由 `FlowEdge` /
- * `FlowConnectionLine` 按同一个值补齐。
+ * 连接点的圆心位移另给 `--flow-handle-offset`（几何在 `flow-handle.ts`），用在 `translate` 上 ——
+ * 只动 transform，不动布局，Vue Flow 量好的连接点位置也就不会失效；连线两端由 `FlowEdge` /
+ * `FlowConnectionLine` 按 `flowHandleShift` 补齐。
  */
 const { viewport, connectionStartHandle } = useVueFlow()
-const handleStyle = computed(() => ({
-  "--flow-handle-shift": `${flowHandleShift(viewport.value.zoom)}px`
+const screenStyle = computed(() => ({
+  ...flowScreenVars(viewport.value.zoom),
+  "--flow-handle-offset": `${flowHandleOffset(viewport.value.zoom)}px`
 }))
 
 /** 覆盖 `default` 这个类型名，而不是另起一个 —— 边的 type 照旧，文档里的数据不用动 */
@@ -83,7 +86,7 @@ const edgeTypes = { default: markRaw(FlowEdge) }
         'flow-canvas-panning': canvas.spacePanning.value,
         'flow-canvas-connecting': connectionStartHandle !== null
       }"
-      :style="handleStyle"
+      :style="screenStyle"
       @wheel.capture="canvas.onWheelZoom"
       @pointermove="canvas.onPointerMove"
       @pointerleave="canvas.onPointerLeave"
