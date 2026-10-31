@@ -6,7 +6,7 @@
  * 并发单位是**会话**：一个会话同时只跑一轮，不同会话、不同的人可以同时跑（docs/20 §3.10.3）。
  * 这里只放两边都要认的东西 —— 接口路径、流式事件的形状、对话消息的形状、
  * 以及「提及节点」在 prompt 文本里的写法。实现分别在
- * `apps/server/agent/` 和 `apps/web/src/components/flow/agent/`。
+ * `packages/mod-agent/src/` 和 `apps/web/src/components/flow/agent/`。
  *
  * 只用 ES2020，不碰 DOM / Node API（见本包 tsconfig 的护栏）。
  */

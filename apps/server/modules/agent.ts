@@ -1,35 +1,55 @@
-import { startAgentReconciler } from '../agent/authority.ts'
-import { abortAgentRuns, startAgentSandboxReaper } from '../agent/index.ts'
-import { defineModule } from '@shadecn/server-kit/kernel'
+import { createAgentModule } from '@shadecn/mod-agent'
 import type { ServerApp } from '../app.ts'
+import {
+  agentConfig,
+  agentDefinitionsDir,
+  agentModelsFile,
+  agentProviderApiKey,
+  agentTextSkillsDir,
+  agentWorkspaceDir,
+  host,
+  instanceId,
+  isDev,
+  s3Config,
+  s3Enabled,
+} from '../config.ts'
+import { isBundle, moduleDir } from '../runtime.ts'
+import { agentConversations, agentGrants, agentRunLog } from '../store/agent.ts'
+import { flows } from '../store/flows.ts'
+import { projects } from '../store/projects.ts'
+import { users } from '../store/users.ts'
 
 /**
- * 画布 agent 模块（REQ-AGENT / REQ-AGENT-SANDBOX）。
+ * 画布 agent 模块的装配点：能力在 `@shadecn/mod-agent`（编排引擎在 `@shadecn/agent`），这里只把底座的东西交进去 ——
+ * 解析好的配置、各路径、会话 / 运行日志 / Grant 的落库、用户简况、成员关系判定。
  *
- * - 硬依赖 collab：agent 经 direct connection 写活房间（`agent/canvas-access.ts`）；
- * - 软依赖 storage：没配 S3 就没有看图工具（`agent/media.ts` 自己判 `s3Enabled`）。
- *
- * 收尾在 collab 之前（内核按装配逆序）：在跑的轮次先叫停并等它们收尾 —— 已写进画布的改动保留（各自是独立的 Y 事务），
- * 房间随 collab 的落库一起存；这一轮的对话和运行日志要赶在关数据库之前写进去。中止是立刻的，收尾只是几次写库，
- * 上限 5 秒，和 collab 的 20 秒一起仍在 60 秒宽限期之内。
+ * **import 这个文件就装配好了端口**，并且当场校验 agent 定义、文字技能、模型表（不合法就抛，进程不监听端口）。
+ * 测试的 setup 也 import 它。
  */
-export const agentModule = defineModule<ServerApp>({
-  name: 'agent',
-  roles: ['agent'],
-  dependsOn: ['collab'],
-  optional: ['storage'],
-  setup() {
-    // 委托授权：每 10 分钟全量对账一次（过期的标掉、失权的叫停；权限变化事件那条路是当场的，见 agent/authority.ts）
-    const stopReconciler = startAgentReconciler()
-    // 沙箱：oci / k8s 驱动先自检（引擎 / 镜像 / 网络），再清上一个进程留下的孤儿容器，之后定时清
-    const stopReaper = startAgentSandboxReaper()
-    return {
-      shutdownTimeoutMs: 5_000,
-      async shutdown() {
-        stopReconciler()
-        stopReaper()
-        await abortAgentRuns('服务正在重启')
-      },
-    }
+export const agentModule = createAgentModule<ServerApp>({
+  config: agentConfig,
+  instanceId,
+  host,
+  isDev,
+  paths: {
+    workspaceDir: agentWorkspaceDir,
+    modelsFile: agentModelsFile,
+    definitionsDir: agentDefinitionsDir,
+    textSkillsDir: agentTextSkillsDir,
+  },
+  providerApiKey: agentProviderApiKey,
+  storage: { enabled: s3Enabled, keyPrefix: s3Config.keyPrefix },
+  runner: { isBundle, moduleDir },
+  stores: {
+    conversations: agentConversations,
+    runLog: agentRunLog,
+    userProfiles: users.briefs,
+    grants: agentGrants,
+    // 和 `requireFlowMember` 同口径：画布（及其项目）没被删，且这个人是项目成员（个人空间即所有者）
+    async flowAccess(flowId, userId) {
+      const target = await flows.locate(flowId)
+      if (!target) return null
+      return (await projects.membershipOf(target.projectId, userId)) ? target : null
+    },
   },
 })

@@ -5,13 +5,14 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { K8S_LABELS, OCI_LABELS, PROCESS_DRIVER_REFUSED_IN_PRODUCTION } from '@shadecn/agent/sandbox/drivers'
-import { forwardedImports, runnerCommand } from '../../agent/runner-command.ts'
+import { forwardedImports, runnerCommand } from '@shadecn/mod-agent/runner-command'
 
 /**
  * 沙箱相关的配置与装配（docs/22 §7）：`AGENT_SANDBOX` 的取值、生产环境拒绝 process 驱动（除非显式放行）、
  * `oci` 驱动的 socket / 网关地址 / 资源上限、`k8s` 驱动的 API 连接 / Pod IP 网关地址 / 自检决定启不启用、
  * 启动自检与清孤儿、令牌密钥的来路、runner 的启动命令。
- * config.ts / agent/index.ts 的值在模块加载时算定，所以每个用例 resetModules 重新 import。
+ * config.ts 的值在模块加载时算定，所以每个用例 resetModules 重新 import —— 先 import 宿主的装配点（`modules/agent.ts`，
+ * 它读新的 config 并装配端口），再 import 包里的 runtime（见 {@link freshAgentRuntime}）。
  */
 
 let engineServer: Server | null = null
@@ -245,7 +246,7 @@ describe('装配', () => {
   async function runtimeWith(env: Record<string, string>) {
     for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value)
     vi.resetModules()
-    const { agentRuntime } = await import('../../agent/index.ts')
+    const { agentRuntime } = await freshAgentRuntime()
     return agentRuntime()
   }
 
@@ -303,9 +304,9 @@ describe('装配', () => {
     vi.resetModules()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.spyOn(console, 'info').mockImplementation(() => {})
-    const agent = await import('../../agent/index.ts')
-    instance = agent.agentSandboxInstance
-    expect(agent.agentGatewayUrl).toBe('http://host.docker.internal:3100/api/agent-gateway')
+    const agent = await freshAgentRuntime()
+    instance = agent.agentSandboxInstance()
+    expect(agent.agentGatewayUrl()).toBe('http://host.docker.internal:3100/api/agent-gateway')
 
     const stop = agent.startAgentSandboxReaper()
     try {
@@ -327,7 +328,7 @@ describe('装配', () => {
     vi.stubEnv('AGENT_SANDBOX_OCI_SOCKET', engine.socketPath)
     vi.stubEnv('DOCKER_HOST', `unix://${engine.socketPath}`)
     vi.resetModules()
-    const agent = await import('../../agent/index.ts')
+    const agent = await freshAgentRuntime()
     const stop = agent.startAgentSandboxReaper()
     await new Promise((resolve) => setTimeout(resolve, 200))
     stop()
@@ -365,9 +366,9 @@ describe('装配', () => {
     vi.resetModules()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
-    const agent = await import('../../agent/index.ts')
-    instance = agent.agentSandboxInstance
-    expect(agent.agentGatewayUrl).toBe('http://10.2.3.4:3100/api/agent-gateway')
+    const agent = await freshAgentRuntime()
+    instance = agent.agentSandboxInstance()
+    expect(agent.agentGatewayUrl()).toBe('http://10.2.3.4:3100/api/agent-gateway')
 
     const stop = agent.startAgentSandboxReaper()
     try {
@@ -402,7 +403,7 @@ describe('装配', () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const agent = await import('../../agent/index.ts')
+    const agent = await freshAgentRuntime()
     const stop = agent.startAgentSandboxReaper(30)
     try {
       await until(() => kube.requests.filter((request) => request.path.includes('labelSelector')).length >= 2)
@@ -436,7 +437,7 @@ describe('装配', () => {
     async function startWith(env: Record<string, string>) {
       for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value)
       vi.resetModules()
-      const agent = await import('../../agent/index.ts')
+      const agent = await freshAgentRuntime()
       // 先建好 runtime（自检还没查完时它是启用的），再开始自检：查完没过要把它换成未启用
       expect(agent.agentRuntime().enabled).toBe(true)
       const stop = agent.startAgentSandboxReaper()
@@ -490,3 +491,9 @@ describe('runner 的启动命令', () => {
     ).toEqual(['--import', '/repo/apps/server/scripts/local-start.mjs', '--import=file:///x.mjs'])
   })
 })
+
+/** resetModules 之后：先让宿主按新的环境变量装配 agent 端口，再拿同一轮模块图里的 runtime */
+async function freshAgentRuntime() {
+  await import('../../modules/agent.ts')
+  return import('@shadecn/mod-agent/runtime')
+}

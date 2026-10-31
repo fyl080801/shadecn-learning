@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import path from 'node:path'
 import { parseRoles, type ServerRole } from '@shadecn/server-kit/kernel'
+import type { AgentHostConfig, AgentSandboxDriver } from '@shadecn/mod-agent/ports'
 import { appRoot, isBundle, moduleDir } from './runtime.ts'
 
 /** 应用根目录：.env、data/、output/ 都以它为准 */
@@ -62,7 +63,7 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  *
  * 这里只做**环境变量 → 参数对象**这一步；拿它选模型（注册表 / 自定义端点 / 缺 key）是
  * `@shadecn/agent/model` 的事；没给 `AGENT_API_KEY` 时按提供方退回它自己的环境变量
- * （`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`…，映射见 {@link AGENT_PROVIDER_KEY_ENV}，由 `apps/server/agent/index.ts` 调用）。
+ * （`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`…，映射见 {@link AGENT_PROVIDER_KEY_ENV}，由 `packages/mod-agent/src/index.ts` 调用）。
  * 那个包刻意不读 `process.env`，环境约定只在宿主这一处。
  *
  * **拿不到模型或 key = agent 没开**，不是配错了：`GET …/agent` 回 `enabled: false`，
@@ -82,7 +83,7 @@ export const dataDir = resolveFromRoot(process.env.DATA_DIR ?? 'data')
  * - `AGENT_API_KEY`：显式的 key，优先于按提供方的环境变量（{@link AGENT_PROVIDER_KEY_ENV}）。**只在服务端**：沙箱里的 runner 拿到的是 run 短令牌，
  *   真实 key 由网关的模型代理注入（docs/22 §4.1）；
  * - 以上几项是模型表里的 `default`（docs/26 §3.4）。其余的项在模型表文件里（{@link agentModelsFile}，`AGENT_MODELS_FILE` 可换路径），
- *   解析在 `apps/server/agent/models.ts`；
+ *   解析在 `packages/mod-agent/src/models.ts`；
  * - `AGENT_SANDBOX`：沙箱驱动（docs/22 §7）—— pi 的推理循环跑在每轮一个的沙箱里：
  *   `process`（默认：本机 `node` 子进程，**不是强隔离**，`NODE_ENV=production` 时拒绝，除非 `AGENT_SANDBOX_ALLOW_PROCESS=1`）；
  *   `oci`（每轮一个 Docker / Podman 容器，经 Engine API 的 unix socket；生产可用）；
@@ -172,7 +173,7 @@ export const agentConfig = {
   maxOutputTokens: positiveInteger(process.env.AGENT_MAX_OUTPUT_TOKENS),
   /** 生成会话标题用的模型表键；不配 = `default`，`off` = 不生成（标题只取首条消息的开头） */
   titleModel: resolveTitleModel(process.env.AGENT_TITLE_MODEL),
-} as const
+} as const satisfies AgentHostConfig
 
 /** `AGENT_TITLE_MODEL` → 模型表键；`off` / `none` / `0` / `false` = 不生成（undefined） */
 function resolveTitleModel(raw: string | undefined): string | undefined {
@@ -249,8 +250,6 @@ export function agentProviderApiKey(provider: string, env: NodeJS.ProcessEnv = p
   return ''
 }
 
-/** 沙箱驱动的取值；认不出的原样带着，由 agent 装配点写成「未启用」的原因 */
-export type AgentSandboxDriver = 'process' | 'oci' | 'k8s' | { unknown: string }
 
 function resolveSandboxDriver(raw: string | undefined): AgentSandboxDriver {
   const value = raw?.trim() || 'process'

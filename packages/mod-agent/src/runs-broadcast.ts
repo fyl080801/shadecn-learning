@@ -1,7 +1,6 @@
 import type { Hocuspocus } from '@hocuspocus/server'
 import { formatAgentRunsMessage, type AgentRunEntry } from '@shadecn/shared/agent'
-import { collabInstance } from '@shadecn/mod-collab/hocuspocus'
-import { roomOf } from '@shadecn/mod-collab/persistence'
+import { collabInstance, roomOf } from '@shadecn/mod-collab/canvas-host'
 
 /**
  * 把一张画布的运行中 agent 任务列表推给它的协同房间（docs/20 §3.10.4，契约 `AgentRunsMessage`）。

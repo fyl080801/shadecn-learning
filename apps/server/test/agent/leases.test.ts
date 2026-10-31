@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeLease } from '@shadecn/agent/occupancy'
-import { createSharedLeaseRegistry } from '../../agent/leases.ts'
-import { agentHostOptions } from '../../agent/index.ts'
-import { agentNodeLeases } from '../../agent/leases.ts'
+import { createSharedLeaseRegistry } from '@shadecn/mod-agent/leases'
+import { agentHostOptions } from '@shadecn/mod-agent/runtime'
+import { agentNodeLeases } from '@shadecn/mod-agent/leases'
 import { stringCodec } from '@shadecn/server-kit/cluster'
 import { createMemoryBackend } from '@shadecn/server-kit/cluster/memory'
 

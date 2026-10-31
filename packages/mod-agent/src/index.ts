@@ -18,9 +18,7 @@ import {
   type SandboxDriver,
 } from '@shadecn/agent/sandbox/drivers'
 import { createAgentRuntime, type AgentRuntime, type AgentRuntimeOptions } from '@shadecn/agent/session'
-import { agentConfig, agentProviderApiKey, agentWorkspaceDir, host, isDev, s3Enabled } from '../config.ts'
-import { agentConversations, agentRunLog } from '../store/agent.ts'
-import { users } from '../store/users.ts'
+import { agentPorts, lazySingleton, type AgentHostConfig } from './ports.ts'
 import { agentAuthority } from './authority.ts'
 import { agentDefinitions, agentTextSkills } from './definitions.ts'
 import { agentModels } from './models.ts'
@@ -33,8 +31,8 @@ import { broadcastAgentRuns } from './runs-broadcast.ts'
 /**
  * 画布 Agent 在本服务里的装配点：环境变量 → `@shadecn/agent` 的显式参数。
  *
- * 那个包不读 `process.env`（见 `@shadecn/agent/model`），所以「没给 `AGENT_API_KEY` 时退回
- * 提供方自己的环境变量（`config.ts` 的 `AGENT_PROVIDER_KEY_ENV`）」「沙箱子进程的 PATH」「生产环境拒绝 process 驱动」这类环境相关的决定都在这里做。
+ * 那个包不读 `process.env`（见 `@shadecn/agent/model`）；这个包也不读配置类的环境变量 —— 解析在宿主（`apps/server/config.ts`），
+ * 经 `AgentPorts` 交进来（`ports.ts`）。「沙箱子进程的 PATH」「找容器引擎 socket」这类**本进程运行环境**仍在这里读。
  *
  * **二期～四期（docs/22 §9 第 2～4 项）**：pi 的推理循环跑在每轮一个的沙箱里（`process` 驱动 = 本机 node 子进程；
  * `oci` 驱动 = 每轮一个 Docker / Podman 容器；`k8s` 驱动 = 每轮一个 Pod），经网关（`routes/agent-gateway.ts`，挂在 `AGENT_GATEWAY_PATH`）说话。
@@ -57,11 +55,14 @@ let runtime: AgentRuntime | null = null
  * 启动时校验过的 agent 定义与文字技能（docs/26，`definitions.ts`）。
  * 启用与否都一样；测试换成假模型时也展开它，测的就是生产的那套接线。
  */
-export const agentHostOptions = {
-  store: agentConversations,
-  runLog: agentRunLog,
-  userProfiles: users.briefs,
-  onRunsChange: (flowId, runs) => {
+export const agentHostOptions: Pick<
+  AgentRuntimeOptions,
+  'store' | 'runLog' | 'userProfiles' | 'onRunsChange' | 'authorities' | 'leases' | 'runRegistry' | 'agents' | 'textSkills'
+> = lazySingleton(() => ({
+  store: agentPorts().stores.conversations,
+  runLog: agentPorts().stores.runLog,
+  userProfiles: agentPorts().stores.userProfiles,
+  onRunsChange: (flowId: string, runs: Parameters<AgentRuntimeOptions['onRunsChange'] & object>[1]) => {
     broadcastAgentRuns(flowId, runs)
   },
   authorities: agentAuthority,
@@ -73,13 +74,15 @@ export const agentHostOptions = {
   agents: agentDefinitions,
   // 文字技能（docs/26 §3.8）：随产物发布的 `skills/`，启动时已校验
   textSkills: agentTextSkills,
-} satisfies Pick<
-  AgentRuntimeOptions,
-  'store' | 'runLog' | 'userProfiles' | 'onRunsChange' | 'authorities' | 'leases' | 'runRegistry' | 'agents' | 'textSkills'
->
+}))
+
+/** 宿主交进来的 agent 配置 */
+const config = (): AgentHostConfig => agentPorts().config
 
 /** 沙箱里看到的网关地址 */
-export const agentGatewayUrl = `${agentConfig.gatewayUrl}${AGENT_GATEWAY_PATH}`
+export function agentGatewayUrl(): string {
+  return `${config().gatewayUrl}${AGENT_GATEWAY_PATH}`
+}
 
 /**
  * 这个实例在容器引擎 / 集群上的标识（`oci` 容器、`k8s` Pod 的 `instance` label，`reap` 只清这个值的）：沙箱看到的网关地址的哈希。
@@ -87,7 +90,9 @@ export const agentGatewayUrl = `${agentConfig.gatewayUrl}${AGENT_GATEWAY_PATH}`
  * 同一个引擎上别的实例（别的端口 / 别的主机名）的容器不受影响。`k8s` 下网关地址是本 Pod 的 IP：
  * 服务端容器在同一个 Pod 里重启，标识不变；Pod 被替换，标识跟着变（旧 Pod 留下的由驱动按「过了时长上限」清）。
  */
-export const agentSandboxInstance = createHash('sha256').update(agentGatewayUrl).digest('hex').slice(0, 16)
+export function agentSandboxInstance(): string {
+  return createHash('sha256').update(agentGatewayUrl()).digest('hex').slice(0, 16)
+}
 
 /** 没启用时也要给的驱动：永远起不来（start 根本不会被调到） */
 const NO_DRIVER: SandboxDriver = {
@@ -118,7 +123,7 @@ function sandboxDriver(): BuiltDriver {
 }
 
 function buildDriver(): BuiltDriver {
-  const choice = agentConfig.sandbox
+  const choice = config().sandbox
   if (typeof choice === 'object') {
     return { ok: false, reason: `不认识的沙箱驱动 AGENT_SANDBOX=${choice.unknown}（可选 process / oci / k8s）` }
   }
@@ -127,10 +132,10 @@ function buildDriver(): BuiltDriver {
   try {
     const driver = createProcessDriver({
       command: runnerCommand(),
-      rootDir: agentWorkspaceDir,
+      rootDir: agentPorts().paths.workspaceDir,
       pathEnv: process.env.PATH,
-      production: !isDev,
-      allowInProduction: agentConfig.allowProcessInProduction,
+      production: !agentPorts().isDev,
+      allowInProduction: config().allowProcessInProduction,
       onOutput: logRunnerOutput,
     })
     return { ok: true, driver }
@@ -141,15 +146,15 @@ function buildDriver(): BuiltDriver {
 
 /** `oci`：找到引擎的 socket（只看文件系统，不调 podman / docker CLI）；生产照常可用 */
 function buildOciDriver(): BuiltDriver {
-  const socket = findEngineSocket(agentConfig.ociSocket, process.env)
+  const socket = findEngineSocket(config().ociSocket, process.env)
   if (!socket.ok) return { ok: false, reason: socket.reason }
   try {
     const driver = createOciDriver({
       engine: createEngineClient(socket.path),
-      image: agentConfig.sandboxImage,
-      instance: agentSandboxInstance,
-      network: agentConfig.ociNetwork,
-      ...(agentConfig.sandboxRuntime ? { runtime: agentConfig.sandboxRuntime } : {}),
+      image: config().sandboxImage,
+      instance: agentSandboxInstance(),
+      network: config().ociNetwork,
+      ...(config().sandboxRuntime ? { runtime: config().sandboxRuntime } : {}),
       onOutput: logRunnerOutput,
     })
     return { ok: true, driver, oci: driver }
@@ -163,8 +168,8 @@ function buildOciDriver(): BuiltDriver {
  * 起 Pod 前先等第一次自检查完，没过就拒绝（原因同「未启用」）。
  */
 function buildK8sDriver(): BuiltDriver {
-  const k8s = agentConfig.k8s
-  if (!agentConfig.gatewayUrl) {
+  const k8s = config().k8s
+  if (!config().gatewayUrl) {
     return {
       ok: false,
       reason:
@@ -181,8 +186,8 @@ function buildK8sDriver(): BuiltDriver {
   try {
     const driver = createK8sDriver({
       kube: createKubeClient(connection.value),
-      image: agentConfig.sandboxImage,
-      instance: agentSandboxInstance,
+      image: config().sandboxImage,
+      instance: agentSandboxInstance(),
       ...(k8s.namespace ? { namespace: k8s.namespace } : {}),
       ...(k8s.runtimeClass ? { runtimeClassName: k8s.runtimeClass } : {}),
       ...(k8s.pullSecret ? { imagePullSecret: k8s.pullSecret } : {}),
@@ -207,10 +212,10 @@ function buildK8sDriver(): BuiltDriver {
 
 function buildRuntime(): AgentRuntime {
   const gateway = {
-    url: agentGatewayUrl,
-    secret: agentConfig.tokenSecret,
+    url: agentGatewayUrl(),
+    secret: config().tokenSecret,
     // 模型参数完全由服务端定（docs/22 §4.3）：输出 token 上限可配
-    ...(agentConfig.maxOutputTokens !== undefined ? { maxOutputTokens: agentConfig.maxOutputTokens } : {}),
+    ...(config().maxOutputTokens !== undefined ? { maxOutputTokens: config().maxOutputTokens } : {}),
   }
   const disabled = (reason: string) => {
     console.warn(`[agent] 未启用：${reason}`)
@@ -220,20 +225,21 @@ function buildRuntime(): AgentRuntime {
   // 模型表的 default（docs/26 §3.4）：AGENT_PROVIDER / AGENT_MODEL / …；其余的项在 models.ts（启动时已读、已解析）
   // AGENT_THINKING 写错了不让 agent 整个关掉（思考是锦上添花）：警告，当没配
   let defaultThinking: AgentThinkingLevel | undefined
-  if (agentConfig.thinking !== undefined) {
-    if (isAgentThinkingLevel(agentConfig.thinking)) defaultThinking = agentConfig.thinking
-    else console.warn(`[agent] AGENT_THINKING=${agentConfig.thinking} 不认识（只认 ${AGENT_THINKING_LEVELS.join(' / ')}），当作没配`)
+  const thinking = config().thinking
+  if (thinking !== undefined) {
+    if (isAgentThinkingLevel(thinking)) defaultThinking = thinking
+    else console.warn(`[agent] AGENT_THINKING=${thinking} 不认识（只认 ${AGENT_THINKING_LEVELS.join(' / ')}），当作没配`)
   }
-  const apiKey = agentConfig.apiKey || agentProviderApiKey(agentConfig.provider)
+  const apiKey = config().apiKey || agentPorts().providerApiKey(config().provider)
   const defaultModel = resolveAgentModel({
-    provider: agentConfig.provider,
-    model: agentConfig.model,
-    baseUrl: agentConfig.baseUrl,
-    api: agentConfig.api,
+    provider: config().provider,
+    model: config().model,
+    baseUrl: config().baseUrl,
+    api: config().api,
     apiKey,
-    ...(agentConfig.imageInput !== undefined ? { imageInput: agentConfig.imageInput } : {}),
-    ...(agentConfig.contextWindow !== undefined ? { contextWindow: agentConfig.contextWindow } : {}),
-    ...(agentConfig.maxTokens !== undefined ? { maxTokens: agentConfig.maxTokens } : {}),
+    ...(config().imageInput !== undefined ? { imageInput: config().imageInput } : {}),
+    ...(config().contextWindow !== undefined ? { contextWindow: config().contextWindow } : {}),
+    ...(config().maxTokens !== undefined ? { maxTokens: config().maxTokens } : {}),
     ...(defaultThinking !== undefined ? { thinking: defaultThinking } : {}),
   })
   // 入口 agent（canvas）的模型不可用 = agent 没开（同以前没配模型）；别的 agent 的不可用到 run_agent 点名它时才报
@@ -257,22 +263,22 @@ function buildRuntime(): AgentRuntime {
     models: agentModels,
     driver: built.driver,
     gateway,
-    mediaTool: agentConfig.sandboxExec,
+    mediaTool: config().sandboxExec,
     // 看图只读本服务的对象存储：没配 S3 就不接（工具也就不给模型）；还要模型吃图片，由编排层判
-    ...(s3Enabled ? { mediaReader: agentMediaReader } : {}),
-    sandbox: { image: agentConfig.sandboxImage, resources: agentConfig.sandboxResources },
+    ...(agentPorts().storage.enabled ? { mediaReader: agentMediaReader } : {}),
+    sandbox: { image: config().sandboxImage, resources: config().sandboxResources },
     // 空闲上限（docs/20 §3.10.8）：网关上既没有在途请求、也这么久没有新请求就停下这一轮；
     // 总时长上限（§3.10.11）：含被调用的 agent 的墙钟上限，沙箱硬期限与 Grant 的绝对过期按它算
-    limits: { idleTimeoutMs: agentConfig.runIdleTimeoutMs, totalTimeoutMs: agentConfig.runTotalTimeoutMs },
+    limits: { idleTimeoutMs: config().runIdleTimeoutMs, totalTimeoutMs: config().runTotalTimeoutMs },
     // 会话标题（docs/20 §3.9）：不放进 agentHostOptions —— 测试复用那份接线，脚本化上游按顺序出步，多一次请求会打乱脚本
-    ...(agentConfig.titleModel !== undefined ? { titleModel: agentConfig.titleModel } : {}),
+    ...(config().titleModel !== undefined ? { titleModel: config().titleModel } : {}),
     ...agentHostOptions,
   })
   if (!created.enabled) return disabled(created.disabledReason ?? '模型不可用')
   console.info(
     `[agent] 已启用：${resolved.value.model.provider}/${resolved.value.model.id}，沙箱驱动 ${built.driver.name}` +
-      `（runner 经 ${agentGatewayUrl}）${agentConfig.sandboxExec ? '，媒体工具（ffmpeg / ffprobe）已开启' : ''}` +
-      `${s3Enabled && resolved.value.model.input.includes('image') ? '，看图（view_node_media）已开启' : ''}`,
+      `（runner 经 ${agentGatewayUrl()}）${config().sandboxExec ? '，媒体工具（ffmpeg / ffprobe）已开启' : ''}` +
+      `${agentPorts().storage.enabled && resolved.value.model.input.includes('image') ? '，看图（view_node_media）已开启' : ''}`,
   )
   if (built.driver.name === 'process') {
     console.warn('[agent] process 沙箱驱动不是强隔离：runner 和服务端同一个用户、同一个文件系统、可以出网（docs/22 §4.2）')
@@ -294,8 +300,8 @@ export function startAgentSandboxReaper(intervalMs = SANDBOX_REAP_INTERVAL_MS): 
   const built = sandboxDriver()
   if (!built.ok) {
     // 配了 oci / k8s 却建不起来（找不到 socket、不在集群里…）：启动时就说，不等第一次有人打开 agent 面板
-    if (agentConfig.sandbox === 'oci' || agentConfig.sandbox === 'k8s') {
-      console.warn(`[agent] ${agentConfig.sandbox} 沙箱不可用（agent 未启用）：${built.reason}`)
+    if (config().sandbox === 'oci' || config().sandbox === 'k8s') {
+      console.warn(`[agent] ${config().sandbox} 沙箱不可用（agent 未启用）：${built.reason}`)
     }
     return () => {}
   }
@@ -352,11 +358,12 @@ async function checkK8s(driver: K8sSandboxDriver): Promise<boolean> {
     details = () => {
       console.info(
         `[agent] k8s 沙箱：Kubernetes ${check.version}（${check.server}），命名空间 ${check.namespace}，镜像 ${check.image}，` +
-          `RuntimeClass ${check.runtimeClassName ?? '（节点默认）'}，网关 ${agentGatewayUrl}`,
+          `RuntimeClass ${check.runtimeClassName ?? '（节点默认）'}，网关 ${agentGatewayUrl()}`,
       )
       for (const warning of check.warnings) console.warn(`[agent] k8s 沙箱：${warning}`)
+      const host = agentPorts().host
       if (host === '127.0.0.1' || host === 'localhost' || host === '::1') {
-        console.warn(`[agent] k8s 沙箱：服务端只听 ${host}，沙箱 Pod 连不上 ${agentGatewayUrl}（Deployment 里设 HOST=0.0.0.0）`)
+        console.warn(`[agent] k8s 沙箱：服务端只听 ${host}，沙箱 Pod 连不上 ${agentGatewayUrl()}（Deployment 里设 HOST=0.0.0.0）`)
       }
     }
     if (check.problems.length > 0) problem = check.problems.join('；')
@@ -382,7 +389,7 @@ async function checkOci(driver: OciSandboxDriver) {
     const check = await driver.check()
     console.info(
       `[agent] oci 沙箱：${check.engine.name} ${check.engine.version}（API ${check.engine.apiVersion}，${check.socketPath}），` +
-        `镜像 ${check.image.name}，网络 ${check.network.name}，网关 ${agentGatewayUrl}`,
+        `镜像 ${check.image.name}，网络 ${check.network.name}，网关 ${agentGatewayUrl()}`,
     )
     if (!check.image.present) {
       console.warn(`[agent] oci 沙箱镜像 ${check.image.name} 不存在：先 pnpm build:sandbox-image（或检查 AGENT_SANDBOX_IMAGE），否则每一轮都会起不来`)

@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { isBundle, moduleDir } from '../runtime.ts'
+import { agentPorts } from './ports.ts'
 
 /**
  * `process` 驱动起 runner 用的命令（docs/22 §7）：
@@ -16,6 +16,7 @@ import { isBundle, moduleDir } from '../runtime.ts'
  * 不带 `--inspect` 一类调试参数：子进程会和父进程抢同一个调试端口。
  */
 export function runnerCommand(): [string, ...string[]] {
+  const { isBundle, moduleDir } = agentPorts().runner
   if (isBundle) return [process.execPath, ...forwardedImports(process.execArgv), path.join(moduleDir, 'agent-runner.js')]
   const resolveFrom = createRequire(import.meta.url)
   const loader = pathToFileURL(resolveFrom.resolve('tsx')).href

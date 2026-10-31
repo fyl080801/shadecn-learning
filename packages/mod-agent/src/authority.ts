@@ -8,11 +8,8 @@ import {
   type RunStopKind,
 } from '@shadecn/agent/authority'
 import type { AgentRunStatus } from '@shadecn/agent/store'
-import { agentConfig } from '../config.ts'
 import { announceRevocation, onAccessRevoked } from '@shadecn/server-kit/access'
-import { agentGrants } from '../store/agent.ts'
-import { flows } from '../store/flows.ts'
-import { projects } from '../store/projects.ts'
+import { agentPorts, lazySingleton, type FlowAccess } from './ports.ts'
 
 /**
  * 画布 agent 的执行身份在本服务里的实现：签发 Grant、每次判权、对账（docs/22 §3、§5）。
@@ -73,18 +70,12 @@ const STATUS_LABEL: Record<Exclude<AgentRunStatus, 'running'>, string> = {
   expired: '到期',
 }
 
-/** 签发时（以及每次判权时）画布所在的项目；发起人不是成员 / 画布不在了 → null */
-interface FlowAccess {
-  projectId: string
-  kind: 'team' | 'personal'
-  personalOwnerId: string | null
-}
-
-/** 和 `requireFlowMember` 同口径：画布（及其项目）没被删，且这个人是项目成员（个人空间即所有者） */
-export async function currentFlowAccess(flowId: string, userId: string): Promise<FlowAccess | null> {
-  const target = await flows.locate(flowId)
-  if (!target) return null
-  return (await projects.membershipOf(target.projectId, userId)) ? target : null
+/**
+ * 和 `requireFlowMember` 同口径：画布（及其项目）没被删，且这个人是项目成员（个人空间即所有者）；否则 null。
+ * 实现在宿主（`AgentPorts.stores.flowAccess`）：成员关系是底座的东西。
+ */
+export function currentFlowAccess(flowId: string, userId: string): Promise<FlowAccess | null> {
+  return agentPorts().stores.flowAccess(flowId, userId)
 }
 
 type Verdict = { ok: true } | { ok: false; kind: RunStopKind; reason: string }
@@ -141,7 +132,7 @@ export function createGrantAuthority(options: GrantAuthorityOptions): GrantAutho
   const live = new Map<string, LiveGrant>()
 
   async function evaluate(entry: LiveGrant, access: Promise<FlowAccess | null>): Promise<Verdict> {
-    const [state, current] = await Promise.all([agentGrants.state(entry.grantId), access])
+    const [state, current] = await Promise.all([agentPorts().stores.grants.state(entry.grantId), access])
     if (!state) return { ok: false, kind: 'revoked', reason: ACCESS_REVOKED }
     if (state.expiresAt.getTime() <= now()) return { ok: false, kind: 'expired', reason: GRANT_EXPIRED }
     if (state.revokedAt) return { ok: false, kind: 'revoked', reason: state.revokeReason ?? ACCESS_REVOKED }
@@ -168,7 +159,7 @@ export function createGrantAuthority(options: GrantAuthorityOptions): GrantAutho
       console.error(`[agent] run=${runId} 叫停失败`, err)
     }
     try {
-      await agentGrants.revoke(entry.grantId, reason)
+      await agentPorts().stores.grants.revoke(entry.grantId, reason)
     } catch (err) {
       // 本进程里它已经判死了；库里没标上只影响审计，下一次定时对账会按到期补标
       console.error(`[agent] grant=${entry.grantId} 撤销没能写进库`, err)
@@ -238,7 +229,7 @@ export function createGrantAuthority(options: GrantAuthorityOptions): GrantAutho
       // 只缩不扩：请求的 ∩ 服务端配置；发起人此刻是成员 = 画布的三项都有（权限模型只有成员 / 管理员，都能编辑）
       const scopes = new Set(request.capabilities.filter((capability) => options.entitled(capability)))
       const expiresAt = now() + request.timeoutMs + options.expiryMarginMs
-      const grantId = await agentGrants.create({
+      const grantId = await agentPorts().stores.grants.create({
         userId: request.userId,
         runId: request.runId,
         flowId: request.flowId,
@@ -277,7 +268,7 @@ export function createGrantAuthority(options: GrantAuthorityOptions): GrantAutho
           live.delete(grantId)
           try {
             // 已因失权 / 到期撤销的，保留那个原因（revoke 只写 revokedAt 为空的行）
-            await agentGrants.revoke(grantId, `本轮已结束（${STATUS_LABEL[end.status]}）`)
+            await agentPorts().stores.grants.revoke(grantId, `本轮已结束（${STATUS_LABEL[end.status]}）`)
           } catch (err) {
             console.error(`[agent] grant=${grantId} 收尾没能关掉，等它自然到期`, err)
           }
@@ -290,7 +281,7 @@ export function createGrantAuthority(options: GrantAuthorityOptions): GrantAutho
 
     async reconcileAll() {
       try {
-        const expired = await agentGrants.expireDue(GRANT_EXPIRED)
+        const expired = await agentPorts().stores.grants.expireDue(GRANT_EXPIRED)
         if (expired > 0) console.info(`[agent] 定时对账：${expired} 份过期授权已标记`)
       } catch (err) {
         console.error('[agent] 定时对账：标记过期授权失败', err)
@@ -301,7 +292,7 @@ export function createGrantAuthority(options: GrantAuthorityOptions): GrantAutho
     async revokeAllForUser(userId, reason) {
       const mine = [...live.values()].filter((entry) => entry.request.userId === userId && !entry.dead)
       await Promise.all(mine.map((entry) => fail(entry, 'revoked', reason)))
-      const revoked = await agentGrants.revokeAllForUser(userId, reason)
+      const revoked = await agentPorts().stores.grants.revokeAllForUser(userId, reason)
       console.warn(`[agent] user=${userId} 账号级撤销：本实例叫停 ${mine.length} 轮，共撤销 ${revoked} 份授权（${reason}）`)
       return mine.length
     },
@@ -318,11 +309,13 @@ export function createGrantAuthority(options: GrantAuthorityOptions): GrantAutho
 }
 
 /** 本进程的那一份（`agent/index.ts` 注入编排层） */
-export const agentAuthority = createGrantAuthority({
-  expiryMarginMs: agentConfig.grantMarginMs,
-  // 没开媒体工具就不授 sandbox:exec；模型能不能用由 runtime 是否启用决定（没启用根本不会签发）
-  entitled: (capability) => capability !== 'sandbox:exec' || agentConfig.sandboxExec,
-})
+export const agentAuthority: GrantAuthority = lazySingleton(() =>
+  createGrantAuthority({
+    expiryMarginMs: agentPorts().config.grantMarginMs,
+    // 没开媒体工具就不授 sandbox:exec；模型能不能用由 runtime 是否启用决定（没启用根本不会签发）
+    entitled: (capability) => capability !== 'sandbox:exec' || agentPorts().config.sandboxExec,
+  }),
+)
 
 // 权限变化事件 → 对账（本实例当场；别的实例经撤销世代号巡检）。协同层不知道订阅者是谁
 onAccessRevoked(() => agentAuthority.reconcileLive())

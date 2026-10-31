@@ -5,7 +5,7 @@ import { AGENT_GATEWAY_PATH, RUNNER_PROTOCOL_VERSION, type RunnerInput, type Sts
 import type { SandboxDriver } from '@shadecn/agent/sandbox/drivers'
 import { createInlineDriver, SCRIPTED_API_KEY, SCRIPTED_UPSTREAM_URL } from '@shadecn/agent/testing'
 import { agentApiPath, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
-import { replaceAgentRuntime } from '../../agent/index.ts'
+import { replaceAgentRuntime } from '@shadecn/mod-agent/runtime'
 import { app } from '../../app.ts'
 import { attachCollabServer } from '@shadecn/mod-collab/hocuspocus'
 import { flushCollabWrites } from '@shadecn/mod-collab/persistence'

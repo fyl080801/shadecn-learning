@@ -1,3 +1,4 @@
+import type { AgentGrantStore, GrantState, NewGrant, NewGrantScope } from '@shadecn/mod-agent/ports'
 import type { AgentMessage } from '@earendil-works/pi-agent-core'
 import { canonicalSkillIds, type AgentChatMessage } from '@shadecn/shared/agent'
 import {
@@ -265,37 +266,10 @@ export const agentRunLog: AgentRunLog = {
 
 // —— 委托授权（Grant，docs/22 §3）——
 
-export interface NewGrantScope {
-  scope: string
-  resource: string
-  onRevoke: string
-  required: boolean
-}
+// 类型的定义在 agent 包（`@shadecn/mod-agent/ports`）：那是 agent 向底座要的端口，这里是实现
+export type { GrantState, NewGrant, NewGrantScope }
 
-export interface NewGrant {
-  userId: string
-  runId: string
-  flowId: string
-  projectId: string
-  projectKind: string
-  personalOwnerId: string | null
-  expiresAt: Date
-  scopes: NewGrantScope[]
-}
-
-/** 判权要的那几列 */
-export interface GrantState {
-  id: string
-  expiresAt: Date
-  revokedAt: Date | null
-  revokeReason: string | null
-}
-
-/**
- * Grant 的读写。只有 `apps/server/agent/authority.ts` 用（编排层只认 `@shadecn/agent/authority` 的接口）。
- * 所有撤销都是「`revokedAt` 为空才写」：先写下的原因（失权）不会被后来的（本轮已结束）盖掉。
- */
-export const agentGrants = {
+export const agentGrants: AgentGrantStore = {
   /** 一个 Grant 和它的全部 scope，一个事务写下 */
   async create(input: NewGrant): Promise<string> {
     return db().transactional(async (em) => {

@@ -14,9 +14,9 @@ import { createAgentRuntime, type AgentRuntimeOptions } from '@shadecn/agent/ses
 import { registerScriptedModel, SCRIPTED_API_KEY, TEST_TOKEN_SECRET, type ScriptedStep } from '@shadecn/agent/testing'
 import { agentApiPath, agentRunAbortPath, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { nodesMap } from '@shadecn/shared/flow-doc'
-import { ACCESS_REVOKED } from '../../agent/authority.ts'
-import { agentHostOptions, replaceAgentRuntime } from '../../agent/index.ts'
-import { runnerCommand } from '../../agent/runner-command.ts'
+import { ACCESS_REVOKED } from '@shadecn/mod-agent/authority'
+import { agentHostOptions, replaceAgentRuntime } from '@shadecn/mod-agent/runtime'
+import { runnerCommand } from '@shadecn/mod-agent/runner-command'
 import { app } from '../../app.ts'
 import { attachCollabServer } from '@shadecn/mod-collab/hocuspocus'
 import { flushCollabWrites, loadFlowState, roomOf } from '@shadecn/mod-collab/persistence'
@@ -360,6 +360,6 @@ describe('runner 进程的退出码（协议版本）', () => {
 
 /** 放行 sandbox:exec 的一份 authority（生产里由 AGENT_SANDBOX_EXEC 决定，测试的环境没开） */
 async function mediaAuthority() {
-  const { createGrantAuthority } = await import('../../agent/authority.ts')
+  const { createGrantAuthority } = await import('@shadecn/mod-agent/authority')
   return createGrantAuthority({ expiryMarginMs: 60_000, entitled: () => true })
 }

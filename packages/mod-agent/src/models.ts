@@ -8,7 +8,7 @@ import {
   type AgentThinkingLevel,
   type ModelResolution,
 } from '@shadecn/agent/model'
-import { agentModelsFile, agentProviderApiKey } from '../config.ts'
+import { agentPorts, lazySingleton } from './ports.ts'
 
 /**
  * 模型表（docs/26 §3.4）里 `default` 以外的项：读 {@link agentModelsFile}（默认 `<dataDir>/agent-models.json`，`AGENT_MODELS_FILE` 可换）。
@@ -147,7 +147,7 @@ export function resolveAgentModelTable(
         continue
       }
     } else {
-      apiKey = agentProviderApiKey(spec.provider, env)
+      apiKey = agentPorts().providerApiKey(spec.provider, env)
     }
     const options: AgentModelOptions = {
       provider: spec.provider,
@@ -169,7 +169,7 @@ export function resolveAgentModelTable(
 function loadAgentModels(): Record<string, ModelResolution> {
   let specs: Record<string, AgentModelSpec>
   try {
-    specs = loadAgentModelTable(agentModelsFile)
+    specs = loadAgentModelTable(agentPorts().paths.modelsFile)
   } catch (err) {
     console.error(`[agent] 模型表不合法，服务不启动：${err instanceof Error ? err.message : String(err)}`)
     throw err
@@ -179,12 +179,12 @@ function loadAgentModels(): Record<string, ModelResolution> {
     if (!resolution.ok) console.warn(`[agent] 模型表的「${key}」现在不可用（用它的 agent 到时会报错）：${resolution.reason}`)
   }
   const keys = Object.keys(table)
-  if (keys.length > 0) console.info(`[agent] 模型表（${agentModelsFile}）：${DEFAULT_AGENT_MODEL}、${keys.join('、')}`)
+  if (keys.length > 0) console.info(`[agent] 模型表（${agentPorts().paths.modelsFile}）：${DEFAULT_AGENT_MODEL}、${keys.join('、')}`)
   return table
 }
 
 /** 模型表里 `default` 以外的项（key → 解析结果），交给 `createAgentRuntime({ models })` */
-export const agentModels: Readonly<Record<string, ModelResolution>> = loadAgentModels()
+export const agentModels: Readonly<Record<string, ModelResolution>> = lazySingleton(loadAgentModels)
 
 /** 模型表的全部 key（含 `default`）：agent 定义的 `model` 按它校验 */
-export const agentModelKeys: readonly string[] = [DEFAULT_AGENT_MODEL, ...Object.keys(agentModels)]
+export const agentModelKeys: readonly string[] = lazySingleton(() => [DEFAULT_AGENT_MODEL, ...Object.keys(agentModels)])

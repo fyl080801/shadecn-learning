@@ -29,4 +29,4 @@ requires: [director]        # 可省略：依赖的内置技能 id
 - `<name>.md`：直接放在本目录根上的 `.md` 也各算一个技能（`README.md` 除外）。
 - 以 `.` 开头的和 `node_modules` 跳过。
 
-服务端启动时读这个目录并校验（`apps/server/agent/definitions.ts`），**任何一个文件不合法服务都起不来**；构建时拷到 `output/server/skills/`。
+服务端启动时读这个目录并校验（`packages/mod-agent/src/definitions.ts`），**任何一个文件不合法服务都起不来**；构建时拷到 `output/server/skills/`。

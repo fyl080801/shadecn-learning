@@ -1,6 +1,6 @@
 import { leaseAgentOf, leaseKey, type NodeLease, type NodeLeaseRegistry } from '@shadecn/agent/occupancy'
 import { sharedMap, stringCodec, type SharedMap } from '@shadecn/server-kit/cluster'
-import { agentConfig, instanceId } from '../config.ts'
+import { agentPorts, lazySingleton } from './ports.ts'
 
 /**
  * 节点占用的登记表（docs/20 §3.10.8）落在共享层：单副本是进程内存，多副本是 redis —— 和协同层的独占登记同一套 `SharedMap`。
@@ -69,7 +69,9 @@ export function createSharedLeaseRegistry(
 const table = sharedMap<string>('agent-node-lease', stringCodec)
 
 /** 本服务的那一份：TTL 取 `AGENT_LEASE_TTL_MS`，副本标识取 `INSTANCE_ID` */
-export const agentNodeLeases: NodeLeaseRegistry = createSharedLeaseRegistry(table, {
-  ttlMs: agentConfig.leaseTtlMs,
-  instanceId,
-})
+export const agentNodeLeases: NodeLeaseRegistry = lazySingleton(() =>
+  createSharedLeaseRegistry(table, {
+    ttlMs: agentPorts().config.leaseTtlMs,
+    instanceId: agentPorts().instanceId,
+  }),
+)

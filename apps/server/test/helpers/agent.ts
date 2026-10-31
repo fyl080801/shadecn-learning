@@ -1,7 +1,7 @@
 import { vi } from 'vitest'
 import { createAgentRuntime, type AgentRuntime, type AgentRuntimeOptions } from '@shadecn/agent/session'
 import { gatewayFetch, registerScriptedModel, type ScriptedModel, type ScriptedStep } from '@shadecn/agent/testing'
-import { agentHostOptions, replaceAgentRuntime } from '../../agent/index.ts'
+import { agentHostOptions, replaceAgentRuntime } from '@shadecn/mod-agent/runtime'
 import { app } from '../../app.ts'
 
 /**

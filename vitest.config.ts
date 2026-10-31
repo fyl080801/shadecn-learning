@@ -9,6 +9,7 @@ import { defineConfig } from 'vitest/config'
  *   server-kit —— packages/server-kit/vitest.config.ts：Node 环境，测服务端底座的运行时库（模块内核、共享层契约、总线、权限撤销信号）
  *   mod-collab —— packages/mod-collab/vitest.config.ts：Node 环境，测协同能力包
  *   mod-storage —— packages/mod-storage/vitest.config.ts：Node 环境，测对象存储能力包（签名、对象键、缩略图）
+ *   mod-agent —— packages/mod-agent/vitest.config.ts：Node 环境，测画布 agent 宿主侧能力包（接上数据库 / 协同之后的用例在 server project）
  *
  * 单独跑：`pnpm test:server` / `test:client` / `test:shared` / `test:agent` / `test:server-kit` / `test:mod-*`（= vitest --project=xxx）
  *
@@ -24,6 +25,7 @@ export default defineConfig({
       'packages/server-kit/vitest.config.ts',
       'packages/mod-collab/vitest.config.ts',
       'packages/mod-storage/vitest.config.ts',
+      'packages/mod-agent/vitest.config.ts',
     ],
 
     coverage: {

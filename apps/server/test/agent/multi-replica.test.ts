@@ -12,8 +12,8 @@ import { createAgentRuntime, type AgentRuntime, type OpenedCanvas } from '@shade
 import { createMemoryConversationStore, createMemoryRunLog } from '@shadecn/agent/store'
 import { createInlineDriver, registerScriptedModel, type ScriptedModel, type ScriptedStep } from '@shadecn/agent/testing'
 import { AGENT_GATEWAY_PATH } from '@shadecn/agent/protocol'
-import { createSharedLeaseRegistry } from '../../agent/leases.ts'
-import { createSharedRunRegistry, type RunRegistryTables } from '../../agent/runs.ts'
+import { createSharedLeaseRegistry } from '@shadecn/mod-agent/leases'
+import { createSharedRunRegistry, type RunRegistryTables } from '@shadecn/mod-agent/runs'
 import { stringCodec, type ClusterBackend } from '@shadecn/server-kit/cluster'
 import { createMemoryBackend } from '@shadecn/server-kit/cluster/memory'
 

@@ -1,0 +1,45 @@
+{
+  "name": "@shadecn/mod-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/module.ts",
+    "./ports": "./src/ports.ts",
+    "./runtime": "./src/index.ts",
+    "./authority": "./src/authority.ts",
+    "./canvas-access": "./src/canvas-access.ts",
+    "./definitions": "./src/definitions.ts",
+    "./leases": "./src/leases.ts",
+    "./media": "./src/media.ts",
+    "./models": "./src/models.ts",
+    "./runner-command": "./src/runner-command.ts",
+    "./runs": "./src/runs.ts",
+    "./runs-broadcast": "./src/runs-broadcast.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@hocuspocus/server": "^4.6.0",
+    "yaml": "2.8.2",
+    "yjs": "^13.6.32"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@hocuspocus/server": "^4.6.0",
+    "@shadecn/agent": "workspace:*",
+    "@shadecn/mod-collab": "workspace:*",
+    "@shadecn/mod-storage": "workspace:*",
+    "@shadecn/server-kit": "workspace:*",
+    "@shadecn/shared": "workspace:*",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.23.12",
+    "typescript": "~5.9.3",
+    "yaml": "2.8.2",
+    "yjs": "^13.6.32"
+  }
+}

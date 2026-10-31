@@ -12,8 +12,8 @@ import {
   revokeAllGrantsForUser,
   startAgentReconciler,
   type GrantAuthority,
-} from '../../agent/authority.ts'
-import { replaceAgentRuntime } from '../../agent/index.ts'
+} from '@shadecn/mod-agent/authority'
+import { replaceAgentRuntime } from '@shadecn/mod-agent/runtime'
 import { useScripted } from '../helpers/agent.ts'
 import { attachCollabServer } from '@shadecn/mod-collab/hocuspocus'
 import { flushCollabWrites } from '@shadecn/mod-collab/persistence'

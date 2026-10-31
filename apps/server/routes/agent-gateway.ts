@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { agentRuntime } from '../agent/index.ts'
+import { agentRuntime } from '@shadecn/mod-agent/runtime'
 
 /**
  * 画布 Agent 的网关（docs/22 §4）：沙箱里的 runner 只经这里够得着服务端 —— 换令牌、模型请求（服务端调上游，§4.3）、画布工具、

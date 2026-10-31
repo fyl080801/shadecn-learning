@@ -16,7 +16,8 @@
     "./awareness": "./src/awareness.ts",
     "./exclusive": "./src/exclusive.ts",
     "./write-gate": "./src/write-gate.ts",
-    "./socket-id": "./src/socket-id.ts"
+    "./socket-id": "./src/socket-id.ts",
+    "./canvas-host": "./src/canvas-host.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

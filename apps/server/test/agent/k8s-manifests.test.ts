@@ -66,7 +66,7 @@ function templateParam(name: string): string {
 }
 const occurrences = (text: string, needle: string) => text.split(needle).length - 1
 
-/** 驱动按 k8s/deployment.yaml 里的 env 生成的沙箱 Pod（宿主 apps/server/agent/index.ts 也是这么拼的） */
+/** 驱动按 k8s/deployment.yaml 里的 env 生成的沙箱 Pod（宿主 packages/mod-agent/src/index.ts 也是这么拼的） */
 function deployedOptions(): Pick<K8sDriverOptions, 'image' | 'instance' | 'namespace' | 'imagePullSecret' | 'imagePullPolicy' | 'nodeSelector'> {
   const nodeSelector = parseK8sNodeSelector(envValue('AGENT_SANDBOX_K8S_NODE_SELECTOR') ?? '')
   if (!nodeSelector.ok) throw new Error(nodeSelector.reason)

@@ -205,7 +205,7 @@ POST /api/flows/:id/doc                 ← application/octet-stream（Yjs updat
 > **REQ-AGENT 修订（原「两条通道互相拒绝」）**：个人画布的 WebSocket 房间**只对所有者本人开放**
 > （认 `Project.personalOwner`，不认成员表），其他任何人仍是 `forbidden`；写入闸门走的是同一个
 > `authorizeCollab`，所以所有者能写、画布删掉后谁都写不了。agent 自己不走 WebSocket，而是用服务端的
-> direct connection 写活房间（`apps/server/agent/canvas-access.ts`），个人画布和项目画布同一条路。
+> direct connection 写活房间（`packages/mod-agent/src/canvas-access.ts`），个人画布和项目画布同一条路。
 >
 > 前端不再走 REST `/doc`（文首修订），「还停在 HTTP 那条路上的旧标签页看不到 agent 的改动」这个缺口
 > 也就随之消失了。REST `/doc` 服务端仍保留、照旧直写库；万一有旧客户端还在用，它和活房间之间经

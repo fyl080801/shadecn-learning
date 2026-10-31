@@ -1,7 +1,7 @@
 import { createAgentRegistry, loadAgentConfigs, type AgentRegistry } from '@shadecn/agent/agents'
 import { BUILTIN_SKILLS } from '@shadecn/agent/skills'
 import { createTextSkillRegistry, loadTextSkills, type TextSkillRegistry } from '@shadecn/agent/text-skills'
-import { agentDefinitionsDir, agentTextSkillsDir } from '../config.ts'
+import { agentPorts, lazySingleton } from './ports.ts'
 import { agentModelKeys } from './models.ts'
 
 /**
@@ -15,14 +15,14 @@ import { agentModelKeys } from './models.ts'
  */
 function loadAgentDefinitions(): AgentRegistry {
   try {
-    return createAgentRegistry(loadAgentConfigs(agentDefinitionsDir), { skills: BUILTIN_SKILLS, models: agentModelKeys })
+    return createAgentRegistry(loadAgentConfigs(agentPorts().paths.definitionsDir), { skills: BUILTIN_SKILLS, models: agentModelKeys })
   } catch (err) {
     console.error(`[agent] agent 定义不合法，服务不启动：${err instanceof Error ? err.message : String(err)}`)
     throw err
   }
 }
 
-export const agentDefinitions: AgentRegistry = loadAgentDefinitions()
+export const agentDefinitions: AgentRegistry = lazySingleton(loadAgentDefinitions)
 
 /**
  * 文字技能（docs/26 §3.8，pi `SKILL.md`）：同 agent 定义，模块一被 import 就读 {@link agentTextSkillsDir} 并校验，启用与否都一样。
@@ -31,11 +31,11 @@ export const agentDefinitions: AgentRegistry = loadAgentDefinitions()
  */
 function loadAgentTextSkills(): TextSkillRegistry {
   try {
-    return createTextSkillRegistry(loadTextSkills(agentTextSkillsDir), { skills: BUILTIN_SKILLS })
+    return createTextSkillRegistry(loadTextSkills(agentPorts().paths.textSkillsDir), { skills: BUILTIN_SKILLS })
   } catch (err) {
     console.error(`[agent] 文字技能不合法，服务不启动：${err instanceof Error ? err.message : String(err)}`)
     throw err
   }
 }
 
-export const agentTextSkills: TextSkillRegistry = loadAgentTextSkills()
+export const agentTextSkills: TextSkillRegistry = lazySingleton(loadAgentTextSkills)

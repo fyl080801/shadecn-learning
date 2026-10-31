@@ -29,7 +29,7 @@
 
 | 耦合 | 位置 | 拆开后的处理 |
 |---|---|---|
-| agent 经 `collabInstance()` 的 direct connection 直接写**本进程**内存里的 Y.Doc | `apps/server/agent/canvas-access.ts`、`runs-broadcast.ts` | agent 角色自带一个不监听 WebSocket 的 Hocuspocus（§3.4.2） |
+| agent 经 `collabInstance()` 的 direct connection 直接写**本进程**内存里的 Y.Doc | `packages/mod-agent/src/canvas-access.ts`、`runs-broadcast.ts` | agent 角色自带一个不监听 WebSocket 的 Hocuspocus（§3.4.2） |
 | web 路由直接调 `revokeCollabAccess` / `flushRoomToDatabase` / `applyFlowUpdate` | `routes/flows.ts`、`routes/projects.ts` | 广播 / 请求-应答 / 共享库（§3.7） |
 | agent 的 HTTP 入口挂在 `/api/flows/:id/agent` 下，和发起它的进程是同一个 | `routes/flows.ts`、`routes/agent.ts` | 队列：web 入队、agent 认领（§3.6） |
 | 启停顺序手写在 `index.ts` | `apps/server/index.ts` | 内核按依赖拓扑序 setup / 逆序 shutdown（§3.1.3） |

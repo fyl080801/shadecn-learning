@@ -19,7 +19,7 @@ import {
   type SharedLog,
   type SharedMap,
 } from '@shadecn/server-kit/cluster'
-import { agentConfig, instanceId } from '../config.ts'
+import { agentPorts, lazySingleton } from './ports.ts'
 
 /**
  * 运行中轮次的共享登记（docs/20 §3.10.10，F14）落在共享层：单副本是进程内存，多副本是 redis。
@@ -121,12 +121,14 @@ export function createSharedRunRegistry(
 }
 
 /** 本服务的那一份：TTL 取 `AGENT_LEASE_TTL_MS`，副本标识取 `INSTANCE_ID` */
-export const agentRunRegistry: RunRegistry = createSharedRunRegistry(
-  {
-    runs: sharedMap<string>('agent-run', stringCodec),
-    slots: sharedMap<string>('agent-conversation', stringCodec),
-    replay: sharedLog<string>('agent-replay', stringCodec),
-    stops: sharedChannel<string>('agent-stop', stringCodec),
-  },
-  { ttlMs: agentConfig.leaseTtlMs, instanceId },
+export const agentRunRegistry: RunRegistry = lazySingleton(() =>
+  createSharedRunRegistry(
+    {
+      runs: sharedMap<string>('agent-run', stringCodec),
+      slots: sharedMap<string>('agent-conversation', stringCodec),
+      replay: sharedLog<string>('agent-replay', stringCodec),
+      stops: sharedChannel<string>('agent-stop', stringCodec),
+    },
+    { ttlMs: agentPorts().config.leaseTtlMs, instanceId: agentPorts().instanceId },
+  ),
 )

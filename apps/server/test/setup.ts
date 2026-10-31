@@ -1,6 +1,8 @@
 import { afterEach, vi } from 'vitest'
 // 装配协同模块的端口（画布表存取、会话鉴权）：不起服务端也能直接调协同的落库 / REST 写入
 import '../modules/collab.ts'
+// 装配 agent 模块的端口（配置、落库、成员判定），顺带校验 agent 定义和模型表
+import '../modules/agent.ts'
 
 /**
  * 测试必须是密闭的：不允许任何一条真实网络请求跑出去。

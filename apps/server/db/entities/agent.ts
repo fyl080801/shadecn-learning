@@ -143,7 +143,7 @@ export type AgentToolCall = InferEntity<typeof AgentToolCall>
  * 建了外键就会被级联删掉或挡住删除。`projectId` / `projectKind` / `personalOwnerId` 是签发时的**快照**：
  * 判权时画布必须仍在同一个项目里（个人画布仍是同一个所有者），挪走了就算失权。
  *
- * 有效与否看三列：`revokedAt` 为空、`expiresAt` 在将来 —— 再与发起人此刻的权限取交集（`apps/server/agent/authority.ts`）。
+ * 有效与否看三列：`revokedAt` 为空、`expiresAt` 在将来 —— 再与发起人此刻的权限取交集（`packages/mod-agent/src/authority.ts`）。
  * 一轮结束时也写 `revokedAt`（原因「本轮已结束」）：结束之后它不能再被用来做任何事。
  */
 export const AgentGrant = defineEntity({

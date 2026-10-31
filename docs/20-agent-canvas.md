@@ -163,7 +163,7 @@ REQ-SOLO 的「两条通道互相拒绝」不变式改写为：**个人画布的
 
 **原方案（awareness）不采用**：编排器经 direct connection 的 awareness 发布 agent 条目。这条路在**个人画布上走不通** ——
 服务端对个人画布的 awareness 整帧丢弃（[REQ-SOLO](16-personal-flow.md)，同一个人的另一个窗口不算协作者），
-任务列表当初改走无状态广播也是这个原因（`apps/server/agent/runs-broadcast.ts`）。
+任务列表当初改走无状态广播也是这个原因（`packages/mod-agent/src/runs-broadcast.ts`）。
 另外，awareness 条目要靠 y-protocols 每 15s 重放来维持，run 结束必须显式清掉，否则残留条目会被一直广播。
 
 **改为两条通道，两种画布都适用：**

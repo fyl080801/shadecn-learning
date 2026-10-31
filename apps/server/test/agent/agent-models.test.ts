@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { loadAgentModelTable, parseAgentModelTable, resolveAgentModelTable } from '../../agent/models.ts'
+import { loadAgentModelTable, parseAgentModelTable, resolveAgentModelTable } from '@shadecn/mod-agent/models'
 
 /**
  * 模型表文件（docs/26 §3.4）：`<dataDir>/agent-models.json` / `AGENT_MODELS_FILE`。文件本身不对 → 启动失败（抛）；

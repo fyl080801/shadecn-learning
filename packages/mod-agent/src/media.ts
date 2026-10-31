@@ -1,5 +1,5 @@
 import { MediaReadError, type MediaReader } from '@shadecn/agent/media'
-import { s3Config } from '../config.ts'
+import { agentPorts } from './ports.ts'
 import { assetStorage } from '@shadecn/mod-storage'
 import { assetKeyOfUrl } from '@shadecn/mod-storage/keys'
 
@@ -17,7 +17,7 @@ export const agentMediaReader: MediaReader = {
   async read(url, { maxBytes, signal }) {
     const storage = assetStorage()
     if (!storage) throw new MediaReadError('unavailable', '服务端没有配置对象存储')
-    const key = assetKeyOfUrl(url, storage.objectUrl(''), s3Config.keyPrefix)
+    const key = assetKeyOfUrl(url, storage.objectUrl(''), agentPorts().storage.keyPrefix)
     if (!key) throw new MediaReadError('foreign', '不是本服务对象存储里的素材')
     let got
     try {
