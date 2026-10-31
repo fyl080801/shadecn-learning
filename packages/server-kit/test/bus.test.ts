@@ -145,3 +145,65 @@ describe('总线：scatter-gather 请求', () => {
     expect(later.missing).toEqual([])
   })
 })
+
+describe('总线：dispatch 派给一个提供方', () => {
+  it('没有提供方 → no-responder，立刻返回', async () => {
+    const result = await instance(createMemoryBackend(), 'web').dispatch(ECHO, { n: 1 }, { timeoutMs: 5_000 })
+    expect(result).toEqual({ ok: false, reason: 'no-responder' })
+  })
+
+  it('本实例登记了就交给本实例，不碰别的实例', async () => {
+    const backend = createMemoryBackend()
+    const a = instance(backend, 'a')
+    const b = instance(backend, 'b')
+    const seen: string[] = []
+    await a.handle(ECHO, ({ n }) => (seen.push('a'), { doubled: n * 2, by: 'a' }))
+    await b.handle(ECHO, ({ n }) => (seen.push('b'), { doubled: n * 2, by: 'b' }))
+
+    const result = await a.dispatch(ECHO, { n: 3 })
+
+    expect(result).toEqual({ ok: true, instance: 'a', value: { doubled: 6, by: 'a' } })
+    expect(seen).toEqual(['a'])
+  })
+
+  it('派给别的实例：只有一个实例处理', async () => {
+    const backend = createMemoryBackend()
+    const web = instance(backend, 'web')
+    const seen: string[] = []
+    for (const id of ['agent-1', 'agent-2', 'agent-3']) {
+      await instance(backend, id).handle(ECHO, ({ n }) => (seen.push(id), { doubled: n * 2, by: id }))
+    }
+
+    const result = await web.dispatch(ECHO, { n: 1 })
+
+    expect(result.ok).toBe(true)
+    expect(seen).toHaveLength(1)
+    expect(result.ok && result.instance).toBe(seen[0])
+  })
+
+  it('选中的实例超时 → timeout，且不换实例重发', async () => {
+    const backend = createMemoryBackend()
+    const web = instance(backend, 'web')
+    let calls = 0
+    await instance(backend, 'agent-1').handle(ECHO, () => {
+      calls += 1
+      return new Promise<never>(() => {})
+    })
+
+    const result = await web.dispatch(ECHO, { n: 1 }, { timeoutMs: 100 })
+
+    expect(result).toEqual({ ok: false, reason: 'timeout', instance: 'agent-1' })
+    expect(calls).toBe(1)
+  })
+
+  it('处理函数抛错 → failed，带上原因', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const backend = createMemoryBackend()
+    const web = instance(backend, 'web')
+    await instance(backend, 'agent-1').handle(ECHO, () => {
+      throw new Error('沙箱起不来')
+    })
+
+    expect(await web.dispatch(ECHO, { n: 1 })).toEqual({ ok: false, reason: 'failed', instance: 'agent-1', error: '沙箱起不来' })
+  })
+})

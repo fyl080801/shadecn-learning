@@ -3,7 +3,8 @@ import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import type { AgentAttachment, AgentAttachmentRef, AgentStreamEvent } from '@shadecn/shared/agent'
 import { validatePrompt } from '@shadecn/agent/session'
-import { flowHasNode, openAgentCanvas } from '@shadecn/mod-agent/canvas-access'
+import { flowHasNode } from '@shadecn/mod-agent/canvas-access'
+import { startRunRemotely } from '@shadecn/mod-agent/dispatch'
 import { agentRuntime } from '@shadecn/mod-agent/runtime'
 import type { AuthVariables } from '../auth/middleware.ts'
 import { currentUserId, type ProjectVariables } from '../auth/project.ts'
@@ -235,19 +236,21 @@ export const agent = new Hono<Env>()
     const attachments = await resolveAttachments(c, flowId, prompt.attachments)
     if (attachments instanceof Response) return attachments
 
+    // 派给一个 agent 副本执行（docs/28 §3.6）：会话槽位、模型、沙箱都在执行那一侧；事件经派发日志回到这里
     const relay = sseRelay()
-    const started = await runtime.start({
-      flowId,
-      userId,
-      text: prompt.text,
-      conversationId: prompt.conversationId,
-      nodeId: prompt.nodeId,
-      attachments,
-      openCanvas: (runId, authority) => openAgentCanvas({ flowId, userId, runId, authority }),
-      emit: relay.emit,
-    })
+    const started = await startRunRemotely(
+      {
+        flowId,
+        userId,
+        text: prompt.text,
+        conversationId: prompt.conversationId,
+        nodeId: prompt.nodeId,
+        attachments,
+      },
+      relay.emit,
+    )
     if (!started.ok) {
-      // busy：这个会话在跑（不论在哪个副本上，docs/20 §3.10.10）；disabled / unavailable（共享登记不可用）→ 503
+      // busy：这个会话在跑（不论在哪个副本上，docs/20 §3.10.10）；disabled / unavailable（没有 agent 副本、共享登记不可用）→ 503
       return started.reason === 'busy'
         ? c.json({ error: 'Conflict', message: started.message }, 409)
         : c.json({ error: 'Service Unavailable', message: started.message }, 503)

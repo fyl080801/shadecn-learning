@@ -50,6 +50,16 @@ export interface RequestOptions {
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 5_000
 
+/** 派给一个提供方（{@link Bus.dispatch}）的结果 */
+export type DispatchResult<Res> =
+  | { ok: true; instance: string; value: Res }
+  /** 没有任何实例登记了这个令牌（比如 agent 角色一个副本都没起） */
+  | { ok: false; reason: 'no-responder' }
+  /** 选中的实例没在超时内回话。**它可能已经开始做了** —— 调用方不能拿同一个请求换个实例重发 */
+  | { ok: false; reason: 'timeout'; instance: string }
+  /** 选中的实例的处理函数抛了错 */
+  | { ok: false; reason: 'failed'; instance: string; error: string }
+
 /** 登记的 TTL；续期按它的 1/3 */
 export const RESPONDER_TTL_MS = 30_000
 
@@ -74,6 +84,11 @@ export interface Bus {
   handle<Req, Res>(token: RequestToken<Req, Res>, handler: (req: Req) => Res | Promise<Res>): Promise<() => Promise<void>>
   /** 发给全部提供方，等它们回话或超时 */
   request<Req, Res>(token: RequestToken<Req, Res>, payload: Req, options?: RequestOptions): Promise<ScatterResult<Res>>
+  /**
+   * 派给**一个**提供方（负载分摊：发起一轮 agent）。本实例登记了就交给本实例（不绕共享层），否则在登记的实例里随机挑一个。
+   * **只发一次，不自动换实例重试**：超时不代表没做（回话丢了），重发可能让同一件事做两遍。
+   */
+  dispatch<Req, Res>(token: RequestToken<Req, Res>, payload: Req, options?: RequestOptions): Promise<DispatchResult<Res>>
   /** 撤掉全部登记和订阅（进程退出、测试收尾） */
   close(): Promise<void>
 }
@@ -207,6 +222,50 @@ export function createBus(options: BusOptions): Bus {
         failures,
         missing: [...waiting],
       }
+    },
+
+    async dispatch(token, payload, requestOptions = {}) {
+      const local = handlers.get(token.name)
+      if (local) {
+        const result = await runHandler(local, payload)
+        return result.ok
+          ? { ok: true as const, instance: instanceId, value: result.value as never }
+          : { ok: false as const, reason: 'failed' as const, instance: instanceId, error: result.error }
+      }
+
+      let candidates: string[]
+      try {
+        candidates = (await responders.entries(`${token.name}:`)).map(([, instance]) => instance)
+      } catch (err) {
+        console.warn(`[bus] 读取 ${token.name} 的提供方失败`, err)
+        candidates = []
+      }
+      if (candidates.length === 0) return { ok: false, reason: 'no-responder' }
+      const instance = candidates[Math.floor(Math.random() * candidates.length)]!
+
+      await ensureSubscribed()
+      const id = randomUUID()
+      const replies: { instance: string; value: unknown }[] = []
+      const failures: { instance: string; error: string }[] = []
+      const waiting = new Set([instance])
+      let timer: NodeJS.Timeout | undefined
+      const done = new Promise<void>((resolve) => {
+        const finish = () => {
+          if (timer) clearTimeout(timer)
+          pending.delete(id)
+          resolve()
+        }
+        pending.set(id, { waiting, replies, failures, finish })
+        timer = setTimeout(finish, requestOptions.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
+      })
+      await channel
+        .publish(INBOX(instance), { kind: 'request', id, name: token.name, from: instanceId, payload })
+        .catch((err: unknown) => console.warn(`[bus] 派给 ${instance} 的 ${token.name} 失败`, err))
+      await done
+
+      if (replies[0]) return { ok: true, instance, value: replies[0].value as never }
+      if (failures[0]) return { ok: false, reason: 'failed', instance, error: failures[0].error }
+      return { ok: false, reason: 'timeout', instance }
     },
 
     async close() {

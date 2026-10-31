@@ -15,7 +15,8 @@
     "./models": "./src/models.ts",
     "./runner-command": "./src/runner-command.ts",
     "./runs": "./src/runs.ts",
-    "./runs-broadcast": "./src/runs-broadcast.ts"
+    "./runs-broadcast": "./src/runs-broadcast.ts",
+    "./dispatch": "./src/dispatch.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

@@ -161,30 +161,32 @@ agent 进程等于一个不对外的 collab 副本。`canvas-access.ts` 里写�
 在 web（`/api/assets`、[REQ-ASSET-THUMB](27-asset-thumbnails.md)）和 agent（媒体读取）两处按配置启用。
 `enabled: false` 时 web 的上传接口 404、agent 的 `view_media` 报"未启用"。缩略图的 sharp 仍同步在上传路径上生成，成瓶颈再拆（§5）。
 
-### 3.6 agent 模块：队列模式
+### 3.6 agent 模块：web 派发、agent 副本执行
 
-现在的 `POST /api/flows/:flowId/agent/messages` 在接收请求的进程里直接起一轮。拆开后 web 角色不跑 agent，改成**入队 → 认领**：
+web 角色不跑 agent。`POST /api/flows/:flowId/agent/messages` 在 web 上做完判权、`validatePrompt`、附件归属、续聊会话存在性，
+然后把发起请求**派给一个** agent 副本（`@shadecn/mod-agent/dispatch`）：
 
 ```
-浏览器 ──POST /messages──▶ web：判权、校验、占会话槽位、写入 agent-queue ──▶ SSE 接回（补发日志）
-                                                                       │
-                      agent 副本 ×M ◀── 认领（SharedMap.claim）───────┘
-                      签 Grant → 开画布 → 起沙箱 → 推进 → 写 agent-replay / 任务登记（照旧）
+浏览器 ──POST /messages──▶ web：判权、校验 ──bus.dispatch(agent.start-run)──▶ 某个 agent 副本：runtime.start()
+   ▲                                                                              │ 回「开始了 / busy / disabled / unavailable」
+   │                                                                              │ 发给发起者的每一帧 → 攒批 → 追加进
+   └──── SSE ◀── web 从头读 SharedLog agent-dispatch:<派发 id>（带连续 seq，末尾结束标记）◀──┘
 ```
 
-- **入队**：web 做 `requireFlowMember`、`validatePrompt`、附件校验、会话槽位 `claim`（[REQ-AGENT §3.10.10](20-agent-canvas.md) 已有），
-  然后往 `SharedLog` `agent-queue` 追加 `{ runId, flowId, conversationId, userId, prompt, attachments, enqueuedAt }`，
-  并在任务登记里写一条状态为 `queued` 的记录（TTL 同其它登记）。响应仍是同一条 SSE：先回 `queued`，之后接到补发日志上 —— 接回落在哪个副本上结果都一样，这一点现在就成立。
-- **认领**：每个 agent 副本是一个消费者，`SharedLog.wait` 阻塞读队列，对每条用 `SharedMap.claim('<flowId>:<runId>')` 抢；抢到的那个按今天 `agentRuntime().start()` 的流程往下走（签 Grant、判权、开画布、起沙箱），
-  登记改为 `running` 并带上自己的 `instanceId`。没抢到的跳过。**Grant 由认领的副本签**，因为"发起人此刻能进这张画布"本来就要在执行那一刻判。
-- **没有 agent 副本时不收单**：agent 副本每 1/3 TTL 在 `SharedMap` `agent-workers` 心跳一次；web 入队前先看有没有活着的，没有回 503 `agent_unavailable`，
-  前端提示"agent 服务不可用"。排进去又没人认领的（副本在入队后全挂了）：登记 TTL 到期自动消失，SSE 在 `queued` 状态等到 TTL 后收到 `error: no_worker`。
-- **停止**：`POST /runs/:runId/abort` 不变 —— 已认领的经 `agent-stop` 频道送到持有副本（现有）；还在 `queued` 的，web 直接 `deleteIfEquals` 掉登记并写一条 `aborted` 到补发日志，认领者抢不到就算了。
-- **只读接口留在 web**：`GET /agent`（视图）、会话列表、会话详情、删除会话、`GET /runs/:runId/events` 都只读库和共享层，不需要 agent 运行时。
-  这要求把 `agentRuntime` 里的读路径和执行路径分成两份导出 —— 读那份在 web 角色可用，执行那份只在 agent 角色装配。
-- **网关**：`/api/agent-gateway/*` 只在 agent 角色上，鉴权仍是 run 令牌、不认会话（[REQ-AGENT-SANDBOX](22-agent-sandbox.md)）。
-  沙箱回连的 `AGENT_GATEWAY_URL` 按副本算（k8s 驱动已用 `POD_IP`），不经 ingress。
-- **单进程（全部角色）下同一套路径照跑**：`SharedLog` 的内存实现 + 本进程的消费者，就是今天的行为多绕一次队列。不另留一条"直接起"的快路径。
+- **派发**：`bus.dispatch` 在登记了 `agent.start-run` 的实例里挑一个（本进程登记了就交给本进程），只发一次、不自动换实例重试 ——
+  超时不代表没做，重发可能让同一件事做两遍。没有任何 agent 副本 → 立刻 503「没有正在运行的 agent 实例」；超时 → 503「没有响应」。
+- **执行侧做 `start()`**：会话槽位（`busy` → web 回 409）、模型、沙箱、Grant 全在执行的这一侧。Grant 由执行的副本签，
+  「发起人此刻能进这张画布」在执行那一刻判（docs/22 §5）。
+- **事件回传不复用编排层的补发日志**：那条要等这一轮进了任务列表才有登记，发起后立刻订阅会 404，很短的一轮结束得比订阅还早也会 404。
+  派发日志从第一帧起就在，和编排层内部的时机无关。读到断号（被截断 / 过期）就停止转发，浏览器照常走「流断了 → `GET …/runs/:runId/events` 接回」。
+- **浏览器断开** = web 不读了，这一轮照常跑完（和改造前「发起者退订」一样），派发日志靠 TTL 自己消失。
+- **只读接口留在 web**：视图、会话列表 / 详情 / 删除、`GET …/runs/:runId/events`（接回走编排层的共享补发日志，本来就跨副本）、中止
+  （停止指令经共享层转给持有副本，本来就跨副本）。web 进程里的 runtime 只用来读，它从不 `start()`。
+- **网关**：`/api/agent-gateway/*` 只对 agent 角色有意义，鉴权仍是 run 令牌、不认会话（[REQ-AGENT-SANDBOX](22-agent-sandbox.md)）。
+  沙箱回连的 `AGENT_GATEWAY_URL` 按副本算（k8s 驱动用 `POD_IP`），不经 ingress。
+- **单进程（全部角色）也走这一条**：派发交给本进程的处理函数，事件经内存实现的派发日志回来。没有「本地就直接 start」的快路径。
+- **已知限制**：视图里的 `enabled` / 模型名由 web 进程按自己的配置算 —— web 和 agent 两种 Deployment 要用同一份 agent 配置
+  （同一个 ConfigMap / Secret），否则面板显示和实际能不能跑会对不上。
 
 ### 3.7 跨角色通信
 
@@ -229,7 +231,7 @@ agent 进程等于一个不对外的 collab 副本。`canvas-access.ts` 里写�
    - 发起 agent，一轮由 agent 副本认领，改动在两个浏览器里实时可见，撤回按 `runId` 正确；
    - 执行中移除发起人的成员资格：collab 侧断连、agent 侧一轮被叫停（现有行为，跨进程仍成立）；
    - web 调 `flushRoomToDatabase` 能等到 collab 的回执；杀掉全部 collab 副本后调用在超时内退回读库。
-6. 没有 agent 副本时 `POST /messages` 回 503；入队后杀掉全部 agent 副本，SSE 在 TTL 内收到 `no_worker`。
+6. 没有 agent 副本时 `POST /messages` 回 503；派发给的副本超时回 503；派给另一个实例执行时整条事件流经派发日志回到 web 的 SSE。
 7. 关掉 storage：`/api/features.storage === false`，上传接口 404，前端不显示上传入口；agent 的 `view_media` 回"未启用"。
 8. 每个模块各自的配置校验失败时，启动错误指出模块名和字段。
 
@@ -253,7 +255,7 @@ agent 进程等于一个不对外的 collab 副本。`canvas-access.ts` 里写�
 |---|---|---|---|
 | 1 | **已做**：内核（`apps/server/kernel/`）+ 角色解析（`SERVER_ROLES`，非全角色暂拒绝）+ 模块收口生命周期（`apps/server/modules/`，路由仍静态挂、配置仍在 `config.ts`）；dev 入口 `apps/server/dev.ts` + 构建断言；`GET /api/features` | ✓ | 生产产物无 Vite |
 | 2 | **已做**：`@shadecn/server-kit`（内核、共享层、总线、撤权信号从 `apps/server` 搬入）；`@shadecn/mod-storage`（整个 storage 搬入，宿主只交配置）；`@shadecn/mod-collab` 契约入口；撤权改走 `revokeAccess()`、复制画布前的落库改走 `flushRoom()`（scatter-gather）。**剩余**：`routes/flows.ts` 的 `/doc` 读写仍直接 import `collab/flow-writer.ts` 和 `COLLAB_LIMITS`，第 4 期随路由一起进协同包 | ✓ | 能力开始离开 `apps/server` |
-| 3 | **spike**：collab headless + agent `canvasHost`，在 `dev:cluster` 下跑 §4.5 | ✓（spike 结论决定是否继续） | — |
-| 4 | collab / agent 成包（实现搬进 `packages/mod-*`，底座的东西经端口交进去），路由随模块走；agent 入口改队列 | 每个包一次 | 可按角色启动 |
+| 3 | **已做**：collab headless（只有 agent 角色的进程挂 Hocuspocus 不接 WebSocket）+ agent 只经 `@shadecn/mod-collab/canvas-host` 拿活房间 | ✓ | — |
+| 4 | **已做**：collab 成包（`CollabPorts`、headless）、agent 成包（`AgentPorts`、惰性单例）、发起一轮改成 web 派发 / agent 执行（§3.6）。路由随模块走、按角色启动见第 5 期 | 每个包一次 | — |
 | 5 | `dev:cluster` 按角色；补 §4 的测试 | ✓ | — |
 | 6 | k8s 按角色拆 Deployment、ingress 分流、HPA | ✓ | 协同独立扩容 |

@@ -1,6 +1,7 @@
 import { defineModule, type ServerModule } from '@shadecn/server-kit/kernel'
 import { startAgentReconciler } from './authority.ts'
 import { agentDefinitions, agentTextSkills } from './definitions.ts'
+import { handleRunDispatch } from './dispatch.ts'
 import { abortAgentRuns, startAgentSandboxReaper } from './index.ts'
 import { agentModels } from './models.ts'
 import { configureAgent, type AgentPorts } from './ports.ts'
@@ -28,7 +29,9 @@ export function createAgentModule<App>(ports: AgentPorts): ServerModule<App> {
     roles: ['agent'],
     dependsOn: ['collab'],
     optional: ['storage'],
-    setup() {
+    async setup() {
+      // 发起一轮：web 经总线派给某个 agent 副本（dispatch.ts）。只有装了这个模块的进程才登记
+      const stopDispatch = await handleRunDispatch()
       // 委托授权：每 10 分钟全量对账一次（过期的标掉、失权的叫停；权限变化事件那条路是当场的，见 authority.ts）
       const stopReconciler = startAgentReconciler()
       // 沙箱：oci / k8s 驱动先自检（引擎 / 镜像 / 网络），再清上一个进程留下的孤儿容器，之后定时清
@@ -36,6 +39,8 @@ export function createAgentModule<App>(ports: AgentPorts): ServerModule<App> {
       return {
         shutdownTimeoutMs: 5_000,
         async shutdown() {
+          // 先撤登记：退出过程中不再接新的一轮
+          await stopDispatch()
           stopReconciler()
           stopReaper()
           await abortAgentRuns('服务正在重启')
