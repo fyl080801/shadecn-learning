@@ -13,6 +13,7 @@ import { Background } from "@vue-flow/background"
 
 import FlowConnectionLine from "@/components/flow/FlowConnectionLine.vue"
 import FlowEdge from "@/components/flow/FlowEdge.vue"
+import FlowPaneContextMenu from "@/components/flow/FlowPaneContextMenu.vue"
 import { flowHandleShift } from "@/components/flow/flow-handle"
 import FlowPresenceCursors from "@/components/flow/FlowPresenceCursors.vue"
 import FlowSelectionToolbar from "@/components/flow/FlowSelectionToolbar.vue"
@@ -72,67 +73,71 @@ const edgeTypes = { default: markRaw(FlowEdge) }
     显式写出来是因为这是一条说得出口的产品规则，不是碰巧的默认：蹭到一个角就算选中的话，
     拉框扫过谁就选中谁，想只挑出那几个节点会非常难。命中的节点**相连的边也一并算选中**，
     这是 Vue Flow 在框选时顺手做的（见 `apps/web/src/styles/vue-flow.css` 里选中连线的样式）。
+
+    外面套的是空白处的右键菜单（添加 / 上传），只在空白处弹，规则在组件里。
   -->
-  <div
-    class="h-full w-full"
-    :class="{
-      'flow-canvas-panning': canvas.spacePanning.value,
-      'flow-canvas-connecting': connectionStartHandle !== null
-    }"
-    :style="handleStyle"
-    @wheel.capture="canvas.onWheelZoom"
-    @pointermove="canvas.onPointerMove"
-    @pointerleave="canvas.onPointerLeave"
-  >
-    <VueFlow
-      :nodes="canvas.nodes.value"
-      :edges="canvas.edges.value"
-      :node-types="flowNodeComponents"
-      :edge-types="edgeTypes"
-      :connection-mode="ConnectionMode.Strict"
-      :connect-on-click="false"
-      :selection-mode="SelectionMode.Full"
-      :default-edge-options="defaultEdgeOptions"
-      :connection-line-type="ConnectionLineType.Bezier"
-      :source-position="Position.Right"
-      :target-position="Position.Left"
-      :pan-on-scroll="true"
-      :pan-on-scroll-mode="PanOnScrollMode.Vertical"
-      :pan-on-drag="canvas.panOnDrag.value"
-      :nodes-draggable="canvas.nodesDraggable.value"
-      :zoom-on-scroll="false"
-      :zoom-on-pinch="false"
-      :delete-key-code="null"
+  <FlowPaneContextMenu>
+    <div
       class="h-full w-full"
-      @nodes-change="canvas.onNodesChange"
-      @move-end="canvas.syncViewport"
+      :class="{
+        'flow-canvas-panning': canvas.spacePanning.value,
+        'flow-canvas-connecting': connectionStartHandle !== null
+      }"
+      :style="handleStyle"
+      @wheel.capture="canvas.onWheelZoom"
+      @pointermove="canvas.onPointerMove"
+      @pointerleave="canvas.onPointerLeave"
     >
-      <!--
-        zoom-pane 插槽在 .vue-flow__transformationpane 里面，和节点连线同一层，
-        所以放进去的东西天然跟着缩放平移走；默认插槽在变换之外，别搞反了。
-      -->
-      <template #connection-line="connectionLineProps">
-        <FlowConnectionLine v-bind="connectionLineProps" />
-      </template>
+      <VueFlow
+        :nodes="canvas.nodes.value"
+        :edges="canvas.edges.value"
+        :node-types="flowNodeComponents"
+        :edge-types="edgeTypes"
+        :connection-mode="ConnectionMode.Strict"
+        :connect-on-click="false"
+        :selection-mode="SelectionMode.Full"
+        :default-edge-options="defaultEdgeOptions"
+        :connection-line-type="ConnectionLineType.Bezier"
+        :source-position="Position.Right"
+        :target-position="Position.Left"
+        :pan-on-scroll="true"
+        :pan-on-scroll-mode="PanOnScrollMode.Vertical"
+        :pan-on-drag="canvas.panOnDrag.value"
+        :nodes-draggable="canvas.nodesDraggable.value"
+        :zoom-on-scroll="false"
+        :zoom-on-pinch="false"
+        :delete-key-code="null"
+        class="h-full w-full"
+        @nodes-change="canvas.onNodesChange"
+        @move-end="canvas.syncViewport"
+      >
+        <!--
+          zoom-pane 插槽在 .vue-flow__transformationpane 里面，和节点连线同一层，
+          所以放进去的东西天然跟着缩放平移走；默认插槽在变换之外，别搞反了。
+        -->
+        <template #connection-line="connectionLineProps">
+          <FlowConnectionLine v-bind="connectionLineProps" />
+        </template>
 
-      <template #zoom-pane>
-        <FlowSnapGuides />
-        <FlowPresenceCursors />
-      </template>
+        <template #zoom-pane>
+          <FlowSnapGuides />
+          <FlowPresenceCursors />
+        </template>
 
-      <!-- 点阵的间距就是网格吸附的格子（同一个常量），否则「吸到网格上」对不齐任何看得见的东西 -->
-      <Background :gap="FLOW_GRID_GAP" />
-      <!-- 左下角：缩放 / 全览 / 小地图（小地图本身也归它管，显隐开关在同一组里） -->
-      <FlowViewControls />
+        <!-- 点阵的间距就是网格吸附的格子（同一个常量），否则「吸到网格上」对不齐任何看得见的东西 -->
+        <Background :gap="FLOW_GRID_GAP" />
+        <!-- 左下角：缩放 / 全览 / 小地图（小地图本身也归它管，显隐开关在同一组里） -->
+        <FlowViewControls />
 
-      <!--
-        框选一片时浮在选区上方的工具栏。放在 <VueFlow> 里面是必须的：
-        它内部 teleport 到 viewport 容器上，拿的是这棵树里的那个 Vue Flow 实例。
-      -->
-      <FlowSelectionToolbar />
+        <!--
+          框选一片时浮在选区上方的工具栏。放在 <VueFlow> 里面是必须的：
+          它内部 teleport 到 viewport 容器上，拿的是这棵树里的那个 Vue Flow 实例。
+        -->
+        <FlowSelectionToolbar />
 
-      <!-- 给上层留的扩展位：想往画布里再塞浮层（对齐线、批注…）从这儿进 -->
-      <slot />
-    </VueFlow>
-  </div>
+        <!-- 给上层留的扩展位：想往画布里再塞浮层（对齐线、批注…）从这儿进 -->
+        <slot />
+      </VueFlow>
+    </div>
+  </FlowPaneContextMenu>
 </template>

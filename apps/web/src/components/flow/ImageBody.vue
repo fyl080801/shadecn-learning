@@ -7,8 +7,7 @@ import { useMediaFit } from "@/components/flow/media-fit"
 import NodeUploadButton from "@/components/flow/NodeUploadButton.vue"
 import NodeUploadProgress from "@/components/flow/NodeUploadProgress.vue"
 import { useNodePart } from "@/components/flow/node-kit/context"
-import { useNodeUpload } from "@/components/flow/node-upload"
-import { uploadFlowAsset } from "@/lib/asset-upload"
+import { uploadImageToNode, useNodeUpload } from "@/components/flow/node-upload"
 
 /**
  * 图片节点的 body —— 画 `data.src` 那张图；没有就是一块空占位，上面一个「上传图片」按钮。
@@ -30,12 +29,9 @@ const src = computed(() => {
   return typeof value === "string" ? value.trim() : ""
 })
 
-const { upload, state: uploading, cancel } = useNodeUpload(ctx, async (file, io) => {
-  const asset = await uploadFlowAsset(ctx.editor.flowId.value, file, io)
-  // 传完的那一刻刚好点了取消：以取消为准，不挂上去
-  io.signal.throwIfAborted()
-  ctx.node.attachAsset({ src: asset.url }, "上传图片")
-})
+const { upload, state: uploading, cancel } = useNodeUpload(ctx, (file, io) =>
+  uploadImageToNode(ctx.editor.flowId.value, file, io, ctx.node.attachAsset)
+)
 </script>
 
 <template>

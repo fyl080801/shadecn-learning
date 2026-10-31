@@ -699,7 +699,7 @@ model FlowUserState {
   | `useFlowPresence` | 反馈层：上报光标/选中/拖动几何，读别人的 |
   | `useFlowSnapping` | 拖动时的网格 / 辅助线吸附（见 4.4.3），两者都常开、无开关、无持久化状态 |
   依赖是一条直线：`selection`/`sync` → `presence` → `canvas`，只有 `useFlowCanvas` 同时认识这三者。另有 `useFlowShortcuts(ctx)` 管快捷键和离开前的 flush；上下文里还带着节点扩展协议的运行时 `nodeKit`（注册表、编辑模式、动作执行器）。
-- **组件层（`apps/web/src/components/flow/`）** —— 一块界面一个组件，各自直接读上下文：`FlowCanvas`（画布本体，留了 `<slot/>` 给画布内浮层）、`FlowViewControls`（左下角视图控件：缩放 / 全览 / 自动布局 / 小地图）、`FlowTitleCapsule`（左上角胶囊，自带删除确认）、`FlowToolbar`（底部工具栏，胶囊右侧独立挂 agent 快捷输入 `agent/FlowAgentQuickPrompt`）、`agent/FlowAgentChat`（右上角 agent 对话框）、`FlowSelectionToolbar`（框选一片时浮在选区上方的工具栏，目前放「打组」）、`node-kit/NodeHost.vue`（每种节点共用的宿主：外部名字标签、单独选中时浮在正上方的工具栏、底部输入框、右侧预览等区域的位置和露出时机都由它说了算；各区域里挂什么由类型声明和能力注册，见 [REQ-NODEKIT](21-node-kit.md)）、`TextBody` / `ImageBody` / `VideoBody` / `DirectorBody`（类型的 body，只管自己长什么样）、`FlowGrowMenu`（从出口长出新节点的候选类型菜单），`FlowSnapGuides`（拖动时的对齐辅助线），以及协同带来的三个：`FlowPresenceBar`（头像栏）、`FlowPresenceAvatar`、`FlowPresenceCursors`（别人的光标与正在拉的线）。
+- **组件层（`apps/web/src/components/flow/`）** —— 一块界面一个组件，各自直接读上下文：`FlowCanvas`（画布本体，留了 `<slot/>` 给画布内浮层）、`FlowViewControls`（左下角视图控件：缩放 / 全览 / 自动布局 / 小地图）、`FlowTitleCapsule`（左上角胶囊，自带删除确认）、`FlowToolbar`（底部工具栏，胶囊右侧独立挂 agent 快捷输入 `agent/FlowAgentQuickPrompt`）、`agent/FlowAgentChat`（右上角 agent 对话框）、`FlowSelectionToolbar`（框选一片时浮在选区上方的工具栏，目前放「打组」）、`node-kit/NodeHost.vue`（每种节点共用的宿主：外部名字标签、单独选中时浮在正上方的工具栏、底部输入框、右侧预览等区域的位置和露出时机都由它说了算；各区域里挂什么由类型声明和能力注册，见 [REQ-NODEKIT](21-node-kit.md)）、`TextBody` / `ImageBody` / `VideoBody` / `DirectorBody`（类型的 body，只管自己长什么样）、`FlowGrowMenu`（从出口长出新节点的候选类型菜单）、`FlowPaneContextMenu`（画布空白处的右键菜单：添加 / 上传，见 4.4.4），`FlowSnapGuides`（拖动时的对齐辅助线），以及协同带来的三个：`FlowPresenceBar`（头像栏）、`FlowPresenceAvatar`、`FlowPresenceCursors`（别人的光标与正在拉的线）。
 
 判据：**加一块新面板 / 新工具按钮，不应该需要改 `FlowEditor.vue` 或任何中间层** —— 新建组件、`useFlowEditor()` 取上下文、挂到模板上即可。
 - 快捷键：`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Delete` / `Backspace` 删除选中。单独选中一个节点时，它工具条上动作的快捷键也生效（复制 `Ctrl/Cmd+D`、解组 `Ctrl/Cmd+Shift+G`，写在按钮的提示里）；编辑器自己的这几个键先判，节点动作抢不走。**`Ctrl/Cmd+S` 只是拦住浏览器的「保存网页」对话框**，本身不再有任何含义 —— 没有要保存的东西。
@@ -723,6 +723,21 @@ model FlowUserState {
 - **多选拖动按外接矩形吸附**，算出的位移原样施加到每个被拖节点，相对位置不会被拆散。
 - **吸附只作用在拖动上，不去动已经摆好的节点。** 所以没有用 Vue Flow 自带的 `:snap-to-grid`：它除了拖动，还会在**节点挂载时**（`NodeWrapper` 的 `clampPosition`）把位置对到格子上 —— 那是一次只发生在本地视图、不进文档的位移，开着吸附的人和没开的人看到的画布从此不一样。两种吸附收在同一个函数（`apps/web/src/lib/flow-snap.ts`，纯几何、可单测）里算，结果只有一个位移。
 - 吸附发生在 `onNodeDrag` 里、Vue Flow 写完位置之后：它每帧都从**指针位置**重新算一遍节点位置，所以这一下修正不会累加到下一帧 —— 手移开对齐线，吸附自然松开。落点仍然只在 `onNodeDragStop` 一次性进文档，中间态照旧不落库（见 4.5）；上报给协作者的拖动几何是**吸附之后**的位置，否则别人看到的是没吸住的那个。
+
+#### 4.4.4 画布右键菜单：添加 / 上传
+
+在画布**空白处**右键弹出一个菜单（shadcn-vue 的 `ContextMenu`，`FlowPaneContextMenu.vue`，包在 `FlowCanvas` 外面）。只有两项：
+
+| 菜单项 | 行为 |
+|---|---|
+| **添加 ›** | 子菜单，列的就是底部工具栏加号那张表（`ADDABLE_NODE_TYPES`：文本 / 图片 / 视频 / 导演台，名字和图标取自注册表）。和工具栏唯一的区别是**落点**：新节点以右键那一点为中心，而不是画布中心 |
+| **上传** | 打开文件选择框（可多选），支持**图片、视频、文本**（`.txt` / `.md` / `.json` / `.csv` / `.log` / `.yaml` 及任意 `text/*`）。一个文件一个节点，第一个落在右键那一点，后面的依次往右下错开；名字取文件名去掉扩展名 |
+
+- **只在空白处弹。** 右键落在节点（含连接点、节点工具栏）、连线、选区框、画布浮层面板（视图控件、右上角对话框）、输入框上时不弹，浏览器原生菜单照常出现（输入框里要能粘贴）。
+- **上传是「先建节点，再往里传」。** 图片 / 视频：先在落点建一个空的图片 / 视频节点，节点立刻进入「上传中」—— 和在节点 body 上点「上传图片 / 视频」是同一份本地上传状态（进度、取消、角标都一样，见 3.7）；传完经 `attachAsset` 挂上（同一步定形态）。失败或取消就留下这个空节点，可以在它上面再传或删掉；失败会提示原因，取消不提示。视频同样先在本地截一帧当预览图。
+- **文本不上传对象存储**：读出文件内容直接当文本节点的正文（`data.text`），和建节点同一个事务、一步撤销。单个文本文件上限 **200KB**，超过就拒收并提示（正文整段进 Y.Doc，不截断）。
+- 认不出类型的文件（如 PDF）提示「不支持的文件类型」并跳过，不影响同一批里的其他文件。
+- 工具栏的「添加」本身也是菜单实现（`DropdownMenu`，加号是触发器）；两个入口读同一张表，只是菜单组件不同（下拉 vs 右键）。
 
 ### 4.5 Pinia store（`apps/web/src/stores/flow/`）
 

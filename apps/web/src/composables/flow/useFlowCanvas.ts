@@ -50,6 +50,16 @@ export const FLOW_EDGE_TYPE = DEFAULT_EDGE_TYPE
 
 /** 连续新增时的层叠偏移，避免节点完全重叠（第一个仍然正好在中心） */
 const CASCADE_STEP = 24
+
+/** `addNode` 的可选项，见该函数 */
+export interface AddNodeOptions {
+  /** 新节点中心落在哪（屏幕坐标）；不给就是画布中心 + 级联偏移 */
+  point?: { x: number; y: number }
+  /** 名字；不给就是「类型名 + 序号」 */
+  label?: string
+  /** 并进默认 data 的业务字段（同一个事务） */
+  data?: Record<string, unknown>
+}
 const CASCADE_COUNT = 6
 
 /** 视图控件按钮触发的缩放 / 全览过渡时长（ms） */
@@ -762,28 +772,34 @@ export function useFlowCanvas(
   let cascadeIndex = 0
 
   /**
-   * 在画布中心加一个节点，返回它的 id（画布还没挂载好时返回 null）。
+   * 在画布中心（或给定的落点）加一个节点，返回它的 id（画布还没挂载好时返回 null）。
    *
    * 长什么样由**节点类型注册表**说了算（`apps/web/src/components/flow/node-types.ts`）——
    * 这里不认识任何具体类型，加一种节点不用改这个函数。
+   *
+   * `options.point` 是**屏幕坐标**（右键菜单记下的那一点），新节点以它为中心；不给就落在画布中心、按级联错开。
+   * `options.data` 并进类型的默认 data、和新建同一个事务（例如从文本文件建的节点直接带正文，一步撤销）——
+   * 别拿它写图片 / 视频的 `src`：素材只能经 `attachAsset` 挂（形态规则，docs/13 §3.7）。
    */
-  async function addNode(type: string = NEW_NODE_TYPE): Promise<string | null> {
+  async function addNode(type: string = NEW_NODE_TYPE, options: AddNodeOptions = {}): Promise<string | null> {
     const bounds = vueFlowRef.value?.getBoundingClientRect()
     if (!bounds) return null
 
     const id = createId("n")
-    const offset = (cascadeIndex++ % CASCADE_COUNT) * CASCADE_STEP
-    const center = screenToFlowCoordinate({
-      x: bounds.left + bounds.width / 2 + offset,
-      y: bounds.top + bounds.height / 2 + offset
-    })
+    let screen = options.point
+    if (!screen) {
+      const offset = (cascadeIndex++ % CASCADE_COUNT) * CASCADE_STEP
+      screen = { x: bounds.left + bounds.width / 2 + offset, y: bounds.top + bounds.height / 2 + offset }
+    }
+    const center = screenToFlowCoordinate(screen)
 
     const node = buildFlowNode({
       id,
       type,
       position: center,
-      label: `${flowNodeTypeOf(type).label} ${store.nodes.length + 1}`
+      label: options.label || `${flowNodeTypeOf(type).label} ${store.nodes.length + 1}`
     })
+    if (options.data) node.data = { ...node.data, ...options.data }
     // 连点两次「添加节点」应该是两条撤销，不是一条
     store.separateUndo()
     store.addNode(node)
