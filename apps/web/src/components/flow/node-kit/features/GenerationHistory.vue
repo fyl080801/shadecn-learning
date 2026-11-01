@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, type CSSProperties } from "vue"
 import { Film } from "@lucide/vue"
-import { portsOf } from "@shadecn/shared/flow-node-types"
+import { portsOf, readGenerations } from "@shadecn/shared/flow-node-types"
 
 import AssetImage from "@/components/flow/AssetImage.vue"
 import { MEDIA_FIXED_SIDE } from "@/lib/flow-media-size"
 import { cn } from "@/lib/utils"
 import { useNodePart } from "../context"
-import { generationsOf } from "./generations"
 
 /**
  * 生成历史（能力 `generations`，节点右侧画布里的 `aside` 区）：一列缩略图，最新的在最上面。
@@ -19,7 +18,7 @@ import { generationsOf } from "./generations"
  */
 const ctx = useNodePart()
 
-const items = computed(() => [...generationsOf(ctx)].reverse())
+const items = computed(() => [...readGenerations(ctx.node.data.value)].reverse())
 const current = computed(() => {
   const src = ctx.node.data.value.src
   return typeof src === "string" ? src : ""

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue"
 import { History } from "@lucide/vue"
+import { readGenerations } from "@shadecn/shared/flow-node-types"
 
 import { Button } from "@/components/ui/button"
 import { useNodePart } from "../context"
-import { generationsOf } from "./generations"
 
 /**
  * 右上角的生成数量（能力 `generations`，badge 区）：点一下展开 / 收起右侧的生成历史。
@@ -12,7 +12,7 @@ import { generationsOf } from "./generations"
  */
 const ctx = useNodePart()
 
-const count = computed(() => generationsOf(ctx).length)
+const count = computed(() => readGenerations(ctx.node.data.value).length)
 const open = computed(() => ctx.slots.isOpen("aside"))
 
 function toggle() {

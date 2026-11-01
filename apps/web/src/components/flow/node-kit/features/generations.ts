@@ -13,7 +13,7 @@ import GenerationHistory from "./GenerationHistory.vue"
  *
  * 展开与否是本地 UI 状态（`ctx.slots`），不进文档。
  */
-export function generationsOf(ctx: NodePartContext) {
+function generationsOf(ctx: NodePartContext) {
   return readGenerations(ctx.node.data.value)
 }
 
