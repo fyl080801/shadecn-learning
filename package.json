@@ -25,6 +25,7 @@
     "typecheck:mod-collab": "pnpm --filter @shadecn/mod-collab typecheck",
     "typecheck:mod-storage": "pnpm --filter @shadecn/mod-storage typecheck",
     "typecheck:mod-agent": "pnpm --filter @shadecn/mod-agent typecheck",
+    "typecheck:mod-apps": "pnpm --filter @shadecn/mod-apps typecheck",
     "preview": "pnpm build && pnpm start",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -40,6 +41,7 @@
     "test:mod-collab": "vitest run --project=mod-collab",
     "test:mod-storage": "vitest run --project=mod-storage",
     "test:mod-agent": "vitest run --project=mod-agent",
+    "test:mod-apps": "vitest run --project=mod-apps",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"

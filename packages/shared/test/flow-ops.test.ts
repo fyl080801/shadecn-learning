@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import { edgesMap, fromYEdge, fromYNode, nodeGroup, nodesMap, toYEdge, toYNode } from '../src/flow-doc.ts'
+import { edgesMap, fromYEdge, fromYNode, nodeGroup, nodeGroupMap, nodesMap, toYEdge, toYNode } from '../src/flow-doc.ts'
 import { defaultEdgeData, type FlowEdge, type FlowNodeRecord } from '../src/flow-graph.ts'
 import { GROUP_HEADER, GROUP_PADDING, LAYOUT_NODE_GAP, LAYOUT_RANK_GAP } from '../src/flow-layout.ts'
-import { buildNodeRecord } from '../src/flow-node-types.ts'
+import { buildNodeRecord, readGenerations } from '../src/flow-node-types.ts'
 import * as ops from '../src/flow-ops.ts'
 import { FlowOpError, type FlowOpContext } from '../src/flow-ops.ts'
 
@@ -269,6 +269,53 @@ describe('disconnectNodes', () => {
   })
 })
 
+describe('断开之后清掉目标节点对上游的引用（提示词提及、连入顺序）', () => {
+  const M = (id: string) => `@{node:${id}}`
+  function generation() {
+    const gen = record('gen', 'image')
+    gen.data = { ...gen.data, prompt: `把${M('ref1')} 换成${M('ref2')} 的风格`, inputOrder: ['ref2', 'ref1'] }
+    return setup(
+      [record('ref1', 'image'), record('ref2', 'image'), gen],
+      [edge('e1', 'ref1', 'gen'), edge('e2', 'ref2', 'gen')],
+    )
+  }
+
+  it('删线：提及（连带紧跟的空格）和 inputOrder 里的它一起去掉，和删线是同一个事务', () => {
+    const { run, node, transactions } = generation()
+    run((ctx) => ops.removeElements(ctx, [], ['e1']))
+    expect(node('gen')!.data).toMatchObject({ prompt: `把换成${M('ref2')} 的风格`, inputOrder: ['ref2'] })
+    expect(transactions).toHaveLength(1)
+  })
+
+  it('删上游节点：连带删掉的线照样清引用；目标节点自己也删了就不管', () => {
+    const { run, node } = generation()
+    run((ctx) => ops.removeElements(ctx, ['ref2'], []))
+    expect(node('gen')!.data).toMatchObject({ prompt: `把${M('ref1')} 换成的风格`, inputOrder: ['ref1'] })
+
+    const both = generation()
+    both.run((ctx) => ops.removeElements(ctx, ['ref1', 'gen'], []))
+    expect(both.node('gen')).toBeNull()
+  })
+
+  it('disconnectNodes 同样清；同一对节点还有别的线连着就不清（它仍然是连入节点）', () => {
+    const { run, node } = generation()
+    run((ctx) => ops.disconnectNodes(ctx, 'ref1', 'gen'))
+    expect(node('gen')!.data.prompt).toBe(`把换成${M('ref2')} 的风格`)
+
+    const twice = generation()
+    twice.run((ctx) => ops.insertEdge(ctx, edge('e3', 'ref2', 'gen')))
+    twice.run((ctx) => ops.removeElements(ctx, [], ['e2']))
+    expect(twice.node('gen')!.data).toMatchObject({ prompt: `把${M('ref1')} 换成${M('ref2')} 的风格`, inputOrder: ['ref2', 'ref1'] })
+  })
+
+  it('提示词是协同结构（Y.Text）时只跳过清理，不挡删除', () => {
+    const { doc, run, edges } = generation()
+    doc.transact(() => nodeGroupMap(nodesMap(doc).get('gen'), 'data')!.set('prompt', new Y.Text(M('ref1'))))
+    run((ctx) => ops.removeElements(ctx, [], ['e1']))
+    expect(edges().map((item) => item.id)).toEqual(['e2'])
+  })
+})
+
 describe('布局', () => {
   it('moveNodes 只写 position，不存在的跳过；resizeNode 尺寸和位置同一笔，节点不在 → NODE_NOT_FOUND', () => {
     const { run, node } = setup([record('a'), record('b')])
@@ -527,6 +574,82 @@ describe('形态：attachAsset / 连入改回 generate', () => {
     run((ctx) => ops.attachAsset(ctx, 'img', { src: 'https://x/a.png' }))
     run((ctx) => ops.duplicateNode(ctx, 'img', { id: 'copy', offset: { x: 0, y: 0 } }))
     expect(formOf(doc, 'copy')).toBe('asset')
+  })
+})
+
+describe('生成历史：recordGeneration / selectGeneration', () => {
+  it('记一次生成 = 挂素材 + 留一条 gen.<id>，同一个事务；同一个 id 再记只覆盖那一条', () => {
+    const { run, node, transactions } = setup([record('t', 'text'), record('img', 'image')], [edge('in', 't', 'img')])
+    run((ctx) => ops.recordGeneration(ctx, 'img', { id: 'task1', src: 'https://x/1.png', createdAt: 1 }))
+    expect(transactions).toEqual([ORIGIN])
+    run((ctx) => ops.recordGeneration(ctx, 'img', { id: 'task2', src: 'https://x/2.png', createdAt: 2 }))
+    run((ctx) => ops.recordGeneration(ctx, 'img', { id: 'task2', src: 'https://x/2b.png', createdAt: 3 }))
+    const data = node('img')!.data
+    expect(data.src).toBe('https://x/2b.png')
+    expect(data.form).toBe('generate')
+    expect(readGenerations(data).map((item) => [item.id, item.src])).toEqual([
+      ['task1', 'https://x/1.png'],
+      ['task2', 'https://x/2b.png'],
+    ])
+  })
+
+  it('首次生成时节点上已有图：先把它补成第一条 gen.original（排在这次之前）；之后不再补', () => {
+    const { run, node } = setup([record('vid', 'video')])
+    run((ctx) => ops.attachAsset(ctx, 'vid', { src: 'https://x/up.mp4', poster: 'https://x/up.jpg' }))
+    run((ctx) => ops.recordGeneration(ctx, 'vid', { id: 't1', src: 'https://x/1.mp4', createdAt: 10 }))
+    run((ctx) => ops.recordGeneration(ctx, 'vid', { id: 't2', src: 'https://x/2.mp4', createdAt: 20 }))
+    expect(readGenerations(node('vid')!.data)).toEqual([
+      { id: 'original', src: 'https://x/up.mp4', poster: 'https://x/up.jpg', createdAt: 9 },
+      { id: 't1', src: 'https://x/1.mp4', createdAt: 10 },
+      { id: 't2', src: 'https://x/2.mp4', createdAt: 20 },
+    ])
+  })
+
+  it('首次生成前没有图（空 src）：不补', () => {
+    const { run, node } = setup([record('img', 'image')])
+    run((ctx) => ops.recordGeneration(ctx, 'img', { id: 't1', src: 'https://x/1.png', createdAt: 1 }))
+    expect(readGenerations(node('img')!.data).map((item) => item.id)).toEqual(['t1'])
+  })
+
+  it('挑一条当主图：只换 src / poster，不动形态和历史；一步撤销', () => {
+    const { doc, run, node } = setup([record('vid', 'video')])
+    run((ctx) => ops.recordGeneration(ctx, 'vid', { id: 'a', src: 'https://x/a.mp4', poster: 'https://x/a.jpg', createdAt: 1 }))
+    run((ctx) => ops.recordGeneration(ctx, 'vid', { id: 'b', src: 'https://x/b.mp4', createdAt: 2 }))
+    expect(node('vid')!.data.form).toBe('asset')
+    const undo = new Y.UndoManager([nodesMap(doc), edgesMap(doc)], { trackedOrigins: new Set([ORIGIN]) })
+
+    run((ctx) => ops.selectGeneration(ctx, 'vid', 'a'))
+    expect(node('vid')!.data).toMatchObject({ src: 'https://x/a.mp4', poster: 'https://x/a.jpg', form: 'asset' })
+    undo.stopCapturing()
+    // 没有预览图的那条：预览图清空，不留上一条的
+    run((ctx) => ops.selectGeneration(ctx, 'vid', 'b'))
+    expect(node('vid')!.data).toMatchObject({ src: 'https://x/b.mp4', poster: '' })
+    expect(readGenerations(node('vid')!.data)).toHaveLength(2)
+
+    undo.undo()
+    expect(node('vid')!.data).toMatchObject({ src: 'https://x/a.mp4', poster: 'https://x/a.jpg' })
+  })
+
+  it('历史里没有这一条 → GENERATION_NOT_FOUND；没有形态的类型 → NO_FORMS；都不写', () => {
+    const { run, transactions } = setup([record('t', 'text'), record('img', 'image')])
+    expect(codeOf(() => run((ctx) => ops.selectGeneration(ctx, 'img', 'nope')))).toBe('GENERATION_NOT_FOUND')
+    expect(codeOf(() => run((ctx) => ops.selectGeneration(ctx, 't', 'nope')))).toBe('NO_FORMS')
+    expect(codeOf(() => run((ctx) => ops.recordGeneration(ctx, 'img', { id: '', src: 'x', createdAt: 0 })))).toBe(
+      'INVALID_GENERATION',
+    )
+    expect(transactions).toEqual([])
+  })
+
+  it('readGenerations 按生成先后排、跳过形状不对的条目', () => {
+    expect(
+      readGenerations({
+        src: 'x',
+        'gen.b': { src: 'b', createdAt: 2 },
+        'gen.a': { src: 'a', createdAt: 1 },
+        'gen.bad': { createdAt: 3 },
+        'gen.junk': 'oops',
+      }).map((item) => item.id),
+    ).toEqual(['a', 'b'])
   })
 })
 

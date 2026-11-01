@@ -8,5 +8,10 @@ const ctx = useNodePart()
 </script>
 
 <template>
-  <FlowNodeHandles :node-id="ctx.id" :type="ctx.type" :data="ctx.node.data.value" />
+  <FlowNodeHandles
+    :node-id="ctx.id"
+    :type="ctx.type"
+    :data="ctx.node.data.value"
+    :aside-width="ctx.asideWidth.value"
+  />
 </template>

@@ -22,6 +22,7 @@ export function fakeContext(kit: NodeKit, id: string, type: string): NodePartCon
       exit: () => undefined
     },
     slots: { open: () => undefined, close: () => undefined, isOpen: () => false },
+    asideWidth: ref(0),
     has: (feature) => kit.hasFeature(type, feature),
     emit: (event, payload) => kit.emit(event, payload, ctx)
   }

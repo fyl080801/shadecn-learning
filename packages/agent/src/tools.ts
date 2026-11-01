@@ -2,6 +2,7 @@ import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core'
 import { StringEnum, Type, type Static, type TSchema } from '@earendil-works/pi-ai'
 import * as Y from 'yjs'
 import { DIRECTOR_NODE_TYPE, msToSeconds, readDirectorScene } from '@shadecn/shared/director-doc'
+import { isCollectionKey } from '@shadecn/shared/flow-collection'
 import { edgesMap, fromYEdge, nodeGroupMap, nodesMap, readNodes, type FlowNodeGroup } from '@shadecn/shared/flow-doc'
 import { type FlowEdge, type FlowNode } from '@shadecn/shared/flow-graph'
 import { nextSlotInGroup } from '@shadecn/shared/flow-layout'
@@ -11,6 +12,7 @@ import {
   defaultNodeSize,
   GROUP_NODE_TYPE,
   NODE_FORM_KEY,
+  NODE_GENERATION_PREFIX,
   nodeSizeOf,
   nodeTypeDefaultsOf,
   portsOf,
@@ -467,6 +469,10 @@ const MANAGED_DATA_KEYS = ['src', NODE_FORM_KEY] as const
 
 function assertNotManaged(keys: Iterable<string>, allowed: readonly string[] = []) {
   for (const key of keys) {
+    // 生成历史（`gen.<taskId>`）只由服务端写回生成结果时记（`ops.recordGeneration`）
+    if (isCollectionKey(NODE_GENERATION_PREFIX, key)) {
+      throw new Error(`data.${key} 是节点的生成历史，由画布在生成完成时自动记录，不能直接写`)
+    }
     if ((MANAGED_DATA_KEYS as readonly string[]).includes(key) && !allowed.includes(key)) {
       throw new Error(
         key === NODE_FORM_KEY

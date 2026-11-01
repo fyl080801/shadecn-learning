@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from "pinia"
 import * as Y from "yjs"
 import { GRAPH_SCHEMA_VERSION } from "@shadecn/shared/flow-graph"
 import { buildNodeRecord } from "@shadecn/shared/flow-node-types"
+import * as ops from "@shadecn/shared/flow-ops"
 import type { FlowDetail } from "@shadecn/shared/canvas"
 
 import NodeHost from "@/components/flow/node-kit/NodeHost.vue"
@@ -107,7 +108,8 @@ describe("默认注册表的组合", () => {
     expect(ids(kit.partsFor("text", "label"))).toEqual(["rename.title"])
     expect(ids(kit.actionsFor("text", "toolbar"))).toEqual(["node.duplicate", "node.delete"])
     expect(ids(kit.partsFor("text", "handles"))).toEqual(["connectable.handles"])
-    expect(ids(kit.partsFor("text", "badge"))).toEqual(["status.badge", "text.open-editor"])
+    expect(ids(kit.partsFor("text", "badge"))).toEqual(["text.open-editor"])
+    expect(ids(kit.partsFor("text", "overlay"))).toEqual(["status.processing", "status.error", "resizable.handles"])
 
     expect(ids(kit.partsFor("group", "label"))).toEqual(["rename.title"])
     expect(kit.partsFor("group", "handles")).toHaveLength(0)
@@ -124,7 +126,7 @@ describe("默认注册表的组合", () => {
   it("分组：解组、拉伸、顶部把手；文本多一个就地编辑", () => {
     const kit = createDefaultNodeKit()
     expect(ids(kit.actionsFor("group", "toolbar"))).toEqual(["group.ungroup"])
-    expect(ids(kit.partsFor("group", "overlay"))).toEqual(["resizable.handles", "drag-strip.handle"])
+    expect(ids(kit.partsFor("group", "overlay"))).toEqual(["status.processing", "status.error", "resizable.handles", "drag-strip.handle"])
     expect(kit.findMode("text", "edit-body")).not.toBeNull()
     expect(kit.findMode("process", "edit-body")).toBeNull()
   })
@@ -138,11 +140,13 @@ describe("默认注册表的组合", () => {
     }
   })
 
-  it("产出预览、可运行是登记着的通用能力，但眼下没有类型启用", () => {
+  it("可运行只给图片 / 视频（运行器是 app-run，docs/29 §3.8）；产出预览是登记着的通用能力，眼下没有类型启用", () => {
     const kit = createDefaultNodeKit()
     for (const type of Object.keys(FLOW_NODE_TYPES)) {
+      const media = type === "image" || type === "video"
       expect(kit.partsFor(type, "side"), type).toHaveLength(0)
-      expect(kit.hasFeature(type, "runnable"), type).toBe(false)
+      expect(kit.hasFeature(type, "runnable"), type).toBe(media)
+      expect(kit.hasFeature(type, "app-run"), type).toBe(media)
       expect(kit.hasFeature(type, "output-preview"), type).toBe(false)
     }
   })
@@ -347,5 +351,94 @@ describe("改名是一个编辑模式", () => {
     expect(runtime.modes.current.value).toBeNull()
     expect(store.nodeById.get("a")?.metadata.label).toBe("甲二")
     expect(w.find("#a input").exists()).toBe(false)
+  })
+})
+
+describe("生成历史（generations）", () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    selectedNodeId.value = null
+  })
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+  })
+
+  /** 服务端写回生成结果时走的就是 `recordGeneration`；这里在本地文档上直接跑同一个 op */
+  function mountWithGenerations(count: number) {
+    const store = useFlowStore()
+    const doc = new Y.Doc()
+    store.load(detail())
+    store.attachDoc(doc)
+    store.addNode(buildNodeRecord({ id: "n1", type: "image", label: "图", position: { x: 0, y: 0 } }))
+    store.separateUndo()
+    // 不在撤销栈里的 origin（服务端写回用 appsOrigin，谁都不追踪）
+    for (let i = 1; i <= count; i++) {
+      doc.transact(
+        () => ops.recordGeneration(ops.opContext(doc), "n1", { id: `t${i}`, src: `https://x/${i}.png`, createdAt: i }),
+        "apps"
+      )
+    }
+    const Root = defineComponent({
+      setup() {
+        provideNodeKit(createDefaultNodeKit(), selectedNodeId)
+        return () => h(NodeHost, nodeProps("n1", "image"))
+      }
+    })
+    wrapper = mount(Root)
+    return { wrapper, store }
+  }
+
+  it("图片 / 视频启用；没有生成过、或只有一条 → 没有计数、也展不开", () => {
+    const kit = createDefaultNodeKit()
+    for (const type of Object.keys(FLOW_NODE_TYPES)) {
+      expect(kit.hasFeature(type, "generations"), type).toBe(type === "image" || type === "video")
+    }
+    expect(mountWithGenerations(0).wrapper.find('[data-testid="node-generation-count"]').exists()).toBe(false)
+    wrapper?.unmount()
+    setActivePinia(createPinia())
+    expect(mountWithGenerations(1).wrapper.find('[data-testid="node-generation-count"]').exists()).toBe(false)
+  })
+
+  it("右上角显示生成数量；点了在右侧展开历史（最新在上），再点收起", async () => {
+    const { wrapper } = mountWithGenerations(3)
+    const count = wrapper.find('[data-testid="node-generation-count"]')
+    expect(count.text()).toBe("3")
+    expect(wrapper.find('[data-node-slot="aside"]').exists()).toBe(false)
+
+    await count.trigger("click")
+    const items = wrapper.findAll('[data-testid="node-generation-item"]')
+    expect(items).toHaveLength(3)
+    expect(items[0]!.attributes("aria-label")).toBe("第 3 次生成")
+    // 最新那次就是当前主图
+    expect(items[0]!.attributes("aria-pressed")).toBe("true")
+
+    await count.trigger("click")
+    expect(wrapper.find('[data-node-slot="aside"]').exists()).toBe(false)
+  })
+
+  it("点一条历史：换成主图（一步撤销），形态和历史不变", async () => {
+    const { wrapper, store } = mountWithGenerations(2)
+    await wrapper.find('[data-testid="node-generation-count"]').trigger("click")
+    await wrapper.findAll('[data-testid="node-generation-item"]')[1]!.trigger("click")
+
+    const data = () => store.nodeById.get("n1")!.data
+    expect(data().src).toBe("https://x/1.png")
+    expect(Object.keys(data()).filter((key) => key.startsWith("gen."))).toHaveLength(2)
+    expect(wrapper.findAll('[data-testid="node-generation-item"]')[1]!.attributes("aria-pressed")).toBe("true")
+
+    store.undo()
+    expect(data().src).toBe("https://x/2.png")
+  })
+
+  it("界面上不能直接改生成历史（gen.* 和 src 一样受保护）", () => {
+    const { store } = mountWithGenerations(2)
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+    store.writeNode("n1", "data", { remove: ["gen.t1"] })
+    expect(store.nodeById.get("n1")!.data["gen.t1"]).toBeDefined()
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
   })
 })

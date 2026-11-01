@@ -17,7 +17,7 @@
 ```
 FlowNodeBase.vue ─┬─ FlowNodeChrome.vue  （框外名字 + 双击改名 + 复制/删除工具条，#actions 插槽整排换）
                   ├─ FlowNodeHandles.vue （连接点）
-                  ├─ runtime.status 角标 / 错误行
+                  ├─ runtime.status 运行中 / 出错提示
                   └─ <slot/>             （各类型的 body）
 ProcessNode / TextNode / GroupNode / GenericNode = FlowNodeBase + 自己的 body + 若干 props
 useFlowNode(id)   = 读四组 + 按组写 + draft
@@ -57,8 +57,8 @@ useFlowNode(id)   = 读四组 + 按组写 + draft
 
 | 概念 | 是什么 | 开放 / 封闭 | 例子 |
 |---|---|---|---|
-| **区域 Slot** | 节点上一个固定的挂载位置，**几何与露出规则由宿主决定** | **封闭**（宿主定义） | `label` `label-end` `toolbar` `header` `body` `footer` `composer` `side` `badge` `overlay` |
-| **部件 Part** | 挂到某个区域里的一个组件 | 开放 | 名字标签、状态角标、错误行、拉伸手柄、prompt 输入框、产出预览 |
+| **区域 Slot** | 节点上一个固定的挂载位置，**几何与露出规则由宿主决定** | **封闭**（宿主定义） | `label` `label-end` `toolbar` `header` `body` `footer` `composer` `side` `aside` `badge` `overlay` |
+| **部件 Part** | 挂到某个区域里的一个组件 | 开放 | 名字标签、状态角标、出错提示、拉伸手柄、prompt 输入框、产出预览 |
 | **动作 Action** | 一个可触发的「工具」：图标 + 名字 + `run` + 可用条件 + 快捷键 | 开放 | 复制、删除、解组、运行、下载 |
 | **模式 Mode** | 节点的一种编辑状态：互斥、进入 / 退出钩子、可改变区域露出 | 开放 | `rename`、`edit-body`、`edit-prompt` |
 | **事件 Event** | 一个带类型的语义消息，部件 `emit`、处理函数订阅 | 开放 | `composer:submit`、`node:run`、`mode:enter` |
@@ -165,6 +165,7 @@ export const FLOW_NODE_TYPES = {
 | `footer` | 卡片内，body 之下 | 文档流 | 常开 |
 | `composer` | 框外下方 | `NodeToolbar` Bottom / center | **只对注册了 composer 部件的类型存在**；存在时：单独选中，或有模式要求露出 |
 | `side` | 框外右侧 | `NodeToolbar` Right / start | **只在被要求时**（模式或 `slots.open('side')`） |
+| `aside` | 框外右侧，**画布里**（贴节点右边、与节点垂直居中、高度由部件定，跟着画布缩放） | 节点内 absolute `left-full`，不计入节点实测尺寸 | **只在被要求时**（模式或 `slots.open('aside')`）；拉框不收（它是内容不是浮层）。宿主量它的宽度给 `ctx.asideWidth`，`connectable` 把右边的连接点挪到它外面（媒体节点的生成历史，docs/13 §3.7） |
 | `overlay` | 覆盖整个节点 | 卡片内 absolute inset-0 | 部件自己 `when` |
 | `handles` | 左右两侧 | `Handle` | 由 `connectable` 能力提供，宿主只留位置 |
 
@@ -387,7 +388,7 @@ defineNodePopup({
 | 复制 / 删除按钮 | 能力 `duplicate` / `delete`，各一个动作 |
 | `GroupNode` 的 `#actions` 换成解组 | 能力 `ungroup`：一个动作。分组不启用 `delete`，所以没有「替换」要写 |
 | `FlowNodeHandles` | 能力 `connectable`（`handles` 区）；`connectable=false` 这个 prop 消失 |
-| `runtime.status` 角标 / 错误行 | 能力 `status`：`badge` 区一个部件、`footer` 区一个部件 |
+| `runtime.status` 运行中 / 出错提示 | 能力 `status`：`overlay` 区两个部件，都盖住主体、不撑开节点 —— 运行中（转圈 / 进度条 + 生成任务的取消）、出错（「生成失败」，原文在悬停提示里）；`badge` 区压在它们上面，照常可点 |
 | `GroupNode` 的 `NodeResizer` | 能力 `resizable`：`overlay` 区一个部件（右下角单个 `NodeResizeControl`），约束读类型外观的 `view.resize`（`minWidth` / `minHeight` / `keepAspectRatio`；自由拉伸时 Shift 锁比例），`resize-end` 写 `store.resizeNode`；文本也启用 |
 | `GroupNode` 的顶部拖动把手 | 能力 `drag-strip`：`overlay` 区一个部件 |
 | `TextNode` 的双击编辑正文 | 能力 `edit-body`：模式 `edit-body` + 订阅 `node:dblclick`；`TextBody` 读 `ctx.mode` 决定渲染 textarea 还是段落；该模式 `conceal: ['composer']`，改正文期间底部输入框收起 |

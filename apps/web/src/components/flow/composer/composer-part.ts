@@ -1,4 +1,5 @@
-import { defineComponent, h, markRaw } from "vue"
+import { defineComponent, h, markRaw, type Component } from "vue"
+import { NODE_PROMPT_KEY } from "@shadecn/shared/flow-node-types"
 
 import { defineNodePart, ORDER_TYPE, type NodePartContext, type NodePartDef } from "@/components/flow/node-kit/protocol"
 
@@ -17,13 +18,21 @@ export interface PromptComposerPartOptions {
   placeholder: string
   /** 什么时候出现（在宿主露出规则之上再收窄）；不给就一直有 */
   when?: (ctx: NodePartContext) => boolean
+  /** 发送按钮左边那一块换成这个组件（见 `PromptComposer` 的 `controls`）；不给 = 键位提示 */
+  controls?: Component
 }
 
 export function definePromptComposerPart(options: PromptComposerPartOptions): NodePartDef {
   const component = markRaw(
     defineComponent({
       name: "NodePromptComposer",
-      setup: () => () => h(PromptComposer, { field: "prompt", placeholder: options.placeholder })
+      setup: () => () =>
+        h(PromptComposer, {
+          // 和 flow-ops 断开连线时清提及读的是同一个键
+          field: NODE_PROMPT_KEY,
+          placeholder: options.placeholder,
+          ...(options.controls ? { controls: options.controls } : {})
+        })
     })
   )
   return defineNodePart({

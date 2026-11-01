@@ -8,6 +8,7 @@ import {
   type FlowNodeLayout,
   type FlowNodeRecord,
 } from './flow-graph.ts'
+import { readCollection } from './flow-collection.ts'
 
 /**
  * 节点类型注册表的**数据那一半** —— `type`、新建时的默认业务 `data`、默认布局、端口声明。
@@ -87,6 +88,53 @@ export function isConnectableType(type: string): boolean {
 
 /** 形态存在 `data` 上的键 */
 export const NODE_FORM_KEY = 'form'
+
+/** 底部输入框的提示词存在 `data` 上的键（文字里的 `@{node:<id>}` 是对连入节点的提及） */
+export const NODE_PROMPT_KEY = 'prompt'
+
+/** 底部输入框里连入节点的顺序存在**目标节点** `data` 上的键：上游节点 id 的数组，整个值一次写 */
+export const NODE_INPUT_ORDER_KEY = 'inputOrder'
+
+/**
+ * 媒体节点（有形态的类型）的**生成历史**：每次生成成功留一条，平铺分键 `gen.<taskId>`
+ * （`@shadecn/shared/flow-collection`，一条一个键、值是整体替换的普通 JSON）。
+ * 只由 `flow-ops` 的 `recordGeneration` 写（服务端写回生成结果时，和挂素材同一个事务）；
+ * 选哪一条当主图走 `selectGeneration`。上传不进历史。
+ */
+export const NODE_GENERATION_PREFIX = 'gen'
+
+export interface NodeGeneration {
+  /** 生成任务 id，也是集合里的 id */
+  id: string
+  src: string
+  /** 视频的预览图 */
+  poster?: string
+  /** 生成完成的时刻（UTC epoch ms，服务端时钟 —— 历史只由服务端写，所以可以按它排序） */
+  createdAt: number
+}
+
+/**
+ * 首次生成时节点上已有的那张图（上传的素材，或这个功能之前生成的）补进历史时用的 id ——
+ * 固定值、不是下标；历史只会补一次（之后历史不空），不会撞
+ */
+export const ORIGINAL_GENERATION_ID = 'original'
+
+/** 读出节点的生成历史，按生成先后排（旧 → 新）；形状不对的条目跳过 */
+export function readGenerations(data: Readonly<Record<string, unknown>>): NodeGeneration[] {
+  const out: NodeGeneration[] = []
+  for (const [id, value] of readCollection<unknown>(data, NODE_GENERATION_PREFIX)) {
+    if (typeof value !== 'object' || value === null) continue
+    const { src, poster, createdAt } = value as Record<string, unknown>
+    if (typeof src !== 'string' || !src) continue
+    out.push({
+      id,
+      src,
+      ...(typeof poster === 'string' && poster ? { poster } : {}),
+      createdAt: typeof createdAt === 'number' ? createdAt : 0,
+    })
+  }
+  return out.sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+}
 
 export interface FlowNodeTypeDefaults {
   /** 顶层 `type`，也是注册表的键 */
@@ -405,6 +453,11 @@ export interface ConnectionContext {
   edges: Iterable<Pick<FlowEdge, 'id' | 'source' | 'target' | 'data'>>
   /** 正在被改端点的那条边自己（重连时），不算进容量和重复判断 */
   ignoreEdgeId?: string
+  /**
+   * 宿主在端口声明之上再收紧的条数上限（可选）：前端按生成节点选的应用 / 模型给（参考图最多几张，docs/29 §3.8）。
+   * 只收紧不放宽（和端口自己的上限取小）；`reason` 是满了时给人看的那句话。agent / 服务端不传，只按端口声明
+   */
+  inputLimit?: (targetId: string, port: PortDef) => { max: number; reason: string } | undefined
 }
 
 /** 选定的那对端口；没声明端口的一侧是 null */
@@ -492,6 +545,7 @@ export function resolveConnection(
   // 0 = 类型都不兼容，1 = 兼容但满了，2 = 兼容也没满，但这对已经连过
   let closest = 0
   let fullPort: PortDef | null = null
+  let fullReason: string | null = null
   for (const from of sources.ports) {
     for (const to of targets.ports) {
       if (!isDataTypeCompatible(from?.dataType ?? 'any', to?.dataType ?? 'any')) continue
@@ -507,11 +561,21 @@ export function resolveConnection(
         closest = Math.max(closest, 1)
         continue
       }
+      const limit = to ? context.inputLimit?.(candidate.target, to) : undefined
+      if (to && limit && onPort.length >= limit.max) {
+        if (closest < 1) {
+          fullPort = to
+          fullReason = limit.reason
+        }
+        closest = Math.max(closest, 1)
+        continue
+      }
       return { ok: true, sourcePort, targetPort }
     }
   }
 
   if (closest === 2) return { ok: false, reason: '这两个节点之间能连的端口都已经有线了' }
+  if (closest === 1 && fullReason) return { ok: false, reason: fullReason }
   if (closest === 1 && fullPort) {
     return { ok: false, reason: `输入端口 ${fullPort.label ?? fullPort.id} 已经接满（最多 ${portCapacity(fullPort)} 条）` }
   }

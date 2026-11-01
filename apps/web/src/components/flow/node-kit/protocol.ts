@@ -26,6 +26,7 @@ export const NODE_SLOTS = [
   "footer",
   "composer",
   "side",
+  "aside",
   "overlay",
   "handles"
 ] as const
@@ -99,7 +100,7 @@ export interface NodeModeView {
   exit(reason?: NodeModeExitReason): void
 }
 
-/** 「被要求才露出」的区域（`side` / `composer`）由谁要求 */
+/** 「被要求才露出」的区域（`side` / `aside` / `composer`）由谁要求 */
 export interface NodeSlotControl {
   open(slot: NodeSlot): void
   close(slot: NodeSlot): void
@@ -126,6 +127,11 @@ export interface NodePartContext {
   dragging: Readonly<Ref<boolean>>
   mode: NodeModeView
   slots: NodeSlotControl
+  /**
+   * 框外右侧的 `aside` 区此刻占了多宽（画布坐标，含它离节点的间距）；没露出是 0。
+   * 右边的连接点（和它上面的加号）按这个往右挪，挪到 aside 区外面去。
+   */
+  asideWidth: Readonly<Ref<number>>
   /** 只用来降级（「有 runnable 才显示运行按钮」），不是用来写 if 分支替代注册的 */
   has(feature: string): boolean
   emit<K extends NodeEventName>(event: K, payload: FlowNodeEventMap[K]): void

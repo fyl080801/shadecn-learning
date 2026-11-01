@@ -12,8 +12,8 @@ const mounted = (target: { routes: readonly { path: string }[] }, prefix: string
   target.routes.some((route) => route.path.startsWith(prefix))
 
 describe('按清单装配', () => {
-  it('全部角色：清单里的模块都加载，各自的入口都挂上了', () => {
-    expect(loadedFeatures()).toEqual({ auth: true, canvas: true, storage: true, collab: true, agent: true, notes: true })
+  it('全部角色：清单里的模块都加载（apps 除外：测试环境没有应用表），各自的入口都挂上了', () => {
+    expect(loadedFeatures()).toEqual({ auth: true, canvas: true, storage: true, collab: true, agent: true, notes: true, apps: false })
     for (const prefix of ['/api/auth', '/api/notes', '/api/projects', '/api/flows/:flowId/doc', '/api/flows/:flowId/agent', '/api/flows/:flowId/assets', '/api/agent-gateway']) {
       expect(mounted(app, prefix), prefix).toBe(true)
     }
@@ -37,7 +37,10 @@ describe('配置关掉的模块', () => {
     const { resolved, loaded } = await assemble({ app: fresh.app, server: createServer() })
 
     expect(kernel.loadedFeatures()).toMatchObject({ canvas: true, agent: false })
-    expect(resolved.skipped).toMatchObject([{ module: { name: 'agent' }, detail: expect.stringContaining('AGENT_ENABLED') }])
+    // 测试环境没有应用表，apps 也在跳过名单里（原因是它自己的 enabled 判定），这里只看 agent 那一条
+    expect(resolved.skipped.filter((item) => item.module.name !== 'apps')).toMatchObject([
+      { module: { name: 'agent' }, detail: expect.stringContaining('AGENT_ENABLED') },
+    ])
     expect(mounted(fresh.app, '/api/flows/:flowId/agent')).toBe(false)
     expect(mounted(fresh.app, '/api/agent-gateway')).toBe(false)
     expect(mounted(fresh.app, '/api/flows/:flowId/doc')).toBe(true)

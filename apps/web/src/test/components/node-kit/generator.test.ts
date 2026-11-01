@@ -25,10 +25,11 @@ import { useFlowStore } from "@/stores/flow"
 /**
  * 底部输入框（REQ-NODEKIT §6，按类型注册）：文本 / 图片 / 视频 / 导演台各有一个；文本有了正文就收起，
  * 图片 / 视频看形态（generate 有、asset 没有），导演台一直有；
- * 提交只写回 `data.prompt` 并发 `composer:submit`，眼下没有谁接它（四种类型都没启用 `runnable`）。
+ * 提交写回 `data.prompt` 并发 `composer:submit`；图片 / 视频启用了 `runnable`，它转成 `node:run`，
+ * 运行器 `app-run` 接住去生成（那一段在 `app-run.test.ts`；这里把应用列表打桩成空，运行器只会提示「没有可用的应用」）。
  *
- * `runnable`（把提交转成运行请求）和 `output-preview`（产出列表与侧边大图）仍是登记着的通用能力，
- * 只是默认类型都没启用 —— 在测试里给 `image` 单独装一份启用了它们的注册表来测。三方互不 import，只靠事件和注册表串起来。
+ * `output-preview`（产出列表与侧边大图）是登记着的通用能力，默认类型都没启用 —— 在测试里给 `image`
+ * 单独装一份启用了它的注册表来测。三方互不 import，只靠事件和注册表串起来。
  */
 
 const selectedNodeId = ref<string | null>(null)
@@ -50,6 +51,11 @@ vi.mock("@/composables/flow/editor-context", () => ({
     flowId: ref("flow-1"),
     store: useFlowStore()
   })
+}))
+
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  appApi: { list: async () => [], executeOnFlow: vi.fn() }
 }))
 
 vi.mock("@vue-flow/core", async (importOriginal) => ({
@@ -217,7 +223,7 @@ describe("图片节点的底部输入框", () => {
     expect(w.findComponent(PromptInput).props("modelValue")).toBe("写到一半")
   })
 
-  it("Shift+回车：写回 data.prompt，发 composer:submit；没有谁把它转成运行请求（图片没启用 runnable）", async () => {
+  it("Shift+回车：写回 data.prompt，发 composer:submit，图片启用了 runnable —— 转成带提示词的 node:run", async () => {
     const { store, w } = mountNode(imageNode())
     await nextTick()
     const submits: string[] = []
@@ -232,8 +238,32 @@ describe("图片节点的底部输入框", () => {
 
     expect(store.nodeById.get("gen")?.data.prompt).toBe("一只橘猫")
     expect(submits).toEqual(["一只橘猫"])
-    expect(runs).toEqual([])
+    expect(runs).toEqual(["一只橘猫"])
     expect(runtime.modes.current.value).toBeNull()
+  })
+
+  it("节点正在生成：发送按钮转圈、不可点，Shift+回车也不发；生成结束恢复", async () => {
+    const { store, w } = mountNode(imageNode({ runtime: { status: "processing" } }))
+    await nextTick()
+    const submits: string[] = []
+    runtime.kit.on("composer:submit", ({ text }) => submits.push(text))
+
+    const composer = composerOf(w)
+    await composer.focus()
+    await composer.type("一只橘猫")
+    const send = () => w.get('[data-testid="prompt-composer-send"]')
+    expect(send().attributes("aria-busy")).toBe("true")
+    expect(send().attributes("disabled")).toBeDefined()
+    expect(send().attributes("aria-label")).toBe("生成中")
+    await composer.key("Enter", { shiftKey: true })
+    expect(submits).toEqual([])
+
+    store.writeNode("gen", "runtime", { set: { status: "completed" } })
+    await nextTick()
+    expect(send().attributes("aria-busy")).toBeUndefined()
+    expect(send().attributes("disabled")).toBeUndefined()
+    await composer.key("Enter", { shiftKey: true })
+    expect(submits).toEqual(["一只橘猫"])
   })
 
   it("单按回车（换行）、输入法组字时的 Shift+回车都不提交", async () => {

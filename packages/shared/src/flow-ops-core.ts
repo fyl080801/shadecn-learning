@@ -32,6 +32,10 @@ export type FlowOpErrorCode =
   | 'CONNECTION_REJECTED'
   /** 这个类型没有「生成 / 素材」形态，不能挂素材（`attachAsset`） */
   | 'NO_FORMS'
+  /** 生成记录不完整（缺 id）—— `recordGeneration` */
+  | 'INVALID_GENERATION'
+  /** 生成历史里没有点名的那一条 —— `selectGeneration` */
+  | 'GENERATION_NOT_FOUND'
   /** 点名的节点不是分组框（`ungroup`） */
   | 'NOT_A_GROUP'
   /** 这批节点不能圈成一个分组（不够两个、有分组框、有已经在别的分组里的）—— `groupFrameFor` */

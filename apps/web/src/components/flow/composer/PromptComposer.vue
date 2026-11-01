@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue"
+import { computed, nextTick, onBeforeUnmount, ref, watch, type Component } from "vue"
 import { Maximize2, X } from "@lucide/vue"
 import type { FlowNode } from "@shadecn/shared/flow-graph"
 import { declaresSide } from "@shadecn/shared/flow-node-types"
-import { removeNodeMentions } from "@shadecn/shared/agent"
 
 import { PromptInput, createEditor, type CustomInline } from "@/components/prompt-input"
 
@@ -13,6 +12,7 @@ import { useNodePart, useNodeTypeView } from "@/components/flow/node-kit/context
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
 import { suspendCanvasShortcuts } from "@/composables/flow/shortcut-layer"
+import { useOptionalFlowAppTasks } from "@/composables/flow/useFlowAppTasks"
 import { cn } from "@/lib/utils"
 
 import ComposerInputs from "./ComposerInputs.vue"
@@ -37,6 +37,7 @@ import { SEND_KEY_HINT, isSendKey } from "./send-key"
  * 写字的规矩没变：
  * - **草稿**走 `ctx.node.draft("data", field)`：打字期间只改草稿，结束时写一次文档、前后夹 `separateUndo`；
  * - **回车换行，Shift+回车 / 点发送**：写回文档并发 `composer:submit`（谁接、接了做什么这里不知道 —— 眼下只有导演台接）；
+ *   节点正在生成时发送按钮转圈、不可点，发送键也不发（`generating`）；
  *   键位规则和 agent 对话框共用一份（`send-key.ts`）；**Esc** 丢掉草稿；**失焦**只写回、不提交；
  * - **编辑模式**：开始写字就进 `edit-prompt` —— 整张画布同时只有一个节点可编辑，别的节点正在改名会先提交；
  *   被顶掉（选中了别的节点、改起了名字）时草稿按失焦的规矩写回。
@@ -45,6 +46,11 @@ const props = defineProps<{
   /** 写到 `data` 的哪个键 */
   field: string
   placeholder?: string
+  /**
+   * 发送按钮左边那一块（默认是键位提示）换成这个组件 —— 生成节点在这里放「用哪个应用 / 模型」（`apps/AppPicker.vue`）。
+   * 它和部件一样不收 props、自己 `useNodePart()`
+   */
+  controls?: Component
 }>()
 
 const ctx = useNodePart()
@@ -69,19 +75,14 @@ const upstreamNodes = computed(() =>
 )
 
 /**
- * 点了某一格的移除角标：断开这个上游的所有线，同时去掉提示词里对它的提及、把它从 `inputOrder` 里拿掉 ——
- * 一个事务一条撤销（`store.disconnectUpstream`）。正在写的草稿先按失焦的规矩写回，再在文档里的文字上去提及，
+ * 点了某一格的移除角标：断开这个上游的所有线。提示词里对它的提及、`inputOrder` 里的它由 `flow-ops` 在同一个事务里清掉
+ * （和删线、删上游节点同一条规则），一条撤销。正在写的草稿先按失焦的规矩写回，再断开 ——
  * 草稿不会把去掉的提及又写回来。
  */
 function removeUpstream(nodeId: string) {
   if (prompt.editing.value) finish("commit")
-  const set: Record<string, unknown> = {}
-  const nextText = removeNodeMentions(current.value, [nodeId])
-  if (nextText !== current.value) set[props.field] = nextText
-  const order = readInputOrder(ctx.node.data.value[INPUT_ORDER_KEY])
-  if (order.includes(nodeId)) set[INPUT_ORDER_KEY] = order.filter((id) => id !== nodeId)
   store.separateUndo()
-  store.disconnectUpstream(ctx.id, nodeId, Object.keys(set).length > 0 ? { set } : undefined)
+  store.disconnectUpstream(ctx.id, nodeId)
   store.separateUndo()
 }
 
@@ -119,6 +120,15 @@ const text = computed({
 
 const canSend = computed(() => text.value.trim().length > 0)
 
+/**
+ * 这个节点正在生成（提交请求在路上，或任务还在进行中，`useFlowAppTasks().isGenerating`）：发送按钮转圈、不可点，发送键也不发。
+ * 不在编辑器里（单测）就只看节点自己的 `runtime.status`
+ */
+const appTasks = useOptionalFlowAppTasks()
+const generating = computed(() =>
+  appTasks ? appTasks.isGenerating(ctx.id) : ctx.node.runtime.value.status === "processing"
+)
+
 function begin() {
   if (prompt.editing.value) return
   if (ctx.mode.current.value !== EDIT_PROMPT_MODE && !ctx.mode.enter(EDIT_PROMPT_MODE)) return
@@ -133,6 +143,7 @@ function finish(reason: "commit" | "cancel") {
 
 /** 发送键和发送按钮是同一件事：写回、发 `composer:submit`、收起光标。眼下没有真正的提交（没人消费这个事件，导演台除外） */
 function submit() {
+  if (generating.value) return
   const submitted = text.value
   finish("commit")
   ctx.emit("composer:submit", { text: submitted })
@@ -238,7 +249,8 @@ function iconOf(nodeId: string) {
 <template>
   <!--
     nodrag / nopan / nowheel：在框里拖选文字、拖格子排序、滚动不该变成拖节点、拖画布、缩放。
-    固定宽 440px（屏幕像素：宿主的 composer 区在 NodeToolbar 里，不随缩放变）：一排放得下六格预览 + 加号，
+    固定宽 520px（屏幕像素：宿主的 composer 区在 NodeToolbar 里，不随缩放变）：一排放得下七格预览 + 加号，
+    底下一行放得下生成节点的应用 / 模型 / 尺寸选择（`controls`），
     再多就横向滚；输入框 2 行起步、最高 5 行后滚动 —— 面板总高封顶，不会把节点下面一大片盖住。
   -->
   <Teleport :to="dialogSlot" :disabled="!expanded">
@@ -246,7 +258,7 @@ function iconOf(nodeId: string) {
     :class="
       cn(
         'nodrag nopan nowheel relative flex flex-col gap-2 rounded-xl border bg-card p-3 text-card-foreground shadow-lg',
-        expanded ? 'w-full' : 'w-110'
+        expanded ? 'w-full' : 'w-130'
       )
     "
     :data-expanded="expanded || undefined"
@@ -337,10 +349,16 @@ function iconOf(nodeId: string) {
     </PromptInput>
 
     <div class="flex items-center justify-between gap-2">
-      <span class="truncate text-[11px] text-muted-foreground">
+      <component :is="controls" v-if="controls" />
+      <span v-else class="truncate text-[11px] text-muted-foreground">
         {{ hasInputs ? `@ 提及连入的节点 · ${SEND_KEY_HINT}` : SEND_KEY_HINT }}
       </span>
-      <SendButton :disabled="!canSend" data-testid="prompt-composer-send" @click="submit()" />
+      <SendButton
+        :disabled="!canSend"
+        :loading="generating"
+        data-testid="prompt-composer-send"
+        @click="submit()"
+      />
     </div>
   </div>
   </Teleport>

@@ -12,7 +12,8 @@ import {
   VIEWPORT_KEY,
   type FlowNodeGroup
 } from "@shadecn/shared/flow-doc"
-import { NODE_FORM_KEY, nodeFormOf } from "@shadecn/shared/flow-node-types"
+import { isCollectionKey } from "@shadecn/shared/flow-collection"
+import { NODE_FORM_KEY, NODE_GENERATION_PREFIX, nodeFormOf } from "@shadecn/shared/flow-node-types"
 import type { GroupArrangement } from "@shadecn/shared/flow-layout"
 import * as ops from "@shadecn/shared/flow-ops"
 import { FlowOpError, type ConnectFrom, type ConnectTo, type FlowOpContext, type NodeFieldChanges } from "@shadecn/shared/flow-ops"
@@ -74,7 +75,7 @@ export const USER_STATE_FLUSH_MAX_WAIT = 10000
 export const LOCAL_ORIGIN = Symbol("flow-local")
 
 /**
- * 「从内容派生出来、顺手记进文档」的事务 origin（眼下只有媒体节点按资源记下的尺寸，`recordNodeSize`）。
+ * 「从内容派生出来、顺手记进文档」的事务 origin（媒体节点按资源记下的尺寸 `recordNodeSize`）。
  *
  * 照样广播、落库，但**不进撤销栈**：它不是用户的操作，只是把「量过一次的结果」存下来 ——
  * 打开画布什么都没做就按 Ctrl+Z，撤掉的不该是一个尺寸。
@@ -559,6 +560,14 @@ export const useFlowStore = defineStore("flow", () => {
   }
 
   /**
+   * 从生成历史里挑一条当图片 / 视频节点的主图（`ops.selectGeneration`：只换 `src` / `poster`，不动形态）。
+   * 是用户的编辑：进撤销栈，一步撤回。节点或这一条已经没了就什么都不做。
+   */
+  function selectGeneration(nodeId: string, generationId: string, label = "切换生成结果") {
+    mutate((ctx) => lenient(() => ops.selectGeneration(ctx, nodeId, generationId)), label)
+  }
+
+  /**
    * 打组：新建一个分组框，并把一批节点挂到它下面 —— 同一个事务（理由见 `ops.groupNodes`）。
    *
    * `children` 里的位置是**相对分组框左上角**的，调用方负责换算（见 `groupSelection`）。
@@ -636,8 +645,8 @@ export const useFlowStore = defineStore("flow", () => {
    *
    * 节点不存在、这一组的 key 上是别的类型、要碰的字段类型对不上：什么都不写（key 的类型首次写入即固定）。
    *
-   * **素材字段不走这里**：有形态的类型（图片 / 视频）上，`data.form` / `src` / `poster` 只能经
-   * `attachAsset`（挂素材）和连线（asset → generate）变；这里碰它们的写入整笔拒绝并告警，
+   * **素材字段不走这里**：有形态的类型（图片 / 视频）上，`data.form` / `src` / `poster` / 生成历史 `gen.*` 只能经
+   * `attachAsset`（挂素材）、`selectGeneration`（挑历史）和连线（asset → generate）变；这里碰它们的写入整笔拒绝并告警，
    * 否则形态规则（docs/13 §3.7）能被绕过。
    */
   function writeNode(
@@ -666,7 +675,11 @@ export const useFlowStore = defineStore("flow", () => {
   function guardedAssetKeys(changes: NodeFieldChanges): string[] {
     const touched = new Set<string>(changes.remove ?? [])
     for (const [key, value] of Object.entries(changes.set ?? {})) if (value !== undefined) touched.add(key)
-    return ASSET_GUARDED_KEYS.filter((key) => touched.has(key))
+    // 生成历史（`gen.<id>`）只由服务端写回结果时记，界面上不改它
+    return [
+      ...ASSET_GUARDED_KEYS.filter((key) => touched.has(key)),
+      ...[...touched].filter((key) => isCollectionKey(NODE_GENERATION_PREFIX, key))
+    ]
   }
 
   /**
@@ -681,8 +694,8 @@ export const useFlowStore = defineStore("flow", () => {
   }
 
   /**
-   * 断开一个上游（`source` → `target` 的所有线），顺带改目标节点的 `data`（比如去掉提示词里对它的提及）——
-   * **同一个事务**：一条撤销，撤回来线和文字一起回来。没连着就什么都不做（不写 data），返回 false。
+   * 断开一个上游（`source` → `target` 的所有线）。提示词里对它的提及、`inputOrder` 里的它由 `ops.disconnectNodes` 顺带清掉；
+   * `data` 是调用方另外要改的字段。都在**同一个事务**：一条撤销，撤回来线和文字一起回来。没连着就什么都不做，返回 false。
    */
   function disconnectUpstream(targetId: string, sourceId: string, data?: NodeFieldChanges, label = "断开连入") {
     return (
@@ -869,6 +882,7 @@ export const useFlowStore = defineStore("flow", () => {
     addUpstreamNode,
     duplicateNode,
     attachAsset,
+    selectGeneration,
     groupNodes,
     moveNodes,
     arrangeGroup,

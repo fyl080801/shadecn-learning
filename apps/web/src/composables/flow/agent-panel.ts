@@ -171,7 +171,7 @@ export function provideFlowAgentPanel(
  * 画布元信息里没有角色，所以问一次项目详情；拿不到就当不是：少一个按钮，服务端照样把关（403）。
  * 个人画布不问（`projectId` 给 null）：那里只有自己的会话。
  */
-function useProjectAdmin(projectId: Ref<string | null>): Ref<boolean> {
+export function useProjectAdmin(projectId: Ref<string | null>): Ref<boolean> {
   const isAdmin = ref(false)
   let seq = 0
   watch(

@@ -5,6 +5,7 @@ import { User } from '@shadecn/server-kit/identity'
 import { Flow, FlowUserState, Project, ProjectInvite, ProjectMember } from '@shadecn/mod-canvas/entities'
 import { AgentConversation, AgentGrant, AgentGrantScope, AgentRun, AgentToolCall } from '@shadecn/mod-agent/entities'
 import { FlowAsset } from '@shadecn/mod-storage/entities'
+import { AppTask } from '@shadecn/mod-apps/entities'
 
 export { db, orm }
 
@@ -18,6 +19,7 @@ export async function resetDb() {
   const em = db()
   // 实体各自的类型推断不能互相赋值，作为「一张表」这里只关心名字
   const tables = [
+    AppTask,
     AgentGrantScope,
     AgentGrant,
     AgentToolCall,

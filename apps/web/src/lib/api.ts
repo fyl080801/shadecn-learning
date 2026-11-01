@@ -29,6 +29,7 @@ import {
   type AgentSessionView,
   type AgentStreamEvent
 } from "@shadecn/shared/agent"
+import { flowAppsPath, type AppInfo, type AppTaskView } from "@shadecn/shared/apps"
 import type { FlowUserState } from "@shadecn/shared/flow-graph"
 import { apiFetch } from "@/lib/auth"
 import { readSseStream } from "@/lib/sse"
@@ -519,5 +520,43 @@ export const agentApi = {
   /** 删除一个会话（它正在跑时 409，不存在 404） */
   deleteConversation(flowId: string, conversationId: string) {
     return request<void>(agentConversationPath(flowId, conversationId), { method: "DELETE" })
+  }
+}
+
+/**
+ * 应用执行（docs/29）：语言 / 图像 / 视频 / 3D 生成服务统一成「应用 id + 参数」。
+ * 应用模块没加载（没有应用表）时 `/api/apps` 不存在 —— `list()` 按「没有应用」处理，不抛。
+ */
+export const appApi = {
+  /** 全部应用（含不可用的，带原因）；模块没开 = 空数组 */
+  async list(): Promise<AppInfo[]> {
+    try {
+      return await request<AppInfo[]>("/api/apps")
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return []
+      throw err
+    }
+  },
+
+  /**
+   * 在画布节点上提交一个生成任务（docs/29 §3.10）：参数当场校验（错了抛 400），**提交即返回**任务；
+   * 执行、存资源、把结果写回节点都在服务端。同一节点已有进行中的任务 → 409。失败抛 `ApiError`，`body` 是 `{ error, code }`
+   */
+  async submitOnFlow(flowId: string, appId: string, input: { params: Record<string, unknown>; nodeId: string }) {
+    const { task } = await request<{ task: AppTaskView }>(
+      `${flowAppsPath(flowId)}/${encodeURIComponent(appId)}/execute`,
+      { method: "POST", body: JSON.stringify(input) }
+    )
+    return task
+  },
+
+  /** 这张画布进行中的生成任务（`now` 是服务端时钟）；之后的变化走 `apps:tasks` 推送 */
+  listFlowTasks(flowId: string) {
+    return request<{ tasks: AppTaskView[]; now: number }>(`${flowAppsPath(flowId)}/tasks`)
+  },
+
+  /** 取消一个生成任务（发起人 / 项目管理员）；已结束也成功 */
+  async cancelFlowTask(flowId: string, taskId: string): Promise<void> {
+    await request<void>(`${flowAppsPath(flowId)}/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" })
   }
 }

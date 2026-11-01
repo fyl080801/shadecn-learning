@@ -276,6 +276,18 @@ describe('连线规则：resolveConnection 的其余规则', () => {
     expect(resolveConnection({ source: 'dc', target: 'img' }, context(occupied))).toMatchObject({ ok: true, targetPort: 'image' })
   })
 
+  it('宿主的 inputLimit 只收紧不放宽：图片端口满了给宿主的那句话，别的端口照常；不传 = 只按端口声明', () => {
+    const limited: ConnectionContext = {
+      ...context([link('e1', 'img2', 'img', 'image', 'image')]),
+      inputLimit: (target, port) => (target === 'img' && port.id === 'image' ? { max: 1, reason: 'Seedream 5.0 最多连 1 张参考图' } : undefined),
+    }
+    expect(resolveConnection({ source: 'full', target: 'img' }, limited)).toEqual({ ok: false, reason: 'Seedream 5.0 最多连 1 张参考图' })
+    expect(resolveConnection({ source: 't1', target: 'img' }, limited)).toMatchObject({ ok: true, targetPort: 'text' })
+    // 导演台 → 图片：截图那对满了，落到录制那对（video 端口不受限）
+    expect(resolveConnection({ source: 'dc', target: 'img' }, limited)).toMatchObject({ ok: true, targetPort: 'video' })
+    expect(resolveConnection({ source: 'full', target: 'img' }, context([link('e1', 'img2', 'img', 'image', 'image')])).ok).toBe(true)
+  })
+
   it('同一个上游、同一对端口连过了就试下一对；没有下一对就拒绝', () => {
     const once = [link('e1', 't1', 'img', 'text', 'text')]
     const verdict = resolveConnection({ source: 't1', target: 'img' }, context(once))

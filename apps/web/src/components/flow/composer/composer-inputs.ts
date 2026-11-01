@@ -1,5 +1,5 @@
 import type { FlowNodeInput } from "@shadecn/shared/flow-graph"
-import { isDataTypeCompatible, portsOf } from "@shadecn/shared/flow-node-types"
+import { isDataTypeCompatible, NODE_INPUT_ORDER_KEY, portsOf } from "@shadecn/shared/flow-node-types"
 
 /**
  * 底部输入框「连入预览」那一排的纯逻辑（docs/13 §3.7「底部输入框」）：哪些上游、按什么顺序、加号能选哪些文件。
@@ -9,8 +9,9 @@ import { isDataTypeCompatible, portsOf } from "@shadecn/shared/flow-node-types"
 /**
  * 连入顺序存在**目标节点**的 `data.inputOrder`：上游节点 id 的数组，整个值一次写（一个键，一条撤销）。
  * 两个人同时排序后写的赢 —— 顺序本来就是一个整体，合并两份半截顺序没有意义。
+ * 键在 shared（`NODE_INPUT_ORDER_KEY`）：断开连线时 `flow-ops` 要顺带把上游从里面拿掉。
  */
-export const INPUT_ORDER_KEY = "inputOrder"
+export const INPUT_ORDER_KEY = NODE_INPUT_ORDER_KEY
 
 /** 读 `data.inputOrder`：不是字符串数组就当没有（老数据、坏数据都不抛） */
 export function readInputOrder(raw: unknown): string[] {

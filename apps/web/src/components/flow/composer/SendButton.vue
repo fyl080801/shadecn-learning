@@ -8,8 +8,9 @@ import { Button } from "@/components/ui/button"
  * （`PromptComposer`）。圆形图标按钮、里面一个 ↑，长相只在这里改一处。
  *
  * 只管长相和点击；能不能点（`disabled`）、点了做什么由用它的一方决定。
+ * `loading`：箭头换成转圈、不可点（节点正在生成时）。
  */
-defineProps<{ disabled?: boolean }>()
+defineProps<{ disabled?: boolean; loading?: boolean }>()
 
 const emit = defineEmits<{ click: [] }>()
 </script>
@@ -19,10 +20,11 @@ const emit = defineEmits<{ click: [] }>()
     size="icon-sm"
     class="shrink-0 rounded-full"
     :disabled="disabled"
-    aria-label="发送"
-    title="发送"
+    :loading="loading"
+    :aria-label="loading ? '生成中' : '发送'"
+    :title="loading ? '生成中' : '发送'"
     @click="emit('click')"
   >
-    <ArrowUp class="size-4" />
+    <ArrowUp v-if="!loading" class="size-4" />
   </Button>
 </template>

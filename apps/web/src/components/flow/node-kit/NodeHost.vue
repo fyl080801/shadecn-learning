@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, provide, shallowReactive, watch } from "vue"
+import { computed, onBeforeUnmount, provide, ref, shallowReactive, useTemplateRef, watch } from "vue"
+import { useResizeObserver } from "@vueuse/core"
 import { Position } from "@vue-flow/core"
 import { NodeToolbar } from "@vue-flow/node-toolbar"
 
@@ -61,6 +62,9 @@ const openSlots = shallowReactive(new Set<NodeSlotName>())
 const selected = computed(() => props.selected)
 const dragging = computed(() => props.dragging)
 
+/** `aside` 区此刻占的宽度（画布坐标，含间距）；没露出是 0。下面量出来写进去，连接点读它 */
+const asideWidth = ref(0)
+
 /** 显示的名字：起了名用名字，没起名用兜底 */
 const label = computed(() => node.label.value || view.value.fallbackLabel || "")
 
@@ -95,6 +99,7 @@ const ctx: NodePartContext = {
     },
     isOpen: (slot) => openSlots.has(slot)
   },
+  asideWidth,
   has: (feature) => kit.hasFeature(props.type, feature),
   emit: (event, payload) => kit.emit(event, payload, ctx)
 }
@@ -134,6 +139,7 @@ const parts = computed(() => ({
   footer: partsIn("footer"),
   composer: partsIn("composer"),
   side: partsIn("side"),
+  aside: partsIn("aside"),
   overlay: partsIn("overlay"),
   handles: partsIn("handles")
 }))
@@ -203,6 +209,32 @@ const sideVisible = computed(() => {
   const rule = override("side")
   if (rule === "conceal") return false
   return rule === "reveal" || openSlots.has("side")
+})
+
+/**
+ * 节点右侧、画布里的那一块（`aside`）：只在被要求时（模式要求，或 `slots.open('aside')`）。
+ * 和 `side` 不同，它是画布内容 —— 跟着节点一起缩放，拉框时也不收。和节点垂直居中对齐，高度由部件自己定。
+ */
+const asideVisible = computed(() => {
+  if (parts.value.aside.length === 0) return false
+  const rule = override("aside")
+  if (rule === "conceal") return false
+  return rule === "reveal" || openSlots.has("aside")
+})
+
+/** aside 区离节点右边框的距离，画布像素 */
+const ASIDE_GAP = 8
+
+/**
+ * 量 aside 区的宽度。`offsetWidth` 是布局尺寸，不受画布缩放的 transform 影响 —— 正好是画布坐标。
+ * 收起时元素卸载、回 0；ResizeObserver 在卸载时不回调，所以另外按露出与否清零
+ */
+const asideEl = useTemplateRef<HTMLElement>("aside")
+useResizeObserver(asideEl, () => {
+  asideWidth.value = asideEl.value ? asideEl.value.offsetWidth + ASIDE_GAP : 0
+})
+watch(asideVisible, (visible) => {
+  if (!visible) asideWidth.value = 0
 })
 
 // —— 外观 ——
@@ -312,11 +344,11 @@ const OUTER_OFFSET = 8
       角标：节点内部的外观，贴着卡片自己的角，不是画布上的定位。
       **登记到 badge 区的部件自动按屏幕尺寸画**（上传按钮、「上传中」、打开导演台…），部件自己不用管：
       整块 `flow-screen-fixed`，以右上角为原点缩（`origin-top-right`）；离角的距离写成内边距 `p-1.5`，
-      内边距在被缩放的盒子里，天然也是屏幕像素。
+      内边距在被缩放的盒子里，天然也是屏幕像素。`z-10`：压在 overlay 区（出错时盖住主体的那层）之上，角标照常可点。
     -->
     <div
       v-if="parts.badge.length > 0"
-      class="flow-screen-fixed pointer-events-none absolute right-0 top-0 flex origin-top-right items-center gap-1 p-1.5"
+      class="flow-screen-fixed pointer-events-none absolute right-0 top-0 z-10 flex origin-top-right items-center gap-1 p-1.5"
       data-node-slot="badge"
     >
       <NodeSlot :parts="parts.badge" />
@@ -332,6 +364,22 @@ const OUTER_OFFSET = 8
     </div>
 
     <NodeSlot :parts="parts.overlay" />
+
+    <!--
+      框外右侧、画布里的一块（aside）：贴着节点右边、和节点垂直居中（高度由部件定），跟着画布缩放 —— 是内容，不是浮层。
+      绝对定位，不算进节点的实测尺寸；宽度量出来交给 `ctx.asideWidth`，右边的连接点据此挪到它外面。
+      `nowheel`：里面能滚动，滚轮不拿去缩放画布。
+    -->
+    <div
+      v-if="asideVisible"
+      ref="aside"
+      class="nodrag nopan nowheel absolute left-full top-1/2 -translate-y-1/2"
+      :style="{ marginLeft: `${ASIDE_GAP}px` }"
+      data-node-slot="aside"
+    >
+      <NodeSlot :parts="parts.aside" />
+    </div>
+
     <NodeSlot :parts="parts.handles" />
 
     <!--

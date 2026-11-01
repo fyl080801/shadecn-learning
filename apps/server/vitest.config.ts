@@ -96,6 +96,12 @@ export default defineConfig({
       S3_ACCESS_KEY_ID: 'test-ak',
       S3_SECRET_ACCESS_KEY: 'test-sk',
       S3_KEY_PREFIX: 'canvas',
+      /**
+       * 应用表（docs/29 §3.3）默认在 `<dataDir>/apps.yaml`：开发者自己那份不能漏进来。指到每次清空的 data/test 下，即「没有文件」→ 模块不加载；
+       * 要测应用接口的用例（`test/routes/apps.test.ts`）stubEnv 指到 `test/fixtures/apps.yaml` 再重建 app
+       */
+      APPS_FILE: 'data/test/apps.yaml',
+      APPS_TIMEOUT_MS: '',
     },
   },
 })

@@ -317,10 +317,17 @@ function isolateKeys(event: KeyboardEvent) {
         </Badge>
       </span>
 
-      <!-- 挂在按钮正下方、右缘对齐：同一排左边的其他按钮（分享等）不会被它挤开 -->
+      <!--
+        挂在按钮正下方、右缘对齐：同一排左边的其他按钮（分享等）不会被它挤开。
+        开合动画和右上角其他浮层（生成任务的 Popover）一致：淡入 + 从 95% 放大 + 从上方滑入，收起淡出 + 缩小
+      -->
+      <Transition
+        enter-active-class="animate-in fade-in-0 zoom-in-95 slide-in-from-top-2"
+        leave-active-class="animate-out fade-out-0 zoom-out-95"
+      >
       <section
         v-show="open"
-        class="absolute right-0 top-full mt-2 flex h-[min(560px,calc(100vh-12rem))] w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-xl"
+        class="absolute right-0 top-full mt-2 flex origin-top-right h-[min(560px,calc(100vh-12rem))] w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-xl"
         data-testid="agent-dialog"
         :aria-label="copy.name"
       >
@@ -525,5 +532,6 @@ function isolateKeys(event: KeyboardEvent) {
           </div>
         </template>
       </section>
+      </Transition>
   </div>
 </template>

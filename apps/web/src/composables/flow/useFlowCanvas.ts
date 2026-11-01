@@ -1,6 +1,9 @@
 import { computed, nextTick, ref, shallowRef, watch, watchEffect } from "vue"
 import { until, useEventListener } from "@vueuse/core"
 import { toast } from "vue-sonner"
+
+import { appInputLimit } from "@/components/flow/apps/node-app"
+import { useApps } from "@/composables/useApps"
 import {
   getConnectedEdges,
   getRectOfNodes,
@@ -95,6 +98,8 @@ export function useFlowCanvas(
   presence: FlowPresence,
   selection: FlowSelection
 ) {
+  // 生成应用列表（模块级缓存）：连线时按节点选的应用 / 模型收紧参考图条数
+  const { apps } = useApps()
   const {
     vueFlowRef,
     screenToFlowCoordinate,
@@ -539,7 +544,12 @@ export function useFlowCanvas(
     return {
       typeOf: typeOfNode,
       dataOf: (id) => store.nodeById.get(id)?.data,
-      edges: store.edges
+      edges: store.edges,
+      // 人连线时按生成节点选的应用 / 模型收紧参考图条数（docs/29 §3.8）；agent 走 flow-ops 的上下文，不受它限
+      inputLimit: (target, port) => {
+        const node = store.nodeById.get(target)
+        return node?.type ? appInputLimit(apps.value, node.type, node.data, port) : undefined
+      }
     }
   }
 
@@ -581,6 +591,12 @@ export function useFlowCanvas(
     const gate = interactionGate({ target }, connectionContext())
     if (!gate.ok) {
       toast.error(gate.reason)
+      return
+    }
+    // 交互上的收紧（参考图条数）只在人连线这一侧：建边的 ops.connect 不知道它，先在这里判一次
+    const verdict = resolve({ source, target })
+    if (!verdict.ok) {
+      toast.error(verdict.reason)
       return
     }
     try {
@@ -686,6 +702,13 @@ export function useFlowCanvas(
   /** 全览：和首次打开的兜底一致，不放大超过 1 倍 */
   function fitAll() {
     return afterTransition(fitView({ maxZoom: 1, padding: 0.2, duration: VIEW_TRANSITION_MS }))
+  }
+
+  /** 定位到一个节点：选中它，视口移过去（不放大超过 1 倍）。节点不在了什么都不做 */
+  function revealNode(nodeId: string) {
+    if (!findNode(nodeId)) return Promise.resolve()
+    selectOnly(nodeId)
+    return afterTransition(fitView({ nodes: [nodeId], maxZoom: 1, padding: 0.6, duration: VIEW_TRANSITION_MS }))
   }
 
   // —— 自动布局 ——
@@ -1026,6 +1049,18 @@ export function useFlowCanvas(
   ): Promise<string | null> {
     const target = findNode(targetId)
     if (!target || typeOfNode(targetId) === undefined) return null
+    // 先按「一个这种类型的新节点连进来」判一次（参考图条数满了就不建节点、不上传）
+    const NEW_INPUT = "\u0000new-input"
+    const base = connectionContext()
+    const verdict = resolveConnection(
+      { source: NEW_INPUT, target: targetId },
+      { ...base, typeOf: (nodeId) => (nodeId === NEW_INPUT ? type : base.typeOf(nodeId)) }
+    )
+    if (!verdict.ok) {
+      toast.error(verdict.reason)
+      return null
+    }
+
     const upstream = new Set(store.edges.filter((edge) => edge.target === targetId).map((edge) => edge.source)).size
     const anchor = {
       x: target.computedPosition.x - INPUT_NODE_GAP,
@@ -1180,6 +1215,7 @@ export function useFlowCanvas(
     zoomOutView,
     zoomToLevel,
     fitAll,
+    revealNode,
     canAutoLayout,
     autoLayout,
     arrangeGroup,

@@ -856,6 +856,22 @@ describe("inputs 派生（增量）", () => {
     expect(byId(store).get("cfg")!.data.prompt).toBe("@{node:src} 换个背景")
   })
 
+  it("在画布上删线 / 删上游节点：下游提示词里对它的提及、inputOrder 里的它一起清掉，一次撤销线和文字都回来", () => {
+    const { store } = wired()
+    store.writeNode("cfg", "data", { set: { prompt: "把 @{node:src} 换个背景", inputOrder: ["src"] } })
+    store.separateUndo()
+
+    store.removeElements([], ["e1"])
+    expect(byId(store).get("cfg")!.data).toMatchObject({ prompt: "把 换个背景", inputOrder: [] })
+    store.undo()
+    expect(byId(store).get("cfg")!.data).toMatchObject({ prompt: "把 @{node:src} 换个背景", inputOrder: ["src"] })
+    expect(byId(store).get("cfg")!.inputs).toHaveLength(1)
+
+    store.separateUndo()
+    store.removeElements(["src"], [])
+    expect(byId(store).get("cfg")!.data.prompt).toBe("把 换个背景")
+  })
+
   it("删掉上游节点：连着的边一起没了，下游 inputs 清空", () => {
     const { store } = wired()
     store.removeElements(["src"], [])

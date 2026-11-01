@@ -14,6 +14,7 @@
     "./flow-ops": "./src/flow-ops.ts",
     "./flow-layout": "./src/flow-layout.ts",
     "./id": "./src/id.ts",
+    "./apps": "./src/apps.ts",
     "./flow-collection": "./src/flow-collection.ts",
     "./director-doc": "./src/director-doc.ts",
     "./director-eval": "./src/director-eval.ts"

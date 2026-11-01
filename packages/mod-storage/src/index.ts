@@ -5,6 +5,7 @@ import { configureAssetStorage } from './client.ts'
 import { storageConfig } from './config.ts'
 import { STORAGE_SERVICE, type StorageService } from './contract.ts'
 import { FlowAsset } from './entities.ts'
+import { readFlowAsset, saveFlowAsset } from './generated.ts'
 import { createAssetRoutes } from './routes.ts'
 
 export { assetStorage, configureAssetStorage, replaceAssetStorage } from './client.ts'
@@ -32,7 +33,15 @@ export default defineModule({
   enabled: (config) => config.s3 !== null || '没配 S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY',
   setup(ctx) {
     configureAssetStorage(ctx.config.s3)
-    const service: StorageService = { keyPrefix: ctx.config.keyPrefix, assets: flowAssets }
+    const keyPrefix = ctx.config.keyPrefix
+    const service: StorageService = {
+      keyPrefix,
+      assets: {
+        findInFlow: (flowId, keys) => flowAssets.findInFlow(flowId, keys),
+        save: (input) => saveFlowAsset(keyPrefix, input),
+        read: (flowId, url, options) => readFlowAsset(keyPrefix, flowId, url, options),
+      },
+    }
     ctx.provide(STORAGE_SERVICE, service)
 
     const canvas = ctx.service<CanvasService>(CANVAS_SERVICE)!

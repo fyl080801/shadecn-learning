@@ -17,5 +17,31 @@ export interface StorageService {
   readonly assets: {
     /** 这些键里**属于这张画布**的那些，按 `keys` 的顺序；条数对不上 = 有不属于这张画布的 */
     findInFlow(flowId: string, keys: readonly string[]): Promise<FlowAssetRecord[]>
+    /**
+     * 服务端产出的字节存成这张画布的资源（生成节点的结果，docs/29 §3.8）：和浏览器上传走同一套键、缩略图、上传记录。
+     * 只收图片 / 视频（同上传接口）；别的类型抛错
+     */
+    save(input: SaveFlowAssetInput): Promise<SavedFlowAsset>
+    /**
+     * 读**这张画布自己的**资源字节：地址先反解成本桶素材键（不发请求），再查归属。
+     * 不是本桶的地址、不属于这张画布 → `null`（调用方按「不是我们的资源」处理，绝不去请求那个地址）；超过 `maxBytes` 抛错
+     */
+    read(flowId: string, url: string, options: { maxBytes: number; signal?: AbortSignal }): Promise<{ data: Uint8Array; contentType: string } | null>
   }
+}
+
+export interface SaveFlowAssetInput {
+  flowId: string
+  createdById: string
+  data: Uint8Array
+  contentType: string
+  /** 文件名（只取扩展名，给人看的） */
+  name?: string
+}
+
+export interface SavedFlowAsset {
+  url: string
+  key: string
+  contentType: string
+  size: number
 }

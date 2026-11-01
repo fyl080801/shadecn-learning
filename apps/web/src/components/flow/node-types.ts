@@ -1,6 +1,7 @@
 import { markRaw, type Component } from "vue"
 import { Box, Clapperboard, Film, Frame, Image, SquarePen, Type } from "@lucide/vue"
 
+import AppPicker from "@/components/flow/apps/AppPicker.vue"
 import { definePromptComposerPart } from "@/components/flow/composer/composer-part"
 import DirectorBody from "@/components/flow/DirectorBody.vue"
 import DirectorOpenButton from "@/components/flow/DirectorOpenButton.vue"
@@ -162,8 +163,12 @@ const uploadButton = (type: string) =>
  */
 const COMPOSER_FEATURES = [...STANDARD_NODE_FEATURES, "edit-prompt"] as const
 
-/** 媒体类型（图片 / 视频，以后的音频之类同理）多启用 `download`：工具条上一枚下载，文件名 = 节点名 */
-const MEDIA_FEATURES = [...COMPOSER_FEATURES, "download"] as const
+/**
+ * 媒体类型（图片 / 视频，以后的音频之类同理）多启用 `download`：工具条上一枚下载，文件名 = 节点名；
+ * 和 `runnable` + `app-run`：底部输入框发送 = 用选中的应用生成（docs/29 §3.8），结果挂回这个节点；
+ * 和 `generations`：每次生成留进历史，右上角显示数量、点开在右侧挑一条当主图（docs/13 §3.7）
+ */
+const MEDIA_FEATURES = [...COMPOSER_FEATURES, "download", "runnable", "app-run", "generations"] as const
 
 export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
   /**
@@ -209,7 +214,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     icon: Image,
     view: { body: ImageBody, class: "flex flex-col", style: mediaNodeStyle, fallbackLabel: "图片" },
     parts: [
-      whenGenerate({ id: "image.composer", placeholder: "描述想要的画面（Shift+回车发送）" }),
+      whenGenerate({ id: "image.composer", placeholder: "描述想要的画面（Shift+回车生成）", controls: markRaw(AppPicker) }),
       uploadingBadge("image"),
       uploadButton("image")
     ],
@@ -221,7 +226,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
     icon: Film,
     view: { body: VideoBody, class: "flex flex-col", style: mediaNodeStyle, fallbackLabel: "视频" },
     parts: [
-      whenGenerate({ id: "video.composer", placeholder: "描述想要的视频（Shift+回车发送）" }),
+      whenGenerate({ id: "video.composer", placeholder: "描述想要的视频（Shift+回车生成）", controls: markRaw(AppPicker) }),
       uploadingBadge("video"),
       uploadButton("video")
     ],

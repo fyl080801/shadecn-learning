@@ -46,6 +46,7 @@ COPY packages/mod-canvas/package.json ./packages/mod-canvas/
 COPY packages/mod-collab/package.json ./packages/mod-collab/
 COPY packages/mod-storage/package.json ./packages/mod-storage/
 COPY packages/mod-agent/package.json ./packages/mod-agent/
+COPY packages/mod-apps/package.json ./packages/mod-apps/
 COPY apps/server/package.json ./apps/server/
 RUN pnpm install --frozen-lockfile
 COPY . .

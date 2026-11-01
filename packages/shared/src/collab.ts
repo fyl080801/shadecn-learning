@@ -24,6 +24,12 @@ export const STORE_STATE_MESSAGE = 'flow:store-state'
 export const AGENT_RUNS_MESSAGE = 'agent:runs'
 
 /**
+ * 服务端广播「这张画布上此刻有哪些生成任务在排队 / 生成中」用的 stateless 消息类型（docs/29 §3.10）。
+ * 载荷的形状、序列化与防御式解析在 `@shadecn/shared/apps`（`AppTasksMessage` / `parseAppTasksMessage`）。
+ */
+export const APP_TASKS_MESSAGE = 'apps:tasks'
+
+/**
  * 个人画布（REST 推拉）在 `GET /api/flows/:id/doc` 上用来带回服务端状态向量的响应头，
  * 值是 base64url。客户端以它为基线算差量（见 `apps/web/src/composables/flow/sync/solo.ts`）。
  */

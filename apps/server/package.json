@@ -33,6 +33,7 @@
   "devDependencies": {
     "@shadecn/agent": "workspace:*",
     "@shadecn/mod-agent": "workspace:*",
+    "@shadecn/mod-apps": "workspace:*",
     "@shadecn/mod-auth": "workspace:*",
     "@shadecn/mod-canvas": "workspace:*",
     "@shadecn/mod-collab": "workspace:*",

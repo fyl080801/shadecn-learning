@@ -77,6 +77,11 @@ export function useFlowNode(id: MaybeRefOrGetter<string>) {
     store.attachAsset(toValue(id), asset, actionLabel)
   }
 
+  /** 从生成历史里挑一条当主图，见 `store.selectGeneration` */
+  function selectGeneration(generationId: string) {
+    store.selectGeneration(toValue(id), generationId)
+  }
+
   /** 读某一组的当前值（原样，可能是 undefined） */
   function readGroup(group: FlowNodeGroup, key: string): unknown {
     const source =
@@ -113,6 +118,7 @@ export function useFlowNode(id: MaybeRefOrGetter<string>) {
     rename,
     setData,
     attachAsset,
+    selectGeneration,
     draft
   }
 }

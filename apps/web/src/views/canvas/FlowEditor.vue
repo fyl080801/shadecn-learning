@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 
 import FlowCanvas from "@/components/flow/FlowCanvas.vue"
 import FlowAgentChat from "@/components/flow/agent/FlowAgentChat.vue"
+import FlowAppTasksButton from "@/components/flow/apps/FlowAppTasksButton.vue"
 import FlowConnectionEndedDialog from "@/components/flow/FlowConnectionEndedDialog.vue"
 import FlowDirectorOverlay from "@/components/flow/FlowDirectorOverlay.vue"
 import FlowGrowMenu from "@/components/flow/FlowGrowMenu.vue"
@@ -16,6 +17,7 @@ import FlowTitleCapsule from "@/components/flow/FlowTitleCapsule.vue"
 import FlowToolbar from "@/components/flow/FlowToolbar.vue"
 import { provideFlowEditor, useFlowShortcuts } from "@/composables/flow"
 import { provideFlowAgentPanel } from "@/composables/flow/agent-panel"
+import { provideFlowAppTasks } from "@/composables/flow/useFlowAppTasks"
 
 /**
  * 画布编辑器 —— 独占整屏（路由挂在 BlankLayout 模板页下，没有侧栏）。
@@ -33,6 +35,8 @@ useFlowShortcuts(editor)
 // 右上角对话框和工具栏快捷输入共用的那一份 agent（docs/20）；任务列表经 `editor.sync` 的 stateless 推送更新
 // 画布选区就是「选中的节点」：快捷会话 / 新会话的空输入框开头自动带上它们的提及（docs/20 §3.10.9）
 provideFlowAgentPanel(editor, { selection: () => editor.canvas.selectedNodeIds.value })
+// 进行中的生成任务（docs/29 §3.10）：节点上的「生成中」和右上角的生成任务按钮读同一份
+provideFlowAppTasks(editor)
 
 const { sync, document: doc } = editor
 
@@ -76,10 +80,11 @@ const ready = computed(() => {
     </div>
 
     <template v-else>
-      <!-- 右上角一排：分享 + agent 对话，用 Vue Flow 的 <Panel> 定位，所以放进 VueFlow 的插槽里；定位只写在这一层 -->
+      <!-- 右上角一排：分享 + 生成任务 + agent 对话，用 Vue Flow 的 <Panel> 定位，所以放进 VueFlow 的插槽里；定位只写在这一层 -->
       <FlowCanvas>
         <Panel position="top-right" class="flex items-start gap-2">
           <FlowShareButton />
+          <FlowAppTasksButton />
           <FlowAgentChat />
         </Panel>
       </FlowCanvas>

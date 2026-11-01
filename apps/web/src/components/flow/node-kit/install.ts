@@ -7,9 +7,11 @@ import { downloadFeature } from "./features/download"
 import { directorChatFeature } from "./features/director-chat"
 import { editBodyFeature } from "./features/edit-body"
 import { arrangeFeature, dragStripFeature, resizableFeature, ungroupFeature } from "./features/frame"
+import { generationsFeature } from "./features/generations"
 import { outputPreviewFeature } from "./features/output-preview"
 import { renameFeature } from "./features/rename"
 import { runnableFeature } from "./features/runnable"
+import { appRunFeature } from "./features/app-run"
 import { createNodeKit, type NodeKit } from "./registry"
 
 /**
@@ -36,9 +38,13 @@ const FEATURES = [
   resizableFeature,
   dragStripFeature,
   directorChatFeature,
-  // 下面两个是通用能力，眼下没有类型启用（四种节点都还没有运行器 / 产出）；保留登记，有类型要用时只改声明
+  // 通用能力，眼下没有类型启用（还没有类型声明产出）；保留登记，有类型要用时只改声明
   outputPreviewFeature,
-  runnableFeature
+  // 图片 / 视频启用：输入框发送 → node:run → 用选中的应用生成（docs/29 §3.8）
+  runnableFeature,
+  appRunFeature,
+  // 图片 / 视频启用：右上角的生成数量 + 右侧的生成历史，点一条换成主图
+  generationsFeature
 ]
 
 export function createDefaultNodeKit(): NodeKit {

@@ -46,6 +46,9 @@ import { useFlowEditor } from "@/composables/flow/editor-context"
  * 接在这一侧的线里有一条处于「选中的样子」（`isEdgeHighlighted`：线被选中，或它任一端的节点被选中）时，
  * 这一侧的连接点挂 `flow-handle--active`，和线一起高亮加粗。
  *
+ * 节点右侧画布里展开着 `aside` 区（比如媒体节点的生成历史）时，右边的连接点连同加号整个挪到它外面
+ * （`asideWidth`，画布坐标）—— 挪的是手柄元素本身（`right`），所以要重量一次，连线端点跟着走。
+ *
  * 能不能连由 `canvas.isValidConnection` 判（先过 shared 的交互门 `interactionGate`，再过和 agent 共用的 `resolveConnection`）。
  * 它挂在 **Handle 上**而不是 `<VueFlow>` 上：Vue Flow 每次同步边都会拿全局那个校验一遍，
  * 判不过的边直接不渲染 —— 而「这对端口已经连过」这些规则拿已经存在的边去判，
@@ -56,6 +59,8 @@ const props = defineProps<{
   type: string
   /** 节点的业务 data（`useFlowNode` 读的那份）：输入开不开放要看它 */
   data: Readonly<Record<string, unknown>>
+  /** 节点右侧 `aside` 区占的宽度（画布坐标）；右边的连接点挪到它外面。没有就是 0 */
+  asideWidth?: number
 }>()
 
 const { canvas } = useFlowEditor()
@@ -99,7 +104,15 @@ const lineOrigin = computed(() => {
   return menu !== null && menu.via === "drop" && menu.sourceId === props.nodeId
 })
 
-watch([showInput, hasOutput], () => updateNodeInternals([props.nodeId]), { flush: "post" })
+watch([showInput, hasOutput, () => props.asideWidth ?? 0], () => updateNodeInternals([props.nodeId]), {
+  flush: "post"
+})
+
+/** 出口手柄的位置：Vue Flow 默认 `right: 0`（圆心压在右边框上），有 aside 区就再往外挪它那么宽 */
+const outputStyle = computed(() => {
+  const shift = props.asideWidth ?? 0
+  return shift > 0 ? { right: `${-shift}px` } : undefined
+})
 
 /** 感应区（加号能被感知、能跟着鼠标移动的范围）的尺寸按缩放折算（画布坐标；屏幕上的大小不随缩放变） */
 const zoneStyle = computed(() => {
@@ -163,6 +176,7 @@ function openGrowMenu(event: MouseEvent) {
     type="source"
     :position="Position.Right"
     class="flow-handle"
+    :style="outputStyle"
     :class="{
       'flow-handle--connected': sourceConnections.length > 0,
       'flow-handle--origin': lineOrigin,

@@ -14,13 +14,20 @@ import {
   type LayoutNode,
   type LayoutRect,
 } from './flow-layout.ts'
+import { removeNodeMentions } from './agent.ts'
+import { collectionKey } from './flow-collection.ts'
 import {
   connectionEdgeData,
   DEFAULT_EDGE_TYPE,
   GROUP_NODE_TYPE,
   NODE_FORM_KEY,
+  NODE_GENERATION_PREFIX,
+  NODE_INPUT_ORDER_KEY,
+  ORIGINAL_GENERATION_ID,
+  NODE_PROMPT_KEY,
   nodeFormOf,
   nodeSizeOf,
+  readGenerations,
   resolveConnection,
   type ConnectionContext,
   type NodeForm,
@@ -258,6 +265,61 @@ export function attachAsset(
   return form
 }
 
+/**
+ * 记下一次生成的结果：挂上素材（{@link attachAsset}，形态规则照旧）并往生成历史里加一条（`gen.<id>`，
+ * 见 `NODE_GENERATION_PREFIX`）—— 同一个事务。只有服务端写回生成结果时调；上传本身不进历史。
+ * 同一个 id 再记一次就覆盖那一条（任务被接手后重写不会多出一条）。
+ *
+ * **首次生成**（历史还是空的）时节点上已经有图（上传的素材，或这个功能之前生成的）：先把它补成第一条
+ * （`gen.original`，时刻排在这次之前），不然它被这次结果顶掉就再也找不回来。
+ */
+export function recordGeneration(
+  ctx: FlowOpContext,
+  nodeId: string,
+  generation: { id: string; src: string; poster?: string; createdAt: number },
+): NodeForm {
+  if (!generation.id) throw new FlowOpError('INVALID_GENERATION', '生成记录缺少 id')
+  const before = requireNodeRecord(ctx, nodeId).data
+  const previousSrc = typeof before.src === 'string' ? before.src.trim() : ''
+  const seed: Record<string, unknown> = {}
+  if (previousSrc && previousSrc !== generation.src && readGenerations(before).length === 0) {
+    const previousPoster = typeof before.poster === 'string' ? before.poster.trim() : ''
+    seed[collectionKey(NODE_GENERATION_PREFIX, ORIGINAL_GENERATION_ID)] = {
+      src: previousSrc,
+      ...(previousPoster ? { poster: previousPoster } : {}),
+      createdAt: generation.createdAt - 1,
+    }
+  }
+  const form = attachAsset(ctx, nodeId, generation)
+  const entry = {
+    src: generation.src,
+    ...(generation.poster ? { poster: generation.poster } : {}),
+    createdAt: generation.createdAt,
+  }
+  writeNodeFields(ctx, nodeId, 'data', {
+    set: { ...seed, [collectionKey(NODE_GENERATION_PREFIX, generation.id)]: entry },
+  })
+  return form
+}
+
+/**
+ * 从生成历史里挑一条当主图：只换 `src` / `poster`，**不动形态**（挑历史不是新挂素材，连没连线都不该因此变）。
+ * 历史里没有这一条就拒绝（`GENERATION_NOT_FOUND`）。
+ */
+export function selectGeneration(ctx: FlowOpContext, nodeId: string, generationId: string): void {
+  const node = requireNodeRecord(ctx, nodeId)
+  if (nodeFormOf(node.type, node.data) === null) {
+    throw new FlowOpError('NO_FORMS', `${node.type} 节点没有生成历史`)
+  }
+  const entry = readGenerations(node.data).find((item) => item.id === generationId)
+  if (!entry) throw new FlowOpError('GENERATION_NOT_FOUND', `节点 ${nodeId} 的生成历史里没有 ${generationId}`)
+  const set: Record<string, unknown> = { src: entry.src }
+  // 视频带着预览图；这一条没有预览图就清空，别留着上一条的
+  if (entry.poster !== undefined) set.poster = entry.poster
+  else if (node.data.poster !== undefined) set.poster = ''
+  writeNodeFields(ctx, nodeId, 'data', { set })
+}
+
 export interface ConnectRequest {
   source: string
   target: string
@@ -416,6 +478,7 @@ export interface RemovedElements {
 
 /**
  * 删元素。连着被删节点的边一起删 —— 留下悬空的边，画面上没了、数据里还在。
+ * 一个上游因此**不再连着**某个节点时，顺带清掉那个节点里对它的引用（提示词里的提及、连入顺序，见 {@link planUpstreamCleanup}）。
  *
  * 删掉一个分组，组里的节点**留在原地**：只解除归属（清掉 `parentNode` / `extent`），
  * 相对坐标换算回画布坐标。不解除的话它们指向一个不存在的父节点，整组跳到画布原点附近
@@ -459,7 +522,9 @@ export function removeElements(
     })
   }
 
+  const cleanup = planUpstreamCleanup(ctx, doomedEdges, doomedNodes)
   for (const id of doomedEdges) ctx.edges.delete(id)
+  applyUpstreamCleanup(ctx, cleanup)
   for (const { node, position } of orphaned) {
     node.delete('parentNode')
     node.delete('extent')
@@ -471,7 +536,8 @@ export function removeElements(
 
 /**
  * 断开 `sourceId` → `targetId` 之间的**所有**线（同一对节点可能经几对端口连着，比如导演台的截图和录制），
- * 返回删掉的边 id；本来就没连着回 `[]`。节点本身不动（目标节点的形态也不回退，和删线一样）。
+ * 返回删掉的边 id；本来就没连着回 `[]`。节点本身不动（目标节点的形态也不回退，和删线一样），
+ * 目标节点里对这个上游的引用一起清掉（{@link planUpstreamCleanup}）。
  */
 export function disconnectNodes(ctx: FlowOpContext, sourceId: string, targetId: string): string[] {
   const doomed: string[] = []
@@ -479,8 +545,79 @@ export function disconnectNodes(ctx: FlowOpContext, sourceId: string, targetId: 
     if (!(edge instanceof Y.Map)) continue
     if (edge.get('source') === sourceId && edge.get('target') === targetId) doomed.push(edgeId)
   }
+  const cleanup = planUpstreamCleanup(ctx, new Set(doomed), new Set())
   for (const id of doomed) ctx.edges.delete(id)
+  applyUpstreamCleanup(ctx, cleanup)
   return doomed
+}
+
+// —— 断开之后清掉目标节点里对上游的引用 ——
+
+interface UpstreamCleanup {
+  nodeId: string
+  changes: NodeFieldChanges
+}
+
+/**
+ * 删掉 `doomedEdges` 之后，哪些节点**不再连着**某个上游、要清掉对它的引用（docs/13 §3.7「底部输入框」）：
+ * 提示词里对它的 `@` 提及（连带紧跟的一个空格，`removeNodeMentions`）、连入顺序 `inputOrder` 里的它。
+ * 和删边在**同一个事务**里 —— 一步撤销，撤回来线和文字一起回来；删线、删上游节点、输入框的移除角标、agent 的删除都走这里。
+ *
+ * - 同一对节点还有别的线连着（经另一对端口）就不清：它仍然是连入节点；
+ * - 目标节点自己也在被删的里面就不管；
+ * - **先算后写**：写之前先过 `assertNodeFieldsWritable`，不能写的（字段是协同结构）**只跳过清理，不挡删除** ——
+ *   删除是主动作，引用没清掉只是读的一侧多一枚失效的提及。
+ */
+function planUpstreamCleanup(ctx: FlowOpContext, doomedEdges: ReadonlySet<string>, doomedNodes: ReadonlySet<string>): UpstreamCleanup[] {
+  if (doomedEdges.size === 0) return []
+  const removedPairs = new Map<string, Set<string>>()
+  const remainingPairs = new Set<string>()
+  for (const [edgeId, edge] of ctx.edges.entries()) {
+    if (!(edge instanceof Y.Map)) continue
+    const source = edge.get('source')
+    const target = edge.get('target')
+    if (typeof source !== 'string' || typeof target !== 'string') continue
+    if (!doomedEdges.has(edgeId)) {
+      remainingPairs.add(`${source}\u0000${target}`)
+      continue
+    }
+    if (doomedNodes.has(target)) continue
+    let sources = removedPairs.get(target)
+    if (!sources) removedPairs.set(target, (sources = new Set()))
+    sources.add(source)
+  }
+
+  const plans: UpstreamCleanup[] = []
+  for (const [target, sources] of removedPairs) {
+    const gone = [...sources].filter((source) => !remainingPairs.has(`${source}\u0000${target}`))
+    if (gone.length === 0) continue
+    const data = nodeMapOf(ctx, target)?.get('data')
+    if (!(data instanceof Y.Map)) continue
+    const set: Record<string, unknown> = {}
+    const prompt = data.get(NODE_PROMPT_KEY)
+    if (typeof prompt === 'string') {
+      const next = removeNodeMentions(prompt, gone)
+      if (next !== prompt) set[NODE_PROMPT_KEY] = next
+    }
+    const order = data.get(NODE_INPUT_ORDER_KEY)
+    if (Array.isArray(order) && order.some((id) => gone.includes(id as string))) {
+      set[NODE_INPUT_ORDER_KEY] = order.filter((id) => !gone.includes(id as string))
+    }
+    if (Object.keys(set).length === 0) continue
+    const changes: NodeFieldChanges = { set }
+    try {
+      assertNodeFieldsWritable(ctx, target, 'data', changes)
+    } catch (err) {
+      if (err instanceof FlowOpError) continue
+      throw err
+    }
+    plans.push({ nodeId: target, changes })
+  }
+  return plans
+}
+
+function applyUpstreamCleanup(ctx: FlowOpContext, plans: readonly UpstreamCleanup[]): void {
+  for (const plan of plans) writeNodeFields(ctx, plan.nodeId, 'data', plan.changes)
 }
 
 export interface UngroupResult {

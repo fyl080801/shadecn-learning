@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ops from "@shadecn/shared/flow-ops";
-import { defineComponent, h, nextTick, ref, shallowRef } from "vue";
+import { computed, defineComponent, h, nextTick, ref, shallowRef } from "vue";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import * as Y from "yjs";
@@ -18,6 +18,9 @@ import {
   NODE_KIT_KEY,
 } from "@/components/flow/node-kit/context";
 import { createDefaultNodeKit } from "@/components/flow/node-kit/install";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { FLOW_APP_TASKS_KEY, registerFlowAppTasks, type FlowAppTasks } from "@/composables/flow/useFlowAppTasks";
+import type { AppTaskView } from "@shadecn/shared/apps";
 import { nodeKitGlobal } from "./node-kit/with-kit";
 
 /**
@@ -188,6 +191,21 @@ function record(
 
 let wrapper: VueWrapper | null = null;
 
+/**
+ * 带提示的部件（出错时的「生成失败」）要有 `TooltipProvider` —— 应用里是 `App.vue` 那个全局的，
+ * 这里在节点外面包一层，返回节点本身（外层记进 `wrapper`，照常在 afterEach 卸掉）
+ */
+function mountWithTooltips(id: string, type: string) {
+  const outer = mount(
+    defineComponent({
+      setup: () => () => h(TooltipProvider, null, { default: () => h(NodeHost, nodeProps(id, type)) }),
+    }),
+    { global: nodeKitGlobal() },
+  );
+  wrapper = outer;
+  return outer.findComponent(NodeHost);
+}
+
 function setup(...nodes: FlowNodeRecord[]) {
   const store = useFlowStore();
   store.load(detail());
@@ -217,7 +235,7 @@ describe("画布节点", () => {
     wrapper = null;
   });
 
-  it("runtime.status 为 processing：根元素标上状态并出现「运行中」角标，没有错误信息", () => {
+  it("runtime.status 为 processing：主体上盖一层「运行中」（不撑开节点），根元素标上状态，没有错误信息", () => {
     setup(record("n1", "process", { runtime: { status: "processing" } }));
     wrapper = mount(NodeHost, {
       global: nodeKitGlobal(),
@@ -225,35 +243,111 @@ describe("画布节点", () => {
     });
 
     expect(wrapper.attributes("data-status")).toBe("processing");
-    expect(
-      wrapper.find('[data-testid="node-status-processing"]').text(),
-    ).toContain("运行中");
+    const overlay = wrapper.find('[data-testid="node-status-processing"]');
+    expect(overlay.text()).toContain("运行中");
+    expect(overlay.classes()).toEqual(expect.arrayContaining(["absolute", "inset-0", "pointer-events-none"]));
+    expect(wrapper.find('[data-testid="node-status-cancel"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="node-status-error"]').exists()).toBe(
       false,
     );
   });
 
-  it("runtime.status 为 error：显示 runtime.error；没有错误文案时给兜底", async () => {
+  it("生成任务在跑：排队中 → 生成中 42%（进度条）；发起人能取消", async () => {
+    setup(
+      record("img", "image", { runtime: { status: "processing", taskId: "t1" } }),
+    );
+    const task = ref<AppTaskView>({
+      id: "t1", flowId: "flow-1", nodeId: "img", appId: "seedance", appTitle: "视频",
+      status: "queued", owner: { id: "u1", name: "我", avatarUrl: null }, createdAt: 1,
+    });
+    const cancel = vi.fn();
+    const tasks = {
+      tasks: computed(() => [task.value]),
+      taskOf: (id?: string) => (id === task.value.id ? task.value : undefined),
+      upsert: vi.fn(),
+      canCancel: () => true,
+      cancel,
+      isCancelling: () => false,
+    };
+    const kit = nodeKitGlobal();
+    wrapper = mount(NodeHost, {
+      global: { provide: { ...kit.provide, [FLOW_APP_TASKS_KEY as symbol]: tasks } },
+      props: nodeProps("img", "image"),
+    });
+    const text = () => wrapper!.find('[data-role="status-text"]').text();
+    expect(text()).toBe("排队中");
+
+    task.value = { ...task.value, status: "running", progress: { status: "running", ratio: 0.42 } };
+    await nextTick();
+    expect(text()).toBe("生成中 42%");
+    expect(wrapper.find('[data-testid="node-status-processing"] [role="progressbar"]').exists()).toBe(true);
+
+    await wrapper.find('[data-testid="node-status-cancel"]').trigger("click");
+    expect(cancel).toHaveBeenCalledWith(task.value);
+  });
+
+  it("排队中（执行副本还没接手，节点 runtime 没有痕迹）：照样盖「排队中」、外圈高亮，盖过上一次的「生成失败」", async () => {
+    setup(record("img", "image", { runtime: { status: "error", error: "上次失败", taskId: "old" } }));
+    const queued: AppTaskView = {
+      id: "t2", flowId: "flow-1", nodeId: "img", appId: "seedance", appTitle: "视频",
+      status: "queued", owner: { id: "u1", name: "我", avatarUrl: null }, createdAt: 1,
+    };
+    const list = ref<AppTaskView[]>([queued]);
+    const tasks = {
+      tasks: computed(() => list.value),
+      taskOf: (id?: string) => list.value.find((task) => task.id === id),
+      taskOn: (nodeId: string) => list.value.find((task) => task.nodeId === nodeId),
+      upsert: vi.fn(),
+      canCancel: () => true,
+      cancel: vi.fn(),
+      isCancelling: () => false,
+      isGenerating: () => true,
+      markSubmitting: () => () => {},
+    } as unknown as FlowAppTasks;
+    const unregister = registerFlowAppTasks("flow-1", tasks);
+    try {
+      const kit = nodeKitGlobal();
+      wrapper = mount(
+        defineComponent({
+          setup: () => () => h(TooltipProvider, null, { default: () => h(NodeHost, nodeProps("img", "image")) }),
+        }),
+        { global: { provide: { ...kit.provide, [FLOW_APP_TASKS_KEY as symbol]: tasks } } },
+      );
+      const host = wrapper.findComponent(NodeHost);
+      expect(host.find('[data-role="status-text"]').text()).toBe("排队中");
+      expect(host.classes()).toContain("flow-node-processing");
+      expect(host.find('[data-testid="node-status-error"]').exists()).toBe(false);
+
+      // 任务没了（比如被取消）：回到节点自己的状态
+      list.value = [];
+      await nextTick();
+      expect(host.find('[data-testid="node-status-processing"]').exists()).toBe(false);
+      expect(host.find('[data-testid="node-status-error"]').exists()).toBe(true);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("runtime.status 为 error：主体上盖一层「生成失败」，完整的 runtime.error 在悬停提示里；没有错误文案时给兜底", async () => {
     const { store } = setup(
       record("n1", "process", {
         runtime: { status: "error", error: "模型超时" },
       }),
     );
-    wrapper = mount(NodeHost, {
-      global: nodeKitGlobal(),
-      props: nodeProps("n1", "process"),
-    });
+    const host = mountWithTooltips("n1", "process");
 
-    expect(wrapper.attributes("data-status")).toBe("error");
-    expect(wrapper.find('[data-testid="node-status-error"]').text()).toBe(
-      "模型超时",
-    );
-    expect(wrapper.classes()).toContain("flow-node-error");
+    expect(host.attributes("data-status")).toBe("error");
+    const overlay = host.find('[data-testid="node-status-error"]');
+    expect(overlay.find('[data-role="title"]').text()).toBe("生成失败");
+    // 错误原文不在节点里（不撑开节点），在提示的无障碍名字 / 悬停内容里
+    expect(overlay.text()).not.toContain("模型超时");
+    expect(overlay.find("[aria-label]").attributes("aria-label")).toBe("生成失败：模型超时");
+    expect(host.classes()).toContain("flow-node-error");
 
     store.writeNode("n1", "runtime", { remove: ["error"] });
     await nextTick();
-    expect(wrapper.find('[data-testid="node-status-error"]').text()).toBe(
-      "运行出错",
+    expect(host.find('[data-testid="node-status-error"] [aria-label]').attributes("aria-label")).toBe(
+      "生成失败：运行出错",
     );
   });
 
@@ -1095,25 +1189,22 @@ describe("各类型的 body", () => {
     );
   });
 
-  it("报错不影响图片：报错行接在图片区后面，图片区照旧按记录的比例", () => {
+  it("报错不撑开节点：提示盖在图片区上（overlay），图片区照旧按记录的比例，根元素不多出一截", () => {
     setup(
       record("img", "image", {
         layout: { position: { x: 0, y: 0 }, width: 240, height: 427 },
         data: { src: "https://x/a.png" },
-        runtime: { status: "error", error: "生成失败" },
+        runtime: { status: "error", error: "很长很长的上游报错".repeat(20) },
       }),
     );
-    wrapper = mount(NodeHost, {
-      global: nodeKitGlobal(),
-      props: nodeProps("img", "image"),
-    });
-    const body = wrapper.find('[data-testid="image-body"]');
+    const host = mountWithTooltips("img", "image");
+    const body = host.find('[data-testid="image-body"]');
     expect(body.attributes("style")).toBe("aspect-ratio: 240 / 427;");
-    expect(body.element.nextElementSibling?.getAttribute("data-testid")).toBe(
-      "node-status-error",
-    );
-    // 根元素不钉高度，报错行是多出来的一截
-    expect(wrapper.attributes("style")).toBe("width: 240px;");
+    const overlay = host.find('[data-testid="node-status-error"]');
+    expect(overlay.classes()).toEqual(expect.arrayContaining(["absolute", "inset-0", "pointer-events-none"]));
+    // 错误原文不进节点（只在悬停提示里），节点不会被长报错撑开
+    expect(overlay.text()).toBe("生成失败");
+    expect(host.attributes("style")).toBe("width: 240px;");
   });
 
   it("图片上传：选了文件 → 传到本画布 → S3 原始地址写进 data.src", async () => {
