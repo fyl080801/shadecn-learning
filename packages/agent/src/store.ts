@@ -8,7 +8,7 @@ export { parseCanvasDigest, type CanvasDigest } from './canvas-changes.ts'
 /**
  * 编排层要的两样持久化：**会话**（对话记录 + 模型上下文）和**运行日志**（每轮一行 + 每次工具调用一行）。
  *
- * 本包不认识任何数据库：这里只声明接口，宿主注入实现（`apps/server/store/agent.ts` 是 MikroORM 那份）。
+ * 本包不认识任何数据库：这里只声明接口，宿主注入实现（`@shadecn/mod-agent` 的 `stores.ts` 是 MikroORM 那份）。
  * 下面的内存实现只给包内测试用 —— **生产路径必须显式注入**，`createAgentRuntime` 不会拿它兜底，
  * 否则「忘了接库」会悄悄退化成「重启即丢」，而且没人看得出来。
  *
@@ -18,7 +18,7 @@ export { parseCanvasDigest, type CanvasDigest } from './canvas-changes.ts'
  *
  * 会话按「画布 + 发起人」归属，读写的口径不一样（docs/20 §3.10.5）：
  * - **展示用的读**（`list` / `get`）只按画布取：项目画布上成员看得到别人的会话（只读）。
- *   能不能进这张画布是宿主的事（路由的 `requireFlowMember`），这里不管；
+ *   能不能进这张画布是宿主的事（画布模块的 `flowGuard`），这里不管；
  * - **写、以及带模型上下文的读**（`latest` / `getWithContext` / `save` / `remove`）带 `flowId` + `userId`，
  *   实现必须把它们放进查询条件（`where id and flow and user`），而不是按 id 取出来再比 ——
  *   对写来说，别人的会话和不存在的会话必须一模一样（宿主先按 `get` 的 `userId` 判 403，这里是第二道）。

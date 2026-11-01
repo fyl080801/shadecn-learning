@@ -429,7 +429,7 @@ export interface AgentRuntimeOptions {
   runLog: AgentRunLog
   /**
    * 一批用户的展示信息（会话 / 任务的 `owner`）。必填，理由同上：宿主才认识用户表
-   * （apps/server 用 `store/users.ts`，名字的取值顺序与协同层在场信息一致）。
+   * （服务端用 `@shadecn/server-kit/identity` 的 `users.briefs`，名字的取值顺序与协同层在场信息一致）。
    * 查不到的人可以不在返回的 Map 里，编排层兜底成「匿名用户」；**不要带邮箱以外的私密字段，也不要带邮箱**。
    */
   userProfiles: (userIds: string[]) => Promise<Map<string, AgentUserView>>

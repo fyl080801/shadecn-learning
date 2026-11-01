@@ -67,7 +67,7 @@ export const PROTOCOL_MISMATCH_ERROR = 'protocol_mismatch'
 /** runner 因协议版本不一致被网关拒绝时的进程退出码（`runner/main.ts`；3 = 令牌被拒，1 = 其他错误） */
 export const RUNNER_EXIT_PROTOCOL_MISMATCH = 4
 
-/** 宿主把网关挂在这个路径下（apps/server 的 `routes/agent-gateway.ts`）；runner 看到的网关地址以它结尾 */
+/** 宿主把网关挂在这个路径下（`@shadecn/mod-agent/routes` 的 `createAgentGatewayRoutes`）；runner 看到的网关地址以它结尾 */
 export const AGENT_GATEWAY_PATH = '/api/agent-gateway'
 
 /** 网关的各个接口（相对 {@link AGENT_GATEWAY_PATH}） */

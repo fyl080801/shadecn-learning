@@ -22,7 +22,7 @@ import { agentPorts, lazySingleton, type FlowAccess } from './ports.ts'
  * 2. 过了 `expiresAt` → **expired**；
  * 3. 这项能力不在授予范围里 → denied（只拒这一次）；
  * 4. 库里这一行 `revokedAt` 已写（别的实例做的账号级撤销也在这里被看见）→ revoked；
- * 5. 发起人此刻还能进这张画布（`requireFlowMember` 同口径：画布和项目没删、是项目成员），
+ * 5. 发起人此刻还能进这张画布（画布模块 `flowGuard` 同口径：画布和项目没删、是项目成员），
  *    **且画布仍在签发时那个项目里、个人画布仍是同一个所有者**（签发时的快照）→ 否则 revoked。
  *
  * 4、5 两项的结论缓存 {@link VERDICT_TTL_MS}（缓存的是 Promise，并发的判权共用一次查询）；
@@ -71,7 +71,7 @@ const STATUS_LABEL: Record<Exclude<AgentRunStatus, 'running'>, string> = {
 }
 
 /**
- * 和 `requireFlowMember` 同口径：画布（及其项目）没被删，且这个人是项目成员（个人空间即所有者）；否则 null。
+ * 和画布模块的 `flowGuard` 同口径：画布（及其项目）没被删，且这个人是项目成员（个人空间即所有者）；否则 null。
  * 实现在宿主（`AgentPorts.stores.flowAccess`）：成员关系是底座的东西。
  */
 export function currentFlowAccess(flowId: string, userId: string): Promise<FlowAccess | null> {

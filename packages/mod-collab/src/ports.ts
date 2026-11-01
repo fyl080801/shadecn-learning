@@ -1,12 +1,14 @@
 import type { Extension } from '@hocuspocus/server'
-import type { FlowGraph } from '@shadecn/shared/flow-graph'
+import type { FlowDocStore } from '@shadecn/mod-canvas/contract'
+
+export type { FlowDocRow, FlowDocReadOptions, FlowDocStore, FlowDocWrite } from '@shadecn/mod-canvas/contract'
 
 /**
- * 协同模块向底座要的东西（REQ-MODULES，docs/28 §3.1.4）。
+ * 协同模块内部用的依赖（REQ-MODULES，docs/28 §3.1.2）。
  *
- * 这个包不 import `apps/server`、不读 `process.env`：画布表怎么读写、会话怎么认、实例叫什么、Redis 在哪，
- * 全由宿主在启动时经 {@link configureCollab} 交进来（`apps/server/modules/collab.ts`）。
- * 测试同样要先交一份（`apps/server/test/setup.ts`），没交就用 → 直接抛，不猜默认值。
+ * 由模块的 `setup(ctx)` 从平台能力和 `canvas` 服务拼好、经 {@link configureCollab} 存一份（`./module.ts`）：
+ * 会话怎么认、成员怎么判来自平台和画布模块，画布内容的存取来自 `canvas.docs`，实例身份和 Redis 来自 `ctx.platform.runtime`。
+ * 没装配就用 → 直接抛，不猜默认值。
  */
 
 // ---------------------------------------------------------------- 鉴权
@@ -47,52 +49,10 @@ export interface CollabAuthorizeOptions {
 }
 
 export interface CollabAuthPort {
-  /** 按 cookie 头和房间名判进房资格（实现：`apps/server/auth/ws.ts` 的 `authorizeCollab`） */
+  /** 按 cookie 头和房间名判进房资格（实现：`./authorize.ts` 的 `authorizeCollab`） */
   authorize(cookieHeader: string | null | undefined, room: string, options?: CollabAuthorizeOptions): Promise<CollabAuthorization>
-  /** WebSocket 握手的 `Origin` 校验（CSWSH；实现：`auth/ws.ts` 的 `isAllowedCollabOrigin`） */
+  /** WebSocket 握手的 `Origin` 校验（CSWSH；实现：`./authorize.ts` 的 `isAllowedCollabOrigin`） */
   isAllowedOrigin(origin: string | undefined, host: string | undefined): boolean
-}
-
-// ---------------------------------------------------------------- 画布内容的存取
-
-/** 读到的一行画布内容 */
-export interface FlowDocRow {
-  /** `Flow.ydoc`：Yjs 状态，**事实源**。空 / 没有 = null */
-  ydoc: Uint8Array | null
-  /** 服务端的 CAS 计数 */
-  revision: number
-  /**
-   * 老数据迁移用：`ydoc` 为空时，库里那份 graph JSON 解析出来的图（坏数据已退化成空图）。
-   * 只在 `read(..., { legacy: true })` 且 `ydoc` 为空时给；其余情况 null。
-   */
-  legacy: FlowGraph | null
-}
-
-export interface FlowDocReadOptions {
-  /** 只认所属项目也没删的画布（进房、REST 读写）；落库只看画布本身没删（项目刚删时房间里那份照样写进去） */
-  liveProject: boolean
-  /** 要不要带上老 graph（见 {@link FlowDocRow.legacy}） */
-  legacy: boolean
-}
-
-export interface FlowDocWrite {
-  /** 新的 Yjs 状态 */
-  ydoc: Uint8Array
-  /**
-   * 顺带写的派生投影（列表计数、缩略图读的 `graph`）。不给就只写 `ydoc`。
-   * 序列化和字节上限由宿主判（`GRAPH_LIMITS.bytes`，超了跳过投影、只写内容，docs/04 §4.2）。
-   */
-  projection?: FlowGraph
-}
-
-/**
- * `Flow` 表上协同要的那几步（实现：`apps/server/store/flow-docs.ts`，MikroORM）。
- * 写入是一次 CAS：`where revision = expectedRevision`，返回是否真的写进去了（false = 被抢先 / 已删，调用方重读重来）。
- * 实现必须自己写 `updatedAt`（直接发 SQL 的更新不触发 `onUpdate`，`.claude/rules/database.md`）。
- */
-export interface FlowDocStore {
-  read(flowId: string, options: FlowDocReadOptions): Promise<FlowDocRow | null>
-  compareAndWrite(flowId: string, expectedRevision: number, write: FlowDocWrite): Promise<boolean>
 }
 
 // ---------------------------------------------------------------- 汇总
@@ -105,7 +65,7 @@ export interface CollabPorts {
   /** 多副本时的 Redis（Hocuspocus 的 redis 扩展用）；单副本 = null */
   redis: { url: string; prefix: string } | null
   /**
-   * 额外的 Hocuspocus 扩展，排在业务钩子之前（宿主的日志扩展 `collabLogging()`：带 `priority`，
+   * 额外的 Hocuspocus 扩展，排在业务钩子之前（日志扩展 `./logging.ts` 的 `collabLogging()`：带 `priority`，
    * 一头一尾夹住落库，「开始 − 完成」= 失败次数）。每次 attach 调一次。
    */
   extensions?: () => Extension[]
@@ -119,7 +79,7 @@ export function configureCollab(ports: CollabPorts): void {
 
 export function collabPorts(): CollabPorts {
   if (!current) {
-    throw new Error('[collab] 协同模块还没装配：宿主要先调 configureCollab()（apps/server/modules/collab.ts）')
+    throw new Error('[collab] 协同模块还没装配（setup 时调 configureCollab）')
   }
   return current
 }

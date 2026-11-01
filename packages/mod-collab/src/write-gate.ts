@@ -227,7 +227,7 @@ export const collabWriteAuthorize: AuthorizeWrite = async (cookie, room) => {
  *   严格强于这里的「会话还在」—— 换成这个反而会让画布被删之后还能写一阵。
  *   按房间类型分别注入还得给闸门开第二个实例、在 `beforeSync` 里按房间挑，换来的只是更弱的检查。
  * - **REST**（`POST /api/flows/:id/doc`）：服务端暂时保留、前端已不再调用；每个请求都完整过一遍
- *   `withSession` → `requireAuth` → `requireFlowMember`（`routes/flows.ts`），HTTP 中间件链本身就是闸门。
+ *   `withSession` → `requireAuth` → `canvas.flowGuard`，HTTP 中间件链本身就是闸门。
  *
  * 等哪天真有一条「只需要登录态」的长连接通道，注入这个就行，闸门的其余部分一行都不用改。
  * 房间名在这里用不上 —— 这里只回答「人还在不在」。

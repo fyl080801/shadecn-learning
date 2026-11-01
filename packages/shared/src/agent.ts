@@ -13,7 +13,7 @@
 
 import { AGENT_RUNS_MESSAGE } from './collab.ts'
 
-/** 接口都挂在画布下面，鉴权跟着 `requireFlowMember` 走（每次请求重查）：非成员 404 */
+/** 接口都挂在画布下面，鉴权跟着画布模块的 `flowGuard` 走（每次请求重查）：非成员 404 */
 export function agentApiPath(flowId: string): string {
   return `/api/flows/${encodeURIComponent(flowId)}/agent`
 }

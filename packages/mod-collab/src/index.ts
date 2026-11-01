@@ -8,6 +8,7 @@
  */
 export {
   attachCollabServer,
+  createCollabUpgrade,
   collabInstance,
   collabStats,
   COLLAB_PATH,
@@ -24,6 +25,6 @@ export {
   storeFlowState,
 } from './persistence.ts'
 export { readGraphFromDoc } from './flow-doc.ts'
-export { createCollabModule } from './module.ts'
+export { default, COLLAB_MONITOR_PATH, FLOW_DOC_PATH } from './module.ts'
 export { configureCollab, collabPorts, type CollabPorts } from './ports.ts'
 export { applyGraphToDoc } from '@shadecn/shared/flow-doc'

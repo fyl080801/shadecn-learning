@@ -51,7 +51,7 @@ export interface ProjectMemberView {
 /**
  * 项目的分享链接，一个项目只有一条；不限使用次数，只有有效期。
  *
- * `url` 是服务端按**这次请求的访问域名**拼好的完整链接（`apps/server/routes/projects.ts`
+ * `url` 是服务端按**这次请求的访问域名**拼好的完整链接（`packages/mod-canvas/src/routes/projects.ts`
  * 的 `withUrl`），直接复制就能发人。store 层产出的记录没有它。
  */
 export interface ProjectInviteView {
@@ -70,7 +70,7 @@ export type InviteInvalidReason = 'not_found' | 'expired' | 'project_deleted' | 
 /**
  * 打开分享链接时的预览。
  *
- * `message` 是服务端按 `reason` 配好的那句中文（`apps/server/routes/invites.ts`），
+ * `message` 是服务端按 `reason` 配好的那句中文（`packages/mod-canvas/src/routes/invites.ts`），
  * store 层产出的预览没有它。
  */
 export interface InvitePreview {

@@ -31,11 +31,11 @@ import { broadcastAgentRuns } from './runs-broadcast.ts'
 /**
  * 画布 Agent 在本服务里的装配点：环境变量 → `@shadecn/agent` 的显式参数。
  *
- * 那个包不读 `process.env`（见 `@shadecn/agent/model`）；这个包也不读配置类的环境变量 —— 解析在宿主（`apps/server/config.ts`），
+ * 那个包不读 `process.env`（见 `@shadecn/agent/model`）；这个包也不读配置类的环境变量 —— 解析在宿主（`packages/server-core/src/config.ts`），
  * 经 `AgentPorts` 交进来（`ports.ts`）。「沙箱子进程的 PATH」「找容器引擎 socket」这类**本进程运行环境**仍在这里读。
  *
  * **二期～四期（docs/22 §9 第 2～4 项）**：pi 的推理循环跑在每轮一个的沙箱里（`process` 驱动 = 本机 node 子进程；
- * `oci` 驱动 = 每轮一个 Docker / Podman 容器；`k8s` 驱动 = 每轮一个 Pod），经网关（`routes/agent-gateway.ts`，挂在 `AGENT_GATEWAY_PATH`）说话。
+ * `oci` 驱动 = 每轮一个 Docker / Podman 容器；`k8s` 驱动 = 每轮一个 Pod），经网关（`routes.ts` 的 `createAgentGatewayRoutes`，宿主挂在 `AGENT_GATEWAY_PATH`）说话。
  * 真实的 LLM key 只在这里交给网关（模型请求由服务端发，docs/22 §4.3）；沙箱的环境变量只有网关地址、一次性 bootstrap token、工作目录和 `PATH`。
  *
  * 驱动和 runtime 分开懒建：驱动在启动时就要用（{@link startAgentSandboxReaper}：`oci` / `k8s` 的启动自检 + 清孤儿），

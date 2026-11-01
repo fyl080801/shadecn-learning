@@ -1,21 +1,20 @@
 import type { AgentRuntimeOptions } from '@shadecn/agent/session'
 import type { AgentConversationStore, AgentRunLog } from '@shadecn/agent/store'
+import type { AgentPaths } from './config.ts'
 
 /**
- * 画布 agent 模块向底座要的东西（REQ-MODULES，docs/28 §3.1.4）。
+ * agent 模块内部用的依赖（REQ-MODULES，docs/28 §3.1.2）。
  *
+ * 由模块的 `setup(ctx)` 拼好、经 {@link configureAgent} 存一份（`./module.ts`）：配置来自本模块的配置段（`./config.ts`），
+ * 实例身份 / 监听地址来自平台，成员判定来自 `canvas` 服务，看图开不开看 `storage` 服务在不在，会话 / 运行日志 / Grant 是本模块自己的表（`./stores.ts`）。
  * 这个包不 import `apps/server`、不读 `process.env`（沙箱子进程的 `PATH`、找容器引擎 socket 这类**本进程运行环境**除外 ——
- * 那不是配置，是运行时事实）：环境变量的解析、数据库、会话和成员关系都在宿主，经 {@link configureAgent} 交进来
- * （`apps/server/modules/agent.ts`）。测试同样要先交一份（`apps/server/test/setup.ts`），没交就用 → 直接抛。
+ * 那不是配置，是运行时事实）。没装配就用 → 直接抛。
  */
 
 /** 沙箱驱动的取值；认不出的原样带着，由装配点写成「未启用」的原因 */
 export type AgentSandboxDriver = 'process' | 'oci' | 'k8s' | { unknown: string }
 
-/**
- * agent 的运行配置（宿主 `apps/server/config.ts` 的 `agentConfig`，各项的含义和默认值见那里的注释）。
- * 宿主用 `satisfies AgentHostConfig` 对齐，字段一处定义。
- */
+/** agent 的运行配置（`./config.ts` 解析，各项的含义和默认值见那里的注释） */
 export interface AgentHostConfig {
   readonly provider: string
   readonly model: string
@@ -86,7 +85,7 @@ export interface GrantState {
   revokeReason: string | null
 }
 
-/** `agent_grant` / `agent_grant_scope` 表上的几步（实现：`apps/server/store/agent.ts` 的 `agentGrants`） */
+/** `agent_grant` / `agent_grant_scope` 表上的几步（实现：`./stores.ts` 的 `agentGrants`） */
 export interface AgentGrantStore {
   create(input: NewGrant): Promise<string>
   state(grantId: string): Promise<GrantState | null>
@@ -118,20 +117,11 @@ export interface AgentPorts {
    * 但发起只经派发（docs/28 §3.6），所以它的 runtime **不建沙箱驱动**：不白占一个驱动、不打「已启用 / 沙箱」那几行误导人的日志。
    */
   executesRuns: boolean
-  paths: {
-    /** 沙箱工作目录的根：`<dataDir>/agent-workspaces` */
-    workspaceDir: string
-    /** 模型表文件（docs/26 §3.4）；不存在 = 只有 `default` */
-    modelsFile: string
-    /** agent 定义（docs/26 §3.1）：源码 `packages/agent/agents/`，产物 `output/server/agents/` */
-    definitionsDir: string
-    /** 文字技能（docs/26 §3.8）：源码 `packages/agent/skills/`，产物 `output/server/skills/`；不存在 = 没有 */
-    textSkillsDir: string
-  }
-  /** 没配 `AGENT_API_KEY` 时按提供方退回的 key（宿主的 `agentProviderApiKey`） */
-  providerApiKey(provider: string, env?: NodeJS.ProcessEnv): string
+  paths: AgentPaths
+  /** 没配 `AGENT_API_KEY` 时按提供方退回的 key（`./config.ts` 的 `agentProviderApiKey`）；`env` 给了就从它读（测试） */
+  providerApiKey(provider: string, env?: Readonly<Record<string, string | undefined>>): string
   storage: {
-    /** 配齐了对象存储：只有开了才把看图（`view_node_media`）接给编排层 */
+    /** 本进程加载了对象存储模块：只有开了才把看图（`view_node_media`）接给编排层 */
     enabled: boolean
     /** 画布素材的键前缀（`S3_KEY_PREFIX`）：看图时把 URL 反解回本服务的键 */
     keyPrefix: string
@@ -143,7 +133,7 @@ export interface AgentPorts {
     runLog: AgentRunLog
     userProfiles: AgentRuntimeOptions['userProfiles']
     grants: AgentGrantStore
-    /** 和 `requireFlowMember` 同口径：画布（及其项目）没被删，且这个人是项目成员（个人空间即所有者）；否则 null */
+    /** 和画布模块的 `flowGuard` 同口径：画布（及其项目）没被删，且这个人是项目成员（个人空间即所有者）；否则 null */
     flowAccess(flowId: string, userId: string): Promise<FlowAccess | null>
   }
 }
@@ -156,7 +146,7 @@ export function configureAgent(ports: AgentPorts): void {
 
 export function agentPorts(): AgentPorts {
   if (!current) {
-    throw new Error('[agent] agent 模块还没装配：宿主要先调 configureAgent()（apps/server/modules/agent.ts）')
+    throw new Error('[agent] agent 模块还没装配（setup 时调 configureAgent）')
   }
   return current
 }

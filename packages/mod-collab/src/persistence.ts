@@ -326,7 +326,7 @@ function storeTask(
         Y.applyUpdate(doc, new Uint8Array(row.ydoc), MERGE_ORIGIN)
       }
 
-      // CAS：where 带着读到的 revision，写成读到的 + 1（实现见宿主 store/flow-docs.ts，它负责写 updatedAt）
+      // CAS：where 带着读到的 revision，写成读到的 + 1（实现见画布模块的 flow-docs.ts，它负责写 updatedAt）
       const written = await collabPorts().flowDocs.compareAndWrite(flowId, row.revision, {
         ydoc: Y.encodeStateAsUpdate(doc),
         ...(options.projection ? { projection: deriveProjection(doc) } : {}),

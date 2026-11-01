@@ -16,7 +16,7 @@
  * runtime —— 三者互不相干，混在一层里（v2 的 `data` 上同时住着 label / status / prompt）
  * 就只能靠一张「保留字清单」去区分哪些是框架的、哪些是业务的。
  *
- * 服务端只做**结构校验**（`apps/server/store/flow-types.ts` 的 `parseGraph`），
+ * 服务端只做**结构校验**（`@shadecn/mod-canvas/flow-types` 的 `parseGraph`），
  * 不解释 `data` 上那些业务字段，原样透传存储。
  *
  * 这里只放纯类型、常量和纯函数：没有 DOM、没有 Node，也不 import 任何东西 ——
@@ -220,7 +220,7 @@ export function emptyGraph(): FlowGraph {
  * （面板宽度、折叠了哪些节点…）。字段一律可选：老数据里没有它。
  *
  * **扩展点**：加一个分区 = 这里加一个可选字段 + 服务端
- * `apps/server/store/flow-types.ts` 的 `FLOW_USER_STATE_PARSERS` 加一条校验。
+ * `@shadecn/mod-canvas/flow-types` 的 `FLOW_USER_STATE_PARSERS` 加一条校验。
  * 后者按这个接口的键做了映射类型，**漏加校验会编译失败**；表结构和接口都不用动。
  */
 export interface FlowUserState {

@@ -2,7 +2,7 @@
  * 登录相关的接口形状与常量 —— 服务端产出、前端消费的同一份（docs/02-auth-keycloak.md）。
  */
 
-/** 登录方式。加一种 = 服务端 `apps/server/auth/providers/` 多一个实现 + 这里多一个值 */
+/** 登录方式。加一种 = 服务端 `packages/mod-auth/src/providers/` 多一个实现 + 这里多一个值 */
 export type ProviderId = 'keycloak' | 'github'
 
 /** `/api/auth/config` 里列出的可用登录方式（不含任何配置细节）；数组顺序就是登录页按钮顺序 */
@@ -48,11 +48,17 @@ export interface PendingLinkView {
   avatarUrl: string | null
 }
 
+/**
+ * 登录页的路径。它是**前端 bundle 的第二个入口**（`login.html`），不是 SPA 路由：
+ * 服务端的前端托管按它挑 `login.html`（`@shadecn/server-core` 的 `frontend/`），登录模块的页面守卫按它放行匿名导航。
+ */
+export const LOGIN_PATH = '/login'
+
 // —— 新窗口重新登录 ——
 
 /**
  * 「重新登录」开的那个窗口走完 OIDC 之后落地的路径。
- * 服务端在这里渲染一张自包含的小页面（`apps/server/frontend/login-done-page.ts`），
+ * 服务端在这里渲染一张自包含的小页面（`packages/mod-auth/src/login-done-page.ts`），
  * 它 postMessage 通知开它的那一页，然后把自己关掉。
  */
 export const LOGIN_DONE_PATH = '/auth/login-done'

@@ -5,20 +5,30 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./contract": "./src/contract.ts",
+    "./client": "./src/client.ts",
+    "./entities": "./src/entities.ts",
     "./s3": "./src/s3.ts",
     "./keys": "./src/keys.ts",
-    "./variants": "./src/variants.ts"
+    "./variants": "./src/variants.ts",
+    "./assets": "./src/assets.ts",
+    "./config": "./src/config.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "peerDependencies": {
+    "@mikro-orm/core": "7.2.5",
+    "hono": "^4.13.2",
     "sharp": "0.35.5"
   },
   "devDependencies": {
+    "@mikro-orm/core": "7.2.5",
+    "@shadecn/mod-canvas": "workspace:*",
     "@shadecn/server-kit": "workspace:*",
     "@shadecn/shared": "workspace:*",
     "@types/node": "^24.10.1",
+    "hono": "^4.13.2",
     "sharp": "0.35.5",
     "typescript": "~5.9.3"
   }

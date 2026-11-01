@@ -8,6 +8,7 @@ import {
   type AgentThinkingLevel,
   type ModelResolution,
 } from '@shadecn/agent/model'
+import { platform } from '@shadecn/server-kit/platform'
 import { agentPorts, lazySingleton } from './ports.ts'
 
 /**
@@ -135,13 +136,15 @@ export function loadAgentModelTable(filePath: string): Record<string, AgentModel
  */
 export function resolveAgentModelTable(
   specs: Readonly<Record<string, AgentModelSpec>>,
-  env: NodeJS.ProcessEnv = process.env,
+  env?: Readonly<Record<string, string | undefined>>,
 ): Record<string, ModelResolution> {
+  // 没给就经平台读：模型表里引用的变量名是写表的人定的，不在任何配置 schema 里
+  const read = (name: string) => (env ? env[name] : platform().runtime.envVar(name))
   const table: Record<string, ModelResolution> = {}
   for (const [key, spec] of Object.entries(specs)) {
     let apiKey: string
     if (spec.apiKeyEnv !== undefined) {
-      apiKey = env[spec.apiKeyEnv]?.trim() ?? ''
+      apiKey = read(spec.apiKeyEnv)?.trim() ?? ''
       if (!apiKey) {
         table[key] = { ok: false, reason: `apiKey 引用的环境变量 ${spec.apiKeyEnv} 没有设置` }
         continue

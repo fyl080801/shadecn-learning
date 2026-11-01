@@ -1,6 +1,6 @@
 import { MediaReadError, type MediaReader } from '@shadecn/agent/media'
 import { agentPorts } from './ports.ts'
-import { assetStorage } from '@shadecn/mod-storage'
+import { assetStorage } from '@shadecn/mod-storage/client'
 import { assetKeyOfUrl } from '@shadecn/mod-storage/keys'
 
 /**

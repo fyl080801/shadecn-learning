@@ -5,7 +5,6 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./contract": "./src/contract.ts",
     "./ports": "./src/ports.ts",
     "./hocuspocus": "./src/hocuspocus.ts",
     "./persistence": "./src/persistence.ts",
@@ -17,7 +16,9 @@
     "./exclusive": "./src/exclusive.ts",
     "./write-gate": "./src/write-gate.ts",
     "./socket-id": "./src/socket-id.ts",
-    "./canvas-host": "./src/canvas-host.ts"
+    "./canvas-host": "./src/canvas-host.ts",
+    "./authorize": "./src/authorize.ts",
+    "./logging": "./src/logging.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -25,10 +26,12 @@
   "devDependencies": {
     "@hocuspocus/extension-redis": "^4.6.0",
     "@hocuspocus/server": "^4.6.0",
+    "@shadecn/mod-canvas": "workspace:*",
     "@shadecn/server-kit": "workspace:*",
     "@shadecn/shared": "workspace:*",
     "@types/node": "^24.10.1",
     "crossws": "^0.4.10",
+    "hono": "^4.13.2",
     "typescript": "~5.9.3",
     "yjs": "^13.6.32"
   },
@@ -36,6 +39,7 @@
     "@hocuspocus/extension-redis": "^4.6.0",
     "@hocuspocus/server": "^4.6.0",
     "crossws": "^0.4.10",
+    "hono": "^4.13.2",
     "yjs": "^13.6.32"
   }
 }

@@ -44,7 +44,7 @@ import {
 
 /**
  * 网关：沙箱里的 runner 够得着服务端的**唯一**入口（docs/22 §4）。宿主把 {@link AgentGateway.handle}
- * 挂在 `AGENT_GATEWAY_PATH` 下（apps/server 的 `routes/agent-gateway.ts`，**在会话登录那道闸之外**：
+ * 挂在 `AGENT_GATEWAY_PATH` 下（`@shadecn/mod-agent/routes` 的 `createAgentGatewayRoutes`，**在会话登录那道闸之外**：
  * 这里只认 run 短令牌，浏览器的会话 cookie 在这里一文不值）。
  *
  * ## 这里管什么、不管什么

@@ -6,7 +6,7 @@ import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all'
  *
  * 环境变量怎么解析（`AGENT_PROVIDER` / `AGENT_MODEL` / `AGENT_BASE_URL` / `AGENT_API` /
  * `AGENT_API_KEY`，以及没给 key 时按提供方退回它自己的环境变量）是宿主的事，
- * 在 `apps/server/config.ts` 和 `packages/mod-agent/src/` 里。这样这个包测起来不用摆弄环境，
+ * 在 `packages/server-core/src/config.ts` 和 `packages/mod-agent/src/` 里。这样这个包测起来不用摆弄环境，
  * 换一个宿主（CLI、别的服务）也不会被一份它不认识的环境约定绑住。
  *
  * 三条路：

@@ -1,0 +1,39 @@
+{
+  "name": "@shadecn/mod-auth",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/module.ts",
+    "./entities": "./src/entities.ts",
+    "./settings": "./src/settings.ts",
+    "./session": "./src/session.ts",
+    "./oidc": "./src/oidc.ts",
+    "./middleware": "./src/middleware.ts",
+    "./profile": "./src/profile.ts",
+    "./identities": "./src/identities.ts",
+    "./current-user": "./src/current-user.ts",
+    "./redirect": "./src/redirect.ts",
+    "./guard": "./src/guard.ts",
+    "./providers": "./src/providers/index.ts",
+    "./avatar": "./src/avatar/index.ts",
+    "./config": "./src/config.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "@mikro-orm/core": "7.2.5",
+    "hono": "^4.13.2",
+    "minidenticons": "^4.2.1"
+  },
+  "devDependencies": {
+    "@mikro-orm/core": "7.2.5",
+    "@shadecn/server-kit": "workspace:*",
+    "@shadecn/shared": "workspace:*",
+    "@types/node": "^24.10.1",
+    "hono": "^4.13.2",
+    "minidenticons": "^4.2.1",
+    "typescript": "~5.9.3"
+  }
+}

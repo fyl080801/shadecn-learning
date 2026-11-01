@@ -144,7 +144,7 @@ export async function openAgentCanvas(options: OpenAgentCanvasOptions): Promise<
  * 房间在本进程里活着就读内存里的文档（刚建的节点可能还没落库：落库有 2–10 秒的防抖）；
  * 不在就读库 —— 没人连着的房间，卸载时已经落了库。多副本时房间可能活在别的副本上，库里最多慢一个防抖窗口，
  * 这时刚建的节点会被误判成不存在（再点一次就好），不会放过一个真不存在的节点。
- * 只判存在，不判权限：能不能进这张画布是路由前面的 `requireFlowMember`。
+ * 只判存在，不判权限：能不能进这张画布是路由前面的 `canvas.flowGuard`。
  */
 export async function flowHasNode(flowId: string, nodeId: string, hocuspocus: Hocuspocus | null = collabInstance()): Promise<boolean> {
   const live = hocuspocus?.documents.get(roomOf(flowId))

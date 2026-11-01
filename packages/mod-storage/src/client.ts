@@ -3,9 +3,9 @@ import { createS3Client, type S3Client, type S3Options } from './s3.ts'
 /**
  * 画布资源的对象存储客户端，进程里一份。
  *
- * 宿主装配存储模块时交进来连接参数（{@link configureAssetStorage}，见 `./index.ts` 的 `createStorageModule`）；
+ * 存储模块装配时按本模块的配置段交进来（{@link configureAssetStorage}，见 `./index.ts`）；
  * 没配齐 S3 或者没装配过（测试）就是 null：上传接口回 503、agent 没有看图工具，不影响启动。
- * 第一次用到时才构造，可被测试替换。这个包不读环境变量 —— 解析在宿主（`apps/server/config.ts` 的 `s3Config`）。
+ * 第一次用到时才构造，可被测试替换。解析在 `./config.ts`。
  */
 let options: S3Options | null = null
 let client: S3Client | null | undefined
