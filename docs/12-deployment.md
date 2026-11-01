@@ -49,7 +49,7 @@ output/
   package.json        # 运行时依赖（版本锁死）+ start / db:push 脚本
   server/
     index.js          # 打包后的后端入口（ESM，node 22），带 .map
-    db-sync.js        # 表结构同步入口（apps/server/db/sync-cli.ts），容器启动先跑它
+    db-sync.js        # 表结构同步入口（apps/server/db-sync.ts），容器启动先跑它
     chunk-*.js        # 两个入口共用的模块（config、实体、ORM 工厂…）
     dev-*.js          # 动态 import 切出来的开发分支 chunk，生产不会加载
   public/             # 前端静态资源 = 后端的静态资源目录
@@ -72,14 +72,14 @@ better-sqlite3 / pg 不在这份清单里 —— bundle 不直接 import 它们�
 > 产物里锁的是直接依赖的版本，间接依赖没有 lockfile 兜底。
 
 **一个产物两种库**：实体定义和库无关，驱动在**运行时**按 `DB_PROVIDER` / `DATABASE_URL`
-动态 import（`apps/server/db/orm.ts`）。构建时不用关心连哪种库，同一个 `pnpm build`、同一个镜像，
+动态 import（`packages/server-core/src/db/orm.ts`）。构建时不用关心连哪种库，同一个 `pnpm build`、同一个镜像，
 换库只改环境变量（Prisma 时代生成的 client 编译期绑死一种库、要按库分别构建，这一条随换 ORM 取消了，
 见 [REQ-DATA §2.1](05-data-persistence.md)）。代价是 PG 部署的镜像里也带着 better-sqlite3 的二进制，几 MB。
 
 - **前端静态资源直接构建进后端的静态资源目录**：`apps/web/vite.config.ts` 里 `build.outDir = output/public`，后端生产模式就吐这个目录（可用 `STATIC_DIR` 覆盖）。
-- 后端由 `apps/server/scripts/build-server.mjs`（esbuild）打包，两个入口（`index.ts` → `server/index.js`、`db/sync-cli.ts` → `server/db-sync.js`）一次构建：仓库内的相对导入全部内联（实体定义、ORM 配置都在其中），`node_modules` 里的第三方包保持 external（运行时从产物旁的 `node_modules` 解析）。**workspace 包 `@shadecn/*` 例外，一律内联**：`apps/server/scripts/build-server.mjs` 里用 `externalizePackages` 插件代替了 `packages: 'external'` —— 判据相同（不以 `.` / `/` 开头的导入路径视为 external），只是放过 `@shadecn/`，否则 `@shadecn/shared` 会留成一句运行时 import，而产物里根本没装这个包。
+- 后端由 `apps/server/scripts/build-server.mjs`（esbuild）打包，两个入口（`index.ts` → `server/index.js`、`apps/server/db-sync.ts` → `server/db-sync.js`）一次构建：仓库内的相对导入全部内联（实体定义、ORM 配置都在其中），`node_modules` 里的第三方包保持 external（运行时从产物旁的 `node_modules` 解析）。**workspace 包 `@shadecn/*` 例外，一律内联**：`apps/server/scripts/build-server.mjs` 里用 `externalizePackages` 插件代替了 `packages: 'external'` —— 判据相同（不以 `.` / `/` 开头的导入路径视为 external），只是放过 `@shadecn/`，否则 `@shadecn/shared` 会留成一句运行时 import，而产物里根本没装这个包。
 - `splitting: true` 是硬要求：`frontend/index.ts` 里的 `await import('./dev.ts')` 必须留成真正的动态 import，否则 `vite` 会被提升成顶层静态依赖 —— 而 `vite` 是 devDependency，生产环境根本不会装，一启动就崩。
-- 打包时 define 了 `__APP_BUNDLE__`，`apps/server/runtime.ts` 靠它区分「源码运行」和「产物运行」：产物运行时应用根目录取进程 cwd（容器里就是 `/app`），静态资源取产物自己旁边的 `public/`。
+- 打包时 define 了 `__APP_BUNDLE__`，`packages/server-core/src/runtime.ts` 靠它区分「源码运行」和「产物运行」：产物运行时应用根目录取进程 cwd（容器里就是 `/app`），静态资源取产物自己旁边的 `public/`。
 - 运行产物**不再需要 `tsx`**；表结构同步也是打包好的 `server/db-sync.js`，不需要任何 CLI 工具。
 - 产物里的 `Dockerfile` / `.dockerignore` / `README.md` 是从 `apps/server/scripts/output-image/` 原样拷进去的 —— 要改这几个文件改模板，别改产物。
 
@@ -198,6 +198,9 @@ ValidatingAdmissionPolicy（`k8s/variants/agent-sandbox-vap.yaml`，不进 ArgoC
 - 换成 PostgreSQL 时 PVC 和 `DATA_DIR` 都可以去掉：镜像里没有任何要落盘的东西。
 
 ### 3.3 配置
+
+每一项也能写进配置文件 `server.config.{yaml,yml,json}`（[REQ-MODULES §3.3](28-server-modules.md#33-配置管理)）：挂一份 ConfigMap、用 `SERVER_CONFIG` 指过去即可，
+环境变量优先于文件。现有清单仍全部用环境变量，不需要改。
 
 明文环境变量（在 Deployment 里）：`NODE_ENV`、`HOST`、`PORT`、`DATA_DIR`、`APP_ORIGIN`、`KEYCLOAK_ISSUER`、`KEYCLOAK_CLIENT_ID`；挂多个对外域名时再加 `APP_ORIGINS`；
 agent 沙箱那一组（`AGENT_SANDBOX=k8s`、`POD_IP`、`AGENT_SANDBOX_K8S_*`、`AGENT_SANDBOX_IMAGE`，[REQ-AGENT-SANDBOX §7.5](22-agent-sandbox.md#75-k8s-驱动四期)）。

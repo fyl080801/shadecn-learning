@@ -92,7 +92,7 @@ interface ProjectInvite {
 }
 ```
 
-**未登录用户点开分享链接是可用的**：`/invite/<token>` 是普通页面路径，会被 `apps/server/frontend/guard.ts` 拦下并 302 到 `/login?redirect=/invite/<token>`，登录完自动跳回，落在「确认加入」界面上。这条路径不需要额外开白名单。
+**未登录用户点开分享链接是可用的**：`/invite/<token>` 是普通页面路径，会被 `packages/mod-auth/src/guard.ts` 拦下并 302 到 `/login?redirect=/invite/<token>`，登录完自动跳回，落在「确认加入」界面上。这条路径不需要额外开白名单。
 
 ### 3.4 画布列表项（`FlowSummary`）
 
@@ -155,7 +155,7 @@ interface FlowUserState {
 }
 ```
 
-加一个分区要动三处、都不改表：`@shadecn/shared/flow-graph` 的 `FlowUserState` 加字段（前后端共用一份）、服务端 `apps/server/store/flow-types.ts` 的 `FLOW_USER_STATE_PARSERS` 加一条校验（它按 `FlowUserState` 的键做映射类型，漏加编译不过；**不认识的 key 一律 400** —— 这张表不是任意 KV）、前端 `store.setUserState('新字段', 值)`（攒批、失败重试、离开前落库都是现成的）。
+加一个分区要动三处、都不改表：`@shadecn/shared/flow-graph` 的 `FlowUserState` 加字段（前后端共用一份）、服务端 `packages/mod-canvas/src/flow-types.ts` 的 `FLOW_USER_STATE_PARSERS` 加一条校验（它按 `FlowUserState` 的键做映射类型，漏加编译不过；**不认识的 key 一律 400** —— 这张表不是任意 KV）、前端 `store.setUserState('新字段', 值)`（攒批、失败重试、离开前落库都是现成的）。
 
 **视图状态自己不发请求。** `setUserState` 只把值记在本地队列里，真正落库由 `noteLocalEdit()` 触发 —— 每次本地编辑（`mutate` / `undo` / `redo`）都会叫它一声，节奏是**先立刻发一次，再防抖收尾**：空闲之后的第一次编辑当场就走（leading，不等窗口），这之后的改动交给 `useDebounceFn`，手停下来 `USER_STATE_FLUSH_DELAY`（2s）补齐最后的状态，一直不停手则由 `maxWait`（`USER_STATE_FLUSH_MAX_WAIT`，10s）顶上去。于是：只看不改的一次访问**零写流量**；一串连续操作合成开头一发加收尾一发；**没有哪次改动被丢掉**。纯防抖不行是因为它有滞后（手不停就一直不发，而这趟还兼着会话心跳，见下），纯节流又会把窗口内最后那截改动整个丢掉。只有一次编辑时收尾那发发现没东西可送，不会白跑一趟。这条设计的由来：画布内容改走 Yjs 之后，视口若还自己起定时器，它就成了整个编辑器**唯一**的周期性 HTTP 请求 —— 看一眼画布就一路 PATCH 上去。
 
@@ -509,7 +509,7 @@ interface FlowEdge {
 ### 3.10 数据库模型（新增六张表）
 
 > 下面是这批表**最初设计时**的 Prisma 写法，字段和约束的语义至今没变；数据层换成 MikroORM 之后，
-> 现行定义在 `apps/server/db/entities/canvas.ts`（外键变成了关系属性：`projectId` → `project`，
+> 现行定义在 `packages/mod-canvas/src/entities.ts`（外键变成了关系属性：`projectId` → `project`，
 > 列名按 `UnderscoreNamingStrategy` 变成 `project_id`；`FlowOperation` 那张表后来已整体移除）。
 
 ```prisma
@@ -598,7 +598,7 @@ model Flow {
 
 /// 画布上「属于某个人」的视图状态：视口，以后还有面板开合、个人偏好…
 /// 按 key 分区存 JSON 字符串 —— 加一种要存的东西 = 加一个 key，不用改表。
-/// 合法的 key 与各自的校验在 apps/server/store/flow-types.ts 的 FLOW_USER_STATE_PARSERS。
+/// 合法的 key 与各自的校验在 packages/mod-canvas/src/flow-types.ts 的 FLOW_USER_STATE_PARSERS。
 model FlowUserState {
   id        String   @id @default(cuid())
   flowId    String
@@ -875,16 +875,16 @@ store 的职责边界：
 
 **上传记录**：每次上传成功（一次传完的在存进 S3 之后、分片的在 complete 之后），回包之前记一行「对象键 → 这张画布、服务端看到的类型、上传人」（`FlowAsset`）；记不下来整个上传算失败（500）。对象键本身看不出属于哪张画布，凡是客户端递来一个键、要确认它属于这张画布的地方都查它 —— 现在是 agent 消息的附件（[REQ-AGENT §3.10.12](20-agent-canvas.md)），以后私有访问判权（[REQ-ASSET-PRIVATE §3.3](25-private-asset-access.md)）也从它出发。
 
-**画布内容走的不是 HTTP**：`ws://<host>/ws/collaboration`（房间 `flow:<flowId>` 走消息，不在路径里），握手时按项目成员身份鉴权（`apps/server/auth/ws.ts`），此后服务端还会持续确认这条连接的权限还在：**移除成员 / 删项目 / 删画布这三个接口会当场把受影响的 WebSocket 踢掉**（本实例立即，其它实例 ≤3 秒），另有每 20 秒一轮的复验兜底。所以「移除成员」对正在编辑的人不再有可观的窗口期——这很要紧，因为他在窗口期里改的东西会被 CRDT 合并落库，而留下的人**撤销不回来**（撤销只跟踪自己的操作）。踢下线时会区分「会话过期」和「不是成员了」，两者给用户的出路不同。协议与运行参数见 [REQ-COLLAB](04-realtime-collab.md)。
+**画布内容走的不是 HTTP**：`ws://<host>/ws/collaboration`（房间 `flow:<flowId>` 走消息，不在路径里），握手时按项目成员身份鉴权（`packages/mod-collab/src/authorize.ts`），此后服务端还会持续确认这条连接的权限还在：**移除成员 / 删项目 / 删画布这三个接口会当场把受影响的 WebSocket 踢掉**（本实例立即，其它实例 ≤3 秒），另有每 20 秒一轮的复验兜底。所以「移除成员」对正在编辑的人不再有可观的窗口期——这很要紧，因为他在窗口期里改的东西会被 CRDT 合并落库，而留下的人**撤销不回来**（撤销只跟踪自己的操作）。踢下线时会区分「会话过期」和「不是成员了」，两者给用户的出路不同。协议与运行参数见 [REQ-COLLAB](04-realtime-collab.md)。
 
-约定沿用 [REQ-DATA](05-data-persistence.md)：错误响应统一 `{ error: string }`；请求体非法 JSON → 400；参数校验在路由层，数据访问全在 `apps/server/store/projects.ts` 与 `apps/server/store/flows.ts`，路由文件里不出现任何数据库访问。
+约定沿用 [REQ-DATA](05-data-persistence.md)：错误响应统一 `{ error: string }`；请求体非法 JSON → 400；参数校验在路由层，数据访问全在 `packages/mod-canvas/src/projects.ts` 与 `flows.ts`，路由文件里不出现任何数据库访问。
 
 所有端点在 `/api/*` 之下，因此默认需要登录（[REQ-AUTH](02-auth-keycloak.md)）。
 
 ### 4.8 鉴权规则
 
 - **画布的访问权完全由项目成员身份决定**，与 `Flow.createdById` 无关。
-- `/api/flows/:id` 系列先按 id 查出 `projectId`，再查请求者是不是该项目成员 —— 这段判断收敛到一个中间件（如 `apps/server/auth/project.ts` 的 `requireProjectMember` / `requireProjectAdmin`），路由里不重复写。
+- `/api/flows/:id` 系列先按 id 查出 `projectId`，再查请求者是不是该项目成员 —— 这段判断收敛到一个中间件（如 `packages/mod-canvas/src/guards.ts` 的 `requireProjectMember` / `requireProjectAdmin`），路由里不重复写。
 - **非成员访问一律 404，不是 403**（不泄露项目/画布是否存在）。成员但权限不足（member 干 admin 的事）才是 **403**。
 - 软删的项目 / 画布对所有人都等同于不存在（404）。**软删就到此为止**：不清理、不物理删除、不提供恢复入口 —— `deletedAt` 只是一道过滤条件，数据留在库里当兜底，真要捞得手工进库。
 - 唯一的例外是 `/api/invites/:token` 两个端点：它们按 token 鉴权而非成员身份，只要求登录。
@@ -895,7 +895,7 @@ store 的职责边界：
 - `pageSize`：1..100 的整数，越界 → 400。
 - 分享链接 `expiresInDays` 只接受 1 / 7 / 30。
 - 单项目成员上限 200、画布上限 500，超出 → 400 并给出明确文案。
-- `graph`：**没有任何接口接受它了**，所以不存在请求体校验。`parseGraph` 仍在 `apps/server/store/flow-types.ts` 里，用途变成两处**读**：把库里的老 `graph` JSON 灌进 Y.Doc 时（`bindState` 的迁移），以及列表页读投影时。读到坏数据的策略是**跳过而不是报错** —— 那是历史数据，拒绝它只会让画布打不开。
+- `graph`：**没有任何接口接受它了**，所以不存在请求体校验。`parseGraph` 仍在 `packages/mod-canvas/src/flow-types.ts` 里，用途变成两处**读**：把库里的老 `graph` JSON 灌进 Y.Doc 时（`bindState` 的迁移），以及列表页读投影时。读到坏数据的策略是**跳过而不是报错** —— 那是历史数据，拒绝它只会让画布打不开。
 - `user-state`：body 必须是非空对象；**未登记的分区 key → 400**；每个分区按 `FLOW_USER_STATE_PARSERS` 里自己的规则校验（视口要求 `x`/`y`/`zoom` 都是有限数字且 `zoom > 0`）；单个分区序列化后 16KB 封顶。任一分区不合法就整体拒绝，不「对一半存一半」。
 - 单个画布上限：**文档 20MB、单条消息 1MB**，拦在 WebSocket 那一层
   （见 [REQ-COLLAB §4.2](04-realtime-collab.md)）。**节点数和连线数不设上限** —— 那是产品判断不是护栏，

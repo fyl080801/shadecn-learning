@@ -104,7 +104,7 @@
 
 ### 3.2 身份提供方
 
-两家的差别全部收在 `apps/server/auth/providers/` 的实现里，一个统一接口
+两家的差别全部收在 `packages/mod-auth/src/providers/` 的实现里，一个统一接口
 （`authorizationUrl` / `exchange` / `refresh`）对外。路由、会话、登录页都**不认识**具体是谁 ——
 加一个登录方式 = 新写一个实现 + 在注册表数组里加一行。
 
@@ -119,13 +119,13 @@
 会话 cookie 也就种在了 A 上，回到 B 依旧是未登录。真要命的是它**看起来像成功了**：
 整条授权流程一路 302 都没报错。
 
-所以 `apps/server/auth/origin.ts` 的 `originOf(c)` 按**这次请求**算出对外地址，
+所以 `packages/mod-auth/src/settings.ts` 的 `originOf(c)` 按**这次请求**算出对外地址，
 `redirect_uri`、CORS 回显、WebSocket 的 `Origin` 校验、分享链接、cookie 的 `Secure`
 标记全都从它取值。
 
 但**不能无脑跟着 `Host` 走**。反代后面 `Host` / `X-Forwarded-Host` 都是外部可控的
 输入，跟着它拼 `redirect_uri` 就是把授权码送去攻击者的域名（经典的 host header 注入）。
-收口的是 `APP_ORIGINS` 白名单（`apps/server/config.ts`）：
+收口的是 `APP_ORIGINS` 白名单（`packages/server-core/src/config.ts`）：
 
 - 取值顺序 `X-Forwarded-Proto` + `X-Forwarded-Host` → `Host` → `Origin`，
   取第一个**在名单里**的（整页导航根本不带 `Origin`，所以它排最后；
@@ -214,10 +214,10 @@ GitHub 上没有本应用的角色概念，用它登录拿到的 roles 恒为空
 `upsertUser` 只负责把 id_token 的 claims 落库，「还该给这个人补点什么」是另一件事，
 以后再加规则（默认显示名、默认时区……）不该往登录流程里堆。
 
-- 机制在 `apps/server/auth/profile.ts`：`registerProfileHook()` 挂规则，`completeUserProfile(user)`
+- 机制在 `packages/mod-auth/src/profile.ts`：`registerProfileHook()` 挂规则，`completeUserProfile(user)`
   在登录回调里跑一遍。钩子只回答「缺什么」，合并成一次 update；某条钩子抛异常只记日志，**不能挡住登录**。
 - **每次登录都跑**，所以存量用户下次进来自动补齐 —— 不需要迁移脚本，读取侧也不用到处兜底。
-- 当前只有一条规则（`apps/server/avatar/`）：**没有头像的用户补一张 identicon** ——
+- 当前只有一条规则（`packages/mod-auth/src/avatar/`）：**没有头像的用户补一张 identicon** ——
   GitHub 那种由身份算出来的像素方块，用 [minidenticons](https://github.com/laurentpayot/minidenticons)（MIT）生成 SVG。
   Keycloak 给了 `picture` 就用人家的，这条规则只管空着的。
 - 头像**不落图片**：库里存的是 `/api/avatars/<seed>.svg`，请求进来现算。
@@ -290,7 +290,7 @@ GitHub 上没有本应用的角色概念，用它登录拿到的 roles 恒为空
 
 一个用户可以绑多条登录方式，用其中任意一条都登进同一个账号。
 
-**数据模型**（`apps/server/db/entities/auth.ts`、`apps/server/store/identities.ts`）：
+**数据模型**（`packages/server-core/src/db/entities/auth.ts`、`packages/mod-auth/src/identities.ts`）：
 
 - 每条绑定是一行 `UserIdentity`，`(provider, subject)` **唯一** —— 同一个 GitHub 账号
   只能绑给一个人，这条约束就是冲突检测的全部依据。

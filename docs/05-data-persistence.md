@@ -15,7 +15,7 @@
 | SQLite（默认） | 单文件、无需额外服务；配合 PVC 就能在 k8s 上跑 |
 | PostgreSQL（可选） | 需要多副本 / 并发写 / 外部托管库时切过去 |
 | MikroORM 7（`@mikro-orm/core` 7.2.5，版本锁死） | 一份实体定义（`defineEntity`），驱动在运行时选；自带按实体比对库结构的 schema 生成器 |
-| `@mikro-orm/sqlite`（连带 better-sqlite3）/ `@mikro-orm/postgresql`（连带 pg） | 两种库的驱动，`apps/server/db/orm.ts` 按 `DB_PROVIDER` **动态** import；两个都进构建产物 |
+| `@mikro-orm/sqlite`（连带 better-sqlite3）/ `@mikro-orm/postgresql`（连带 pg） | 两种库的驱动，`packages/server-core/src/db/orm.ts` 按 `DB_PROVIDER` **动态** import；两个都进构建产物 |
 
 ### 2.1 为什么从 Prisma 换成 MikroORM
 
@@ -46,7 +46,7 @@ MikroORM 的实体定义本来就和库无关，驱动是运行时的一个配�
 
 ### 3.2 数据库位置
 
-解析规则只有一份，在 `apps/server/config.ts`（`dbProvider` / `databaseUrl`）。服务端进程和表结构同步入口（`apps/server/db/sync-cli.ts`）都从这里取：
+解析规则只有一份，在 `packages/server-core/src/config.ts`（`dbProvider` / `databaseUrl`）。服务端进程和表结构同步入口（`apps/server/db-sync.ts`）都从这里取：
 
 1. 设了 `DATABASE_URL` → 直接用它，覆盖一切；
 2. 否则（仅 sqlite）库文件为 `$DATA_DIR/app.db`；
@@ -57,7 +57,7 @@ MikroORM 的实体定义本来就和库无关，驱动是运行时的一个配�
 
 ### 3.3 一份实体定义，两种库
 
-实体在 `apps/server/db/entities/`（`auth.ts` / `canvas.ts`，用 `defineEntity` + `p.*` 构建器写），`index.ts` 汇总成交给 MikroORM 的列表。规矩写在 `db/entities/columns.ts` 的头注释里，每一条都是两种库上实测出来的：
+实体用 `defineEntity` + `p.*` 构建器写，**各归其主**（[REQ-MODULES](28-server-modules.md) §3.1）：`User` 是平台的表（`@shadecn/server-kit/identity`），登录与会话的在底座 `packages/server-core/src/db/entities/auth.ts`，项目 / 画布的在 `packages/mod-canvas/src/entities.ts`，上传记录、agent 的在各自的模块包里；`packages/server-core/src/db/entities/index.ts` 把底座的和模块清单里每个模块声明的 `entities` 汇总成交给 MikroORM 的列表。规矩写在 `@shadecn/server-kit/db` 的头注释里，每一条都是两种库上实测出来的：
 
 | 规则 | 不这么做会怎样 |
 |---|---|
@@ -73,7 +73,7 @@ MikroORM 的实体定义本来就和库无关，驱动是运行时的一个配�
 
 ### 3.3.1 用法上与 Prisma 的差异（易错点）
 
-- **每次操作 fork 一个 EntityManager**：`db()`（`apps/server/db.ts`）就是 `orm.em.fork()`。不开 `allowGlobalContext`，也不用 RequestContext 中间件 —— store 层每个函数自己 fork，协同落库、定时清理这些不在请求里的路径同样能用。
+- **每次操作 fork 一个 EntityManager**：`db()`（`packages/server-core/src/db.ts`）就是 `orm.em.fork()`。不开 `allowGlobalContext`，也不用 RequestContext 中间件 —— store 层每个函数自己 fork，协同落库、定时清理这些不在请求里的路径同样能用。
 - **`nativeUpdate` / `em.insert` / `em.upsert` 不触发 `onCreate` / `onUpdate`**。Prisma 的 `@updatedAt` 在 `updateMany` 里会自动带上，这里不会：用 `nativeUpdate` 改内容的地方必须显式写 `updatedAt: new Date()`（`collab/persistence.ts` 和 `collab/flow-writer.ts` 的 CAS 写尤其要紧 —— 漏了的话列表按「最近修改」排序时编辑过的画布纹丝不动）；`upsert` 建行时要自己给 `id`（`newId()`）和 `createdAt`，并用 `onConflictMergeFields` 限定撞车时改哪些列（不然 id 也会被换掉）。
 - **CAS**：`em.nativeUpdate(Flow, { id, revision: 读到的 }, { revision: 读到的 + 1, … })` 返回受影响行数，0 就是被抢先了。Prisma 的 `{ increment: 1 }` 在 CAS 里本来就不能用。
 - **嵌套写 / `$transaction([...])` → `em.transactional(async (em) => …)`**：回调里 `em.create` 的实体在提交时一起 flush。
@@ -87,14 +87,14 @@ MikroORM 的实体定义本来就和库无关，驱动是运行时的一个配�
 
 | 场景 | 命令 |
 |---|---|
-| 源码态 | `pnpm db:push`（= `tsx db/sync-cli.ts`）；`pnpm dev` / `pnpm dev:cluster` 先跑它 |
-| 开发期放行有损变更 | `pnpm db:push:force`（= `tsx db/sync-cli.ts --force`） |
-| 构建产物 / 容器 | `node server/db-sync.js`（esbuild 把 `db/sync-cli.ts` 打成的第二个入口）；容器 `CMD` 是 `node server/db-sync.js && exec node server/index.js` |
+| 源码态 | `pnpm db:push`（= `tsx db-sync.ts`）；`pnpm dev` / `pnpm dev:cluster` 先跑它 |
+| 开发期放行有损变更 | `pnpm db:push:force`（= `tsx db-sync.ts --force`） |
+| 构建产物 / 容器 | `node server/db-sync.js`（esbuild 把 `apps/server/db-sync.ts` 打成的第二个入口）；容器 `CMD` 是 `node server/db-sync.js && exec node server/index.js` |
 | 测试 | `apps/server/test/global-setup.ts` 在子进程里跑同一个入口（PG 测试库加 `--reset`） |
 
 **为什么不用迁移文件。** 迁移是按方言生成的纯 DDL（`BLOB`/`BYTEA`、`datetime`/`timestamptz`、内联外键 vs 独立的 `ALTER TABLE ADD CONSTRAINT`），而且 **SQLite 不支持改列** —— 同一次「改一列类型」，PG 是一条 `ALTER TABLE`，SQLite 得整表重建。迁移文件必然两份、条条对应。这套维护成本只有在需要照顾存量数据时才划得来，而这个项目没有。
 
-#### 3.4.1 有损变更守卫（`apps/server/db/schema-sync.ts`）
+#### 3.4.1 有损变更守卫（`packages/server-core/src/db/schema-sync.ts`）
 
 MikroORM 的 `schema.update({ safe: true })` **挡不住有损变更**（实测）：
 
@@ -125,7 +125,7 @@ MikroORM 的 `schema.update({ safe: true })` **挡不住有损变更**（实测�
 
 ### 3.5 两种库的行为差异
 
-只有一处需要代码补偿：**大小写不敏感的模糊搜索**。SQLite 的 `LIKE` 对 ASCII 天生大小写不敏感，PostgreSQL 的不是；MikroORM 的 `$ilike` 又是 PG 专属，SQLite 上直接是语法错误。`apps/server/db/query.ts` 的 `containsIgnoreCase(列名, 关键字)` 统一写成 `lower(列) like lower(?) escape '\'`：两侧用同一个库的同一个函数，关键字里的 `%` `_` `\` 转义掉。新增模糊搜索一律走它（铺进 where 里，放进关系的嵌套条件里也指向正确的表），别直接写 `$like` / `$ilike`。
+只有一处需要代码补偿：**大小写不敏感的模糊搜索**。SQLite 的 `LIKE` 对 ASCII 天生大小写不敏感，PostgreSQL 的不是；MikroORM 的 `$ilike` 又是 PG 专属，SQLite 上直接是语法错误。`@shadecn/server-kit/db` 的 `containsIgnoreCase(列名, 关键字)` 统一写成 `lower(列) like lower(?) escape '\'`：两侧用同一个库的同一个函数，关键字里的 `%` `_` `\` 转义掉。新增模糊搜索一律走它（铺进 where 里，放进关系的嵌套条件里也指向正确的表），别直接写 `$like` / `$ilike`。
 
 ### 3.6 数据模型
 
@@ -140,13 +140,13 @@ MikroORM 的 `schema.update({ safe: true })` **挡不住有损变更**（实测�
 | `Flow`（`flow`） | 一张画布 | `ydoc`（blob，内容的事实源）+ `graph`（只读投影）；`revision` 是写计数，落库时拿它做 CAS |
 | `FlowUserState`（`flow_user_state`） | 每人一份的画布视图状态 | `(flow, user, key)` 唯一 |
 
-字段级说明见 `apps/server/db/entities/*.ts` 中的注释。
+字段级说明见 `packages/server-core/src/db/entities/*.ts` 中的注释。
 
 ### 3.7 ORM 单例与日志
 
-- `apps/server/db.ts` 导出唯一的 `orm`（模块顶层 `await createOrm()`，缓存在 `globalThis` 上，避免 `tsx watch` 每次热重启泄漏连接）和 `db()`（fork）。`MikroORM.init()` 只做实体发现、**不连库**，第一条查询才建连接 —— 数据库不通时进程照样起得来，readiness 如实报 not-ready。
+- `packages/server-core/src/db.ts` 导出唯一的 `orm`（模块顶层 `await createOrm()`，缓存在 `globalThis` 上，避免 `tsx watch` 每次热重启泄漏连接）和 `db()`（fork）。`MikroORM.init()` 只做实体发现、**不连库**，第一条查询才建连接 —— 数据库不通时进程照样起得来，readiness 如实报 not-ready。
 - 驱动**动态** import：连 PG 的进程不会加载 better-sqlite3 的原生模块，反之亦然。
-- 日志走 MikroORM 的 `loggerFactory`（`apps/server/logger/db.ts`），只记 SQL 文本、耗时、行数，**不记参数值**：`query-params` 命名空间永远关着（MikroORM 只在它开着时才把参数拼进交给 logger 的 SQL），`logQuery` 也只挑那几个字段用。慢查询阈值照旧是 `LOG_SLOW_QUERY_MS`。
+- 日志走 MikroORM 的 `loggerFactory`（`packages/server-core/src/logger/db.ts`），只记 SQL 文本、耗时、行数，**不记参数值**：`query-params` 命名空间永远关着（MikroORM 只在它开着时才把参数拼进交给 logger 的 SQL），`logQuery` 也只挑那几个字段用。慢查询阈值照旧是 `LOG_SLOW_QUERY_MS`。
 
 ### 3.8 命令
 
@@ -155,13 +155,13 @@ MikroORM 的 `schema.update({ safe: true })` **挡不住有损变更**（实测�
 | `pnpm db:push` | 把表结构对齐到实体定义（**没有迁移文件**，见 3.4）；有损变更拒绝执行；`pnpm dev` 会先跑一遍 |
 | `pnpm db:push:force` | 同上，但放行有损变更、并删掉实体之外的表。**只在开发期用** |
 
-改完实体（`apps/server/db/entities/*.ts`）的标准动作就是 `pnpm db:push`，没有生成步骤。
+改完实体（`packages/server-core/src/db/entities/*.ts`）的标准动作就是 `pnpm db:push`，没有生成步骤。
 
 Prisma 时代的 `db:generate`（没有生成物了）和 `db:studio`（MikroORM 没有等价的可视化工具）**已删除**；看数据用各库自己的客户端（`sqlite3 data/app.db`、`psql`）。
 
 ### 3.9 业务 API 样板：`/api/notes`
 
-当前是内存 `Map` 实现（`apps/server/store/notes.ts`），进程重启即清空，启动时预置两条示例数据。它的价值是定义**业务路由应该长什么样**：
+当前是内存 `Map` 实现（`packages/mod-notes/src/store.ts`），进程重启即清空，启动时预置两条示例数据。它的价值是定义**业务路由应该长什么样**：
 
 | 方法 | 路径 | 行为 |
 |---|---|---|

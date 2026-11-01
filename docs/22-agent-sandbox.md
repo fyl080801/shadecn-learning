@@ -384,7 +384,7 @@ runner 上报的只剩 runner 执行的工具的开始 / 结束。顺序天然�
 本文 §4 的图与 §9 第 2 项；docs/20 §3.10.2 的插入时机、§3.10.8 空闲上限里的 `/llm`、§3.10.11「步数各算」；REQ-DEPLOY 里「网关的模型代理」的说法。
 不变的：key 只在服务端；令牌、判权、Grant；`model.ts` 的 `CUSTOM_ENDPOINT_COMPAT`（服务端调用时同样生效）；上下文的裁剪规则。
 
-**第 5 步的实现说明**（`session.ts` 的 `modelRequest` / 收尾、`store.ts` 的 `AgentRunUsage`、`apps/server` 的 `agent_run` 实体与 `store/agent.ts`；协议不升，runner 不变）：
+**第 5 步的实现说明**（`session.ts` 的 `modelRequest` / 收尾、`store.ts` 的 `AgentRunUsage`、`@shadecn/mod-agent` 的 `agent_run` 实体与 `stores.ts`；协议不升，runner 不变）：
 
 - **落了什么**：`agent_run` 加五列 —— `input_tokens`（不含缓存命中 / 写入的输入，pi-ai 的 `usage.input`）、`output_tokens`、`cache_read_tokens`、
   `cache_write_tokens`、`cost_micro_usd`（费用，**百万分之一美元的整数**），都可空、`db:push` 直接加列。

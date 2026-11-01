@@ -4,7 +4,7 @@
 > 第 7 项（备份与恢复预案）的**规则已经定下来并实测**（§4.7.1–4.7.3），
 > 差的是定时备份本身与一次恢复演练，那是运维动作。
 >
-> **已完成**：§4.5 可观测（`apps/server/logger/` + `GET /api/collab/health`）、
+> **已完成**：§4.5 可观测（`packages/server-core/src/logger/` + `GET /api/collab/health`）、
 > §4.1 落库失败不再丢数据（异常照抛 + 欠账登记 + 定期重试）、§4.2 a 共享层 fail-open、
 > §4.6 k8s 三项（grace / 落库超时 / readiness 拆路径）、§4.3 落库改成读-合并-CAS、
 > §4.4 「服务器存不进去」的房间广播与状态栏提示。
@@ -220,7 +220,7 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
 
 ### 4.5 发现不了就谈不上容灾
 
-> **已做** —— 日志层（`apps/server/logger/`，winston，零入侵注入）+ `GET /api/collab/health`。
+> **已做** —— 日志层（`packages/server-core/src/logger/`，winston，零入侵注入）+ `GET /api/collab/health`。
 > 剩下的是**运维动作**：在监控系统里配一条针对这个端点的告警。
 
 原本的问题是：落库失败、写队列深度、Redis 断连、redlock 冲突全部只落在 stdout，
@@ -228,7 +228,7 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
 
 现在的形态：
 
-- **日志**（`apps/server/logger/`）—— 落库失败、慢查询、连接进出、房间生命周期都是结构化日志。
+- **日志**（`packages/server-core/src/logger/`）—— 落库失败、慢查询、连接进出、房间生命周期都是结构化日志。
   接管 `console.*` 得来，业务代码一行没改，写法照旧是 `console.warn('[collab] …')`。
 - **端点** `GET /api/collab/health` —— **状态码本身就是结论**（200 / 503），
   最土的告警（curl 判状态码）也接得上，不必解析 JSON。响应里有：
@@ -399,7 +399,7 @@ extension-redis 那把 redlock**，它有两个洞：`lockTimeout` 默认只有 
   库里是两者的合并；本副本的内存文档也被补上了对方的内容。（§4.3）
 - ~~**健康接口**~~：**已完成** —— `GET /api/collab/health` 报出最近一次落库成功时间、
   失败数、队列深度、共享层可用性，落库失败时翻成 503。
-  用例在 `apps/server/test/routes/collab.test.ts` 与 `apps/server/test/logger/collab.test.ts`。（§4.5）
+  用例在 `apps/server/test/routes/collab.test.ts` 与 `apps/server/test/logger/collab.test.ts`（被测的扩展在 `packages/mod-collab/src/logging.ts`）。（§4.5）
 - ~~**退出不超时**~~：**已完成** —— `SHUTDOWN_FLUSH_TIMEOUT` 给落库一个 20 秒上限，
   超时记一笔往下走；实测 SIGTERM 到进程退出 0.2 秒。（§4.6）
 - ~~**readiness 反映依赖**~~：**已完成** —— `/api/health/ready` 在数据库或共享层不通时 503，

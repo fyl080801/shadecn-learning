@@ -1,16 +1,14 @@
 ---
 paths:
-  - "apps/server/auth/**"
-  - "apps/server/routes/auth.ts"
-  - "apps/server/routes/avatars.ts"
-  - "apps/server/store/identities.ts"
-  - "apps/server/avatar/**"
+  - "packages/mod-auth/**"
   - "apps/web/src/lib/auth.ts"
   - "apps/web/src/components/settings/**"
   - "apps/web/src/login/**"
 ---
 
 # Auth — Keycloak OIDC + GitHub OAuth2, BFF style (`docs/02-auth-keycloak.md`)
+
+> Login is the **`@shadecn/mod-auth`** module (`docs/28` §3.1): every path below is relative to `packages/mod-auth/src/` (`auth/x.ts` = `x.ts`, `store/identities.ts` = `identities.ts`, `routes/*` = `routes/*`, `avatar/` = `avatar/`). It **provides the platform's `auth`** (`AUTH_SERVICE`): the core pipeline's session parsing, login gate and page guard, and every module's `ctx.platform.auth.userId` / `identify` / `deriveSecret`, forward to `module.ts`'s provider. Its settings are the `modules.auth` config section (`config.ts`: parse + `assertAuthSettings` — production without a provider or `SESSION_SECRET` fails at parse), handed over in `setup` (`configureAuthSettings`) and read through `settings.ts`'s **live-binding exports** (`authConfig`, `authEnabled`, …) — **read them at call time, never at import time** (they aren't configured yet; that's why `session.ts` has `sessionSecret()` and the providers' `enabled` are getters). Origins come from `platform().origins`. The `User` entity is the platform's (`@shadecn/server-kit/identity`).
 
 The browser never sees a token: the code exchange is server-side, tokens live in the database, the client holds only an httpOnly `sid` cookie. Frontend auth / re-login is in `web-shell.md`.
 
@@ -23,7 +21,7 @@ The browser never sees a token: the code exchange is server-side, tokens live in
 
 ## Callback origin (multi-domain)
 
-- **The callback host follows the domain the browser used** — `auth/origin.ts`'s `originOf(c)`, gated by `APP_ORIGINS`. With one fixed origin, logging in on domain B finishes on A and B stays anonymous, with no error anywhere. `redirect_uri`, the CORS echo, the WebSocket `Origin` check, invite links and the cookie `Secure` flag all use it.
+- **The callback host follows the domain the browser used** — `settings.ts`'s `originOf(c)` (= `platform().origins.of(c)`), gated by `APP_ORIGINS`. With one fixed origin, logging in on domain B finishes on A and B stays anonymous, with no error anywhere. `redirect_uri`, the CORS echo, the WebSocket `Origin` check, invite links and the cookie `Secure` flag all use it.
 - **Never follow `Host` blindly** (attacker-controllable behind a proxy → the code is mailed elsewhere). Take the first of `X-Forwarded-Proto`+`X-Forwarded-Host` → `Host` → `Origin` that is **on the whitelist**, else `APP_ORIGIN`. `APP_ORIGIN` is always a member; comparison is normalized (lowercase, no trailing slash, default port dropped, http/https only); **no wildcards** (each domain's callback must be registered in Keycloak anyway).
 - **`AuthRequest.origin` is stored** — the token exchange's `redirect_uri` must match the authorization step exactly; never recompute it.
 - **`Secure` is per-request** (`secureCookieFor`) — on http the browser silently discards a Secure cookie ("logged in but still logged out", clean logs).
@@ -33,7 +31,7 @@ The browser never sees a token: the code exchange is server-side, tokens live in
 - The cookie holds a 32-byte random token; the row id is `HMAC-SHA256(SESSION_SECRET, token)`, so a DB dump can't forge a cookie.
 - `loadSession()` refreshes an access token within 30s of expiry (concurrent refreshes deduped per session) — **traffic keeps the session alive**; it expires once the refresh token passes Keycloak's SSO Session Idle. `loadSession(token, { refresh: false })` is the read-only variant for non-user traffic (collab revalidation): never renews, never deletes.
 - **A failed refresh is not uniformly fatal**: only a 4xx (`invalid_grant`) destroys the session. Network errors, timeouts, 5xx, local DB failures keep it and retry next request, with a 15s per-session cooldown. Every outbound OIDC request has an 8s timeout. `sweepExpired()` drops expired sessions and unused auth requests.
-- `auth/middleware.ts` — `withSession` (mounted on `*`, the page gate needs it), `requireAuth` (401), `requireRole(...)` (403). Realm roles land in `User.roles` as-is, client roles as `clientId:role`. `auth/ws.ts` does the same check for WebSocket handshakes; `auth/redirect.ts`'s `safeRedirect()` is the shared in-site check for every `?redirect=` (`//evil.com`, `/\evil.com` → `/`).
+- `auth/middleware.ts` — `withSession` (the platform's `auth.session`, run by the core pipeline on `*` — the page gate needs it), `requireAuth` (401, the platform's `auth.requireUser`), `requireRole(...)` (403). Realm roles land in `User.roles` as-is, client roles as `clientId:role`. `packages/mod-collab/src/authorize.ts` does the same check for WebSocket handshakes (through the platform's `auth.identify` = this module's provider); `auth/redirect.ts`'s `safeRedirect()` is the shared in-site check for every `?redirect=` (`//evil.com`, `/\evil.com` → `/`).
 
 ## Routes — `routes/auth.ts`
 
@@ -57,5 +55,5 @@ The browser never sees a token: the code exchange is server-side, tokens live in
 
 ## Profile hooks and avatars
 
-- **`auth/profile.ts` keeps post-login defaults out of the login path.** `registerProfileHook({name, fill})` adds a rule; `completeUserProfile(user)` runs them in the callback and in `auth/project.ts`'s dev-user path. Hooks answer "what's missing", merged into **one** update; a throwing hook is logged and skipped. Runs on every login — that is the backfill. New rule = one file + one `registerProfileHook`.
-- **`apps/server/avatar/`** — no avatar → identicon (minidenticons). Keycloak's `picture` wins. **No image stored**: the DB holds `/api/avatars/<seed>.svg`, `routes/avatars.ts` renders it (no DB read, `immutable` for a year). Seed = `sha256(issuer + "\n" + subject)` truncated to 16 hex. The route module installs the hook, so mounting it in `app.ts` is the one line. **Put a round background under any displayed avatar** (`bg-muted` / `bg-sidebar-accent`) — the identicon is transparent.
+- **`auth/profile.ts` keeps post-login defaults out of the login path.** `registerProfileHook({name, fill})` adds a rule; `completeUserProfile(user)` runs them in the callback and in `auth/current-user.ts`'s dev-user path. Hooks answer "what's missing", merged into **one** update; a throwing hook is logged and skipped. Runs on every login — that is the backfill. New rule = one file + one `registerProfileHook`.
+- **`avatar/`** — no avatar → identicon (minidenticons). Keycloak's `picture` wins. **No image stored**: the DB holds `/api/avatars/<seed>.svg`, `routes/avatars.ts` renders it (no DB read, `immutable` for a year). Seed = `sha256(issuer + "\n" + subject)` truncated to 16 hex. The route module installs the hook, so mounting it in `app.ts` is the one line. **Put a round background under any displayed avatar** (`bg-muted` / `bg-sidebar-accent`) — the identicon is transparent.

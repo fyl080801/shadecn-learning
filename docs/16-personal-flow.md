@@ -52,7 +52,7 @@
 ### 3.1 个人空间就是一个 Project
 
 ```ts
-// apps/server/db/entities/canvas.ts（节选）
+// packages/mod-canvas/src/entities.ts（节选）
 export const Project = defineEntity({
   name: 'Project',
   properties: {

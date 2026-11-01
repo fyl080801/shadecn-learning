@@ -57,7 +57,7 @@
 ### 3.2 握手鉴权
 
 - 握手是普通 HTTP 请求，同源会自动带上 `sid` Cookie。
-- 用与 HTTP 相同的会话校验逻辑（`apps/server/auth/ws.ts` 的 `authorizeCollab`），挂在 `onConnect` 上 ——
+- 用与 HTTP 相同的会话校验逻辑（`packages/mod-collab/src/authorize.ts` 的 `authorizeCollab`），挂在 `onConnect` 上 ——
   它对**每条**连接都跑；`onAuthenticate` 是 token 模型（"only if required"），我们用 cookie，不走它。
   抛异常即拒绝；返回值成为 `context`，后面的 hook 都读它。
 - **房间即资源**：房间名形如 `flow:<flowId>` 的，还要再判一次「请求者是不是该画布所属项目的成员」，

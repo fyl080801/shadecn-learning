@@ -1,20 +1,26 @@
 ---
 paths:
-  - "apps/server/db/**"
-  - "apps/server/db.ts"
-  - "apps/server/store/**"
+  - "packages/server-core/src/db/**"
+  - "packages/server-core/src/db.ts"
+  - "apps/server/db-sync.ts"
+  - "packages/*/src/stores.ts"
   - "packages/mod-collab/src/persistence.ts"
-  - "apps/server/store/flow-docs.ts"
+  - "packages/mod-canvas/src/flow-docs.ts"
+  - "packages/*/src/entities.ts"
+  - "packages/server-kit/src/db.ts"
+  - "packages/server-kit/src/identity.ts"
   - "packages/mod-collab/src/flow-writer.ts"
 ---
 
 # Database — MikroORM 7, SQLite *or* PostgreSQL (`docs/05-data-persistence.md`)
 
-## Entities (`db/entities/*.ts`)
+## Entities (each owner's `entities`, `docs/28` §3.1)
+
+- **Where:** `User` → `@shadecn/server-kit/identity` (every module's FK target); auth tables → `mod-auth`'s `entities.ts`; canvas → `packages/mod-canvas/src/entities.ts`; `FlowAsset` → `mod-storage`; agent → `mod-agent`. `@shadecn/server-core`'s `serverEntities(modules)` concatenates `User` + every listed module's `entities` (regardless of switches/roles). Column helpers (`idColumn`, `newId`, …) and the two-DB rules live in `@shadecn/server-kit/db`; modules get an EntityManager from its `db()`.
 
 - Auth: `User` (unique `(issuer, subject)` — the primary identity's copy; roles as a JSON string), `UserIdentity` (unique `(provider, subject)`; `email` is display-only), `Session` (`provider` = who renews; `id` = the cookie token's HMAC, **set by the caller**), `AuthRequest` (`provider` dispatches the callback, `linkUserId` turns it into linking), `PendingLink` (`user` unique, a retry replaces it).
-- Canvas: `Project`, `ProjectMember` (unique `(project, user)`; the creator's admin row is written, never inferred from `createdBy`), `ProjectInvite` (`project` unique; token in the clear — it *is* the credential; `expiresAt` is the only gate — semantics: `docs/13` §3.3), `Flow` (`ydoc` = Yjs bytes, **source of truth**; `graph` = derived JSON projection; both **lazy** — say `populate: ['ydoc']` / `fields: [...]`; `revision` = the server's CAS counter, not a client lock), `FlowUserState` (unique `(flow, user, key)`, JSON-string value; a new partition is a new key, not a schema change), `FlowAsset` (upload record: unique `key` → `flow` + server-observed `contentType`; written by `routes/assets.ts` **before** the upload responds — a failed write fails the upload, or the asset can never be proven to belong to that canvas; no URL stored, it is derived from the key).
-- Agent (`entities/agent.ts`, REQ-AGENT): `AgentConversation` (FKs to `flow` and `user` with cascade; `messages` / `llmMessages` are lazy JSON strings), audit log `AgentRun` (id = SSE runId; usage columns nullable — null = not recorded, written only by `finishRun`; cost is **integer micro-USD** `costMicroUsd`, rounded once on the run total — there is no decimal type, and PG `int` is 32-bit, so values are clamped, see `store/agent.ts` `usageColumns`) + `AgentToolCall` (`args` = `digestArgs` output: ids and string *lengths*, never content). Their `conversationId` / `flowId` / `userId` / `runId` / `grantId` are **plain text with no FK on purpose** — the audit trail outlives what it describes. Same for the delegation grant `AgentGrant` (issue-time project / owner snapshot, `expiresAt`, `revokedAt` + `revokeReason` — every revoke writes only where `revokedAt` is null, so the first reason sticks) and `AgentGrantScope` (`onRevoke` holds four values, only `stop` is implemented; `docs/22`).
+- Canvas: `Project`, `ProjectMember` (unique `(project, user)`; the creator's admin row is written, never inferred from `createdBy`), `ProjectInvite` (`project` unique; token in the clear — it *is* the credential; `expiresAt` is the only gate — semantics: `docs/13` §3.3), `Flow` (`ydoc` = Yjs bytes, **source of truth**; `graph` = derived JSON projection; both **lazy** — say `populate: ['ydoc']` / `fields: [...]`; `revision` = the server's CAS counter, not a client lock), `FlowUserState` (unique `(flow, user, key)`, JSON-string value; a new partition is a new key, not a schema change), `FlowAsset` (upload record: unique `key` → `flow` + server-observed `contentType`; written by the upload routes (`mod-storage`'s `routes.ts`, via its `assets.ts`) **before** the upload responds — a failed write fails the upload, or the asset can never be proven to belong to that canvas; no URL stored, it is derived from the key).
+- Agent (`mod-agent`'s `entities.ts`, REQ-AGENT): `AgentConversation` (FKs to `flow` and `user` with cascade; `messages` / `llmMessages` are lazy JSON strings), audit log `AgentRun` (id = SSE runId; usage columns nullable — null = not recorded, written only by `finishRun`; cost is **integer micro-USD** `costMicroUsd`, rounded once on the run total — there is no decimal type, and PG `int` is 32-bit, so values are clamped, see `mod-agent`'s `stores.ts` `usageColumns`) + `AgentToolCall` (`args` = `digestArgs` output: ids and string *lengths*, never content). Their `conversationId` / `flowId` / `userId` / `runId` / `grantId` are **plain text with no FK on purpose** — the audit trail outlives what it describes. Same for the delegation grant `AgentGrant` (issue-time project / owner snapshot, `expiresAt`, `revokedAt` + `revokeReason` — every revoke writes only where `revokedAt` is null, so the first reason sticks) and `AgentGrantScope` (`onRevoke` holds four values, only `stop` is implemented; `docs/22`).
 - Naming: MikroORM's `UnderscoreNamingStrategy`. **Foreign keys are relation properties** (`user`, `project`, `flow`, `createdBy`, `personalOwner` → `user_id`): filter `{ user: userId }`, read `row.user.id`, `populate` for the other side's fields. **Only the owning side is defined** — no inverse collections (`defineEntity` inference degrades to `any`); queries start from the FK table ("my projects" = a `ProjectMember` query). `Flow.createdById`, `ProjectInvite.createdById`, `ProjectMember.invitedById`, `AuthRequest.linkUserId` are plain text, no FK.
 - SQLite file: `$DATA_DIR/app.db` (`DATA_DIR` defaults to `<repo>/data`); `DATABASE_URL` overrides; relative `file:` paths resolve against the repo root; the parent dir is `mkdir -p`'d first.
 
@@ -33,7 +39,7 @@ paths:
   - Nested writes / `$transaction([...])` → `em.transactional(async (em) => …)`.
   - Unique conflicts throw `UniqueConstraintViolationException` — catch **only** that in "lost the race, re-read" branches.
   - Missing rows: `nativeUpdate` / `nativeDelete` return 0 (no P2025). The OAuth one-shot consume means "the request whose `nativeDelete` returned 1".
-- **Case-insensitive search** goes through `db/query.ts`'s `containsIgnoreCase(column, keyword)` (`lower(col) like lower(?) escape '\'` via `raw()`, works in nested relation filters, escapes `%` `_` `\`). Never `$like` / `$ilike` inline (`$ilike` is a syntax error on SQLite). It takes the **column** name, not the property.
+- **Case-insensitive search** goes through `@shadecn/server-kit/db`'s `containsIgnoreCase(column, keyword)` (`lower(col) like lower(?) escape '\'` via `raw()`, works in nested relation filters, escapes `%` `_` `\`). Never `$like` / `$ilike` inline (`$ilike` is a syntax error on SQLite). It takes the **column** name, not the property.
 
 ## Schema sync — no migration files (`db/schema-sync.ts`)
 

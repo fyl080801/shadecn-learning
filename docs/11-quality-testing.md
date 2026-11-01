@@ -27,13 +27,13 @@
 三重隔离，缺一不可：
 
 1. **不许联网** —— server / client 两个 project 的 setup 文件都把 `globalThis.fetch` 换成一个**直接 reject** 的桩。任何需要网络的测试必须显式 `vi.stubGlobal('fetch', …)`，不存在"不小心打到真实 Keycloak"这种可能。
-2. **不许读开发者的 `.env`** —— `apps/server/env.ts` 在测试中被 alias 到 `apps/server/test/stubs/env.ts`（空实现）。环境变量**全部**由 `apps/server/vitest.config.ts` 的 `test.env` 提供（固定的 issuer、client id、session secret 等）。
+2. **不许读开发者的 `.env`** —— `packages/server-core/src/env.ts` 在测试中被 alias 到 `apps/server/test/stubs/env.ts`（空实现）。环境变量**全部**由 `apps/server/vitest.config.ts` 的 `test.env` 提供（固定的 issuer、client id、session secret 等）。
    > 这一步必须做，因为 `process.loadEnvFile()` 不覆盖已存在的变量 —— 先在 `test.env` 里占好位，本地 `.env` 就再也影响不到测试。
 3. **不许污染开发库** —— 测试库固定在 `data/test/` 下，与开发用的 `data/app.db` 分离。
 
 ### 2.3 数据库
 
-- `apps/server/test/global-setup.ts` 在**整轮开始前**清空 `data/test/`，并在子进程里执行**真实的表结构同步入口**（`apps/server/db/sync-cli.ts`，就是 `pnpm db:push` 和容器启动跑的那一个）。
+- `apps/server/test/global-setup.ts` 在**整轮开始前**清空 `data/test/`，并在子进程里执行**真实的表结构同步入口**（`apps/server/db-sync.ts`，就是 `pnpm db:push` 和容器启动跑的那一个）。
   > 用真命令而不是手写建表，是为了让测试库和生产库走同一条建表路径，实体写错测试就会红。
   > 这个项目没有迁移文件，结构同步就是这一条（见 [REQ-DATA §3.4](05-data-persistence.md)）。
   > 放在子进程里，是因为同步入口会读仓库根的 `.env`；在子进程里读就污染不到 Vitest 主进程和各个 worker。
@@ -83,7 +83,7 @@ WebSocket 才成立的行为，靠 Playwright 脚本手工跑（不在 CI 里）
 
 ### 2.8 编写约定
 
-- 测试文件**镜像被测目录**：`apps/server/test/routes/auth.test.ts` ↔ `apps/server/routes/auth.ts`。
+- 测试文件**镜像被测目录**：`apps/server/test/routes/auth.test.ts` ↔ `packages/mod-auth/src/routes/auth.ts`。
 - `apps/server/test/` 内的导入保持 `.ts` 扩展名，与 `apps/server/` 一致。
 - **Vitest globals 未开启** —— `describe` / `it` / `expect` / `vi` 必须从 `vitest` 显式导入。
 - 测试名写**被约束的行为**（「未登录 → 401」），不写被调用的函数名（「测试 requireAuth」）。

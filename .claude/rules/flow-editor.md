@@ -11,9 +11,7 @@ paths:
   - "apps/web/src/styles/vue-flow.css"
   - "packages/shared/src/flow-*.ts"
   - "packages/shared/src/canvas.ts"
-  - "apps/server/store/flow-types.ts"
-  - "apps/server/store/flows.ts"
-  - "apps/server/store/projects.ts"
+  - "packages/mod-canvas/src/**"
 ---
 
 # Canvas editor (REQ-CANVAS `docs/13`, REQ-SOLO `docs/16`, REQ-NODEKIT `docs/21`)
@@ -147,4 +145,4 @@ Collaboration (sync transport, persistence, presence, close codes) is in `collab
 
 ## Types
 
-Graph types, `GRAPH_SCHEMA_VERSION`, `nodeRecordFromParts` and `inputs` derivation are in `@shadecn/shared/flow-graph`; ports and `resolveConnection` in `@shadecn/shared/flow-node-types`; project/canvas API shapes in `@shadecn/shared/canvas`. `apps/server/store/flow-types.ts` keeps only server-only code (it uses `Buffer`): `parseGraph` / `parseTransactions` / `parseUserStatePatch`, `GRAPH_LIMITS`, Op types. `metadata.createdAt` is validated with `isTimestamp` everywhere.
+Graph types, `GRAPH_SCHEMA_VERSION`, `nodeRecordFromParts` and `inputs` derivation are in `@shadecn/shared/flow-graph`; ports and `resolveConnection` in `@shadecn/shared/flow-node-types`; project/canvas API shapes in `@shadecn/shared/canvas`. `packages/mod-canvas/src/flow-types.ts` keeps only server-only code (it uses `Buffer`): `parseGraph` / `parseTransactions` / `parseUserStatePatch`, `GRAPH_LIMITS`, Op types. `metadata.createdAt` is validated with `isTimestamp` everywhere.

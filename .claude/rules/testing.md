@@ -15,13 +15,14 @@ paths:
 
 ## Backend
 
-- `test/global-setup.ts` wipes `data/test/` and runs the real `tsx db/sync-cli.ts` (cwd `apps/server`) **in a child process** (reading the repo `.env` in Vitest's main process would leak real Keycloak/GitHub config into workers). `fileParallelism: false` protects the shared DB.
+- `test/global-setup.ts` wipes `data/test/` and runs the real `tsx db-sync.ts` (cwd `apps/server`) **in a child process** (reading the repo `.env` in Vitest's main process would leak real Keycloak/GitHub config into workers). `fileParallelism: false` protects the shared DB.
 - `TEST_DATABASE_URL` = a PostgreSQL URL runs the suite there (`test/paths.ts` derives the provider; it finds the repo root **three levels up**). The PG branch passes `--reset` (drops every table), so it must be a dedicated test database.
-- Env comes only from `test.env` in the vitest config; `apps/server/env.ts` is aliased to `test/stubs/env.ts`.
+- Env comes only from `test.env` in the vitest config; the core's `./env.ts` import (in `@shadecn/server-core`'s `config-source.ts`) is aliased to `test/stubs/env.ts`.
+- **`test/setup.ts` assembles the real platform per file** (`prepare(modules)` + `assemble`, all roles, no listen): module routes exist only after that. Anything that needs a different env re-assembles a **fresh module graph** — `helpers/fresh-app.ts` `importFreshApp()` (whole app; swaps the `globalThis` ORM cache so `helpers/db.ts` keeps its own), `helpers/auth.ts` `freshAuth()` (re-parse + hand the login settings to a fresh mod-auth), `helpers/config.ts` `loadServerConfig()` (core + module config sections, the old flat shape), `helpers/routes.ts` (the product's route table).
 - **`TEST_*` is the exception**: `paths.ts` is imported before Vitest loads `.env`, so `loadTestEnv()` calls `process.loadEnvFile()` itself and **deletes every non-`TEST_` key it introduced**. A command-line value wins. With `TEST_DATABASE_URL` in `.env`, run SQLite as `TEST_DATABASE_URL= pnpm test:server`.
-- **GitHub is deliberately not in the global `test.env`** (keeps "the login page has one button" meaningful). `test/routes/auth-github.test.ts` builds a GitHub-enabled app per test with `vi.stubEnv` + `vi.resetModules()` + dynamic `import`; the "not configured" case must call `vi.resetModules()` too.
+- **GitHub is deliberately not in the global `test.env`** (keeps "the login page has one button" meaningful). `test/routes/auth-github.test.ts` builds a GitHub-enabled app per test with `vi.stubEnv` + `importFreshApp()`; the "not configured" case must build a fresh app too.
 - Helpers: `helpers/db.ts` (`db` / `orm`, `resetDb` — children first, `createUser` — no `UserIdentity`, i.e. the legacy shape), `helpers/session.ts` (`signIn` → `sid` cookie), `helpers/github.ts` (fake GitHub), `helpers/project.ts` (`actor()` with bound `request`/`json`, `createProject` / `createFlow` / `joinViaInvite`), `helpers/oidc.ts` (fake Keycloak with a real RSA keypair). Routes go through `app.request()` — the full middleware stack.
-- **Module-level caches** (`config.ts`, `oidc.ts`'s 10-min discovery/JWKS cache, `lib/auth.ts`'s session singleton) freeze at import: use `vi.resetModules()` + dynamic `import()` (`freshApp()` in `test/routes/auth.test.ts`).
+- **Module-level caches** (`config.ts`, `oidc.ts`'s 10-min discovery/JWKS cache, `lib/auth.ts`'s session singleton) freeze at import: use the fresh helpers above (a bare `vi.resetModules()` + `import` gives a module whose settings were never handed over).
 
 ## Frontend
 

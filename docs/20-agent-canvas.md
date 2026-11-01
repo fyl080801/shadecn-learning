@@ -122,7 +122,7 @@ C 的约束：
 - 房间在线：改动走 Hocuspocus 的正常广播，客户端立刻收到；落库复用 `persistence.ts` 的防抖、
   读 → 合并 → CAS 写回与欠账重试，不另开写路径。
 - 房间不在线：direct connection 触发 `onLoadDocument` 加载房间，用完卸载时 `beforeUnloadDocument` 写投影。
-- **不能**对协同画布调 `applyFlowUpdate()` 写库：活房间看不到库里的变化，而 `routes/flows.ts` 对协同画布 409
+- **不能**对协同画布调 `applyFlowUpdate()` 写库：活房间看不到库里的变化，而 `/doc` 接口（`packages/mod-collab/src/routes.ts`）对协同画布 409
   正是为了堵这条旁路。
 
 #### 3.3.2 个人画布（`mode = 'solo'`）：一律走 WebSocket
@@ -143,7 +143,7 @@ C 的约束：
 | 位置 | 现状 |
 |---|---|
 | 前端传输（`composables/flow/sync/`） | 元信息一到就挂 collab 传输；前端的 solo HTTP 传输已删除 |
-| `authorizeCollab`（`apps/server/auth/ws.ts`） | 个人画布房间只放**所有者本人**（认 `Project.personalOwner`），其余人 `forbidden`；放行结果带 `personal: true` |
+| `authorizeCollab`（`packages/mod-collab/src/authorize.ts`） | 个人画布房间只放**所有者本人**（认 `Project.personalOwner`），其余人 `forbidden`；放行结果带 `personal: true` |
 | 写入闸门 | 与项目画布共用同一个实例、注入 `collabWriteAuthorize`：它走 `authorizeCollab`，对个人画布查「会话 + 画布还在 + 是所有者」，比原计划的 `sessionWriteAuthorize`（只查会话）更严，画布删除后立即写不进 |
 | 在场层 | **不是协作**：前端在场层按 `mode` 关闭（头像、光标、占用标签都不显示）；服务端对 `personal` 房间的 awareness 整帧丢弃。前端仍发一个空的本地状态 `{}`，因为 y-protocols 每 15s 的本地状态重放是这条连接唯一的客户端心跳（服务端 `timeout: 30_000` 只看最后收到消息的时间），发 `null` 会让空闲的个人画布每 30s 被断开一次 |
 | 单连接互斥（`exclusive.ts`） | 对个人画布同样生效：同一个人开两个标签页，旧的被顶掉，弹「这张画布已在另一个窗口打开」 |
@@ -371,7 +371,7 @@ ffmpeg、生成图片 / 视频可能跑几分钟，比发起它的那一轮活�
 
 - 项目没有审计日志。至少为每个 run 记一份**工具调用日志**：工具名、参数摘要、影响的元素 id、沙箱任务的命令与退出码；
   不记完整内容与用户数据。出事时至少能还原 agent 做了什么。
-- **第一期实现**：落库为两张表（实体在 `apps/server/db/entities/agent.ts`）——
+- **第一期实现**：落库为两张表（实体在 `packages/mod-agent/src/entities.ts`）——
   `agent_run`（每轮一行：会话 / 画布 / 发起人、模型、状态 running→success / cancelled / error、失败原因、工具调用次数、起止时刻，
   以及这一轮的模型用量 —— 输入 / 输出 / 缓存读 / 缓存写 token 与按模型价格算出的费用，这一轮所有 agent 合计、收尾时写（各 agent 用不同模型时费用按各自模型算再相加，有一个没定价就记空，REQ-AGENT-DEF §3.4）；
   模型没有价格信息时费用为空，没记的（停在 running 的、加这几列之前的）全为空，口径见 REQ-AGENT-SANDBOX §4.3 第 5 步）
@@ -740,7 +740,7 @@ agent 只能猜。现在加一个只读工具，把图本身交给模型。
 - **网关不变**：runner 只连回发起它的副本（[REQ-AGENT-SANDBOX](22-agent-sandbox.md) 的 Pod IP 方案），工具执行、画布连接、模型调用都在持有副本上。
 - **副本崩溃**：任务登记、会话槽位、占用在一个 TTL 内过期；这一轮没有收尾（同 §3.10.8「服务重启」），补发 stream 随过期删除。
 
-**配置**（环境变量，`apps/server/config.ts` 解析）：
+**配置**（环境变量，`packages/server-core/src/config.ts` 解析）：
 
 | 变量 | 默认 | 作用 |
 |---|---|---|

@@ -18,7 +18,7 @@
 ### 2.1 运行方式
 
 - 开发用 `tsx watch` 直接跑 TypeScript；生产跑 esbuild 打包出来的 `output/server/index.js`，**不需要 tsx**（见 [REQ-DEPLOY](12-deployment.md)）。
-- 源码入口两个，一套启动流程（`apps/server/boot.ts`）：`apps/server/index.ts` 是生产入口（`pnpm start` 跑它的打包产物，也是唯一的打包入口），`apps/server/dev.ts` 是开发入口（`pnpm dev` 跑它），两者只差前端那一个模块（静态产物 vs Vite 中间件）。**Vite 只在 `dev.ts` 的依赖图里**，构建脚本断言产物里没有它（[REQ-MODULES §3.8](28-server-modules.md)）。
+- 源码入口两个，一套启动流程（`packages/server-core/src/boot.ts`）：`apps/server/index.ts` 是生产入口（`pnpm start` 跑它的打包产物，也是唯一的打包入口），`apps/server/dev.ts` 是开发入口（`pnpm dev` 跑它），两者只差前端那一个模块（静态产物 vs Vite 中间件）。**Vite 只在 `dev.ts` 的依赖图里**，构建脚本断言产物里没有它（[REQ-MODULES §3.8](28-server-modules.md)）。
 - `NODE_ENV !== 'production'` 即视为开发环境。
 
 ### 2.2 启动顺序
@@ -66,7 +66,7 @@
 
 ### 2.7 API 路由约定
 
-- 一个资源一个 Hono 子应用，放在 `apps/server/routes/`，统一挂到 `/api/*` 下。
+- 一个资源一个 Hono 子应用，统一挂到 `/api/*` 下；底座自己的（健康检查、能力表）在 `packages/server-core/src/routes/`，其余都在各自的模块包里，由模块声明、在 `setup` 里挂（[REQ-MODULES](28-server-modules.md) §3.1）。
 - 路由必须**链式书写**（`new Hono().get(...).post(...)`），这样导出的 `AppType` 才能被 `hc<AppType>()` 推断，前端可选地享受 RPC 类型。
 - 现有路由：
 
@@ -79,9 +79,9 @@
 
 ### 2.8 配置项
 
-`apps/server/config.ts` 统一导出：`rootDir` / `outputDir` / `staticDir` / `isDev` / `port` / `host` / `isApiPath()` / `dataDir` / `databaseUrl` / `ensureDatabaseDir()` / `appOrigin` / `authConfig` / `authEnabled` / `assertAuthConfig()`。
+`packages/server-core/src/config.ts` 统一导出：`rootDir` / `outputDir` / `staticDir` / `isDev` / `port` / `host` / `isApiPath()` / `dataDir` / `databaseUrl` / `ensureDatabaseDir()` / `appOrigin` / `authConfig` / `authEnabled` / `assertAuthConfig()`。
 
-`rootDir`（应用根目录）来自 `apps/server/runtime.ts`：源码运行是 `apps/server/` 的上两级（仓库根；monorepo 之后源码挪进了 `apps/server`，但 `.env`、`data/`、`output/` 仍在仓库根），构建产物运行是进程 cwd —— 产物躺在 `output/` 下，拿 `output/` 当根会让 `data/` 跑进 `output/` 里，和容器挂卷的 `/app/data` 对不上。
+`rootDir`（应用根目录）来自 `packages/server-core/src/runtime.ts`：源码运行是 `apps/server/` 的上两级（仓库根；monorepo 之后源码挪进了 `apps/server`，但 `.env`、`data/`、`output/` 仍在仓库根），构建产物运行是进程 cwd —— 产物躺在 `output/` 下，拿 `output/` 当根会让 `data/` 跑进 `output/` 里，和容器挂卷的 `/app/data` 对不上。
 
 | 变量 | 默认值 |
 |---|---|
