@@ -1,13 +1,14 @@
 import { Hono } from 'hono'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { freshAuth } from '../helpers/auth.ts'
 import {
   type AuthVariables,
   requireAuth,
   requireRole,
   withSession,
-} from '../../auth/middleware.ts'
+} from '@shadecn/mod-auth/middleware'
 import { db, resetDb } from '../helpers/db.ts'
-import { Session } from '../../db/entities/index.ts'
+import { Session } from '@shadecn/mod-auth/entities'
 import { CLIENT_ID, stubOidcFetch } from '../helpers/oidc.ts'
 import { signIn } from '../helpers/session.ts'
 
@@ -129,10 +130,10 @@ describe('requireRole', () => {
 
 describe('没配 Keycloak 时（authEnabled=false）', () => {
   async function loadDisabledApp() {
-    vi.resetModules()
     vi.stubEnv('KEYCLOAK_ISSUER', '')
     vi.stubEnv('KEYCLOAK_CLIENT_ID', '')
-    const mw = (await import('../../auth/middleware.ts')) as Mw
+    await freshAuth()
+    const mw = (await import('@shadecn/mod-auth/middleware')) as Mw
     return buildApp(mw)
   }
 

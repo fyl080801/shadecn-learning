@@ -1,4 +1,3 @@
-import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { fauxAssistantMessage, fauxToolCall, type Context } from '@earendil-works/pi-ai'
 import type { ScriptedModel, ScriptedStep } from '@shadecn/agent/testing'
@@ -7,8 +6,8 @@ import { replaceAgentRuntime } from '@shadecn/mod-agent/runtime'
 import { agentMediaReader } from '@shadecn/mod-agent/media'
 import { attachCollabServer } from '@shadecn/mod-collab/hocuspocus'
 import { flushCollabWrites } from '@shadecn/mod-collab/persistence'
-import { s3Config } from '../../config.ts'
-import { AgentConversation } from '../../db/entities/index.ts'
+import { agentPorts } from '@shadecn/mod-agent/ports'
+import { AgentConversation } from '@shadecn/mod-agent/entities'
 import { replaceAssetStorage } from '@shadecn/mod-storage'
 import { buildAssetKey } from '@shadecn/mod-storage/keys'
 import type { S3Client } from '@shadecn/mod-storage/s3'
@@ -23,7 +22,7 @@ import { actor, createFlow, createProject, type Actor } from '../helpers/project
  */
 
 beforeAll(async () => {
-  await attachCollabServer(createServer() as never)
+  await attachCollabServer()
 })
 
 beforeEach(async () => {
@@ -117,7 +116,7 @@ function upstreamImages(scripted: ScriptedModel): string[] {
 
 describe('view_node_media（生产接线：agentMediaReader + 对象存储）', () => {
   it('本桶的图片 → 按键读、交到上游模型请求里；SSE 和落库的对话里没有图片字节', async () => {
-    const key = buildAssetKey(s3Config.keyPrefix, { name: 'cat.png', contentType: 'image/png' })
+    const key = buildAssetKey(agentPorts().storage.keyPrefix, { name: 'cat.png', contentType: 'image/png' })
     const storage = fakeStorage(new Map([[key, PNG]]))
     replaceAssetStorage(storage.client)
     const { steps } = addThenView(storage.client.objectUrl(key))
@@ -158,7 +157,7 @@ describe('view_node_media（生产接线：agentMediaReader + 对象存储）', 
   })
 
   it('本桶里的图超过单张上限 → 不读完、拒绝并告诉模型', async () => {
-    const key = buildAssetKey(s3Config.keyPrefix, { name: 'huge.png', contentType: 'image/png' })
+    const key = buildAssetKey(agentPorts().storage.keyPrefix, { name: 'huge.png', contentType: 'image/png' })
     const huge = new Uint8Array(5 * 1024 * 1024 + 1)
     huge.set(PNG)
     const storage = fakeStorage(new Map([[key, huge]]))

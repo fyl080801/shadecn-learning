@@ -17,10 +17,10 @@ import { nodesMap } from '@shadecn/shared/flow-doc'
 import { ACCESS_REVOKED } from '@shadecn/mod-agent/authority'
 import { agentHostOptions, replaceAgentRuntime } from '@shadecn/mod-agent/runtime'
 import { runnerCommand } from '@shadecn/mod-agent/runner-command'
-import { app } from '../../app.ts'
+import { app } from '@shadecn/server-core/app'
 import { attachCollabServer } from '@shadecn/mod-collab/hocuspocus'
 import { flushCollabWrites, loadFlowState, roomOf } from '@shadecn/mod-collab/persistence'
-import { AgentRun, AgentToolCall } from '../../db/entities/index.ts'
+import { AgentRun, AgentToolCall } from '@shadecn/mod-agent/entities'
 import { db, resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject, joinViaInvite, type Actor } from '../helpers/project.ts'
 
@@ -37,7 +37,7 @@ let gatewayUrl = ''
 let workspaces = ''
 
 beforeAll(async () => {
-  await attachCollabServer(createServer() as never)
+  await attachCollabServer()
   server = createAdaptorServer({ fetch: app.fetch, overrideGlobalObjects: false }) as Server
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   gatewayUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}${AGENT_GATEWAY_PATH}`

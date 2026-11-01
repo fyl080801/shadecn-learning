@@ -1,23 +1,10 @@
 import type { EntityName } from '@mikro-orm/core'
-import { db, orm } from '../../db.ts'
-import {
-  AgentConversation,
-  AgentGrant,
-  AgentGrantScope,
-  AgentRun,
-  AgentToolCall,
-  AuthRequest,
-  Flow,
-  FlowAsset,
-  FlowUserState,
-  PendingLink,
-  Project,
-  ProjectInvite,
-  ProjectMember,
-  Session,
-  User,
-  UserIdentity,
-} from '../../db/entities/index.ts'
+import { db, orm } from '@shadecn/server-core/db'
+import { AuthRequest, PendingLink, Session, UserIdentity } from '@shadecn/mod-auth/entities'
+import { User } from '@shadecn/server-kit/identity'
+import { Flow, FlowUserState, Project, ProjectInvite, ProjectMember } from '@shadecn/mod-canvas/entities'
+import { AgentConversation, AgentGrant, AgentGrantScope, AgentRun, AgentToolCall } from '@shadecn/mod-agent/entities'
+import { FlowAsset } from '@shadecn/mod-storage/entities'
 
 export { db, orm }
 

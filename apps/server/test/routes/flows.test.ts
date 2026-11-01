@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import { app } from '../../app.ts'
+import { app } from '@shadecn/server-core/app'
 import { nodesMap } from '@shadecn/shared/flow-doc'
 import { emptyGraph, type FlowGraph } from '@shadecn/shared/flow-graph'
 import { closeRoom, openRoom, resetRooms, writeGraph } from '../helpers/collab.ts'
 import { db, resetDb } from '../helpers/db.ts'
-import { Flow, FlowUserState } from '../../db/entities/index.ts'
+import { Flow, FlowUserState } from '@shadecn/mod-canvas/entities'
 import { actor, createFlow, createProject, joinViaInvite, type Actor } from '../helpers/project.ts'
 
 beforeEach(async () => {

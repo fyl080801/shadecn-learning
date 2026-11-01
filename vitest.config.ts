@@ -7,6 +7,9 @@ import { defineConfig } from 'vitest/config'
  *   shared —— packages/shared/vitest.config.ts：Node 环境，测前后端共用的契约（packages/shared/test/**）
  *   agent  —— packages/agent/vitest.config.ts：Node 环境，测画布 Agent（编排、画布工具、沙箱，packages/agent/test/**）
  *   server-kit —— packages/server-kit/vitest.config.ts：Node 环境，测服务端底座的运行时库（模块内核、共享层契约、总线、权限撤销信号）
+ *   server-core —— packages/server-core/vitest.config.ts：Node 环境，测服务端底座不碰数据库的部分（集成测试在 server project）
+ *   mod-auth / mod-notes —— 登录模块、笔记示例模块（同上，只测不碰数据库的部分）
+ *   mod-canvas —— packages/mod-canvas/vitest.config.ts：Node 环境，测画布模块（不碰数据库的部分：契约）
  *   mod-collab —— packages/mod-collab/vitest.config.ts：Node 环境，测协同能力包
  *   mod-storage —— packages/mod-storage/vitest.config.ts：Node 环境，测对象存储能力包（签名、对象键、缩略图）
  *   mod-agent —— packages/mod-agent/vitest.config.ts：Node 环境，测画布 agent 宿主侧能力包（接上数据库 / 协同之后的用例在 server project）
@@ -23,6 +26,10 @@ export default defineConfig({
       'packages/shared/vitest.config.ts',
       'packages/agent/vitest.config.ts',
       'packages/server-kit/vitest.config.ts',
+      'packages/server-core/vitest.config.ts',
+      'packages/mod-auth/vitest.config.ts',
+      'packages/mod-notes/vitest.config.ts',
+      'packages/mod-canvas/vitest.config.ts',
       'packages/mod-collab/vitest.config.ts',
       'packages/mod-storage/vitest.config.ts',
       'packages/mod-agent/vitest.config.ts',

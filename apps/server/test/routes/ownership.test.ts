@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { routeRole } from '../../routes/ownership.ts'
-import { routeRole as proxyRouteRole } from '../../scripts/dev-route.mjs'
+import { closeFreshOrms, importFreshApp } from '../helpers/fresh-app.ts'
+import { routeRole, routeTable } from '../helpers/routes.ts'
 
 /**
- * 路由按角色归属（docs/28 §3.2）。这张表和 ingress（k8s/ingress.yaml）、dev:cluster 的前置代理是同一份分流规则。
+ * 路由按角色归属（docs/28 §3.2）。表由入口声明推出（底座的 + 每个模块的 `routes`），服务端的角色闸门、
+ * dev:cluster 的前置代理读的是同一份；ingress（k8s/variants/roles/ingress.yaml）由 `test/k8s/roles-manifests.test.ts` 核对。
  */
 describe('routeRole', () => {
   it.each([
@@ -21,22 +22,34 @@ describe('routeRole', () => {
     ['/api/auth/me', 'web'],
     ['/', 'web'],
     ['/login', 'web'],
-  ])('%s → %s（服务端的表和 dev:cluster 前置代理的表一致）', (path, role) => {
+  ])('%s → %s', (path, role) => {
     expect(routeRole(path)).toBe(role)
-    expect(proxyRouteRole(path)).toBe(role)
+  })
+
+  it('免登录的入口只有声明了 public 的那几条', () => {
+    const open = routeTable.routes.filter((route) => route.access === 'public').map((route) => `${route.owner} ${route.path}`)
+    expect(open.sort()).toEqual([
+      'agent /api/agent-gateway',
+      'auth /api/auth',
+      'auth /auth/login-done',
+      'auth /login',
+      'collab /ws/collaboration',
+      'core /api/health',
+    ])
   })
 })
 
-describe('roleGate：本进程不扮演的角色的路由 404', () => {
-  afterEach(() => {
+describe('角色闸门：本进程不扮演的角色的路由 404', () => {
+  afterEach(async () => {
     vi.unstubAllEnvs()
     vi.resetModules()
+    await closeFreshOrms()
   })
 
   async function appWithRoles(roles: string) {
     vi.stubEnv('SERVER_ROLES', roles)
-    vi.resetModules()
-    return (await import('../../app.ts')).app
+    // 按这组角色装一遍（归属表、本进程加载的模块都跟着角色走）
+    return importFreshApp()
   }
 
   it('只有 web：协同和网关的路由 404，并说明归谁；健康检查照常', async () => {

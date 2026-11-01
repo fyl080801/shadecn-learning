@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { app } from '../../app.ts'
-import { identiconUrl } from '../../avatar/index.ts'
+import { app } from '@shadecn/server-core/app'
+import { identiconUrl } from '@shadecn/mod-auth/avatar'
 import { db, firstRow, resetDb } from '../helpers/db.ts'
 import { closeFreshOrms, importFreshApp } from '../helpers/fresh-app.ts'
-import { AuthRequest, Session, User } from '../../db/entities/index.ts'
+import { AuthRequest, Session } from '@shadecn/mod-auth/entities'
+import { User } from '@shadecn/server-kit/identity'
 import {
   AUTHORIZATION_ENDPOINT,
   CLIENT_ID,
@@ -233,7 +234,7 @@ describe('GET /api/auth/login', () => {
 
   it('发出去的 code_challenge = S256(库里的 code_verifier)', async () => {
     const { res, request } = await startLogin()
-    const { codeChallengeOf } = await import('../../auth/oidc.ts')
+    const { codeChallengeOf } = await import('@shadecn/mod-auth/oidc')
 
     const sent = new URL(res.headers.get('location') ?? '').searchParams.get('code_challenge')
     expect(sent).toBe(codeChallengeOf(request?.codeVerifier ?? ''))

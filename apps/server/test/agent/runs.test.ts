@@ -4,7 +4,8 @@ import { agentHostOptions } from '@shadecn/mod-agent/runtime'
 import { agentRunRegistry, createSharedRunRegistry } from '@shadecn/mod-agent/runs'
 import { stringCodec } from '@shadecn/server-kit/cluster'
 import { createMemoryBackend } from '@shadecn/server-kit/cluster/memory'
-import { agentConfig, instanceId } from '../../config.ts'
+import { agentPorts } from '@shadecn/mod-agent/ports'
+import { instanceId } from '@shadecn/server-core/config'
 
 /**
  * 运行中轮次共享登记的宿主实现（docs/20 §3.10.10）：共享层的 `SharedMap` / `SharedLog` / `SharedChannel` 上的一层包装。
@@ -43,7 +44,7 @@ const record = (runId: string, extra: Partial<RunRecord> = {}): RunRecord => ({
 describe('共享层上的运行登记', () => {
   it('接线：宿主给编排层的就是这一份，TTL 取 AGENT_LEASE_TTL_MS，副本标识取 INSTANCE_ID', () => {
     expect(agentHostOptions.runRegistry).toBe(agentRunRegistry)
-    expect(agentRunRegistry.ttlMs).toBe(agentConfig.leaseTtlMs)
+    expect(agentRunRegistry.ttlMs).toBe(agentPorts().config.leaseTtlMs)
     expect(agentRunRegistry.instanceId).toBe(instanceId)
   })
 

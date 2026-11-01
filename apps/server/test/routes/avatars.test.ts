@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { app } from '../../app.ts'
-import { identiconSeed, identiconUrl, isIdenticonUrl, renderIdenticon } from '../../avatar/index.ts'
+import { app } from '@shadecn/server-core/app'
+import { identiconSeed, identiconUrl, isIdenticonUrl, renderIdenticon } from '@shadecn/mod-auth/avatar'
 import { resetDb } from '../helpers/db.ts'
 import { stubOidcFetch } from '../helpers/oidc.ts'
 import { signIn } from '../helpers/session.ts'

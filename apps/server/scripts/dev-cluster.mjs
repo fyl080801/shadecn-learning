@@ -1,7 +1,12 @@
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import net from 'node:net'
-import { routeRole } from './dev-route.mjs'
+// 分流表就是服务端的路由归属表（底座的入口 + 模块清单里的声明推出来的）：这个脚本经 tsx 跑，直接 import TS
+import { buildServerRouteTable, routeRoleIn } from '@shadecn/server-core/routes-table'
+import { modules } from '../modules.ts'
+
+const table = buildServerRouteTable(modules)
+const routeRole = (pathname) => routeRoleIn(table, pathname)
 
 /**
  * 本地起多个实例，验证多副本 / 按角色拆分（docs/14、docs/28 §3.9）。
@@ -12,7 +17,7 @@ import { routeRole } from './dev-route.mjs'
  * 两种形态，都是配置不是参数：
  *
  * - `DEV_CLUSTER_ROLES="web:3001,collab:3002,collab:3003,agent:3004"` —— **按角色拆分**。每项一个进程（`SERVER_ROLES` 就是那个角色），
- *   前面再起一个**前置代理**听 `PORT`（默认 3000），按路径分流到对应角色（`dev-route.mjs`，和 ingress 同一份规则），
+ *   前面再起一个**前置代理**听 `PORT`（默认 3000），按路径分流到对应角色（`@shadecn/server-core/routes-table` 按模块清单建的表，服务端的角色闸门、ingress 都是这一份），
  *   同一角色多个进程时轮流分。浏览器只认代理那一个地址：子进程的 `APP_ORIGIN` 都设成它（登录回跳、cookie、WebSocket Origin 校验都按它）。
  *   agent 沙箱回连的网关地址按 agent 进程自己的端口算（不经代理）。
  * - 没配它就用 `DEV_CLUSTER_PORTS`（默认 `3000,3001`）—— 每个端口一个**全角色**进程，没有代理（原来的多副本验证方式）。
@@ -87,7 +92,7 @@ const children = instances.map((instance, index) => {
   const child = spawn('pnpm', ['exec', 'tsx', 'watch', '--exclude', '../web/node_modules/.vite-temp/**', 'dev.ts'], {
     env: {
       ...process.env,
-      // 真实环境变量压过 .env（apps/server/env.ts 用的 loadEnvFile 不覆盖已存在的变量）
+      // 真实环境变量压过 .env（packages/server-core/src/env.ts 用的 loadEnvFile 不覆盖已存在的变量）
       PORT: String(instance.port),
       INSTANCE_ID: `dev-${instance.role ?? 'all'}-${instance.port}`,
       ...(instance.role
@@ -171,7 +176,7 @@ if (proxy) {
     socket.on('error', close)
   })
   proxy.listen(frontPort, frontHost, () => {
-    console.log(`[dev:cluster] 前置代理 ${frontOrigin} → 按路径分流（dev-route.mjs，和 ingress 同一份规则）`)
+    console.log(`[dev:cluster] 前置代理 ${frontOrigin} → 按路径分流（入口声明推出的路由归属表）`)
   })
 }
 

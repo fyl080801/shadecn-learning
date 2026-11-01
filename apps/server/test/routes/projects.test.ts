@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { app } from '../../app.ts'
+import { app } from '@shadecn/server-core/app'
 import { createRevocationWatcher } from '@shadecn/server-kit/access'
 import { db, resetDb } from '../helpers/db.ts'
-import { ProjectMember } from '../../db/entities/index.ts'
+import { ProjectMember } from '@shadecn/mod-canvas/entities'
 import { actor, createProject, joinViaInvite } from '../helpers/project.ts'
 
 beforeEach(async () => {

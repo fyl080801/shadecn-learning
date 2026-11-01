@@ -1,4 +1,3 @@
-import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fauxAssistantMessage } from '@earendil-works/pi-ai'
 import { AGENT_GATEWAY_PATH, RUNNER_PROTOCOL_VERSION, type RunnerInput, type StsTokenResponse } from '@shadecn/agent/protocol'
@@ -6,7 +5,7 @@ import type { SandboxDriver } from '@shadecn/agent/sandbox/drivers'
 import { createInlineDriver, SCRIPTED_API_KEY, SCRIPTED_UPSTREAM_URL } from '@shadecn/agent/testing'
 import { agentApiPath, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { replaceAgentRuntime } from '@shadecn/mod-agent/runtime'
-import { app } from '../../app.ts'
+import { app } from '@shadecn/server-core/app'
 import { attachCollabServer } from '@shadecn/mod-collab/hocuspocus'
 import { flushCollabWrites } from '@shadecn/mod-collab/persistence'
 import { useScripted } from '../helpers/agent.ts'
@@ -20,7 +19,7 @@ import { actor, createFlow, createProject } from '../helpers/project.ts'
  */
 
 beforeAll(async () => {
-  await attachCollabServer(createServer() as never)
+  await attachCollabServer()
 })
 
 beforeEach(async () => {

@@ -25,7 +25,7 @@ import type { FatalClose, FlowTransport, TransportContext } from "./types"
  * 服务端是 Hocuspocus，所以必须用 `@hocuspocus/provider` 而不是 y-websocket ——
  * 两者线协议不兼容：Hocuspocus 的每条消息以文档名开头，房间名走消息不走 URL。
  * 身份也不走 `token`：我们用的是 httpOnly 的 sid cookie，握手时浏览器自动带上，
- * 服务端在 `onConnect` 里读它（见 `apps/server/auth/ws.ts`）。
+ * 服务端在 `onConnect` 里读它（见 `packages/mod-collab/src/authorize.ts`）。
  *
  * 挂载点（`COLLAB_PATH`）、房间名前缀（`FLOW_ROOM_PREFIX`）、落库状态的 stateless 消息类型
  * （`STORE_STATE_MESSAGE`）和四种终局信号（`CLOSE_*`）都来自 `@shadecn/shared/collab` ——

@@ -6,7 +6,7 @@ import { TEST_DATABASE_URL, TEST_DATA_DIR, TEST_DB_PROVIDER } from './paths.ts'
 /**
  * 整轮测试跑一次：把测试库的结构对齐到实体定义。
  *
- * 用真正的表结构同步入口（`db/sync-cli.ts`，也就是 `pnpm db:push` 和容器启动跑的那一个）
+ * 用真正的表结构同步入口（`db-sync.ts`，也就是 `pnpm db:push` 和容器启动跑的那一个）
  * 建表，而不是手写 CREATE TABLE，是为了让测试库和生产库走**同一条**建表路径 ——
  * 实体写错了测试就会红。
  *
@@ -22,7 +22,7 @@ export default function setup() {
   const serverDir = path.resolve(import.meta.dirname, '..')
   const tsxBin = path.join(serverDir, 'node_modules/.bin/tsx')
 
-  const args = ['db/sync-cli.ts']
+  const args = ['db-sync.ts']
   if (TEST_DB_PROVIDER === 'sqlite') {
     rmSync(TEST_DATA_DIR, { recursive: true, force: true })
     mkdirSync(TEST_DATA_DIR, { recursive: true })
@@ -38,6 +38,8 @@ export default function setup() {
         ...process.env,
         DATABASE_URL: TEST_DATABASE_URL,
         DB_PROVIDER: TEST_DB_PROVIDER,
+        // 不读开发者自己的 server.config.*（docs/28 §3.3）：空串 = 不用配置文件
+        SERVER_CONFIG: '',
         // 同步过程中的 SQL 日志不要混进测试输出
         LOG_LEVEL: 'warn',
       },

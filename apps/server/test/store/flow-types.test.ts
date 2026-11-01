@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { GRAPH_SCHEMA_VERSION } from '@shadecn/shared/flow-graph'
-import { parseGraph, readGraph } from '../../store/flow-types.ts'
+import { parseGraph, readGraph } from '@shadecn/mod-canvas/flow-types'
 
 /**
  * `Flow.graph` 投影的校验。v3 照收；v1 / v2 **不升级也不拒收** —— `ydoc` 为 NULL 的老画布

@@ -102,12 +102,24 @@ importers:
       '@shadecn/mod-agent':
         specifier: workspace:*
         version: link:../../packages/mod-agent
+      '@shadecn/mod-auth':
+        specifier: workspace:*
+        version: link:../../packages/mod-auth
+      '@shadecn/mod-canvas':
+        specifier: workspace:*
+        version: link:../../packages/mod-canvas
       '@shadecn/mod-collab':
         specifier: workspace:*
         version: link:../../packages/mod-collab
+      '@shadecn/mod-notes':
+        specifier: workspace:*
+        version: link:../../packages/mod-notes
       '@shadecn/mod-storage':
         specifier: workspace:*
         version: link:../../packages/mod-storage
+      '@shadecn/server-core':
+        specifier: workspace:*
+        version: link:../../packages/server-core
       '@shadecn/server-kit':
         specifier: workspace:*
         version: link:../../packages/server-kit
@@ -309,9 +321,15 @@ importers:
       '@hocuspocus/server':
         specifier: ^4.6.0
         version: 4.6.0(y-protocols@1.0.7(yjs@13.6.32))(yjs@13.6.32)
+      '@mikro-orm/core':
+        specifier: 7.2.5
+        version: 7.2.5
       '@shadecn/agent':
         specifier: workspace:*
         version: link:../agent
+      '@shadecn/mod-canvas':
+        specifier: workspace:*
+        version: link:../mod-canvas
       '@shadecn/mod-collab':
         specifier: workspace:*
         version: link:../mod-collab
@@ -327,6 +345,9 @@ importers:
       '@types/node':
         specifier: ^24.10.1
         version: 24.12.0
+      hono:
+        specifier: ^4.13.2
+        version: 4.13.2
       tsx:
         specifier: ^4.23.12
         version: 4.23.12
@@ -340,6 +361,51 @@ importers:
         specifier: ^13.6.32
         version: 13.6.32
 
+  packages/mod-auth:
+    devDependencies:
+      '@mikro-orm/core':
+        specifier: 7.2.5
+        version: 7.2.5
+      '@shadecn/server-kit':
+        specifier: workspace:*
+        version: link:../server-kit
+      '@shadecn/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.12.0
+      hono:
+        specifier: ^4.13.2
+        version: 4.13.2
+      minidenticons:
+        specifier: ^4.2.1
+        version: 4.2.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
+  packages/mod-canvas:
+    devDependencies:
+      '@mikro-orm/core':
+        specifier: 7.2.5
+        version: 7.2.5
+      '@shadecn/server-kit':
+        specifier: workspace:*
+        version: link:../server-kit
+      '@shadecn/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.12.0
+      hono:
+        specifier: ^4.13.2
+        version: 4.13.2
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
   packages/mod-collab:
     devDependencies:
       '@hocuspocus/extension-redis':
@@ -348,6 +414,9 @@ importers:
       '@hocuspocus/server':
         specifier: ^4.6.0
         version: 4.6.0(y-protocols@1.0.7(yjs@13.6.32))(yjs@13.6.32)
+      '@shadecn/mod-canvas':
+        specifier: workspace:*
+        version: link:../mod-canvas
       '@shadecn/server-kit':
         specifier: workspace:*
         version: link:../server-kit
@@ -360,6 +429,9 @@ importers:
       crossws:
         specifier: ^0.4.10
         version: 0.4.10
+      hono:
+        specifier: ^4.13.2
+        version: 4.13.2
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
@@ -367,8 +439,29 @@ importers:
         specifier: ^13.6.32
         version: 13.6.32
 
+  packages/mod-notes:
+    devDependencies:
+      '@shadecn/server-kit':
+        specifier: workspace:*
+        version: link:../server-kit
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.12.0
+      hono:
+        specifier: ^4.13.2
+        version: 4.13.2
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
   packages/mod-storage:
     devDependencies:
+      '@mikro-orm/core':
+        specifier: 7.2.5
+        version: 7.2.5
+      '@shadecn/mod-canvas':
+        specifier: workspace:*
+        version: link:../mod-canvas
       '@shadecn/server-kit':
         specifier: workspace:*
         version: link:../server-kit
@@ -378,6 +471,9 @@ importers:
       '@types/node':
         specifier: ^24.10.1
         version: 24.12.0
+      hono:
+        specifier: ^4.13.2
+        version: 4.13.2
       sharp:
         specifier: 0.35.5
         version: 0.35.5(@types/node@24.12.0)
@@ -385,17 +481,62 @@ importers:
         specifier: ~5.9.3
         version: 5.9.3
 
-  packages/server-kit:
+  packages/server-core:
     devDependencies:
+      '@hono/node-server':
+        specifier: ^2.1.1
+        version: 2.1.1(hono@4.13.2)
+      '@mikro-orm/core':
+        specifier: 7.2.5
+        version: 7.2.5
+      '@mikro-orm/postgresql':
+        specifier: 7.2.5
+        version: 7.2.5(@mikro-orm/core@7.2.5)
+      '@mikro-orm/sqlite':
+        specifier: 7.2.5
+        version: 7.2.5(@mikro-orm/core@7.2.5)
+      '@shadecn/server-kit':
+        specifier: workspace:*
+        version: link:../server-kit
+      '@shadecn/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@types/node':
         specifier: ^24.10.1
         version: 24.12.0
+      hono:
+        specifier: ^4.13.2
+        version: 4.13.2
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.1
+        version: 7.3.1(@types/node@24.12.0)(jiti@2.7.0)(lightningcss@1.31.1)(stylus@0.57.0)(tsx@4.23.12)(yaml@2.8.2)
+      winston:
+        specifier: ^3.19.0
+        version: 3.19.0
+
+  packages/server-kit:
+    devDependencies:
+      '@mikro-orm/core':
+        specifier: 7.2.5
+        version: 7.2.5
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.12.0
+      hono:
+        specifier: ^4.13.2
+        version: 4.13.2
       ioredis:
         specifier: ^5.6.1
         version: 5.6.1
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
+      yaml:
+        specifier: 2.8.2
+        version: 2.8.2
 
   packages/shared:
     devDependencies:

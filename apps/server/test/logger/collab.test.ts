@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { collabLogStats, collabLogging, resetCollabLogStats } from '../../logger/collab.ts'
+import { collabLogStats, collabLogging, resetCollabLogStats } from '@shadecn/mod-collab/logging'
 
 /**
  * 协同日志 extension 的**统计**部分。

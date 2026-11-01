@@ -1,4 +1,3 @@
-import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai'
@@ -27,10 +26,10 @@ import type { UploadedAsset } from '@shadecn/shared/canvas'
 import { replaceAgentRuntime } from '@shadecn/mod-agent/runtime'
 import { attachCollabServer, collabInstance } from '@shadecn/mod-collab/hocuspocus'
 import { flushCollabWrites, loadFlowState, roomOf } from '@shadecn/mod-collab/persistence'
-import { AgentConversation, AgentRun, AgentToolCall } from '../../db/entities/index.ts'
+import { AgentConversation, AgentRun, AgentToolCall } from '@shadecn/mod-agent/entities'
 import { replaceAssetStorage } from '@shadecn/mod-storage'
 import type { S3Client } from '@shadecn/mod-storage/s3'
-import { agentConversations } from '../../store/agent.ts'
+import { agentConversations } from '@shadecn/mod-agent/stores'
 import { useScripted } from '../helpers/agent.ts'
 import { writeGraph } from '../helpers/collab.ts'
 import { db, resetDb } from '../helpers/db.ts'
@@ -39,7 +38,7 @@ import { actor, createFlow, createProject, joinViaInvite, type Actor } from '../
 /**
  * 画布 Agent 的接口：鉴权口径（发起人 / 其他成员 / 管理员 / 非成员的权限矩阵，403 与 404 的分界）、状态码、
  * SSE 帧格式，「模型调工具 → 画布真的变了」那一整条，按会话并发，
- * 以及会话 / 运行日志真的落进测试库（store/agent.ts 的 MikroORM 实现）。
+ * 以及会话 / 运行日志真的落进测试库（`@shadecn/mod-agent/stores` 的 MikroORM 实现）。
  * runtime 用的是生产那套宿主接线（`agentHostOptions`），只把模型换成假的。
  * 二期起这一轮的 pi 跑在 runner 里（进程内驱动），经本服务的网关路由取输入、调工具、报事件、请求模型；
  * 模型是脚本化的 OpenAI 兼容上游（`@shadecn/agent/testing`，不碰网络 —— 测试里别的 fetch 照样 reject）。
@@ -47,7 +46,7 @@ import { actor, createFlow, createProject, joinViaInvite, type Actor } from '../
 
 beforeAll(async () => {
   // agent 经 direct connection 写活房间，要有一个协同实例（不 listen）
-  await attachCollabServer(createServer() as never)
+  await attachCollabServer()
 })
 
 beforeEach(async () => {
@@ -375,7 +374,7 @@ describe('消息附件（docs/20 §3.10.12）', () => {
     expect((await send(alice, flowId, { text: '看看', attachments: [{ key: mine.key }] })).status).toBe(400)
     expect((await send(alice, flowId, { text: '   ', attachments: [] })).status).toBe(400)
 
-    replaceAssetStorage(undefined)
+    replaceAssetStorage(null)
     expect((await send(alice, flowId, { text: '看看', attachments: [{ key: mine.key, name: 'a.png' }] })).status).toBe(503)
     expect(await db().count(AgentConversation, {})).toBe(0)
   })

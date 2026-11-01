@@ -11,7 +11,7 @@ const repoRoot = path.resolve(import.meta.dirname, '../../..')
  * 分开，跑测试永远不会碰到你本地正在用的数据。
  *
  * 想在 PostgreSQL 上跑同一套后端测试，设 `TEST_DATABASE_URL` 指向一个**专用测试库**即可
- * （global-setup 会对它 `db/sync-cli.ts --reset`：先删光实体对应的表、再连同实体之外的表
+ * （global-setup 会对它 `db-sync.ts --reset`：先删光实体对应的表、再连同实体之外的表
  * 一起对齐 —— 千万别指向开发库或生产库）：
  *
  *   TEST_DATABASE_URL=postgresql://app:app@127.0.0.1:5432/app_test pnpm test:server
@@ -30,7 +30,7 @@ const repoRoot = path.resolve(import.meta.dirname, '../../..')
  * 于是写在 .env 里的那行看着生效、实际整轮测试还是跑 SQLite（表都建在别处）。
  *
  * 为什么只放 `TEST_` 前缀：测试跟开发者本地的 .env（真实 Keycloak、真实密钥、真实开发库）
- * 彻底无关是这套测试的前提 —— apps/server/env.ts 被换成空实现、环境全由 vitest.config.ts
+ * 彻底无关是这套测试的前提 —— packages/server-core/src/env.ts 被换成空实现、环境全由 vitest.config.ts
  * 的 test.env 提供，都是为了这个。`TEST_` 开头的变量本来就是**只给测试用的**，
  * 不属于那份要隔离的开发配置，所以是这条规则唯一的例外。
  *

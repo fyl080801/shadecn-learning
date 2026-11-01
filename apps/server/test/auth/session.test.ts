@@ -5,10 +5,11 @@ import {
   loadSession,
   sweepExpired,
   toSessionUser,
-} from '../../auth/session.ts'
-import { identities } from '../../store/identities.ts'
+} from '@shadecn/mod-auth/session'
+import { identities } from '@shadecn/mod-auth/identities'
 import { createUser, db, firstRow, resetDb } from '../helpers/db.ts'
-import { AuthRequest, Session, User } from '../../db/entities/index.ts'
+import { AuthRequest, Session } from '@shadecn/mod-auth/entities'
+import { User } from '@shadecn/server-kit/identity'
 import {
   CLIENT_ID,
   ISSUER,
@@ -366,7 +367,7 @@ describe('sweepExpired()', () => {
 
 describe('access_token 的角色解析（与会话联动）', () => {
   it('登录时把 realm/client 角色一起落到 User.roles', async () => {
-    const { rolesFromAccessToken } = await import('../../auth/oidc.ts')
+    const { rolesFromAccessToken } = await import('@shadecn/mod-auth/oidc')
     const roles = rolesFromAccessToken(accessTokenWith({ realm: ['user'], client: ['editor'] }))
 
     const user = await identities.resolveLogin('keycloak', {

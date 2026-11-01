@@ -1,4 +1,3 @@
-import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai'
 import type { AgentRuntimeOptions } from '@shadecn/agent/session'
@@ -18,8 +17,10 @@ import { useScripted } from '../helpers/agent.ts'
 import { attachCollabServer } from '@shadecn/mod-collab/hocuspocus'
 import { flushCollabWrites } from '@shadecn/mod-collab/persistence'
 import { notifyAccessRevoked } from '@shadecn/server-kit/access'
-import { AgentGrant, AgentGrantScope, AgentRun, AgentToolCall, ProjectMember, Session } from '../../db/entities/index.ts'
-import { agentGrants } from '../../store/agent.ts'
+import { Session } from '@shadecn/mod-auth/entities'
+import { ProjectMember } from '@shadecn/mod-canvas/entities'
+import { AgentGrant, AgentGrantScope, AgentRun, AgentToolCall } from '@shadecn/mod-agent/entities'
+import { agentGrants } from '@shadecn/mod-agent/stores'
 import { db, resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject, joinViaInvite, type Actor } from '../helpers/project.ts'
 
@@ -31,7 +32,7 @@ import { actor, createFlow, createProject, joinViaInvite, type Actor } from '../
  */
 
 beforeAll(async () => {
-  await attachCollabServer(createServer() as never)
+  await attachCollabServer()
 })
 
 beforeEach(async () => {

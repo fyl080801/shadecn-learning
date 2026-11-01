@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalize } from '../../logger/console.ts'
+import { normalize } from '@shadecn/server-core/logger/console'
 
 /**
  * console 接管的解析规则 —— 整套日志「零入侵」就靠它：

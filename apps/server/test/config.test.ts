@@ -1,15 +1,18 @@
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AGENT_PROVIDER_KEY_ENV, agentProviderApiKey, isApiPath } from '../config.ts'
+import { AGENT_PROVIDER_KEY_ENV, agentProviderApiKey as providerKeyFrom } from '@shadecn/mod-agent/config'
+import { isApiPath } from '@shadecn/server-core/config'
+import { loadServerConfig } from './helpers/config.ts'
+
+/** 模块里的签名是「按名字读」的函数；用例照旧传一张表，不传 = 读 process.env */
+const agentProviderApiKey = (provider: string, env?: Record<string, string>) =>
+  providerKeyFrom(provider, env ? (name) => env[name] : (name) => process.env[name])
 
 /**
  * config.ts 的值都是模块加载时从 process.env 算出来的常量，
  * 所以每个用例都要 resetModules + stubEnv 之后重新 import 一次。
  */
-async function loadConfig() {
-  vi.resetModules()
-  return import('../config.ts')
-}
+const loadConfig = loadServerConfig
 
 // apps/server/test → 仓库根：往上三层
 const rootDir = path.resolve(import.meta.dirname, '..', '..', '..')

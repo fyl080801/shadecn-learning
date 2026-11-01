@@ -1,5 +1,5 @@
-import { createSession } from '../../auth/session.ts'
-import type { ProviderId } from '../../auth/providers/index.ts'
+import { createSession } from '@shadecn/mod-auth/session'
+import type { ProviderId } from '@shadecn/mod-auth/providers'
 import { createUser, type FakeUserInput } from './db.ts'
 import { providerTokens } from './oidc.ts'
 

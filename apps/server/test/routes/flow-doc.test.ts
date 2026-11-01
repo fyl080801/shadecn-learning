@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import { authorizeCollab } from '../../auth/ws.ts'
+import { collabPorts } from '@shadecn/mod-collab/ports'
 import { nodesMap } from '@shadecn/shared/flow-doc'
 import { forgetFlow, roomOf } from '@shadecn/mod-collab/persistence'
 import { COLLAB_LIMITS } from '@shadecn/mod-collab/quota'
-import type { ProjectSummary } from '../../store/projects.ts'
+import type { ProjectSummary } from '@shadecn/mod-canvas/projects'
 import { resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject, type Actor } from '../helpers/project.ts'
 
@@ -105,12 +105,12 @@ describe('个人画布的内容通道', () => {
     const soloId = await createFlow(alice, space.id)
 
     // agent 介入后前端把个人画布切到 WebSocket（REQ-AGENT §3.3.2），所有者得进得来
-    const owner = await authorizeCollab(alice.cookie, roomOf(soloId))
+    const owner = await collabPorts().auth.authorize(alice.cookie, roomOf(soloId))
     // 带上 personal 标记：这个房间不是协作，awareness 在服务端整个丢掉（hocuspocus.ts）
     expect(owner).toMatchObject({ ok: true, identity: { id: alice.userId }, personal: true })
 
     // 前端会按 mode 分流，但拦不住有人手搓一个 provider 直接连过来：别人一律进不来
-    expect(await authorizeCollab(bob.cookie, roomOf(soloId))).toEqual({
+    expect(await collabPorts().auth.authorize(bob.cookie, roomOf(soloId))).toEqual({
       ok: false,
       reason: 'forbidden',
     })
@@ -122,7 +122,7 @@ describe('个人画布的内容通道', () => {
     const soloId = await createFlow(alice, space.id)
     expect((await alice.request(`/api/flows/${soloId}`, { method: 'DELETE' })).status).toBe(204)
 
-    expect(await authorizeCollab(alice.cookie, roomOf(soloId))).toEqual({
+    expect(await collabPorts().auth.authorize(alice.cookie, roomOf(soloId))).toEqual({
       ok: false,
       reason: 'forbidden',
     })

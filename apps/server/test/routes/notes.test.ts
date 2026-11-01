@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { notes } from '../../routes/notes.ts'
-import { store, type Note } from '../../store/notes.ts'
+import { notes } from '@shadecn/mod-notes/routes'
+import { store, type Note } from '@shadecn/mod-notes/store'
 
 const seedIds = new Set(store.list().map((n) => n.id))
 

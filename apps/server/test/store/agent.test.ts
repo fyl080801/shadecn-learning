@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { AgentChatMessage } from '@shadecn/shared/agent'
-import { AgentConversation, AgentGrant, AgentGrantScope, AgentRun, AgentToolCall } from '../../db/entities/index.ts'
-import { agentConversations, agentGrants, agentRunLog } from '../../store/agent.ts'
+import { AgentConversation, AgentGrant, AgentGrantScope, AgentRun, AgentToolCall } from '@shadecn/mod-agent/entities'
+import { agentConversations, agentGrants, agentRunLog } from '@shadecn/mod-agent/stores'
 import { db, resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject, type Actor } from '../helpers/project.ts'
 

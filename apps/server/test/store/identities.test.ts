@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { identities } from '../../store/identities.ts'
-import type { ProviderProfile } from '../../auth/providers/index.ts'
+import { identities } from '@shadecn/mod-auth/identities'
+import type { ProviderProfile } from '@shadecn/mod-auth/providers'
 import { createUser, db, resetDb } from '../helpers/db.ts'
-import { User, UserIdentity } from '../../db/entities/index.ts'
+import { UserIdentity } from '@shadecn/mod-auth/entities'
+import { User } from '@shadecn/server-kit/identity'
 import { ISSUER } from '../helpers/oidc.ts'
 
 /**

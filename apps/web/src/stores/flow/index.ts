@@ -752,7 +752,7 @@ export const useFlowStore = defineStore("flow", () => {
    * **一次编辑至少产生一次 PATCH，哪怕视图没动过** —— 这一趟同时是会话的心跳。
    * 内容走 WebSocket 之后，编辑本身不再产生任何 HTTP 请求，而会话的空闲计时
    * （Keycloak 的 SSO Session Idle）只认真实请求；服务端的协同复验是只读的、
-   * 特意不续期（`apps/server/auth/session.ts` 的 `LoadSessionOptions.refresh`），
+   * 特意不续期（`packages/mod-auth/src/session.ts` 的 `LoadSessionOptions.refresh`），
    * 否则挂着标签页就永远不会超时。所以：在编辑 = 隔一阵一次 PATCH = 会话续着，
    * 只看不改 = 一个请求都没有 = 该超时就超时。
    *

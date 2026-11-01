@@ -16,6 +16,7 @@ snapshoot
 *.log
 .env
 .env.local
+server.config.*
 data
 **/*.db
 **/*.db-journal

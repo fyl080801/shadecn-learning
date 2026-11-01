@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { app } from '../../app.ts'
-import { collabLogging, resetCollabLogStats } from '../../logger/collab.ts'
+import { app } from '@shadecn/server-core/app'
+import { collabLogging, resetCollabLogStats } from '@shadecn/mod-collab/logging'
 import { resetDb } from '../helpers/db.ts'
 import { actor } from '../helpers/project.ts'
 

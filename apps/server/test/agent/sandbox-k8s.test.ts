@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http'
+import { type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createAdaptorServer } from '@hono/node-server'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -22,7 +22,7 @@ import { registerScriptedModel, TEST_TOKEN_SECRET } from '@shadecn/agent/testing
 import { agentApiPath, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { nodesMap } from '@shadecn/shared/flow-doc'
 import { agentHostOptions, replaceAgentRuntime } from '@shadecn/mod-agent/runtime'
-import { app } from '../../app.ts'
+import { app } from '@shadecn/server-core/app'
 import { attachCollabServer } from '@shadecn/mod-collab/hocuspocus'
 import { flushCollabWrites, loadFlowState, roomOf } from '@shadecn/mod-collab/persistence'
 import { resetDb } from '../helpers/db.ts'
@@ -207,7 +207,7 @@ describe.skipIf(!enabled)('k8s 驱动：真实集群（AGENT_SANDBOX_K8S_IT=1）
     let server: Server
 
     beforeAll(async () => {
-      await attachCollabServer(createServer() as never)
+      await attachCollabServer()
       server = createAdaptorServer({ fetch: app.fetch, overrideGlobalObjects: false }) as Server
       await new Promise<void>((resolve) => server.listen(0, '0.0.0.0', resolve))
     })

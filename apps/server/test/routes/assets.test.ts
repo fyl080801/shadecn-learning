@@ -4,7 +4,7 @@ import { ASSET_PART_SIZE, type AssetUploadSession, type UploadedAsset } from '@s
 import type { S3Client } from '@shadecn/mod-storage/s3'
 import { replaceAssetStorage } from '@shadecn/mod-storage'
 import { resetVariantBackfill } from '@shadecn/mod-storage/variants'
-import { flowAssets } from '../../store/assets.ts'
+import { flowAssets } from '@shadecn/mod-storage/assets'
 import { resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject, type Actor } from '../helpers/project.ts'
 

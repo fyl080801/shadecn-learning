@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm db:push && tsx watch --exclude '../web/node_modules/.vite-temp/**' dev.ts",
-    "dev:cluster": "pnpm db:push && node scripts/dev-cluster.mjs",
-    "db:push": "tsx db/sync-cli.ts",
-    "db:push:force": "tsx db/sync-cli.ts --force",
+    "dev:cluster": "pnpm db:push && tsx scripts/dev-cluster.mjs",
+    "db:push": "tsx db-sync.ts",
+    "db:push:force": "tsx db-sync.ts --force",
     "build": "pnpm typecheck && node scripts/build-server.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
@@ -33,8 +33,12 @@
   "devDependencies": {
     "@shadecn/agent": "workspace:*",
     "@shadecn/mod-agent": "workspace:*",
+    "@shadecn/mod-auth": "workspace:*",
+    "@shadecn/mod-canvas": "workspace:*",
     "@shadecn/mod-collab": "workspace:*",
+    "@shadecn/mod-notes": "workspace:*",
     "@shadecn/mod-storage": "workspace:*",
+    "@shadecn/server-core": "workspace:*",
     "@shadecn/server-kit": "workspace:*",
     "@shadecn/shared": "workspace:*",
     "@types/node": "^24.10.1",

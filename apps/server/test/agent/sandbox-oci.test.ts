@@ -1,4 +1,4 @@
-import { request as httpRequest, createServer, type Server } from 'node:http'
+import { request as httpRequest, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createAdaptorServer } from '@hono/node-server'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -20,10 +20,10 @@ import { registerScriptedModel, SCRIPTED_API_KEY, TEST_TOKEN_SECRET, type Script
 import { agentApiPath, agentRunAbortPath, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
 import { nodesMap } from '@shadecn/shared/flow-doc'
 import { agentHostOptions, replaceAgentRuntime } from '@shadecn/mod-agent/runtime'
-import { app } from '../../app.ts'
+import { app } from '@shadecn/server-core/app'
 import { attachCollabServer } from '@shadecn/mod-collab/hocuspocus'
 import { flushCollabWrites, loadFlowState, roomOf } from '@shadecn/mod-collab/persistence'
-import { AgentRun, AgentToolCall } from '../../db/entities/index.ts'
+import { AgentRun, AgentToolCall } from '@shadecn/mod-agent/entities'
 import { db, resetDb } from '../helpers/db.ts'
 import { actor, createFlow, createProject } from '../helpers/project.ts'
 
@@ -82,7 +82,7 @@ describe.skipIf(!enabled)('oci 驱动：真实容器引擎（AGENT_SANDBOX_OCI_I
     engine = createEngineClient(socketPath)
     if (!(await engine.imageExists(image))) throw new Error(`沙箱镜像 ${image} 不存在：先 pnpm build:sandbox-image`)
 
-    await attachCollabServer(createServer() as never)
+    await attachCollabServer()
     server = createAdaptorServer({ fetch: app.fetch, overrideGlobalObjects: false }) as Server
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     appPort = (server.address() as AddressInfo).port

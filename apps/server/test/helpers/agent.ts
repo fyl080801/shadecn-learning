@@ -2,7 +2,7 @@ import { vi } from 'vitest'
 import { createAgentRuntime, type AgentRuntime, type AgentRuntimeOptions } from '@shadecn/agent/session'
 import { gatewayFetch, registerScriptedModel, type ScriptedModel, type ScriptedStep } from '@shadecn/agent/testing'
 import { agentHostOptions, replaceAgentRuntime } from '@shadecn/mod-agent/runtime'
-import { app } from '../../app.ts'
+import { app } from '@shadecn/server-core/app'
 
 /**
  * 用脚本化的模型换掉 agent runtime，走完整的二期路径：进程内驱动跑 runner → 本服务的网关路由

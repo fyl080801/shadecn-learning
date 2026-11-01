@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { PROJECT_LIMITS, type ProjectSummary } from '../../store/projects.ts'
+import { PROJECT_LIMITS, type ProjectSummary } from '@shadecn/mod-canvas/projects'
 import { db, resetDb } from '../helpers/db.ts'
-import { Project, ProjectInvite } from '../../db/entities/index.ts'
+import { Project, ProjectInvite } from '@shadecn/mod-canvas/entities'
 import { actor, createFlow, createProject, type Actor } from '../helpers/project.ts'
 
 /**

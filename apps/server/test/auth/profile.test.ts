@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { completeUserProfile, registerProfileHook } from '../../auth/profile.ts'
+import { completeUserProfile, registerProfileHook } from '@shadecn/mod-auth/profile'
 // 引入即挂上 identicon 那条补齐规则
-import '../../avatar/index.ts'
-import { identiconUrl } from '../../avatar/identicon.ts'
+import '@shadecn/mod-auth/avatar'
+import { identiconUrl } from '@shadecn/mod-auth/avatar'
 import { createUser, db, resetDb } from '../helpers/db.ts'
-import { User } from '../../db/entities/index.ts'
+import { User } from '@shadecn/server-kit/identity'
 
 beforeEach(async () => {
   await resetDb()

@@ -41,6 +41,11 @@ export default defineConfig({
      */
     env: {
       NODE_ENV: 'test',
+      /**
+       * 配置文件（docs/28 §3.3）：空串 = 不用。仓库根的 `server.config.*` 是开发者自己的（和 .env 一样不进仓库），
+       * 漏进来会改变整轮测试的行为；要测配置文件的用例自己 stubEnv 指过去。
+       */
+      SERVER_CONFIG: '',
       DATABASE_URL: TEST_DATABASE_URL,
       DB_PROVIDER: TEST_DB_PROVIDER,
       APP_ORIGIN: 'http://127.0.0.1:3000',
@@ -81,12 +86,16 @@ export default defineConfig({
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_OAUTH_TOKEN: '',
       /**
-       * 对象存储默认按「没配」跑（上传 503），开发者 .env 里的真 AK/SK 漏不进来。
-       * 要测上传的用例用 `replaceAssetStorage()` 换一个假的存储。
+       * 对象存储按「配了一个假的」跑：模块要加载，上传接口才挂得上（没配齐的模块整个不加载）。
+       * 地址是测试域名、密钥是假的，开发者 .env 里的真 AK/SK 漏不进来；真发出去的请求会被 `setup.ts` 的 fetch 拦截。
+       * 要测上传的用例用 `replaceAssetStorage()` 换一个假的存储，测「存储不可用」的换成 null。
        */
-      S3_BUCKET: '',
-      S3_ACCESS_KEY_ID: '',
-      S3_SECRET_ACCESS_KEY: '',
+      S3_ENDPOINT: 'https://s3.test',
+      S3_INTERNAL_ENDPOINT: '',
+      S3_BUCKET: 'test-bucket',
+      S3_ACCESS_KEY_ID: 'test-ak',
+      S3_SECRET_ACCESS_KEY: 'test-sk',
+      S3_KEY_PREFIX: 'canvas',
     },
   },
 })

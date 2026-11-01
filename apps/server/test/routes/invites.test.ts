@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { app } from '../../app.ts'
+import { app } from '@shadecn/server-core/app'
 import { db, resetDb } from '../helpers/db.ts'
-import { ProjectInvite, ProjectMember } from '../../db/entities/index.ts'
+import { ProjectInvite, ProjectMember } from '@shadecn/mod-canvas/entities'
 import { actor, createProject, type Actor } from '../helpers/project.ts'
 
 beforeEach(async () => {

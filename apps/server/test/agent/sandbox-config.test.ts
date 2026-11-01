@@ -6,6 +6,8 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { K8S_LABELS, OCI_LABELS, PROCESS_DRIVER_REFUSED_IN_PRODUCTION } from '@shadecn/agent/sandbox/drivers'
 import { forwardedImports, runnerCommand } from '@shadecn/mod-agent/runner-command'
+import type { AgentConfig } from '@shadecn/mod-agent/config'
+import { loadServerConfig } from '../helpers/config.ts'
 
 /**
  * 沙箱相关的配置与装配（docs/22 §7）：`AGENT_SANDBOX` 的取值、生产环境拒绝 process 驱动（除非显式放行）、
@@ -135,10 +137,7 @@ async function until(check: () => boolean, ms = 5000) {
   }
 }
 
-async function loadConfig() {
-  vi.resetModules()
-  return import('../../config.ts')
-}
+const loadConfig = loadServerConfig
 
 describe('AGENT_SANDBOX / AGENT_TOKEN_SECRET', () => {
   it('不配 = process；local（一期的取值）= process + 媒体工具；oci / k8s 原样；不认识的带着原值', async () => {
@@ -492,8 +491,26 @@ describe('runner 的启动命令', () => {
   })
 })
 
-/** resetModules 之后：先让宿主按新的环境变量装配 agent 端口，再拿同一轮模块图里的 runtime */
+/**
+ * resetModules 之后：按新的环境变量重新解析配置段、拼好 agent 的依赖（和模块 setup 同一个 `wireAgent`），
+ * 再拿同一轮模块图里的 runtime。不整个装配平台：那会顺带起清孤儿沙箱的定时器，打乱假引擎上的请求计数
+ */
 async function freshAgentRuntime() {
-  await import('../../modules/agent.ts')
+  // 新模块图里的平台能力也要交一次（模型表的 $ENV 经它读）；按清单解析配置段（prepare 顺带给新模块图建好 ORM）
+  const { platform, runtime } = await import('@shadecn/server-core/platform')
+  const { prepare } = await import('@shadecn/server-core/server')
+  const { modules } = await import('../../modules.ts')
+  const { configs: moduleConfigs } = await prepare(modules)
+  const { wireAgent } = await import('@shadecn/mod-agent')
+  const { flows } = await import('@shadecn/mod-canvas/flows')
+  const { projects } = await import('@shadecn/mod-canvas/projects')
+  wireAgent({
+    config: moduleConfigs.values.get('agent') as AgentConfig,
+    runtime,
+    auth: platform.auth,
+    executesRuns: true,
+    canvas: { locate: (flowId) => flows.locate(flowId), roleOf: (projectId, userId) => projects.roleOf(projectId, userId) },
+    storage: undefined,
+  })
   return import('@shadecn/mod-agent/runtime')
 }

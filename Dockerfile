@@ -39,6 +39,10 @@ COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/agent/package.json ./packages/agent/
 COPY packages/server-kit/package.json ./packages/server-kit/
+COPY packages/server-core/package.json ./packages/server-core/
+COPY packages/mod-auth/package.json ./packages/mod-auth/
+COPY packages/mod-notes/package.json ./packages/mod-notes/
+COPY packages/mod-canvas/package.json ./packages/mod-canvas/
 COPY packages/mod-collab/package.json ./packages/mod-collab/
 COPY packages/mod-storage/package.json ./packages/mod-storage/
 COPY packages/mod-agent/package.json ./packages/mod-agent/

@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Hono } from 'hono'
-import { identities } from '../../store/identities.ts'
+import { identities } from '@shadecn/mod-auth/identities'
 import { db, firstRow, resetDb } from '../helpers/db.ts'
 import { closeFreshOrms, importFreshApp } from '../helpers/fresh-app.ts'
-import { AuthRequest, PendingLink, Session, User, UserIdentity } from '../../db/entities/index.ts'
+import { AuthRequest, PendingLink, Session, UserIdentity } from '@shadecn/mod-auth/entities'
+import { User } from '@shadecn/server-kit/identity'
 import {
   GITHUB_AUTHORIZE_URL,
   GITHUB_CLIENT_ID,
@@ -106,8 +107,7 @@ describe('GET /api/auth/login?provider=github', () => {
     // 不 stubEnv，用全局那份只有 Keycloak 的配置。
     // resetModules 是必须的：上一个用例已经建过一份「配了 GitHub」的模块图，
     // 直接 import 拿到的是那一份缓存，环境变量早就不作数了
-    vi.resetModules()
-    const { app } = await import('../../app.ts')
+    const app = await importFreshApp()
     const res = await app.request('/api/auth/login?provider=github')
 
     expect(decodeURIComponent(res.headers.get('location') ?? '')).toContain('没有启用')

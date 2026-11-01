@@ -1,18 +1,22 @@
 import { defineEntity, p } from '@mikro-orm/core'
 import { afterEach, describe, expect, it } from 'vitest'
-import { dbProvider } from '../../config.ts'
-import { AuthRequest, entities } from '../../db/entities/index.ts'
-import { createOrm } from '../../db/orm.ts'
+import { dbProvider } from '@shadecn/server-core/config'
+import { AuthRequest } from '@shadecn/mod-auth/entities'
+import { serverEntities } from '@shadecn/server-core/server'
+import { modules } from '../../modules.ts'
+
+const entities = serverEntities(modules) as unknown[]
+import { createOrm } from '@shadecn/server-core/orm'
 import {
   SchemaDataLossError,
   findDataLoss,
   planSchemaSync,
   splitStatements,
   syncSchema,
-} from '../../db/schema-sync.ts'
+} from '@shadecn/server-core/schema-sync'
 
 /**
- * 表结构同步的有损变更守卫（apps/server/db/schema-sync.ts）。
+ * 表结构同步的有损变更守卫（packages/server-core/src/db/schema-sync.ts）。
  *
  * 前半段是纯函数：下面的 SQL 样本**都是 MikroORM 7.2.5 实际吐出来的**（拿一张探针表在两种库上
  * 分别做加列 / 删列 / 改类型 / 改可空 / 删表，`getUpdateSchemaSQL()` 原样抄下来），
@@ -169,7 +173,7 @@ describe('在真实测试库上算差异（只算不执行）', () => {
     while (opened.length > 0) await opened.pop()?.close()
   })
 
-  async function open(entitySet?: Parameters<typeof createOrm>[0]) {
+  async function open(entitySet: Parameters<typeof createOrm>[0] = { entities: serverEntities(modules) }) {
     const orm = await createOrm(entitySet)
     opened.push(orm)
     return orm
@@ -191,7 +195,7 @@ describe('在真实测试库上算差异（只算不执行）', () => {
     }
     change(properties)
     const changed = defineEntity({ name: 'AuthRequest', properties })
-    return { entities: entities.map((entity) => (entity === AuthRequest ? changed : entity)) }
+    return { entities: entities.map((entity) => (entity === AuthRequest ? changed : entity)) as Parameters<typeof createOrm>[0]['entities'] }
   }
 
   it('实体定义和 global-setup 建出来的库一致：再同步一次没有任何语句', async () => {

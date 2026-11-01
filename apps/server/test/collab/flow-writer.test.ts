@@ -6,7 +6,7 @@ import { forgetFlow, roomOf } from '@shadecn/mod-collab/persistence'
 import { COLLAB_LIMITS } from '@shadecn/mod-collab/quota'
 import { db, resetDb } from '../helpers/db.ts'
 import { EntityManager } from '@mikro-orm/core'
-import { Flow } from '../../db/entities/index.ts'
+import { Flow } from '@shadecn/mod-canvas/entities'
 import { actor, createFlow, createProject } from '../helpers/project.ts'
 
 /**

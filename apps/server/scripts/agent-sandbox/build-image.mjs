@@ -3,7 +3,7 @@
  *
  * 构建上下文是 `pnpm build:server` 产出的 output/agent-sandbox/（runner + 它的 4 个第三方包 + Dockerfile，模板在本目录）。
  * 用哪个 CLI：`CONTAINER_CLI`，不给就先找 podman、再找 docker。镜像名：`AGENT_SANDBOX_IMAGE`（环境变量优先，
- * 其次仓库根 .env 里的同名项 —— 只读这一项），都没有就是 `shadecn-agent-sandbox:latest`（和 apps/server/config.ts 的默认值一致）。
+ * 其次仓库根 .env 里的同名项 —— 只读这一项），都没有就是 `shadecn-agent-sandbox:latest`（和 packages/server-core/src/config.ts 的默认值一致）。
  *
  * 命令行上多给的参数原样交给 `<cli> build`，例如走镜像代理拉基础镜像、给构建容器配出网代理：
  *   pnpm build:sandbox-image --build-arg NODE_IMAGE=<代理>/docker.io/library/node:22-alpine

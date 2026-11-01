@@ -1,4 +1,3 @@
-import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai'
@@ -29,7 +28,7 @@ import { actor, createFlow, createProject, joinViaInvite } from '../helpers/proj
 
 beforeAll(async () => {
   // 不 listen：direct connection 不经网络，attach 只是为了建出那个进程内的协同实例
-  await attachCollabServer(createServer() as never)
+  await attachCollabServer()
 })
 
 beforeEach(async () => {

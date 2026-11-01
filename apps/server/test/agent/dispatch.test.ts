@@ -1,4 +1,3 @@
-import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { fauxAssistantMessage, fauxText } from '@earendil-works/pi-ai'
 import { agentApiPath, AgentEventType, type AgentStreamEvent } from '@shadecn/shared/agent'
@@ -32,7 +31,7 @@ let agentBus: Bus
 let webBus: Bus
 
 beforeAll(async () => {
-  await attachCollabServer(createServer() as never)
+  await attachCollabServer()
 })
 
 beforeEach(async () => {

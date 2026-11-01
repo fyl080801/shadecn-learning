@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { app } from '../app.ts'
+import { app } from '@shadecn/server-core/app'
 import { resetDb } from './helpers/db.ts'
 import { stubOidcFetch } from './helpers/oidc.ts'
 import { signIn } from './helpers/session.ts'
@@ -105,7 +105,7 @@ describe('CORS', () => {
   it('APP_ORIGINS 里的域名也回显 —— 一套部署挂多个域名时它们都是「自己」', async () => {
     vi.stubEnv('APP_ORIGINS', 'https://alt.example.com')
     vi.resetModules()
-    const fresh = (await import('../app.ts')).app
+    const fresh = (await import('@shadecn/server-core/app')).app
 
     const ok = await fresh.request('/api/health', {
       headers: { origin: 'https://alt.example.com' },

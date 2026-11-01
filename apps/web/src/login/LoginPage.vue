@@ -18,7 +18,7 @@ import type { ProviderView, ProviderId } from "@shadecn/shared/auth"
  * （`apps/web/src/login/main.ts`）—— 未登录时后端只发 `/login`，`index.html` 根本发不出去，
  * 所以登录页不能长在需要 `index.html` 才能启动的那棵树上。
  *
- * 它以前是服务端拼的一段 HTML 字符串（`apps/server/frontend/login-page.ts`），
+ * 它以前是服务端拼的一段 HTML 字符串（`packages/server-core/src/frontend/login-page.ts`），
  * 换成这里之后消掉了两处必须手工同步的重复：深色调色板（曾经真的漂过一次，
  * `--primary` 一边 0.985 一边 0.922）和 GitHub 的 SVG。现在配色直接来自
  * `@/style.css`，图标直接来自 `@/components/icons/GithubMark.vue`。

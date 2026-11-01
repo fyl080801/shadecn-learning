@@ -5,11 +5,11 @@
  * 产出（前端由 `vite build` 落到 output/public）：
  *   output/package.json        运行时依赖（版本锁死）+ start / db:push 脚本
  *   output/server/index.js     打包后的后端入口（ESM，node 22）
- *   output/server/db-sync.js   表结构同步入口（apps/server/db/sync-cli.ts），容器启动先跑它
+ *   output/server/db-sync.js   表结构同步入口（apps/server/db-sync.ts），容器启动先跑它
  *   output/server/agent-runner.js  画布 agent 的 runner（packages/agent/src/runner/main.ts）：
  *                              `process` 沙箱驱动 spawn 的就是它（docs/22 §7），环境变量只有网关地址 + 一次性凭证
  *   output/server/agents/      agent 定义（packages/agent/agents/*.md，docs/26 §3.1）：服务端启动时读、校验
- *                              （apps/server/config.ts 的 agentDefinitionsDir）。只给服务端，不进沙箱镜像
+ *                              （packages/server-core/src/config.ts 的 agentDefinitionsDir）。只给服务端，不进沙箱镜像
  *   output/server/skills/      文字技能（packages/agent/skills/ 里的 *.md，保留子目录，docs/26 §3.8）：服务端启动时读、校验
  *                              （config.ts 的 agentTextSkillsDir；源目录不存在就不拷 = 没有文字技能）。只给服务端，不进沙箱镜像
  *   output/Dockerfile          构建上下文就是 output/ 本身
@@ -19,7 +19,7 @@
  *                              Dockerfile（模板在 scripts/agent-sandbox/）。不进主镜像（output/.dockerignore 排掉）
  *
  * **一个产物两种库**：实体定义和库无关，驱动在运行时按 DB_PROVIDER 动态 import
- * （apps/server/db/orm.ts），所以构建不再按库裁剪 —— `@mikro-orm/sqlite`（连带 better-sqlite3）
+ * （packages/server-core/src/db/orm.ts），所以构建不再按库裁剪 —— `@mikro-orm/sqlite`（连带 better-sqlite3）
  * 和 `@mikro-orm/postgresql`（连带 pg）都进运行时依赖，构建时也不用关心 DB_PROVIDER。
  *
  * 打包要点：
@@ -30,7 +30,7 @@
  * - splitting: true —— 三个入口共享的模块切成公共 chunk（见上一条）；
  * - **产物里不能有 Vite**（docs/28 §3.8）：开发用的中间件只在 `apps/server/dev.ts` 入口里，生产入口 `index.ts`
  *   不引用它；下面的 assertNoDevCode 对着 metafile 断言，谁要是把它引回 index.ts 的依赖图，构建直接失败；
- * - define __APP_BUNDLE__ —— apps/server/runtime.ts 靠它区分「源码运行」和「产物运行」；
+ * - define __APP_BUNDLE__ —— packages/server-core/src/runtime.ts 靠它区分「源码运行」和「产物运行」；
  * - define __AGENT_BUILD_ID__ —— 本次构建的 id（packages/agent/src/build-id.ts），服务端和 runner 两个入口拿到的是同一个：
  *   网关据此发现「沙箱镜像和服务端不是同一次构建」（只打 warn；真正拦截不兼容的是协议版本，protocol.ts）。
  *
@@ -104,7 +104,7 @@ const result = await build({
   // server/agent-runner.js（沙箱里的 runner，由服务端的 process 驱动起）
   entryPoints: {
     index: path.join(serverDir, 'index.ts'),
-    'db-sync': path.join(serverDir, 'db/sync-cli.ts'),
+    'db-sync': path.join(serverDir, 'db-sync.ts'),
     'agent-runner': path.join(rootDir, RUNNER_ENTRY),
   },
   outdir: serverOutDir,
@@ -150,14 +150,14 @@ console.log(`[build:server] 构建 id ${buildId}`)
 console.log(`[build:server] output/server → ${(bytes / 1024).toFixed(1)} kB（SQLite / PostgreSQL 通用）`)
 
 /**
- * 产物里不能有开发用的东西（docs/28 §3.8）：`apps/server/dev.ts`、`frontend/dev.ts`、`modules/frontend-dev.ts`
+ * 产物里不能有开发用的东西（docs/28 §3.8）：`apps/server/dev.ts`、`@shadecn/server-core` 的 `frontend/dev.ts`
  * 这几个文件，以及 `vite` 这个包。它们只在 dev 入口的依赖图里；出现在这里 = 有人从 index.ts 那边引到了它们。
  * 以前靠「动态 import + 运行时 isDev 判断」把 vite 挡在生产之外，但 chunk 仍然在产物里；现在是打包时就不存在。
  */
 function assertNoDevCode(metafile) {
   const devFiles = Object.keys(metafile.inputs)
     .map((file) => file.replaceAll('\\', '/'))
-    .filter((file) => /(^|\/)(dev|frontend\/dev|modules\/frontend-dev)\.ts$/.test(file))
+    .filter((file) => /(^|\/)(dev|frontend\/dev)\.ts$/.test(file))
   const externals = new Set()
   for (const output of Object.values(metafile.outputs)) {
     for (const imported of output.imports) {

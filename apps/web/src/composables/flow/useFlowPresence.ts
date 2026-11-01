@@ -35,7 +35,7 @@ import type { FlowSync } from "./sync"
  *
  * awareness 的内容完全由客户端自己写、服务端只做转发，因此对收到的数据一律当
  * 不可信输入解析（`readPeer`），颜色也在本地按 id 重算而不是照抄对方上报的。
- * 真正的边界在握手那一步：`apps/server/auth/ws.ts` 只放项目成员进这个房间。
+ * 真正的边界在握手那一步：`packages/mod-collab/src/authorize.ts` 只放项目成员进这个房间。
  */
 
 export function useFlowPresence(sync: FlowSync, mode?: Ref<FlowMode | null>) {

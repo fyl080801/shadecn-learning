@@ -1,4 +1,3 @@
-import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai'
 import type { ScriptedStep } from '@shadecn/agent/testing'
@@ -24,7 +23,7 @@ import { actor, createFlow, createProject, joinViaInvite } from '../helpers/proj
  */
 
 beforeAll(async () => {
-  await attachCollabServer(createServer() as never)
+  await attachCollabServer()
 })
 
 beforeEach(async () => {

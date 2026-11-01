@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { freshAuth } from '../helpers/auth.ts'
 import {
   CLIENT_ID,
   DISCOVERY_URL,
@@ -23,8 +24,8 @@ import {
  * 才能从干净状态开始。
  */
 async function loadOidc() {
-  vi.resetModules()
-  return import('../../auth/oidc.ts')
+  await freshAuth()
+  return import('@shadecn/mod-auth/oidc')
 }
 
 let stub: ReturnType<typeof stubOidcFetch>

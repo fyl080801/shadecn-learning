@@ -1,4 +1,4 @@
-import { app } from '../../app.ts'
+import { app } from '@shadecn/server-core/app'
 import { signIn } from './session.ts'
 
 /** 一个「已登录的浏览器」：带着 cookie 直接发请求 */

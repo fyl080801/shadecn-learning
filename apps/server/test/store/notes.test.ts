@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { store } from '../../store/notes.ts'
+import { store } from '@shadecn/mod-notes/store'
 
 /** 模块加载时自带的示例数据，用例之间要保住它们 */
 const seedIds = new Set(store.list().map((n) => n.id))

@@ -1,13 +1,14 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { routeRole } from '../../routes/ownership.ts'
+import { describeRouteTable } from '@shadecn/server-kit/kernel'
+import { routeRole, routeTable } from '../helpers/routes.ts'
 import { parseYamlDocuments } from '../helpers/yaml.ts'
 
 /**
  * 按角色拆分的 k8s 清单（`k8s/variants/roles/`，docs/28 §3.9）。
  * 钉住三件事：每个 Deployment 真的是它声称的那个角色、该带的带了不该带的没带；
- * Service 选得中对应的 Pod；ingress 的分流和服务端的路由归属表（`routes/ownership.ts`）是同一张表。
+ * Service 选得中对应的 Pod；ingress 的分流和服务端的路由归属表（`routes-table.ts`，入口声明推出的）是同一张表。
  */
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..', '..', '..')
@@ -104,6 +105,15 @@ describe('k8s/variants/roles：ingress 分流 = 服务端的路由归属表', ()
     '/assets/index.js',
   ])('%s', (pathname) => {
     expect(ingressRole(pathname)).toBe(routeRole(pathname))
+  })
+
+  it('每条不归 web 的入口声明（agent 网关除外）都在 ingress 里分到同一个角色：模块新加了入口，清单漏了就红', () => {
+    for (const route of describeRouteTable(routeTable)) {
+      if (route.role === 'agent') continue
+      // 参数段代入一个样例 id；any（健康检查）在 ingress 上走 web
+      const sample = route.path.replace(/:[^/]+/g, 'abc123')
+      expect(ingressRole(sample), route.path).toBe(route.role === 'any' ? 'web' : route.role)
+    }
   })
 
   it('agent 网关不经 ingress（沙箱直连 Pod IP）：落到 web，由服务端 404', () => {

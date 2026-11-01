@@ -1,17 +1,20 @@
-import './env.ts'
+import '@shadecn/server-core/env'
 // 顺序同 index.ts：.env 之后、其余一切之前接管 console
-import './logger/install.ts'
-import { boot } from './boot.ts'
-import { agentModule } from './modules/agent.ts'
-import { collabModule } from './modules/collab.ts'
-import { frontendDevModule } from './modules/frontend-dev.ts'
-import { storageModule } from './modules/storage.ts'
+import '@shadecn/server-core/logger/install'
+import type { HttpServer } from 'vite'
+import { boot } from '@shadecn/server-core/boot'
+import { attachViteDevServer } from '@shadecn/server-core/frontend/dev'
+import { modules } from './modules.ts'
 
 /**
  * 开发入口（`pnpm dev` / `pnpm dev:cluster` 跑它）：和 `index.ts` 唯一的区别是前端换成 Vite 中间件。
  * 它不进构建 —— esbuild 的入口只有 `index.ts`，所以 Vite 永远不会出现在产物里（docs/28 §3.8）。
  */
-const shutdown = await boot({ modules: [storageModule, collabModule, agentModule, frontendDevModule] })
+// Vite 以中间件形式挂到后端上，HMR 复用同一个端口（`frontend/dev.ts`）。ServerType 是 http/http2 的联合，Vite 只要 http.Server 这一支
+const shutdown = await boot({
+  modules,
+  frontend: async (app, server) => (await attachViteDevServer(app, server as unknown as HttpServer)) ?? undefined,
+})
 
 // dev 下真正 listen 的是 tsx watch fork 出来的这个进程，上面还压着 tsx、sh、pnpm 三层。
 // 终端里 Ctrl+C 时信号发给整个前台进程组，四层都收得到；但从 IDE 点停止、kill 顶层 pid、
