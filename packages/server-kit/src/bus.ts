@@ -299,7 +299,7 @@ async function runHandler(
 
 let current: Bus | undefined
 
-/** 宿主在 `initCluster()` 之后调一次，定下实例身份（`apps/server/boot.ts`）。没调过（测试）就按随机身份懒建 */
+/** 宿主在 `initCluster()` 之后调一次，定下实例身份（`packages/server-core/src/boot.ts`）。没调过（测试）就按随机身份懒建 */
 export function configureBus(options: { instanceId: string }): Bus {
   current = createBus(options)
   return current

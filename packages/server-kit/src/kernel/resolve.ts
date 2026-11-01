@@ -1,18 +1,18 @@
-import type { ServerModule } from './module.ts'
+import type { AnyServerModule, ModuleDependency } from './module.ts'
 import type { ServerRole } from './roles.ts'
 
 /** 一个没加载的模块和原因（进启动日志和 `/api/features`） */
-export interface SkippedModule<App = unknown> {
-  readonly module: ServerModule<App>
+export interface SkippedModule {
+  readonly module: AnyServerModule
   readonly reason: 'disabled' | 'role'
   /** `enabled()` 给的原因；`role` 时为空 */
   readonly detail: string
 }
 
-export interface ResolvedModules<App = unknown> {
+export interface ResolvedModules {
   /** 按装配顺序（依赖在前）排好的模块 */
-  readonly ordered: readonly ServerModule<App>[]
-  readonly skipped: readonly SkippedModule<App>[]
+  readonly ordered: readonly AnyServerModule[]
+  readonly skipped: readonly SkippedModule[]
 }
 
 /**
@@ -20,27 +20,39 @@ export interface ResolvedModules<App = unknown> {
  *
  * 规则：
  * 1. 名字不能重复；
- * 2. `enabled()` 给 `false` / 原因 → 不加载（`disabled`）；角色集和 `roles` 没交集 → 不加载（`role`）；
+ * 2. 配置里关掉的（`switchedOff`，模块名 → 原因）→ 不加载（`disabled`），不再问模块自己；
+ *    `enabled()` 给 `false` / 原因 → 不加载（`disabled`）；角色集和 `roles` 没交集 → 不加载（`role`）；
  * 3. 加载的模块硬依赖（`dependsOn`）的必须也加载，否则抛错并说明缺谁、为什么缺；
+ *    带 `roles` 的依赖只在本进程扮演其中某个角色时才要求（也只在那时参与排序）；
  * 4. 软依赖（`optional`）只影响顺序：加载了就排在前面，没加载当没有；
  * 5. 依赖成环抛错。
  *
  * 排序是稳定的：同一层的模块按声明顺序。
  */
-export function resolveModules<App>(
-  modules: readonly ServerModule<App>[],
-  options: { roles: ReadonlySet<ServerRole> },
-): ResolvedModules<App> {
-  const byName = new Map<string, ServerModule<App>>()
+export function resolveModules(
+  modules: readonly AnyServerModule[],
+  options: {
+    roles: ReadonlySet<ServerRole>
+    /** 配置文件 / 环境变量里显式关掉的模块（`modules.<name>.enabled: false`）：模块名 → 写进启动日志和 `/api/features` 的原因 */
+    switchedOff?: ReadonlyMap<string, string>
+    /** 各模块解析好的配置（模块名 → 值），交给 `enabled(config)`；没有配置段的模块不在表里 */
+    configs?: ReadonlyMap<string, unknown>
+  },
+): ResolvedModules {
+  const byName = new Map<string, AnyServerModule>()
   for (const module of modules) {
     if (byName.has(module.name)) throw new Error(`[kernel] 模块名重复：${module.name}`)
     byName.set(module.name, module)
   }
+  for (const name of options.switchedOff?.keys() ?? []) {
+    if (!byName.has(name)) throw new Error(`[kernel] 配置里关掉了不存在的模块：${name}`)
+  }
 
-  const skipped: SkippedModule<App>[] = []
-  const selected = new Map<string, ServerModule<App>>()
+  const skipped: SkippedModule[] = []
+  const selected = new Map<string, AnyServerModule>()
   for (const module of modules) {
-    const verdict = module.enabled?.() ?? true
+    const off = options.switchedOff?.get(module.name)
+    const verdict = off !== undefined ? off : (module.enabled?.(options.configs?.get(module.name)) ?? true)
     if (verdict !== true) {
       skipped.push({ module, reason: 'disabled', detail: typeof verdict === 'string' ? verdict : '' })
       continue
@@ -53,19 +65,27 @@ export function resolveModules<App>(
   }
 
   for (const module of selected.values()) {
-    for (const dep of module.dependsOn ?? []) {
+    for (const dep of activeDependencies(module, options.roles)) {
       if (selected.has(dep)) continue
       throw new Error(`[kernel] 模块 ${module.name} 依赖 ${dep}，但 ${describeMissing(dep, byName, skipped)}`)
     }
   }
 
-  return { ordered: topologicalOrder(selected), skipped }
+  return { ordered: topologicalOrder(selected, options.roles), skipped }
 }
 
-function describeMissing<App>(
+/** 本进程角色下真正生效的硬依赖名 */
+export function activeDependencies(module: AnyServerModule, roles: ReadonlySet<ServerRole>): string[] {
+  return (module.dependsOn ?? []).flatMap((dep: ModuleDependency) => {
+    if (typeof dep === 'string') return [dep]
+    return dep.roles.some((role) => roles.has(role)) ? [dep.module] : []
+  })
+}
+
+function describeMissing(
   name: string,
-  byName: Map<string, ServerModule<App>>,
-  skipped: readonly SkippedModule<App>[],
+  byName: Map<string, AnyServerModule>,
+  skipped: readonly SkippedModule[],
 ): string {
   if (!byName.has(name)) return `没有这个模块`
   const entry = skipped.find((item) => item.module.name === name)
@@ -75,12 +95,12 @@ function describeMissing<App>(
 }
 
 /** Kahn 算法，每一层按声明顺序取，所以顺序稳定；剩下取不完的就是环 */
-function topologicalOrder<App>(selected: Map<string, ServerModule<App>>): ServerModule<App>[] {
-  const edges = (module: ServerModule<App>) =>
-    [...(module.dependsOn ?? []), ...(module.optional ?? [])].filter((dep) => selected.has(dep))
+function topologicalOrder(selected: Map<string, AnyServerModule>, roles: ReadonlySet<ServerRole>): AnyServerModule[] {
+  const edges = (module: AnyServerModule) =>
+    [...activeDependencies(module, roles), ...(module.optional ?? [])].filter((dep) => selected.has(dep))
 
   const remaining = new Map(selected)
-  const ordered: ServerModule<App>[] = []
+  const ordered: AnyServerModule[] = []
   const done = new Set<string>()
 
   while (remaining.size > 0) {

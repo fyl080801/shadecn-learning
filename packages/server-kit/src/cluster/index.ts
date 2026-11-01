@@ -33,11 +33,11 @@ function swapBackend(next: ClusterBackend) {
   generation += 1
 }
 
-/** `initCluster` 的参数：环境变量的解析在宿主（apps/server/config.ts），这个包不读 `process.env` */
+/** `initCluster` 的参数：环境变量的解析在宿主（packages/server-core/src/config.ts），这个包不读 `process.env` */
 export type ClusterOptions = { mode: 'single' } | { mode: 'redis'; url: string; prefix: string }
 
 /**
- * 挑实现。宿主在监听端口之前 await 它一次（`apps/server/boot.ts`）。
+ * 挑实现。宿主在监听端口之前 await 它一次（`packages/server-core/src/boot.ts`）。
  *
  * 单副本模式下这函数什么也不做 —— Redis 那半连 import 都不会发生，
  * 所以构建产物里也不会出现 ioredis（`apps/server/scripts/build-server.mjs` 从

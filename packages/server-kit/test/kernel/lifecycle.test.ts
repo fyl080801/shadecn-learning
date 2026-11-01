@@ -1,14 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Server } from 'node:http'
-import { startModules, withDeadline } from '../../src/kernel/lifecycle.ts'
+import { Hono } from 'hono'
+import { startModules, withDeadline, type HttpHost, type StartContext } from '../../src/kernel/lifecycle.ts'
 import { defineModule, type ModuleContext, type ServerModule } from '../../src/kernel/module.ts'
 import { ALL_ROLES, type ServerRole } from '../../src/kernel/roles.ts'
+import type { Platform } from '../../src/platform.ts'
 
-const context = {
+const noHttp: HttpHost = { route() {}, use() {}, upgrade() {} }
+
+const context: StartContext = {
   roles: new Set<ServerRole>(ALL_ROLES),
-  app: {},
-  server: {} as Server,
   isDev: true,
+  platform: {} as Platform,
+  server: {} as Server,
+  http: noHttp,
+  configs: new Map(),
 }
 
 const mod = (name: string, extra: Partial<ServerModule> = {}): ServerModule =>
@@ -165,5 +171,64 @@ describe('withDeadline', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     await withDeadline(Promise.resolve(), 1_000, '落库')
     expect(error).not.toHaveBeenCalled()
+  })
+})
+
+describe('startModules：HTTP 只能挂声明过的入口', () => {
+  it('声明过的路径交给宿主；ctx.config 是该模块解析好的配置', async () => {
+    const mounted: string[] = []
+    let seen: unknown
+    await startModules(
+      [
+        mod('canvas', {
+          routes: [{ path: '/api/flows', role: 'web', access: 'user' }],
+          setup(ctx) {
+            seen = ctx.config
+            expect(ctx.http.route('/api/flows', new Hono())).toBe(true)
+          },
+        }),
+      ],
+      { ...context, configs: new Map([['canvas', { a: 1 }]]), http: { ...noHttp, route: (path) => void mounted.push(path) } },
+    )
+    expect(mounted).toEqual(['/api/flows'])
+    expect(seen).toEqual({ a: 1 })
+  })
+
+  it('挂没声明的路径 → 装配失败（它会绕过角色闸门、登录闸门和分流表）', async () => {
+    await expect(
+      startModules([mod('x', { setup: (ctx) => void ctx.http.route('/api/secret', new Hono()) })], context),
+    ).rejects.toThrow('没在 routes 里声明')
+  })
+
+  it('声明的角色不在本进程 → 不挂，返回 false', async () => {
+    const mounted: string[] = []
+    let result: boolean | undefined
+    await startModules(
+      [
+        mod('agent', {
+          routes: [{ path: '/api/agent-gateway', role: 'agent', access: 'public' }],
+          setup(ctx) {
+            result = ctx.http.route('/api/agent-gateway', new Hono())
+          },
+        }),
+      ],
+      { ...context, roles: new Set<ServerRole>(['web']), http: { ...noHttp, route: (path) => void mounted.push(path) } },
+    )
+    expect(result).toBe(false)
+    expect(mounted).toEqual([])
+  })
+
+  it('WebSocket 入口按 kind 区分：http 的声明认领不了 upgrade', async () => {
+    await expect(
+      startModules(
+        [
+          mod('collab', {
+            routes: [{ path: '/ws/collaboration', role: 'collab', access: 'public' }],
+            setup: (ctx) => void ctx.http.upgrade('/ws/collaboration', () => {}),
+          }),
+        ],
+        context,
+      ),
+    ).rejects.toThrow('WebSocket')
   })
 })

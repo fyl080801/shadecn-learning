@@ -10,7 +10,7 @@ export type FeatureTable = Readonly<Record<string, boolean>>
 
 let features: FeatureTable = {}
 
-export function recordFeatures<App>(resolved: ResolvedModules<App>): void {
+export function recordFeatures(resolved: ResolvedModules): void {
   const table: Record<string, boolean> = {}
   for (const module of resolved.ordered) table[module.name] = true
   for (const { module } of resolved.skipped) table[module.name] = false

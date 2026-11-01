@@ -84,3 +84,50 @@ describe('resolveModules：选模块、排依赖', () => {
     expect(() => resolveModules([mod('a'), mod('a')], { roles: all })).toThrow(/重复/)
   })
 })
+
+describe('resolveModules：配置里关掉的模块（switchedOff）', () => {
+  it('关掉的模块不加载，原因原样进 skipped，不再问模块自己的 enabled()', () => {
+    const { ordered, skipped } = resolveModules([mod('storage', { enabled: () => true }), mod('frontend')], {
+      roles: all,
+      switchedOff: new Map([['storage', '配置关闭']]),
+    })
+    expect(names(ordered)).toEqual(['frontend'])
+    expect(skipped).toEqual([expect.objectContaining({ reason: 'disabled', detail: '配置关闭' })])
+  })
+
+  it('关掉被硬依赖的模块 → 抛错，说明是配置关的', () => {
+    expect(() =>
+      resolveModules([mod('agent', { dependsOn: ['collab'] }), mod('collab')], {
+        roles: all,
+        switchedOff: new Map([['collab', '配置关闭（modules.collab.enabled）']]),
+      }),
+    ).toThrow(/agent 依赖 collab.*配置关闭/)
+  })
+
+  it('关一个不存在的模块 → 抛错（多半是名字写错）', () => {
+    expect(() => resolveModules([mod('a')], { roles: all, switchedOff: new Map([['nope', 'x']]) })).toThrow(/不存在的模块：nope/)
+  })
+})
+
+describe('resolveModules：按角色生效的依赖、开关拿配置', () => {
+  it('带 roles 的硬依赖只在扮演这些角色时才要求', () => {
+    const agent = mod('agent', { roles: ['web', 'agent'], dependsOn: [{ module: 'collab', roles: ['agent'] }] })
+    const collab = mod('collab', { roles: ['collab', 'agent'] })
+
+    // web 进程：collab 不随它加载，但 agent 在 web 上不要 collab
+    const web = resolveModules([agent, collab], { roles: new Set<ServerRole>(['web']) })
+    expect(names(web.ordered)).toEqual(['agent'])
+
+    // agent 进程：要 collab，并排在它前面
+    const exec = resolveModules([agent, collab], { roles: new Set<ServerRole>(['agent']) })
+    expect(names(exec.ordered)).toEqual(['collab', 'agent'])
+  })
+
+  it('enabled(config) 拿到的是这个模块解析好的配置', () => {
+    const storage = mod('storage', { enabled: (config) => (config as { s3: unknown }).s3 !== null || '没配 S3' })
+    const off = resolveModules([storage], { roles: all, configs: new Map([['storage', { s3: null }]]) })
+    expect(off.skipped).toMatchObject([{ reason: 'disabled', detail: '没配 S3' }])
+    const on = resolveModules([storage], { roles: all, configs: new Map([['storage', { s3: {} }]]) })
+    expect(names(on.ordered)).toEqual(['storage'])
+  })
+})

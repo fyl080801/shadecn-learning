@@ -1,9 +1,39 @@
-import { DEFAULT_SHUTDOWN_TIMEOUT_MS, type ModuleContext, type ModuleHandle, type ServerModule } from './module.ts'
+import type { Server } from 'node:http'
+import type { Hono, MiddlewareHandler } from 'hono'
+import type { Platform } from '../platform.ts'
+import {
+  DEFAULT_SHUTDOWN_TIMEOUT_MS,
+  type AnyServerModule,
+  type ModuleContext,
+  type ModuleHandle,
+  type ModuleHttp,
+  type UpgradeHandler,
+} from './module.ts'
+import type { ServerRole } from './roles.ts'
+
+/** 宿主的 HTTP 管线：内核核对完声明之后，真正的挂载交给它 */
+export interface HttpHost {
+  route(path: string, app: Hono<any, any, any>): void
+  use(path: string, middleware: MiddlewareHandler): void
+  upgrade(path: string, handler: UpgradeHandler): void
+}
+
+export interface StartContext {
+  readonly roles: ReadonlySet<ServerRole>
+  readonly isDev: boolean
+  readonly platform: Platform
+  readonly server: Server
+  readonly http: HttpHost
+  /** 各模块解析好的配置（模块名 → 值） */
+  readonly configs: ReadonlyMap<string, unknown>
+  /** 每注册一个服务通知一次（底座据此接上由模块提供的平台能力，如 `auth`） */
+  readonly onProvide?: (name: string, value: unknown) => void
+}
 
 /** 装配完的一组模块 */
-export interface LoadedModules<App = unknown> {
+export interface LoadedModules {
   /** 按装配顺序 */
-  readonly modules: readonly ServerModule<App>[]
+  readonly modules: readonly AnyServerModule[]
   /** 全部 `ready()`，按装配顺序串行 */
   ready(): Promise<void>
   /** 按装配的逆序收尾，每个带上限；可重入（第二次调直接返回同一个 Promise） */
@@ -17,16 +47,19 @@ export interface LoadedModules<App = unknown> {
  * - 任一 `setup` 抛错就整体失败 —— 那是配置错，不是运行时故障，进程不该带着半套模块监听端口；
  * - 收尾逆序、每个带上限：超时只记一笔不阻断后面的。一个模块收尾卡死不能拖着别的模块落不了库。
  */
-export async function startModules<App>(
-  ordered: readonly ServerModule<App>[],
-  context: Omit<ModuleContext<App>, 'service' | 'provide'>,
-): Promise<LoadedModules<App>> {
+export async function startModules(ordered: readonly AnyServerModule[], context: StartContext): Promise<LoadedModules> {
   const services = new Map<string, unknown>()
-  const handles: { module: ServerModule<App>; handle: ModuleHandle }[] = []
+  const handles: { module: AnyServerModule; handle: ModuleHandle }[] = []
 
   for (const module of ordered) {
-    const ctx: ModuleContext<App> = {
-      ...context,
+    const ctx: ModuleContext<unknown> = {
+      name: module.name,
+      roles: context.roles,
+      isDev: context.isDev,
+      config: context.configs.get(module.name),
+      platform: context.platform,
+      server: context.server,
+      http: moduleHttp(module, context),
       service: <T>(name: string) => services.get(name) as T | undefined,
       provide: (name, value) => {
         if (!module.provides?.includes(name)) {
@@ -34,6 +67,7 @@ export async function startModules<App>(
         }
         if (services.has(name)) throw new Error(`[kernel] 服务 ${name} 已经被注册过`)
         services.set(name, value)
+        context.onProvide?.(name, value)
       },
     }
     const handle = await module.setup(ctx)
@@ -62,6 +96,37 @@ export async function startModules<App>(
         }
       })()
       return closing
+    },
+  }
+}
+
+/**
+ * 一个模块的 HTTP 注册口：路径必须是本模块声明过的（同 kind、同写法），声明的角色不在本进程就不挂。
+ * 不在声明里的挂载直接抛 —— 那条路由会绕过角色闸门、登录闸门和分流表，是写代码时的错。
+ */
+function moduleHttp(module: AnyServerModule, context: StartContext): ModuleHttp {
+  const claim = (path: string, kind: 'http' | 'upgrade'): boolean => {
+    const declared = module.routes?.find((route) => route.path === path && (route.kind ?? 'http') === kind)
+    if (!declared) {
+      throw new Error(`[kernel] 模块 ${module.name} 挂了没在 routes 里声明的${kind === 'upgrade' ? ' WebSocket ' : ''}入口 ${path}`)
+    }
+    return declared.role === 'any' || context.roles.has(declared.role)
+  }
+  return {
+    route(path, app) {
+      if (!claim(path, 'http')) return false
+      context.http.route(path, app)
+      return true
+    },
+    use(path, middleware) {
+      if (!claim(path, 'http')) return false
+      context.http.use(path, middleware)
+      return true
+    },
+    upgrade(path, handler) {
+      if (!claim(path, 'upgrade')) return false
+      context.http.upgrade(path, handler)
+      return true
     },
   }
 }

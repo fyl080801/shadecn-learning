@@ -9,17 +9,28 @@
     "./cluster/memory": "./src/cluster/memory.ts",
     "./cluster/redis": "./src/cluster/redis.ts",
     "./bus": "./src/bus.ts",
-    "./access": "./src/access.ts"
+    "./access": "./src/access.ts",
+    "./http": "./src/http.ts",
+    "./config": "./src/config.ts",
+    "./db": "./src/db.ts",
+    "./identity": "./src/identity.ts",
+    "./platform": "./src/platform.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "peerDependencies": {
-    "ioredis": "^5.6.1"
+    "@mikro-orm/core": "7.2.5",
+    "hono": "^4.13.2",
+    "ioredis": "^5.6.1",
+    "yaml": "2.8.2"
   },
   "devDependencies": {
+    "@mikro-orm/core": "7.2.5",
     "@types/node": "^24.10.1",
+    "hono": "^4.13.2",
     "ioredis": "^5.6.1",
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "yaml": "2.8.2"
   }
 }
