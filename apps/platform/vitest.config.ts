@@ -13,6 +13,7 @@ export default defineConfig({
     alias: {
       '@learning/config/testing': path.resolve(import.meta.dirname, '../../packages/config/src/testing.ts'),
       '@learning/config': path.resolve(import.meta.dirname, '../../packages/config/src/index.ts'),
+      '@learning/contracts': path.resolve(import.meta.dirname, '../../packages/contracts/src'),
       '@learning/cluster': path.resolve(import.meta.dirname, '../../packages/cluster/src/index.ts'),
       '@learning/foundation': path.resolve(import.meta.dirname, '../../packages/foundation/src/index.ts'),
       '@learning/web': path.resolve(import.meta.dirname, '../../packages/web/src/index.ts'),

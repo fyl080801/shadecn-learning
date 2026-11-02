@@ -6,7 +6,7 @@ import path from 'node:path'
 import { ConfigModule, ConfigService } from '@learning/config'
 import { testConfigModule } from '@learning/config/testing'
 import { type CanActivate, Controller, Get, Injectable, Module, type OnApplicationShutdown } from '@nestjs/common'
-import { APP_GUARD } from '@nestjs/core'
+import { APP_GUARD, NestApplication } from '@nestjs/core'
 import type { NestFastifyApplication } from '@nestjs/platform-fastify'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { bootstrapService, serverHost, serverPort } from '../src/index.js'
@@ -103,9 +103,63 @@ describe('bootstrapService', () => {
     await expect(bootstrapService(Root, { name: 'probe', ...SILENT })).rejects.toThrow(/\/api\/health/)
   })
 
-  it('开了关闭钩子：SIGTERM 的监听器在，close 走完关闭流程', async () => {
+  it('/api/health/ready 没配 readiness：明确的 404，匿名可达，不落到 Nest 的守卫', async () => {
+    app = await bootstrapService(rootWith({ port: 0 }), { name: 'probe', ...SILENT })
+    const res = await fetch(`${await app.getUrl()}/api/health/ready`)
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ statusCode: 404, message: '这个服务没有配置 readiness' })
+  })
+
+  it('/api/health/ready 全通：200，全局守卫挡不住；检查函数拿得到启动好的应用', async () => {
+    app = await bootstrapService(rootWith({ port: 0 }), {
+      name: 'probe',
+      ...SILENT,
+      readiness: (ctx) => ({ closer: () => ctx.get(Closer) instanceof Closer, cluster: () => Promise.resolve(true) }),
+    })
+    const res = await fetch(`${await app.getUrl()}/api/health/ready`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ status: 'ready', closer: 'ok', cluster: 'ok' })
+  })
+
+  it('/api/health/ready 有一项不通（false / 抛错）：503，只说哪项，原因只进日志；/api/health 不受影响', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    app = await bootstrapService(rootWith({ port: 0 }), {
+      name: 'probe',
+      ...SILENT,
+      readiness: () => ({
+        good: () => true,
+        bad: () => false,
+        boom: () => Promise.reject(new Error('postgres://user:hunter2@db')),
+      }),
+    })
+    const url = await app.getUrl()
+    const res = await fetch(`${url}/api/health/ready`)
+    expect(res.status).toBe(503)
+    const body = await res.text()
+    expect(JSON.parse(body)).toEqual({ status: 'not-ready', good: 'ok', bad: 'down', boom: 'down' })
+    expect(body).not.toContain('hunter2')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('boom 探测失败'))
+    expect((await fetch(`${url}/api/health`)).status).toBe(200)
+  })
+
+  it('/api/health/ready 检查卡住：2 秒超时后 503，不把请求挂死', async () => {
+    app = await bootstrapService(rootWith({ port: 0 }), {
+      name: 'probe',
+      ...SILENT,
+      readiness: () => ({ stuck: () => new Promise<boolean>(() => undefined) }),
+    })
+    const startedAt = Date.now()
+    const res = await fetch(`${await app.getUrl()}/api/health/ready`)
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ status: 'not-ready', stuck: 'down' })
+    expect(Date.now() - startedAt).toBeLessThan(4000)
+  })
+
+  it('关闭钩子用 useProcessExit：退出码 0 表示关闭流程走完，node 作容器 PID 1 时也退得掉', async () => {
+    const spy = vi.spyOn(NestApplication.prototype, 'enableShutdownHooks')
     const before = process.listenerCount('SIGTERM')
     app = await bootstrapService(rootWith({ port: 0 }), { name: 'probe', ...SILENT })
+    expect(spy).toHaveBeenCalledWith([], { useProcessExit: true })
     expect(process.listenerCount('SIGTERM')).toBe(before + 1)
     await app.close()
     app = undefined

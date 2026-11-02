@@ -87,6 +87,9 @@ importers:
       '@learning/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@learning/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@learning/data-access':
         specifier: workspace:*
         version: link:../../packages/data-access
@@ -476,6 +479,18 @@ importers:
         specifier: ^1.5.9
         version: 1.6.0(@swc/core@1.16.21(@swc/helpers@0.5.19))(esbuild@0.28.2)(rolldown@1.2.16)(rollup@4.59.0)(vite@7.3.1(@types/node@24.12.0)(jiti@2.7.0)(lightningcss@1.31.1)(stylus@0.57.0)(tsx@4.23.12)(yaml@2.8.2))
 
+  packages/contracts:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.12.0
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+      yjs:
+        specifier: ^13.6.32
+        version: 13.6.32
+
   packages/data-access:
     dependencies:
       '@mikro-orm/core':
@@ -812,6 +827,9 @@ importers:
       '@learning/config':
         specifier: workspace:*
         version: link:../config
+      '@learning/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@learning/data-access':
         specifier: workspace:*
         version: link:../data-access

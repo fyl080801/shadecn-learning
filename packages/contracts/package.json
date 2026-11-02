@@ -1,0 +1,25 @@
+{
+  "name": "@learning/contracts",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./collab": { "source": "./src/collab.ts", "types": "./dist/collab.d.ts", "default": "./dist/collab.js" },
+    "./flow-graph": { "source": "./src/flow-graph.ts", "types": "./dist/flow-graph.d.ts", "default": "./dist/flow-graph.js" },
+    "./flow-doc": { "source": "./src/flow-doc.ts", "types": "./dist/flow-doc.d.ts", "default": "./dist/flow-doc.js" },
+    "./canvas": { "source": "./src/canvas.ts", "types": "./dist/canvas.d.ts", "default": "./dist/canvas.js" },
+    "./auth": { "source": "./src/auth.ts", "types": "./dist/auth.d.ts", "default": "./dist/auth.js" }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "yjs": "^13.6.32"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "~6.0.2",
+    "yjs": "^13.6.32"
+  }
+}

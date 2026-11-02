@@ -10,6 +10,7 @@ export default defineConfig({
   plugins: [swc.vite({ module: { type: 'es6' } })],
   resolve: {
     alias: {
+      '@learning/contracts': path.resolve(import.meta.dirname, '../contracts/src'),
       '@learning/cluster': path.resolve(import.meta.dirname, '../cluster/src/index.ts'),
       '@learning/data-access': path.resolve(import.meta.dirname, '../data-access/src/index.ts'),
       '@learning/session/testing': path.resolve(import.meta.dirname, 'src/testing.ts'),

@@ -1,5 +1,5 @@
 import 'reflect-metadata'
-import { Cluster, ClusterModule, type ClusterBackend, SharedLock, SharedLockUnavailableError } from '@learning/cluster'
+import { Cluster, ClusterModule, type ClusterBackend, createMemoryBackend, SharedLock, SharedLockUnavailableError } from '@learning/cluster'
 import { testConfigModule } from '@learning/config/testing'
 import { DataAccess, DataAccessModule } from '@learning/data-access'
 import { startFakeIdp, type FakeIdp } from '@learning/session/testing'
@@ -60,7 +60,7 @@ class CrossProcessLock extends SharedLock {
 }
 
 function fakeClusterModule(lock: SharedLock): DynamicModule {
-  const backend: ClusterBackend = { createLock: () => lock, close: () => Promise.resolve() }
+  const backend: ClusterBackend = { ...createMemoryBackend(), createLock: () => lock }
   return {
     module: class FakeClusterModule {},
     global: true,

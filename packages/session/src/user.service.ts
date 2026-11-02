@@ -12,6 +12,14 @@ export interface FindOrCreateUserInput {
   roles?: string[]
 }
 
+/**
+ * 显示名的取值顺序，只此一份：协同在场信息和成员列表都从这里取，同一个人在两处才不会叫两个名字。
+ * 要和前端 `useAuth().displayName` 一致，否则改写前后名字会跳。
+ */
+export function displayNameOf(user: { name: string | null; username: string | null; email: string | null }): string {
+  return user.name ?? user.username ?? user.email ?? '匿名用户'
+}
+
 @Injectable()
 export class UserService {
   constructor(@Inject(DataAccess) private readonly dataAccess: DataAccess) {}

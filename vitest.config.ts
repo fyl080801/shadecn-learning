@@ -9,6 +9,7 @@ import { defineConfig } from 'vitest/config'
  *   platform —— apps/platform/vitest.config.ts：Node 环境，测 NestJS 服务（@learning/platform）
  *   config —— packages/config/vitest.config.ts：Node 环境，测配置的 Nest 模块（@learning/config）
  *   learning-web —— packages/web/vitest.config.ts：Node 环境，测托管前端的 Nest 模块（@learning/web）
+ *   contracts —— packages/contracts/vitest.config.ts：Node 环境，测复制的契约文件没有漂移、yjs 单份（@learning/contracts）
  *   cluster —— packages/cluster/vitest.config.ts：Node 环境，测跨进程共享状态（@learning/cluster）；设了 PLATFORM_TEST_REDIS_URL 才连 Redis
  *   foundation —— packages/foundation/vitest.config.ts：Node 环境，测服务的启动底座（@learning/foundation）
  *   data-access —— packages/data-access/vitest.config.ts：Node 环境，测数据访问的 Nest 模块（@learning/data-access）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL
@@ -38,6 +39,7 @@ export default defineConfig({
       'apps/platform/vitest.config.ts',
       'packages/config/vitest.config.ts',
       'packages/web/vitest.config.ts',
+      'packages/contracts/vitest.config.ts',
       'packages/cluster/vitest.config.ts',
       'packages/foundation/vitest.config.ts',
       'packages/data-access/vitest.config.ts',
@@ -62,6 +64,7 @@ export default defineConfig({
         'apps/platform/src/**/*.ts',
         'packages/config/src/**/*.ts',
         'packages/web/src/**/*.ts',
+        'packages/contracts/src/**/*.ts',
         'packages/cluster/src/**/*.ts',
         'packages/foundation/src/**/*.ts',
         'packages/data-access/src/**/*.ts',

@@ -4,14 +4,15 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @learning/config --filter @learning/foundation --filter @learning/cluster --filter @learning/web --filter @learning/data-access --filter @learning/session build && nest start --watch",
-    "build": "pnpm --filter @learning/config --filter @learning/foundation --filter @learning/cluster --filter @learning/web --filter @learning/data-access --filter @learning/session build && nest build",
+    "dev": "pnpm --filter @learning/config --filter @learning/contracts --filter @learning/foundation --filter @learning/cluster --filter @learning/web --filter @learning/data-access --filter @learning/session build && nest start --watch",
+    "build": "pnpm --filter @learning/config --filter @learning/contracts --filter @learning/foundation --filter @learning/cluster --filter @learning/web --filter @learning/data-access --filter @learning/session build && nest build",
     "start": "NODE_ENV=production node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@learning/cluster": "workspace:*",
     "@learning/config": "workspace:*",
+    "@learning/contracts": "workspace:*",
     "@learning/data-access": "workspace:*",
     "@learning/foundation": "workspace:*",
     "@learning/session": "workspace:*",

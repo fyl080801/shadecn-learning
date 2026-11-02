@@ -17,7 +17,7 @@ describe('包的依赖边界', () => {
   it('package.json 不声明 @shadecn/*；data-access、config、cluster、@mikro-orm/core 是 peerDependency，进程里只有应用装的那一份', () => {
     const declared = Object.keys({ ...manifest.dependencies, ...manifest.devDependencies, ...manifest.peerDependencies })
     expect(declared.filter((name) => name.startsWith('@shadecn/'))).toEqual([])
-    for (const name of ['@learning/data-access', '@learning/config', '@learning/cluster', '@mikro-orm/core']) {
+    for (const name of ['@learning/data-access', '@learning/config', '@learning/cluster', '@learning/contracts', '@mikro-orm/core']) {
       expect(manifest.peerDependencies[name], name).toBeDefined()
       expect(manifest.dependencies?.[name], name).toBeUndefined()
     }

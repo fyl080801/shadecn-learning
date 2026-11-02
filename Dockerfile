@@ -54,6 +54,7 @@ COPY apps/agent-sandbox/package.json ./apps/agent-sandbox/
 COPY apps/platform/package.json ./apps/platform/
 COPY packages/config/package.json ./packages/config/
 COPY packages/web/package.json ./packages/web/
+COPY packages/contracts/package.json ./packages/contracts/
 COPY packages/cluster/package.json ./packages/cluster/
 COPY packages/foundation/package.json ./packages/foundation/
 COPY packages/data-access/package.json ./packages/data-access/

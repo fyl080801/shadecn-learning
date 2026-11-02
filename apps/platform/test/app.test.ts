@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { Cluster } from '@learning/cluster'
 import { DataAccess } from '@learning/data-access'
 import { bootstrapService } from '@learning/foundation'
 import { SessionService, UserService } from '@learning/session'
@@ -338,6 +339,30 @@ describe('bootstrapService + AppModule（main.ts 的启动路径）', () => {
     expect(res.headers['content-type']).toContain('application/json')
     expect(JSON.parse(res.body)).toMatchObject({ status: 'ok' })
     expect(res.body).not.toContain(SECRET_PAGE)
+  })
+
+  it('/api/health/ready 没配 readiness：明确的 404，不是登录拦截的 401', async () => {
+    const res = await rawRequest(await app.getUrl(), '/api/health/ready')
+    expect(res.status).toBe(404)
+    expect(JSON.parse(res.body)).toMatchObject({ statusCode: 404 })
+  })
+
+  it('配了 main.ts 那样的 readiness：匿名 200，库和共享层都查', async () => {
+    const dir2 = staticDir()
+    writeConfig(dir2, { ...productionConfig({ url: `file:${path.join(dir2, 'ready.db')}`, dir: dir2 }), server: { port: 0 } })
+    const ready = await bootstrapService(AppModule, {
+      name: 'platform',
+      nest: { logger: false, abortOnError: false },
+      readiness: (ctx) => ({
+        database: () => ctx.get(DataAccess).orm.isConnected(),
+        cluster: () => ctx.get(Cluster).health().ok,
+      }),
+    })
+    const res = await rawRequest(await ready.getUrl(), '/api/health/ready')
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ status: 'ready', database: 'ok', cluster: 'ok' })
+    await ready.close()
+    fs.rmSync(dir2, { recursive: true, force: true })
   })
 
   it('/api/health 之外的 /api 照样要登录，子路径也不算公开', async () => {

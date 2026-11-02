@@ -9,14 +9,9 @@
  * `/api/auth/me` 就行（前端还有一条轮询兜底，见 SessionExpiredDialog.vue）。
  */
 
-/**
- * 登录完成后落地的路径、消息的 source / type 标记。前端（`apps/web/src/lib/auth.ts`）开窗口、认消息靠的是这几个值，
- * 原页面靠标记 + origin 两道校验认这条消息。前端的声明在 `packages/shared/src/auth.ts`，本包不依赖它，
- * 两边的值由 `test/login-done-page.test.ts` 对着那个文件钉着：写错了登录窗口关不掉，原页面只能靠轮询兜底，不会报错。
- */
-export const LOGIN_DONE_PATH = '/auth/login-done'
-const LOGIN_DONE_SOURCE = 'app-auth'
-const LOGIN_DONE_MESSAGE = 'app-auth:login-done'
+import { LOGIN_DONE_MESSAGE, LOGIN_DONE_SOURCE } from '@learning/contracts/auth'
+
+/** 前端（`apps/web/src/lib/auth.ts`）开窗口、认消息靠的是这几个值，原页面靠标记 + origin 两道校验认这条消息。@learning/contracts 钉着和前端同一份 */
 
 export function renderLoginDonePage(): string {
   return `<!doctype html>

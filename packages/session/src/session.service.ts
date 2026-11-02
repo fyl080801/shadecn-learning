@@ -33,6 +33,15 @@ export interface CreateSessionInput {
   ip?: string | null
 }
 
+export interface LoadSessionOptions {
+  /**
+   * access_token 快过期时要不要顺手续一次，默认 true。
+   * 传 `false` 的是**背后没有真实用户动作**的调用（协同长连接的复验、写闸门）：refresh token 的空闲超时掌握在提供方手里，每续一次就往后推一次，
+   * 复验定时跑的话，开着标签页不动的人永远不会空闲超时。只读调用只回答「此刻还有效吗」：不续期，也**不写库、不删行**，清理留给真实请求和 `SessionSweeper`。
+   */
+  refresh?: boolean
+}
+
 /** 带着用户档案的会话。**含 access_token 等列，只在服务端用**，给请求的只有 `toSessionUser` 的结果 */
 export type LoadedSession = Session & { user: User }
 
@@ -100,12 +109,15 @@ export class SessionService {
   /**
    * 按原始 token 取会话；access_token 快过期就顺手续一次，**会话就是被请求养活的**：
    * 不存在 → null；活过 ttl → 删行并返回 null（防止一直续下去）；还有 30 秒以上 → 直接用；否则续期，见 {@link renew}。
+   * `refresh: false` 的只读分支见 {@link LoadSessionOptions}：refresh token 还在就算有效（下一次真实请求会去续），绝不写库。
    */
-  async load(token: string | undefined): Promise<LoadedSession | null> {
+  async load(token: string | undefined, options: LoadSessionOptions = {}): Promise<LoadedSession | null> {
     if (!token) return null
 
+    const readOnly = options.refresh === false
     const id = this.idOf(token)
-    const running = this.renewing.get(id)
+    // 只读调用不搭正在进行的续期：它只看库，也不该被提供方的超时拖住
+    const running = readOnly ? undefined : this.renewing.get(id)
     if (running) return running
 
     const session = await this.find(id)
@@ -113,10 +125,11 @@ export class SessionService {
 
     const now = Date.now()
     if (now - session.createdAt.getTime() > this.options.ttlSeconds * 1000) {
-      await this.deleteById(id)
+      if (!readOnly) await this.deleteById(id)
       return null
     }
     if (this.isFresh(session)) return session
+    if (readOnly) return this.canRefresh(session) ? session : null
 
     // 上一次是「连不上」失败的：冷却期内先用着旧会话，别让每个请求都去撞一次超时
     const retryAt = this.cooldown.get(id)

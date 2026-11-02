@@ -2,28 +2,20 @@ import { ConfigService } from '@learning/config'
 import type { NestApplicationOptions } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify'
+import { type Readiness, registerHealthRoutes } from './health.js'
 import { serverHost, serverPort } from './server-options.js'
-
-/**
- * 浅探针：只回答「这个进程还在跑吗」，不碰数据库。
- *
- * **直接注册在 Fastify 上，不是 Nest 控制器**，这是有意的（实测，`test/bootstrap.test.ts` 和 `apps/platform/test/app.test.ts` 钉着）：
- * `ApiSessionGuard` 让 `/api` 下的 Nest 路由默认都要登录，控制器得标 `@Public()`，而本包不能依赖 `@learning/session`（反过来也不该：会话不需要知道服务怎么启动）。
- * Fastify 路由走不到 Nest 的守卫、异常过滤器，「公开」和「不依赖任何模块」都是结构上保证的。和前端托管不冲突：
- * `/api` 前缀不进 Vite，静态模式下精确路径优先于 `HtmlFallbackController` 的 `/*`。
- * 业务模块再声明同一个路径，Fastify 启动时就报重复路由。
- */
-const HEALTH_PATH = '/api/health'
 
 export interface BootstrapOptions {
   /** 这个服务叫什么，启动日志用 */
   name: string
   /** 透传给 `NestFactory.create`。测试才需要（`abortOnError: false`、`logger: false`） */
   nest?: NestApplicationOptions
+  /** `/api/health/ready` 查哪些依赖。不配时这个路径回 404，见 health.ts */
+  readiness?: Readiness
 }
 
 /**
- * 所有 Nest 服务共用的启动流程：Fastify、关闭钩子（SIGTERM 时走完 Nest 的关闭流程）、`/api/health`、按 `server.port` / `server.host` 监听。
+ * 所有 Nest 服务共用的启动流程：Fastify、关闭钩子（SIGTERM 时走完 Nest 的关闭流程）、`/api/health` 和 `/api/health/ready`、按 `server.port` / `server.host` 监听。
  * 根模块要 import `ConfigModule`，端口是从它读的。
  *
  * Nest 建实例时抛的错默认走 `abortOnError`（记日志后 `process.exit(1)`），到不了这里。这里接得住的是之后的失败（端口或地址不合法、端口被占用）：
@@ -34,10 +26,10 @@ export async function bootstrapService(
   options: BootstrapOptions,
 ): Promise<NestFastifyApplication> {
   const app = await NestFactory.create<NestFastifyApplication>(rootModule, new FastifyAdapter(), options.nest ?? {})
-  app.enableShutdownHooks()
-  app.getHttpAdapter().get(HEALTH_PATH, () =>
-    Promise.resolve({ status: 'ok', uptime: Math.round(process.uptime()), timestamp: new Date().toISOString() }),
-  )
+  // 关闭流程走完后 process.exit(0)，不用默认的 process.kill(self)。默认那样：node 作容器 PID 1 时信号被内核忽略，还有句柄没关就退不掉（实测关完才靠事件循环排空退出，退出码 0）；
+  // 经 `npm start` 这类包装时子进程死于信号，包装层报 `command failed` 退出 1（实测）。现在退出码 0 = 关闭流程走完，1 = 关闭时出错（Nest 自己 exit(1)）
+  app.enableShutdownHooks([], { useProcessExit: true })
+  registerHealthRoutes(app, options.readiness)
 
   try {
     const config = app.get(ConfigService)
