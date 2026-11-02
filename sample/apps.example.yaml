@@ -1,4 +1,4 @@
-# 应用表示例（docs/29 §3.3）。复制到 data/apps.yaml（APPS_FILE 的默认位置，不进仓库）再按需删改。
+# 应用表示例（docs/29 §3.3）。复制到 data/apps.yaml（MODULES_APPS_FILE 的默认位置，不进仓库）再按需删改。
 # 密钥只写 "$环境变量名"，值放 .env；变量为空 = 引用它的应用显示为不可用，不影响启动。
 # 这份文件被 packages/mod-apps/test/example.test.ts 解析：写错了测试会红。
 

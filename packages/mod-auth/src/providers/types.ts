@@ -51,7 +51,7 @@ export interface AuthorizeInput {
   /**
    * 这一趟用哪个回调地址。**按访问的域名算出来的**（见 `auth/origin.ts`），
    * 不是一个全局常量 —— 同一套部署挂在多个域名下时，从哪个域名进来就得回到哪个域名，
-   * 否则会话 cookie 会种到另一个域名上。取值范围由 `APP_ORIGINS` 白名单收口。
+   * 否则会话 cookie 会种到另一个域名上。取值范围由 `SERVER_ORIGINS` 白名单收口。
    */
   redirectUri: string
 }
@@ -87,7 +87,7 @@ export interface AuthProvider {
   exchange(input: ExchangeInput): Promise<ExchangeResult>
   /**
    * 续期。`null` = 这个提供方的 token 根本不会过期（GitHub 的 OAuth App
-   * 就是这样），会话靠自己的 `SESSION_TTL` 到期，不需要也没法续。
+   * 就是这样），会话靠自己的 `MODULES_AUTH_SESSION_TTL` 到期，不需要也没法续。
    */
   refresh: ((refreshToken: string) => Promise<{ tokens: ProviderTokens; roles: string[] }>) | null
 }

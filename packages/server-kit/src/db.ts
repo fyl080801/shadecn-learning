@@ -9,7 +9,7 @@ import { p, raw, type EntityManager } from '@mikro-orm/core'
  *
  * ## 一份定义，两种库
  *
- * 实体定义里**不出现任何数据库专属的东西**，运行时由 `DB_PROVIDER` 选驱动，同一个构建产物既能连 SQLite 也能连 PostgreSQL。
+ * 实体定义里**不出现任何数据库专属的东西**，运行时由 `DATABASE_PROVIDER` 选驱动，同一个构建产物既能连 SQLite 也能连 PostgreSQL。
  * 为此只用五种类型：
  *
  * | 用途 | 构建器 | SQLite | PostgreSQL |

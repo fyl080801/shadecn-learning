@@ -26,7 +26,7 @@ paths:
 
 ## Two databases, one entity definition, one artifact
 
-- Provider = `DB_PROVIDER` (`sqlite` | `postgresql`), else `DATABASE_URL`'s scheme, else sqlite. Contradictory / unknown / `postgresql` without a URL **throws at startup**. Resolved **once** in `config.ts` (`dbProvider` / `databaseUrl`), read by both server and sync CLI. `db/orm.ts` **dynamically imports** only the chosen driver. A Prisma-style `?schema=public` is stripped and passed as MikroORM's `schema`.
+- Provider = `DATABASE_PROVIDER` (`sqlite` | `postgresql`), else `DATABASE_URL`'s scheme, else sqlite. Contradictory / unknown / `postgresql` without a URL **throws at startup**. Resolved **once** in `config.ts` (`dbProvider` / `databaseUrl`), read by both server and sync CLI. `db/orm.ts` **dynamically imports** only the chosen driver. A Prisma-style `?schema=public` is stripped and passed as MikroORM's `schema`.
 - **Entity rules** (header of `entities/columns.ts`; each is a measured cross-DB difference):
   - Strings are always `p.text()`, never `p.string()` (`varchar(255)` on PG).
   - Only five types: text / integer / boolean / datetime / blob. No json / enum / array / `columnType`; JSON stays a string.

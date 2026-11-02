@@ -130,8 +130,8 @@ describe('requireRole', () => {
 
 describe('没配 Keycloak 时（authEnabled=false）', () => {
   async function loadDisabledApp() {
-    vi.stubEnv('KEYCLOAK_ISSUER', '')
-    vi.stubEnv('KEYCLOAK_CLIENT_ID', '')
+    vi.stubEnv('MODULES_AUTH_KEYCLOAK_ISSUER', '')
+    vi.stubEnv('MODULES_AUTH_KEYCLOAK_CLIENT_ID', '')
     await freshAuth()
     const mw = (await import('@shadecn/mod-auth/middleware')) as Mw
     return buildApp(mw)

@@ -69,10 +69,10 @@ async function until(check: () => boolean, ms = 5000) {
 
 describe('process 驱动', () => {
   it('runner 的环境从零造：只有 PATH + 网关地址 + 一次性 token + 工作目录；服务端的密钥一个都不继承', async () => {
-    vi.stubEnv('AGENT_API_KEY', 'sk-should-not-leak')
+    vi.stubEnv('MODULES_AGENT_API_KEY', 'sk-should-not-leak')
     vi.stubEnv('DATABASE_URL', 'postgresql://secret@db/app')
-    vi.stubEnv('SESSION_SECRET', 'session-secret')
-    vi.stubEnv('REDIS_URL', 'redis://:pw@redis:6379')
+    vi.stubEnv('MODULES_AUTH_SESSION_SECRET', 'session-secret')
+    vi.stubEnv('CLUSTER_REDIS_URL', 'redis://:pw@redis:6379')
     const { driver, lines } = await driverWith('console.log(JSON.stringify({ env: process.env, cwd: process.cwd() }))')
     const handle = (await driver.start(spec())) as ProcessSandboxHandle
     expect(await handle.wait()).toEqual({ exitCode: 0 })

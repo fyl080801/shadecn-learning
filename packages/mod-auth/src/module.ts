@@ -3,7 +3,7 @@ import { LOGIN_DONE_PATH, LOGIN_PATH } from '@shadecn/shared/auth'
 import { displayNameOf } from '@shadecn/server-kit/identity'
 import { defineModule } from '@shadecn/server-kit/kernel'
 import { AUTH_SERVICE, type PlatformAuth } from '@shadecn/server-kit/platform'
-import { authConfigSection } from './config.ts'
+import { AUTH_MODULE, authConfigSection } from './config.ts'
 import { currentUserId } from './current-user.ts'
 import { AuthRequest, PendingLink, Session, UserIdentity } from './entities.ts'
 import { loginDoneRoutes, loginPageRoutes, pageGuard } from './guard.ts'
@@ -48,7 +48,7 @@ const provider: PlatformAuth = {
   deriveSecret(purpose) {
     let value = derived.get(purpose)
     if (value === undefined) {
-      // 域分隔：同一把 SESSION_SECRET 派生出另一把，会话 cookie 的 HMAC 和派生出的签名互不通用
+      // 域分隔：同一把 MODULES_AUTH_SESSION_SECRET 派生出另一把，会话 cookie 的 HMAC 和派生出的签名互不通用
       value = authConfig.secret
         ? crypto.createHmac('sha256', authConfig.secret).update(purpose).digest('hex')
         : crypto.randomBytes(32).toString('hex')
@@ -69,7 +69,7 @@ const provider: PlatformAuth = {
  * `User` 表是平台的（`@shadecn/server-kit/identity`，所有模块的外键目标），这里是身份绑定、会话、授权请求、待确认关联四张。
  */
 export default defineModule({
-  name: 'auth',
+  name: AUTH_MODULE,
   roles: ['web', 'collab', 'agent'],
   provides: [AUTH_SERVICE],
   config: authConfigSection,

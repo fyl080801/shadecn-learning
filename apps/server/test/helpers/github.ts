@@ -8,8 +8,8 @@ import { vi } from 'vitest'
  * discovery 和 JWKS 可打桩 —— 端点是写死的。
  */
 
-export const GITHUB_CLIENT_ID = 'gh-client'
-export const GITHUB_CLIENT_SECRET = 'gh-secret'
+export const MODULES_AUTH_GITHUB_CLIENT_ID = 'gh-client'
+export const MODULES_AUTH_GITHUB_CLIENT_SECRET = 'gh-secret'
 export const GITHUB_ISSUER = 'https://github.com'
 
 export const GITHUB_AUTHORIZE_URL = 'https://github.com/login/oauth/authorize'

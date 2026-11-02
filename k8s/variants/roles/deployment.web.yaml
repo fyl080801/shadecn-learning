@@ -5,7 +5,7 @@
 # 单副本下拆角色服务端会拒绝启动）。切换：把这个目录的五个文件放进 k8s/（替换 deployment.yaml / service.yaml / ingress.yaml），
 # 删掉 PVC，提交。带外 apply 会被 ArgoCD 的 selfHeal 刷回去。
 #
-# 连接串在 Secret shadecn-learning-auth 里（DATABASE_URL / REDIS_URL / SESSION_SECRET / KEYCLOAK_CLIENT_SECRET），
+# 连接串在 Secret shadecn-learning-auth 里（DATABASE_URL / CLUSTER_REDIS_URL / MODULES_AUTH_SESSION_SECRET / MODULES_AUTH_KEYCLOAK_CLIENT_SECRET），
 # agent 的模型配置和对象存储照旧走带外的 ConfigMap + Secret（envFrom，optional）—— 三种角色用**同一份**：
 # web 进程按自己的配置算 agent 面板的「已启用 / 模型名」，和 agent 进程对不上就会显示错（docs/28 §3.6 已知限制）。
 #
@@ -47,31 +47,31 @@ spec:
           env:
             - name: NODE_ENV
               value: production
-            - name: HOST
+            - name: SERVER_HOST
               value: 0.0.0.0
-            - name: PORT
+            - name: SERVER_PORT
               value: "3000"
             - name: SERVER_ROLES
               value: web
             - name: CLUSTER_MODE
               value: redis
-            - name: INSTANCE_ID
+            - name: SERVER_INSTANCE_ID
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            - name: REDIS_KEY_PREFIX
+            - name: CLUSTER_REDIS_KEY_PREFIX
               value: shadecn-dev
-            - name: DB_PROVIDER
+            - name: DATABASE_PROVIDER
               value: postgresql
-            - name: APP_ORIGIN
+            - name: SERVER_ORIGIN
               value: https://demo.fyl080801.uk
-            - name: KEYCLOAK_ISSUER
+            - name: MODULES_AUTH_KEYCLOAK_ISSUER
               value: https://keycloak.fyl080801.uk/realms/master
-            - name: KEYCLOAK_CLIENT_ID
+            - name: MODULES_AUTH_KEYCLOAK_CLIENT_ID
               value: sample
-            - name: KEYCLOAK_SCOPE
+            - name: MODULES_AUTH_KEYCLOAK_SCOPE
               value: openid profile email
-            - name: S3_MAX_UPLOAD_MB
+            - name: MODULES_STORAGE_MAX_UPLOAD_MB
               value: "500"
           envFrom:
             - secretRef:

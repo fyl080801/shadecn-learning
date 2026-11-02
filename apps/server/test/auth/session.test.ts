@@ -26,7 +26,7 @@ beforeEach(async () => {
   stub = stubOidcFetch()
 })
 
-/** 只有 SESSION_TTL 是从 env 来的，测试环境固定 1 小时 */
+/** 只有 MODULES_AUTH_SESSION_TTL 是从 env 来的，测试环境固定 1 小时 */
 const TTL_MS = 3600 * 1000
 
 const fakeUser = (roles: string): User =>
@@ -129,7 +129,7 @@ describe('createSession() / loadSession()', () => {
     await expect(loadSession(token)).resolves.toBeNull()
   })
 
-  it('会话活得超过 SESSION_TTL 就作废并删掉（不能无限续）', async () => {
+  it('会话活得超过 MODULES_AUTH_SESSION_TTL 就作废并删掉（不能无限续）', async () => {
     const user = await createUser()
     const token = await createSession({ user, provider: 'keycloak', tokens: providerTokens() })
     await db().nativeUpdate(Session, {}, { createdAt: new Date(Date.now() - TTL_MS - 1000) })

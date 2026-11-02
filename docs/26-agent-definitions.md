@@ -99,12 +99,12 @@ model: default                                          # 可省略 = default
 ### 3.4 模型
 
 - 服务端配置一张**模型表**：每项一个 key，内容同 `AgentModelOptions`（provider / model / baseUrl / api / apiKey / imageInput / contextWindow / maxTokens / thinking）。
-  `contextWindow` / `maxTokens` 不写按 pi 注册表的元数据，注册表里没有的（自建端点、ollama）按保守默认 128000 / 8192；`default` 用 `AGENT_CONTEXT_WINDOW` / `AGENT_MAX_TOKENS`。
+  `contextWindow` / `maxTokens` 不写按 pi 注册表的元数据，注册表里没有的（自建端点、ollama）按保守默认 128000 / 8192；`default` 用 `MODULES_AGENT_CONTEXT_WINDOW` / `MODULES_AGENT_MAX_TOKENS`。
   `maxTokens` 必须小于 `contextWindow`，否则这一项不可用（同解析不出来的模型）。
   `thinking` 是请模型思考的等级（`minimal` / `low` / `medium` / `high` / `xhigh`），不写 = 不请求；写了不认识的值文件就不合法（启动失败）。
-  `default` 用 `AGENT_THINKING`（写错了只警告、当没配，不让 agent 整个关掉）。思考怎么显示见 docs/20 §3.10.13。
-  - **`default`** 就是 `AGENT_PROVIDER` / `AGENT_MODEL` / `AGENT_BASE_URL` / `AGENT_API` / `AGENT_API_KEY` / `AGENT_IMAGE_INPUT`（行为不变，含没给 key 时按提供方自己的环境变量退回）；
-  - **其余的项**在一个 JSON 文件里，默认 `<DATA_DIR>/agent-models.json`（不在仓库里），`AGENT_MODELS_FILE` 可换路径（相对路径按应用根目录算；k8s 上可以挂一个 ConfigMap 文件）。
+  `default` 用 `MODULES_AGENT_THINKING`（写错了只警告、当没配，不让 agent 整个关掉）。思考怎么显示见 docs/20 §3.10.13。
+  - **`default`** 就是 `MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` / `MODULES_AGENT_BASE_URL` / `MODULES_AGENT_API` / `MODULES_AGENT_API_KEY` / `MODULES_AGENT_IMAGE_INPUT`（行为不变，含没给 key 时按提供方自己的环境变量退回）；
+  - **其余的项**在一个 JSON 文件里，默认 `<DATA_DIR>/agent-models.json`（不在仓库里），`MODULES_AGENT_MODELS_FILE` 可换路径（相对路径按应用根目录算；k8s 上可以挂一个 ConfigMap 文件）。
     文件不存在 = 模型表只有 `default`：
 
     ```json
@@ -274,7 +274,7 @@ requires: [director]        # 可省略：依赖的内置技能 id
 2. ~~`run_agent` 的 `agent` 参数要不要必填~~ —— **已定**：必填。
 3. ~~定义文件放在哪~~ —— **已定**：只随仓库打包，不读外部目录。
 4. ~~混用模型时的费用~~ —— **已定**：只要有一次请求的模型没有定价，这一轮费用记 `null`。
-5. ~~模型表除 `default` 以外的项怎么配置~~ —— **已定**（P4）：一个 JSON 文件（默认 `<DATA_DIR>/agent-models.json`，`AGENT_MODELS_FILE` 可换），
-   密钥只能写成 `"$环境变量名"` 引用，`default` 仍来自 `AGENT_*` 环境变量（§3.4）。
+5. ~~模型表除 `default` 以外的项怎么配置~~ —— **已定**（P4）：一个 JSON 文件（默认 `<DATA_DIR>/agent-models.json`，`MODULES_AGENT_MODELS_FILE` 可换），
+   密钥只能写成 `"$环境变量名"` 引用，`default` 仍来自 `MODULES_AGENT_*` 环境变量（§3.4）。
 6. ~~定义文件与文字技能在仓库里的目录~~ —— **已定**：agent 定义（P2）`packages/agent/agents/`，产物里拷到 `output/server/agents/`；
    文字技能（P5）`packages/agent/skills/`，产物里拷到 `output/server/skills/`，根上的 `README.md` 不算技能（§3.8）。

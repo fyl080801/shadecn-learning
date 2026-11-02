@@ -71,12 +71,12 @@ better-sqlite3 / pg 不在这份清单里 —— bundle 不直接 import 它们�
 > 预编译二进制打在包里，`npm install` 不再现场编译，但二进制仍然得是目标平台的那一个）。
 > 产物里锁的是直接依赖的版本，间接依赖没有 lockfile 兜底。
 
-**一个产物两种库**：实体定义和库无关，驱动在**运行时**按 `DB_PROVIDER` / `DATABASE_URL`
+**一个产物两种库**：实体定义和库无关，驱动在**运行时**按 `DATABASE_PROVIDER` / `DATABASE_URL`
 动态 import（`packages/server-core/src/db/orm.ts`）。构建时不用关心连哪种库，同一个 `pnpm build`、同一个镜像，
 换库只改环境变量（Prisma 时代生成的 client 编译期绑死一种库、要按库分别构建，这一条随换 ORM 取消了，
 见 [REQ-DATA §2.1](05-data-persistence.md)）。代价是 PG 部署的镜像里也带着 better-sqlite3 的二进制，几 MB。
 
-- **前端静态资源直接构建进后端的静态资源目录**：`apps/web/vite.config.ts` 里 `build.outDir = output/public`，后端生产模式就吐这个目录（可用 `STATIC_DIR` 覆盖）。
+- **前端静态资源直接构建进后端的静态资源目录**：`apps/web/vite.config.ts` 里 `build.outDir = output/public`，后端生产模式就吐这个目录（可用 `SERVER_STATIC_DIR` 覆盖）。
 - 后端由 `apps/server/scripts/build-server.mjs`（esbuild）打包，两个入口（`index.ts` → `server/index.js`、`apps/server/db-sync.ts` → `server/db-sync.js`）一次构建：仓库内的相对导入全部内联（实体定义、ORM 配置都在其中），`node_modules` 里的第三方包保持 external（运行时从产物旁的 `node_modules` 解析）。**workspace 包 `@shadecn/*` 例外，一律内联**：`apps/server/scripts/build-server.mjs` 里用 `externalizePackages` 插件代替了 `packages: 'external'` —— 判据相同（不以 `.` / `/` 开头的导入路径视为 external），只是放过 `@shadecn/`，否则 `@shadecn/shared` 会留成一句运行时 import，而产物里根本没装这个包。
 - `splitting: true` 是硬要求：`frontend/index.ts` 里的 `await import('./dev.ts')` 必须留成真正的动态 import，否则 `vite` 会被提升成顶层静态依赖 —— 而 `vite` 是 devDependency，生产环境根本不会装，一启动就崩。
 - 打包时 define 了 `__APP_BUNDLE__`，`packages/server-core/src/runtime.ts` 靠它区分「源码运行」和「产物运行」：产物运行时应用根目录取进程 cwd（容器里就是 `/app`），静态资源取产物自己旁边的 `public/`。
@@ -95,7 +95,7 @@ docker build -t shadecn-learning ./output
 1. **deps** —— 只 `COPY package.json` 再 `npm install --omit=dev`，装的就是那十来个运行时依赖；
    **不再装 `python3 make g++`**：better-sqlite3 13（`@mikro-orm/sqlite` 的依赖）自带 `linuxmusl-x64` /
    `linuxmusl-arm64` 的预编译二进制，并声明了 `gypfile: false`，npm 不会现场编译；
-2. **运行时** —— 拷 deps 阶段的 `node_modules` + 产物本身，`ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data`，
+2. **运行时** —— 拷 deps 阶段的 `node_modules` + 产物本身，`ENV NODE_ENV=production SERVER_HOST=0.0.0.0 SERVER_PORT=3000 DATA_DIR=/app/data`，
    建好 `/app/data` 并声明为 `VOLUME`，`EXPOSE 3000`，启动命令是
    **`node server/db-sync.js && exec node server/index.js`**：先把表结构对齐到实体定义（不带 `--force`：
    有损变更宁可启动失败，也不静默丢数据），再用 `exec` 让 node 替掉 sh 成为 1 号进程 —— 这样 k8s 的
@@ -176,7 +176,7 @@ ValidatingAdmissionPolicy（`k8s/variants/agent-sandbox-vap.yaml`，不进 ArgoC
 更强的独立命名空间形态在 `k8s/variants/agent-sandbox.yaml`。细节见 [REQ-AGENT-SANDBOX §7.5](22-agent-sandbox.md#75-k8s-驱动四期)。
 
 **只用 arm64 节点**：CI 只构建 `linux/arm64`（§4.2），所以服务端 Deployment 带 `nodeSelector: kubernetes.io/arch: arm64`，沙箱 Pod 也一样
-（`AGENT_SANDBOX_K8S_NODE_SELECTOR=kubernetes.io/arch=arm64`）。镜像是只含 arm64 的 manifest list，调度到 amd64 节点会拉不到。
+（`MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR=kubernetes.io/arch=arm64`）。镜像是只含 arm64 的 manifest list，调度到 amd64 节点会拉不到。
 
 ### 3.1 硬约束
 
@@ -199,30 +199,30 @@ ValidatingAdmissionPolicy（`k8s/variants/agent-sandbox-vap.yaml`，不进 ArgoC
 
 ### 3.3 配置
 
-每一项也能写进配置文件 `server.config.{yaml,yml,json}`（[REQ-MODULES §3.3](28-server-modules.md#33-配置管理)）：挂一份 ConfigMap、用 `SERVER_CONFIG` 指过去即可，
+除 `DATA_DIR` 外，每一项也能写进配置文件 `server.config.{yaml,yml,json}`（[REQ-MODULES §3.3](28-server-modules.md#33-配置管理)）：放进数据目录，或挂一份 ConfigMap、用 `SERVER_CONFIG` 指过去，
 环境变量优先于文件。现有清单仍全部用环境变量，不需要改。
 
-明文环境变量（在 Deployment 里）：`NODE_ENV`、`HOST`、`PORT`、`DATA_DIR`、`APP_ORIGIN`、`KEYCLOAK_ISSUER`、`KEYCLOAK_CLIENT_ID`；挂多个对外域名时再加 `APP_ORIGINS`；
-agent 沙箱那一组（`AGENT_SANDBOX=k8s`、`POD_IP`、`AGENT_SANDBOX_K8S_*`、`AGENT_SANDBOX_IMAGE`，[REQ-AGENT-SANDBOX §7.5](22-agent-sandbox.md#75-k8s-驱动四期)）。
+明文环境变量（在 Deployment 里）：`NODE_ENV`、`SERVER_HOST`、`SERVER_PORT`、`DATA_DIR`、`SERVER_ORIGIN`、`MODULES_AUTH_KEYCLOAK_ISSUER`、`MODULES_AUTH_KEYCLOAK_CLIENT_ID`；挂多个对外域名时再加 `SERVER_ORIGINS`；
+agent 沙箱那一组（`MODULES_AGENT_SANDBOX_DRIVER=k8s`、`POD_IP`、`MODULES_AGENT_SANDBOX_K8S_*`、`MODULES_AGENT_SANDBOX_IMAGE`，[REQ-AGENT-SANDBOX §7.5](22-agent-sandbox.md#75-k8s-驱动四期)）。
 agent 的模型配置**不在 Deployment 里**：来自带外的 `shadecn-learning-agent`（ConfigMap + Secret，见下文），不配 = agent 未启用，别的功能不受影响。
 
-密钥走 Secret（`envFrom.secretRef`）：`KEYCLOAK_CLIENT_SECRET`、`SESSION_SECRET`，PG 部署再加一个 `DATABASE_URL`（连接串里有密码，**不能**写进 Deployment 的明文 env）。
+密钥走 Secret（`envFrom.secretRef`）：`MODULES_AUTH_KEYCLOAK_CLIENT_SECRET`、`MODULES_AUTH_SESSION_SECRET`，PG 部署再加一个 `DATABASE_URL`（连接串里有密码，**不能**写进 Deployment 的明文 env）。
 
 ```bash
 kubectl -n dev create secret generic shadecn-learning-auth \
-  --from-literal=KEYCLOAK_CLIENT_SECRET=xxx \
-  --from-literal=SESSION_SECRET=$(openssl rand -hex 32)
+  --from-literal=MODULES_AUTH_KEYCLOAK_CLIENT_SECRET=xxx \
+  --from-literal=MODULES_AUTH_SESSION_SECRET=$(openssl rand -hex 32)
 ```
 
 **要开 GitHub 登录**（[REQ-AUTH §3.2.2](02-auth-keycloak.md)）就往同一个 Secret 里再塞两个键：
 
 ```bash
-  --from-literal=GITHUB_CLIENT_ID=xxx \
-  --from-literal=GITHUB_CLIENT_SECRET=xxx
+  --from-literal=MODULES_AUTH_GITHUB_CLIENT_ID=xxx \
+  --from-literal=MODULES_AUTH_GITHUB_CLIENT_SECRET=xxx
 ```
 
 `envFrom` 是**整份 Secret 注入**，所以键加进去就生效，**Deployment 清单不用动**。
-GitHub OAuth App 的 Authorization callback URL 填 `$APP_ORIGIN/api/auth/callback` ——
+GitHub OAuth App 的 Authorization callback URL 填 `$SERVER_ORIGIN/api/auth/callback` ——
 和 Keycloak 共用同一个回调地址，不要另建。
 
 **画布 agent 的模型配置**和**画布资源上传（S3）**各是一对带外资源（非密钥在 ConfigMap、密钥在 Secret；和 `shadecn-learning-auth` 一样不在 git 里、不归 ArgoCD，
@@ -230,27 +230,27 @@ GitHub OAuth App 的 Authorization callback URL 填 `$APP_ORIGIN/api/auth/callba
 
 | 资源 | key | 说明 |
 |---|---|---|
-| ConfigMap `dev/shadecn-learning-agent` | `AGENT_PROVIDER`、`AGENT_MODEL`、`AGENT_BASE_URL`、`AGENT_API`、`AGENT_IMAGE_INPUT` | 非密钥的模型配置（需要时可另加 `AGENT_CONTEXT_WINDOW`、`AGENT_MAX_TOKENS`：自建端点的上下文窗口 / 单次输出，不配按 128000 / 8192） |
-| Secret `dev/shadecn-learning-agent` | `AGENT_API_KEY`、`AGENT_TOKEN_SECRET` | 模型 key、签 run 短令牌的密钥 |
-| ConfigMap `dev/shadecn-learning-s3` | `S3_ENDPOINT`、`S3_INTERNAL_ENDPOINT`、`S3_REGION`、`S3_BUCKET` | 画布资源（图片 / 视频）上传的对象存储（[13-flow-canvas-management.md](13-flow-canvas-management.md)「资源上传」） |
-| Secret `dev/shadecn-learning-s3` | `S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY` | 对象存储的凭据 |
+| ConfigMap `dev/shadecn-learning-agent` | `MODULES_AGENT_PROVIDER`、`MODULES_AGENT_MODEL`、`MODULES_AGENT_BASE_URL`、`MODULES_AGENT_API`、`MODULES_AGENT_IMAGE_INPUT` | 非密钥的模型配置（需要时可另加 `MODULES_AGENT_CONTEXT_WINDOW`、`MODULES_AGENT_MAX_TOKENS`：自建端点的上下文窗口 / 单次输出，不配按 128000 / 8192） |
+| Secret `dev/shadecn-learning-agent` | `MODULES_AGENT_API_KEY`、`MODULES_AGENT_TOKEN_SECRET` | 模型 key、签 run 短令牌的密钥 |
+| ConfigMap `dev/shadecn-learning-s3` | `MODULES_STORAGE_ENDPOINT`、`MODULES_STORAGE_INTERNAL_ENDPOINT`、`MODULES_STORAGE_REGION`、`MODULES_STORAGE_BUCKET` | 画布资源（图片 / 视频）上传的对象存储（[13-flow-canvas-management.md](13-flow-canvas-management.md)「资源上传」） |
+| Secret `dev/shadecn-learning-s3` | `MODULES_STORAGE_ACCESS_KEY_ID`、`MODULES_STORAGE_SECRET_ACCESS_KEY` | 对象存储的凭据 |
 
-- **空值 = 不配**：每一项都按「没设这个变量」处理（`AGENT_PROVIDER` / `AGENT_MODEL` 落回默认的 anthropic 模型、`AGENT_IMAGE_INPUT` 按模型元数据、
-  `AGENT_TOKEN_SECRET` 由 `SESSION_SECRET` 派生）。全部为空时没有任何 key，agent 显示为未启用（`GET …/agent` 的 `enabled: false`），别的功能不受影响。
-- **Deployment 的 `env` 里不写这几项**：`env` 优先于 `envFrom`，写一个就把这几份资源里的值盖掉了（清单测试钉住；`env` 里的 S3 只有 `S3_MAX_UPLOAD_MB`）。
+- **空值 = 不配**：每一项都按「没设这个变量」处理（`MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` 落回默认的 anthropic 模型、`MODULES_AGENT_IMAGE_INPUT` 按模型元数据、
+  `MODULES_AGENT_TOKEN_SECRET` 由 `MODULES_AUTH_SESSION_SECRET` 派生）。全部为空时没有任何 key，agent 显示为未启用（`GET …/agent` 的 `enabled: false`），别的功能不受影响。
+- **Deployment 的 `env` 里不写这几项**：`env` 优先于 `envFrom`，写一个就把这几份资源里的值盖掉了（清单测试钉住；`env` 里的 S3 只有 `MODULES_STORAGE_MAX_UPLOAD_MB`）。
   `envFrom` 里同名的键以后面的为准（`shadecn-learning-auth` → agent 的 ConfigMap → agent 的 Secret → S3 的 ConfigMap → S3 的 Secret）。
 - **改完要重启才生效**：`envFrom` 只在容器启动时读一次 —— `kubectl -n dev rollout restart deploy/shadecn-learning`（`Recreate`，有短暂中断）。
 - **`default` 以外的模型**（给不同的 agent 定义用不同模型，[REQ-AGENT-DEF](26-agent-definitions.md) §3.4）在模型表文件里，默认 `<DATA_DIR>/agent-models.json`，
-  即数据卷上的 `/app/data/agent-models.json`（放进 PVC 即可，同样启动时读一次）；要放进 ConfigMap 就把它挂成文件、再在 agent 的 ConfigMap 里加 `AGENT_MODELS_FILE=<挂载路径>`
+  即数据卷上的 `/app/data/agent-models.json`（放进 PVC 即可，同样启动时读一次）；要放进 ConfigMap 就把它挂成文件、再在 agent 的 ConfigMap 里加 `MODULES_AGENT_MODELS_FILE=<挂载路径>`
   （清单里目前没有这个挂载，需要时再加）。文件里的 `apiKey` 只能写 `"$环境变量名"`，对应的 key 照样放进 Secret `shadecn-learning-agent`（`envFrom` 整份注入）。
   文件格式不对服务端起不来；引用的变量没设只是那一项不可用（启动日志有警告）。
-- 例：用集群里 `dev` 命名空间的 ollama（不要 key，`AGENT_API_KEY` 留空即可）：
+- 例：用集群里 `dev` 命名空间的 ollama（不要 key，`MODULES_AGENT_API_KEY` 留空即可）：
 
   ```bash
   kubectl -n dev patch configmap shadecn-learning-agent --type merge -p '{"data":{
-    "AGENT_PROVIDER":"ollama",
-    "AGENT_MODEL":"<ollama list 里的模型名>",
-    "AGENT_BASE_URL":"http://ollama.dev.svc.cluster.local/v1"}}'
+    "MODULES_AGENT_PROVIDER":"ollama",
+    "MODULES_AGENT_MODEL":"<ollama list 里的模型名>",
+    "MODULES_AGENT_BASE_URL":"http://ollama.dev.svc.cluster.local/v1"}}'
   kubectl -n dev rollout restart deploy/shadecn-learning
   ```
 
@@ -258,22 +258,22 @@ GitHub OAuth App 的 Authorization callback URL 填 `$APP_ORIGIN/api/auth/callba
   用别的提供方时 key 放进 Secret：`kubectl -n dev edit secret shadecn-learning-agent`（`data` 里是 base64），或从一份本地文件生成
   `kubectl -n dev create secret generic shadecn-learning-agent --from-env-file=<本地文件> --dry-run=client -o yaml | kubectl apply -f -`（会去掉 `app` 标签，记得补回）；值不进 git。
 - **S3**：
-  - `S3_ENDPOINT` 是**公开地址**：上传后节点的 `data.src` 存的是原始地址 `<endpoint>/<bucket>/<key>`，浏览器直接去那里取，不经后端转发；
+  - `MODULES_STORAGE_ENDPOINT` 是**公开地址**：上传后节点的 `data.src` 存的是原始地址 `<endpoint>/<bucket>/<key>`，浏览器直接去那里取，不经后端转发；
     agent 看图时服务端也是按它把 `data.src` 反解成对象键。所以必须填**浏览器访问得到**的地址，不能填集群内的 `*.svc`；
     留空 = 默认 `https://s3.fyl080801.uk`。改它之前存进节点的地址不会跟着变（还指着旧地址）。
-  - `S3_INTERNAL_ENDPOINT` **只影响服务端 → S3 的请求**（上传、分片、读字节给 agent 看图）：留空 = 和 `S3_ENDPOINT` 一样（服务端绕公网访问）；
+  - `MODULES_STORAGE_INTERNAL_ENDPOINT` **只影响服务端 → S3 的请求**（上传、分片、读字节给 agent 看图）：留空 = 和 `MODULES_STORAGE_ENDPOINT` 一样（服务端绕公网访问）；
     k8s 里填 `http://minio.minio.svc.cluster.local:9000`，走集群内网。公网的 `s3.fyl080801.uk` 解析到集群外的机器、TLS 在那里终结，
-    集群内的 MinIO ingress 没有 TLS，所以不能靠 hostAliases 把公网名字指回集群（证书对不上）。浏览器读的、存进节点的仍是 `S3_ENDPOINT`；
+    集群内的 MinIO ingress 没有 TLS，所以不能靠 hostAliases 把公网名字指回集群（证书对不上）。浏览器读的、存进节点的仍是 `MODULES_STORAGE_ENDPOINT`；
     两个地址必须是同一个 MinIO、同一个桶。服务端 Pod 出站到 `minio` 命名空间的 9000 不受任何 NetworkPolicy 限制（`dev` 里只有选中沙箱 Pod 的那一条）。
-  - `S3_REGION` 留空 = `us-east-1`；`S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` **缺一个 = 上传关闭**（上传接口 503，别的功能照常）。
+  - `MODULES_STORAGE_REGION` 留空 = `us-east-1`；`MODULES_STORAGE_BUCKET` / `MODULES_STORAGE_ACCESS_KEY_ID` / `MODULES_STORAGE_SECRET_ACCESS_KEY` **缺一个 = 上传关闭**（上传接口 503，别的功能照常）。
   - **桶要对匿名开放读**（`s3:GetObject`），否则画布上的图都是裂的。
-  - `S3_KEY_PREFIX` **刻意不放进这份 Secret**：不配是 `canvas`，而空串的意思是「桶根」—— 一个空值的 key 会把对象键改到桶根下。真要改就在 Deployment 的 `env` 里显式写。
+  - `MODULES_STORAGE_KEY_PREFIX` **刻意不放进这份 Secret**：不配是 `canvas`，而空串的意思是「桶根」—— 一个空值的 key 会把对象键改到桶根下。真要改就在 Deployment 的 `env` 里显式写。
 
 **真值不得提交进仓库** —— 仓库里的 Secret 清单只是占位模板。
 
-部署前必须按实际环境改：`APP_ORIGIN`、`KEYCLOAK_ISSUER`、镜像地址。`APP_ORIGIN` 必须与 Keycloak client 里配的 redirect URI 一致，否则登录回调失败。
+部署前必须按实际环境改：`SERVER_ORIGIN`、`MODULES_AUTH_KEYCLOAK_ISSUER`、镜像地址。`SERVER_ORIGIN` 必须与 Keycloak client 里配的 redirect URI 一致，否则登录回调失败。
 
-同一套服务挂在多个域名下时，把每个对外域名都写进 `APP_ORIGINS`（逗号分隔，`APP_ORIGIN` 自动在内），并且**每个域名的 `/api/auth/callback` 都要加进 Keycloak client 的 *Valid redirect URIs***。不配的话，从名单外的域名进来一律回落到 `APP_ORIGIN` —— 登录会跳到另一个域名上完成，cookie 种在那边，人回来还是未登录。详见 [REQ-AUTH §3.2.0](02-auth-keycloak.md)。
+同一套服务挂在多个域名下时，把每个对外域名都写进 `SERVER_ORIGINS`（逗号分隔，`SERVER_ORIGIN` 自动在内），并且**每个域名的 `/api/auth/callback` 都要加进 Keycloak client 的 *Valid redirect URIs***。不配的话，从名单外的域名进来一律回落到 `SERVER_ORIGIN` —— 登录会跳到另一个域名上完成，cookie 种在那边，人回来还是未登录。详见 [REQ-AUTH §3.2.0](02-auth-keycloak.md)。
 
 ### 3.4 探针与资源
 
@@ -351,7 +351,7 @@ Workflows 负责构建镜像并把新 tag 写回 git，ArgoCD 负责把 git 里�
 ```
 本地 commit → push gitea master → Gitea Actions 起 Argo Workflow（.gitea/workflows/cicd.yaml，钉在 arm64 节点）
   → clone → buildah：pnpm build 一次 → 服务端 + agent 沙箱两个 arm64 镜像推 Harbor
-  → sed 改两行 tag（服务端 image、AGENT_SANDBOX_IMAGE）、提交、push 回同一分支
+  → sed 改两行 tag（服务端 image、MODULES_AGENT_SANDBOX_IMAGE）、提交、push 回同一分支
   → ArgoCD 轮询发现 diff（≤3min）→ Deployment 更新（Recreate，单副本，有短暂中断）
 ```
 
@@ -398,7 +398,7 @@ kubectl apply -f ci/workflow-template.yaml
    **但架构错乱的真凶不在这里，在基础镜像的 tag 上，见 [§2.5.1](#251-三道架构护栏全都是事故留下的)** ——
    日志里那句 `native modules ok: N on <arch>` 才是每轮真实跑在什么架构上的证据，
    `linux/amd64` 那轮打出 `aarch64` 就是出事了
-3. `git-update-image-tag` —— `sed` 改 `k8s/deployment.yaml` 里的两行 tag（服务端容器的 `image:`、沙箱的 `AGENT_SANDBOX_IMAGE` 那行 `value:`），
+3. `git-update-image-tag` —— `sed` 改 `k8s/deployment.yaml` 里的两行 tag（服务端容器的 `image:`、沙箱的 `MODULES_AGENT_SANDBOX_IMAGE` 那行 `value:`），
    暂存区里只要多出这两种行以外的改动就失败、不提交；提交 `ci: update image tag to <sha>`，push 回同一分支。到这里 CI 就结束了，部署是 ArgoCD 的事。
    **push 被拒会 fetch + rebase 重试**（最多 5 次）：clone 停在构建开始那个提交，而构建要 45 分钟，
    这期间分支上有了新提交，这一 push 就是 non-fast-forward —— 镜像明明已经在 Harbor 里，
@@ -563,9 +563,9 @@ workflow-controller 的 tag），argo 升级之后要跟着改这里 —— 这�
 - [ ] 通过 Ingress 完整走通 Keycloak 登录回跳。
 - [ ] 通过 Ingress 能建立 `/ws/collaboration` WebSocket 连接。
 - [ ] **一个登录方式都没配齐**（Keycloak 与 GitHub 的必填项都缺）时容器启动失败并给出明确报错（不能静默放行）；
-      只配了其中一个能正常启动，只配了半个（如有 `KEYCLOAK_ISSUER` 无 `KEYCLOAK_CLIENT_ID`）也要报错。
+      只配了其中一个能正常启动，只配了半个（如有 `MODULES_AUTH_KEYCLOAK_ISSUER` 无 `MODULES_AUTH_KEYCLOAK_CLIENT_ID`）也要报错。
 - [ ] `/api/health` 返回 200，探针不误杀。
-- [ ] 同一份产物 / 同一个镜像，只改 `DB_PROVIDER` + `DATABASE_URL` 就能分别连 SQLite 和 PostgreSQL，`/api/health/ready` 都是 200。
+- [ ] 同一份产物 / 同一个镜像，只改 `DATABASE_PROVIDER` + `DATABASE_URL` 就能分别连 SQLite 和 PostgreSQL，`/api/health/ready` 都是 200。
 - [ ] 实体上有删列 / 改类型时，容器启动在 `db-sync.js` 那一步失败并打出具体语句，`index.js` 没有被执行。
 - [ ] `kubectl create -f ci/run.yaml` 跑完之后：Harbor 里有 `apps/shadecn-learning:<short-sha>` 和 `apps/shadecn-agent-sandbox:<short-sha>` 两个 manifest（各自恰好包含 `platforms` 里的架构，默认只有 arm64），gitea 上多出一条只改了这两行 tag 的 `ci: update image tag to <short-sha>`，且 ArgoCD 在 3 分钟内把 Application 同步回 `Synced` / `Healthy`。
 - [ ] 构建步骤的 Pod 落在 arm64 节点上；日志里每一轮 `base image arch ok: arm64 (aarch64)`。

@@ -9,11 +9,12 @@ import {
   type ModelResolution,
 } from '@shadecn/agent/model'
 import { platform } from '@shadecn/server-kit/platform'
+import { agentEnv } from './config.ts'
 import { agentPorts, lazySingleton } from './ports.ts'
 
 /**
- * 模型表（docs/26 §3.4）里 `default` 以外的项：读 {@link agentModelsFile}（默认 `<dataDir>/agent-models.json`，`AGENT_MODELS_FILE` 可换）。
- * `default` 照旧来自 `AGENT_PROVIDER` / `AGENT_MODEL` / …（`config.ts` 的 `agentConfig`，在 `agent/index.ts` 里解析）。
+ * 模型表（docs/26 §3.4）里 `default` 以外的项：读 {@link agentModelsFile}（默认 `<dataDir>/agent-models.json`，`MODULES_AGENT_MODELS_FILE` 可换）。
+ * `default` 照旧来自 `MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` / …（`config.ts` 的 `agentConfig`，在 `agent/index.ts` 里解析）。
  *
  * ```json
  * { "fast":   { "provider": "anthropic", "model": "claude-haiku-5-5", "apiKey": "$AGENT_FAST_KEY" },
@@ -39,10 +40,10 @@ export interface AgentModelSpec {
   /** 环境变量名（文件里写 `"$NAME"`）；不写 = 按提供方退回 */
   apiKeyEnv?: string
   imageInput?: boolean
-  /** 上下文窗口 / 单次最多输出（正整数）；不写 = 按注册表元数据，自建端点按保守默认（同 `default` 的 `AGENT_CONTEXT_WINDOW` / `AGENT_MAX_TOKENS`） */
+  /** 上下文窗口 / 单次最多输出（正整数）；不写 = 按注册表元数据，自建端点按保守默认（同 `default` 的 `MODULES_AGENT_CONTEXT_WINDOW` / `MODULES_AGENT_MAX_TOKENS`） */
   contextWindow?: number
   maxTokens?: number
-  /** 请模型思考的等级；不写 = 不请求（同 `default` 的 `AGENT_THINKING`） */
+  /** 请模型思考的等级；不写 = 不请求（同 `default` 的 `MODULES_AGENT_THINKING`） */
   thinking?: AgentThinkingLevel
 }
 
@@ -73,7 +74,7 @@ export function parseAgentModelTable(text: string, filePath: string): Record<str
   for (const [key, value] of Object.entries(parsed)) {
     const at = `${where} 的「${key}」`
     if (key === DEFAULT_AGENT_MODEL) {
-      throw new Error(`${at}：${DEFAULT_AGENT_MODEL} 不能写在文件里，它来自 AGENT_PROVIDER / AGENT_MODEL / AGENT_BASE_URL / AGENT_API / AGENT_API_KEY`)
+      throw new Error(`${at}：${DEFAULT_AGENT_MODEL} 不能写在文件里，它来自 ${agentEnv('provider')} / ${agentEnv('model')} / ${agentEnv('baseUrl')} / ${agentEnv('api')} / ${agentEnv('apiKey')}`)
     }
     if (!MODEL_KEY_REGEX.test(key)) throw new Error(`${at}：key 不合法（小写字母开头，只能有小写字母、数字、-，最长 48）`)
     if (!isRecord(value)) throw new Error(`${at}：必须是对象（${FIELD_LIST}）`)

@@ -30,7 +30,7 @@ coverage
 # 本地环境变量与运行时数据（SQLite 库在 data/ 下）
 .env
 .env.local
-# 服务端配置文件（docs/28 §3.3）和 .env 一样是部署方自己的；示例进仓库
+# 服务端配置文件（docs/28 §3.3）放在数据目录，上面的 /data/ 已盖住；根目录这条防误放、误提交，示例进仓库
 /server.config.*
 !/server.config.example.yaml
 /data/

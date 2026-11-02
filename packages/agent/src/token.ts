@@ -15,7 +15,7 @@ import {
  *   网关每次调用照样按这一轮的 Grant 实时判权（`authorize`），令牌里的 `scope` 一个字都不读。
  *
  * 校验用 `timingSafeEqual` 比签名；header 只认 `{"alg":"HS256"}`（不接受 `none`、不接受别的算法）。
- * 本包不读 `process.env`：密钥由宿主传进来（apps/server 的 `AGENT_TOKEN_SECRET`，没配时由 `SESSION_SECRET` 派生）。
+ * 本包不读 `process.env`：密钥由宿主传进来（apps/server 的 `MODULES_AGENT_TOKEN_SECRET`，没配时由 `MODULES_AUTH_SESSION_SECRET` 派生）。
  */
 
 /** run 短令牌的默认有效期（docs/22 §3：10 分钟），Grant 有效时可续期 */

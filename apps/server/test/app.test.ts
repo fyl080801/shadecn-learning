@@ -4,7 +4,7 @@ import { resetDb } from './helpers/db.ts'
 import { stubOidcFetch } from './helpers/oidc.ts'
 import { signIn } from './helpers/session.ts'
 
-const APP_ORIGIN = 'http://127.0.0.1:3000'
+const SERVER_ORIGIN = 'http://127.0.0.1:3000'
 
 // Hono 的路由表一旦收到第一个请求就冻结了，会抛异常的探针路由必须在这儿先挂好
 app.get('/api/boom', () => {
@@ -85,9 +85,9 @@ describe('404 / 500 处理', () => {
 
 describe('CORS', () => {
   it('同源请求带上 ACAO 和 credentials', async () => {
-    const res = await app.request('/api/health', { headers: { origin: APP_ORIGIN } })
+    const res = await app.request('/api/health', { headers: { origin: SERVER_ORIGIN } })
 
-    expect(res.headers.get('access-control-allow-origin')).toBe(APP_ORIGIN)
+    expect(res.headers.get('access-control-allow-origin')).toBe(SERVER_ORIGIN)
     expect(res.headers.get('access-control-allow-credentials')).toBe('true')
   })
 
@@ -98,12 +98,12 @@ describe('CORS', () => {
   })
 
   it('非 /api 的路径不套 CORS', async () => {
-    const res = await app.request('/some/page', { headers: { origin: APP_ORIGIN } })
+    const res = await app.request('/some/page', { headers: { origin: SERVER_ORIGIN } })
     expect(res.headers.get('access-control-allow-origin')).toBeNull()
   })
 
-  it('APP_ORIGINS 里的域名也回显 —— 一套部署挂多个域名时它们都是「自己」', async () => {
-    vi.stubEnv('APP_ORIGINS', 'https://alt.example.com')
+  it('SERVER_ORIGINS 里的域名也回显 —— 一套部署挂多个域名时它们都是「自己」', async () => {
+    vi.stubEnv('SERVER_ORIGINS', 'https://alt.example.com')
     vi.resetModules()
     const fresh = (await import('@shadecn/server-core/app')).app
 

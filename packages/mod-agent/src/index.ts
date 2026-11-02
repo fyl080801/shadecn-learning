@@ -18,6 +18,8 @@ import {
   type SandboxDriver,
 } from '@shadecn/agent/sandbox/drivers'
 import { createAgentRuntime, type AgentRuntime, type AgentRuntimeOptions } from '@shadecn/agent/session'
+import { envNameOf } from '@shadecn/server-kit/config'
+import { agentEnv } from './config.ts'
 import { agentPorts, lazySingleton, type AgentHostConfig } from './ports.ts'
 import { agentAuthority } from './authority.ts'
 import { agentDefinitions, agentTextSkills } from './definitions.ts'
@@ -116,7 +118,7 @@ let sandboxProblem: string | null = null
 /** 第一次自检（起 Pod 之前要等它查完） */
 let firstSandboxCheck: Promise<void> | null = null
 
-/** 按 `AGENT_SANDBOX` 建驱动（只建一次）；建不了 → 未启用的原因 */
+/** 按 `MODULES_AGENT_SANDBOX_DRIVER` 建驱动（只建一次）；建不了 → 未启用的原因 */
 function sandboxDriver(): BuiltDriver {
   builtDriver ??= buildDriver()
   return builtDriver
@@ -125,7 +127,7 @@ function sandboxDriver(): BuiltDriver {
 function buildDriver(): BuiltDriver {
   const choice = config().sandbox
   if (typeof choice === 'object') {
-    return { ok: false, reason: `不认识的沙箱驱动 AGENT_SANDBOX=${choice.unknown}（可选 process / oci / k8s）` }
+    return { ok: false, reason: `不认识的沙箱驱动 ${agentEnv('sandbox.driver')}=${choice.unknown}（可选 process / oci / k8s）` }
   }
   if (choice === 'k8s') return buildK8sDriver()
   if (choice === 'oci') return buildOciDriver()
@@ -173,11 +175,11 @@ function buildK8sDriver(): BuiltDriver {
     return {
       ok: false,
       reason:
-        'k8s 沙箱要连回发起它的那个副本：Deployment 里用 Downward API 注入 POD_IP（fieldRef: status.podIP），或显式配 AGENT_GATEWAY_URL（docs/22 §7.5）',
+        `k8s 沙箱要连回发起它的那个副本：Deployment 里用 Downward API 注入 POD_IP（fieldRef: status.podIP），或显式配 ${agentEnv('gatewayUrl')}（docs/22 §7.5）`,
     }
   }
   if (k8s.pullPolicy && !K8S_PULL_POLICIES.includes(k8s.pullPolicy as K8sPullPolicy)) {
-    return { ok: false, reason: `AGENT_SANDBOX_K8S_PULL_POLICY=${k8s.pullPolicy} 不认识（可选 ${K8S_PULL_POLICIES.join(' / ')}）` }
+    return { ok: false, reason: `${agentEnv('sandbox.k8s.pullPolicy')}=${k8s.pullPolicy} 不认识（可选 ${K8S_PULL_POLICIES.join(' / ')}）` }
   }
   const nodeSelector = parseK8sNodeSelector(k8s.nodeSelector)
   if (!nodeSelector.ok) return { ok: false, reason: nodeSelector.reason }
@@ -222,13 +224,13 @@ function buildRuntime(): AgentRuntime {
     return createAgentRuntime({ model: null, disabled: reason, models: agentModels, driver: NO_DRIVER, gateway, ...agentHostOptions })
   }
 
-  // 模型表的 default（docs/26 §3.4）：AGENT_PROVIDER / AGENT_MODEL / …；其余的项在 models.ts（启动时已读、已解析）
-  // AGENT_THINKING 写错了不让 agent 整个关掉（思考是锦上添花）：警告，当没配
+  // 模型表的 default（docs/26 §3.4）：MODULES_AGENT_PROVIDER / MODULES_AGENT_MODEL / …；其余的项在 models.ts（启动时已读、已解析）
+  // MODULES_AGENT_THINKING 写错了不让 agent 整个关掉（思考是锦上添花）：警告，当没配
   let defaultThinking: AgentThinkingLevel | undefined
   const thinking = config().thinking
   if (thinking !== undefined) {
     if (isAgentThinkingLevel(thinking)) defaultThinking = thinking
-    else console.warn(`[agent] AGENT_THINKING=${thinking} 不认识（只认 ${AGENT_THINKING_LEVELS.join(' / ')}），当作没配`)
+    else console.warn(`[agent] ${agentEnv('thinking')}=${thinking} 不认识（只认 ${AGENT_THINKING_LEVELS.join(' / ')}），当作没配`)
   }
   const apiKey = config().apiKey || agentPorts().providerApiKey(config().provider)
   const defaultModel = resolveAgentModel({
@@ -376,7 +378,7 @@ async function checkK8s(driver: K8sSandboxDriver): Promise<boolean> {
       for (const warning of check.warnings) console.warn(`[agent] k8s 沙箱：${warning}`)
       const host = agentPorts().host
       if (host === '127.0.0.1' || host === 'localhost' || host === '::1') {
-        console.warn(`[agent] k8s 沙箱：服务端只听 ${host}，沙箱 Pod 连不上 ${agentGatewayUrl()}（Deployment 里设 HOST=0.0.0.0）`)
+        console.warn(`[agent] k8s 沙箱：服务端只听 ${host}，沙箱 Pod 连不上 ${agentGatewayUrl()}（Deployment 里设 ${envNameOf('server.host')}=0.0.0.0）`)
       }
     }
     if (check.problems.length > 0) problem = check.problems.join('；')
@@ -405,10 +407,10 @@ async function checkOci(driver: OciSandboxDriver) {
         `镜像 ${check.image.name}，网络 ${check.network.name}，网关 ${agentGatewayUrl()}`,
     )
     if (!check.image.present) {
-      console.warn(`[agent] oci 沙箱镜像 ${check.image.name} 不存在：先 pnpm build:sandbox-image（或检查 AGENT_SANDBOX_IMAGE），否则每一轮都会起不来`)
+      console.warn(`[agent] oci 沙箱镜像 ${check.image.name} 不存在：先 pnpm build:sandbox-image（或检查 ${agentEnv('sandbox.image')}），否则每一轮都会起不来`)
     }
     if (!check.network.exists) {
-      console.warn(`[agent] oci 沙箱网络 ${check.network.name} 不存在（AGENT_SANDBOX_OCI_NETWORK），每一轮都会起不来`)
+      console.warn(`[agent] oci 沙箱网络 ${check.network.name} 不存在（${agentEnv('sandbox.oci.network')}），每一轮都会起不来`)
     } else if (!check.network.internal) {
       console.warn(
         `[agent] oci 沙箱可以出网：网络 ${check.network.name} 不是 internal，容器除了网关还能访问外网和宿主上监听的端口（docs/22 §7.4）`,

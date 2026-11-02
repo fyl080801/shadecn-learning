@@ -6,7 +6,7 @@ import type { Sandbox } from './types.ts'
 /**
  * 让模型在沙箱里跑 ffmpeg / ffprobe 的工具。
  *
- * **默认不暴露**：它属于技能 `media-exec`（`skills/media/`，按需加载），只有宿主开了它（apps/server 里是 `AGENT_SANDBOX_EXEC=1`）、
+ * **默认不暴露**：它属于技能 `media-exec`（`skills/media/`，按需加载），只有宿主开了它（apps/server 里是 `MODULES_AGENT_SANDBOX_EXEC=1`）、
  * 且 Grant 里有 `sandbox:exec` 时才提供这个技能。
  * 二期起它在 **runner 里本地执行**（runner 就是沙箱，命令跑在这一轮自己的工作目录里，`openLocalSandbox`），
  * 不经网关（docs/22 §3：沙箱内部动作）；服务端只拿它的定义给事件里的那句话（`describe`）。

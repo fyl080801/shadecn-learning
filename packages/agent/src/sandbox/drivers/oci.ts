@@ -62,7 +62,7 @@ const REMOVE_ATTEMPTS = 2
 
 export interface OciDriverOptions {
   engine: EngineClient
-  /** 沙箱镜像（宿主的 `AGENT_SANDBOX_IMAGE`） */
+  /** 沙箱镜像（宿主的 `MODULES_AGENT_SANDBOX_IMAGE`） */
   image: string
   /**
    * 这个服务端实例的标识，打在容器的 `instance` label 上，`reap` 只清这个值的容器。
@@ -168,8 +168,8 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 function startFailure(err: unknown, image: string, network: string): string {
   if (err instanceof EngineUnavailableError) return err.message
   if (err instanceof EngineError && err.status === 404) {
-    if (/network/i.test(err.message)) return `沙箱网络 ${network} 不存在（AGENT_SANDBOX_OCI_NETWORK）：${err.message}`
-    return `沙箱镜像 ${image} 不存在：先构建（pnpm build:sandbox-image）或检查 AGENT_SANDBOX_IMAGE（${err.message}）`
+    if (/network/i.test(err.message)) return `沙箱网络 ${network} 不存在（MODULES_AGENT_SANDBOX_OCI_NETWORK）：${err.message}`
+    return `沙箱镜像 ${image} 不存在：先构建（pnpm build:sandbox-image）或检查 MODULES_AGENT_SANDBOX_IMAGE（${err.message}）`
   }
   return `沙箱容器建不起来：${message(err)}`
 }
@@ -184,7 +184,7 @@ export function createOciDriver(options: OciDriverOptions): OciSandboxDriver {
         : 'oci 沙箱不能用 none 网络（runner 连不上网关）',
     )
   }
-  if (!options.image) throw new Error('oci 沙箱驱动没有配置镜像（AGENT_SANDBOX_IMAGE）')
+  if (!options.image) throw new Error('oci 沙箱驱动没有配置镜像（MODULES_AGENT_SANDBOX_IMAGE）')
   /** 本驱动正在管的容器（起了、还没删完）：`reap` 不碰它们，哪怕调用方给的 liveRunIds 漏了 */
   const active = new Set<string>()
 

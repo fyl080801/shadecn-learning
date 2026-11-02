@@ -9,7 +9,7 @@ import { agentModelKeys } from './models.ts'
  * 在 listen 之前 import 到它），**不管 agent 启没启用**（没配模型也校验：定义坏了是打包的错，不该等到有人配上模型才发现）。
  * 不合法（名字、重名、`tools` 里不认识的工具、`model` 不在模型表、没有 `canvas`）就打一行 `[agent]` 错误、抛出，服务起不来。
  *
- * 模型表（docs/26 §3.4）= `default`（`AGENT_PROVIDER` / `AGENT_MODEL` / …）+ 模型表文件里的项（`models.ts`，同样在 import 时读、坏了起不来）：
+ * 模型表（docs/26 §3.4）= `default`（`MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` / …）+ 模型表文件里的项（`models.ts`，同样在 import 时读、坏了起不来）：
  * `model` 只按 **key 在不在** 判 —— 那一项此刻用不用得了（环境变量没设、注册表里没有）不是启动错误，到用时才报。
  * 技能注册表是内置的那份，和 runtime 用的同一个。
  */

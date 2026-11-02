@@ -88,8 +88,8 @@ export function kubeConnection(
       return {
         ok: false,
         reason:
-          '不在 k8s 集群里（没有 KUBERNETES_SERVICE_HOST），也没配 AGENT_SANDBOX_K8S_API_URL；' +
-          '集群外开发可以用 kubectl proxy（AGENT_SANDBOX_K8S_API_URL=http://127.0.0.1:8001、AGENT_SANDBOX_K8S_TOKEN_FILE= 留空；注意它连的是 kubectl 当前的 context）',
+          '不在 k8s 集群里（没有 KUBERNETES_SERVICE_HOST），也没配 MODULES_AGENT_SANDBOX_K8S_API_URL；' +
+          '集群外开发可以用 kubectl proxy（MODULES_AGENT_SANDBOX_K8S_API_URL=http://127.0.0.1:8001、MODULES_AGENT_SANDBOX_K8S_TOKEN_FILE= 留空；注意它连的是 kubectl 当前的 context）',
       }
     }
     const port = env.KUBERNETES_SERVICE_PORT?.trim() || '443'
@@ -99,13 +99,13 @@ export function kubeConnection(
   try {
     url = new URL(server)
   } catch {
-    return { ok: false, reason: `AGENT_SANDBOX_K8S_API_URL=${server} 不是合法的 URL` }
+    return { ok: false, reason: `MODULES_AGENT_SANDBOX_K8S_API_URL=${server} 不是合法的 URL` }
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    return { ok: false, reason: `AGENT_SANDBOX_K8S_API_URL=${server} 只能是 https://（或回环地址上的 http://）` }
+    return { ok: false, reason: `MODULES_AGENT_SANDBOX_K8S_API_URL=${server} 只能是 https://（或回环地址上的 http://）` }
   }
   if (url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) {
-    return { ok: false, reason: `AGENT_SANDBOX_K8S_API_URL=${server}：http:// 只许回环地址（kubectl proxy），否则 token 会明文出本机` }
+    return { ok: false, reason: `MODULES_AGENT_SANDBOX_K8S_API_URL=${server}：http:// 只许回环地址（kubectl proxy），否则 token 会明文出本机` }
   }
   const pick = (value: string | undefined, fallback: string) => (value === undefined ? fallback : value.trim() || null)
   return {
@@ -160,7 +160,7 @@ export function createKubeClient(connection: KubeConnection, options: { timeoutM
       ca = readFileSync(connection.caFile)
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code ?? String(err)
-      throw new Error(`读不到 k8s API 的 CA 证书（${connection.caFile}：${code}）；集群外请配 AGENT_SANDBOX_K8S_CA_FILE（留空 = 用系统 CA）`, {
+      throw new Error(`读不到 k8s API 的 CA 证书（${connection.caFile}：${code}）；集群外请配 MODULES_AGENT_SANDBOX_K8S_CA_FILE（留空 = 用系统 CA）`, {
         cause: err,
       })
     }
@@ -174,7 +174,7 @@ export function createKubeClient(connection: KubeConnection, options: { timeoutM
       token = (await readFile(connection.tokenFile, 'utf8')).trim()
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code ?? String(err)
-      throw new KubeUnavailableError(server, `读不到 ServiceAccount token ${connection.tokenFile}（${code}）；集群外请配 AGENT_SANDBOX_K8S_TOKEN_FILE`, err)
+      throw new KubeUnavailableError(server, `读不到 ServiceAccount token ${connection.tokenFile}（${code}）；集群外请配 MODULES_AGENT_SANDBOX_K8S_TOKEN_FILE`, err)
     }
     if (!token) throw new KubeUnavailableError(server, `ServiceAccount token ${connection.tokenFile} 是空的`)
     return { authorization: `Bearer ${token}` }
@@ -185,7 +185,7 @@ export function createKubeClient(connection: KubeConnection, options: { timeoutM
     const code = e?.code ?? ''
     if (CONNECT_ERRORS.has(code)) return new KubeUnavailableError(server, code, err)
     if (code.startsWith('ERR_TLS') || /CERT|SELF_SIGNED|UNABLE_TO_VERIFY/.test(code)) {
-      return new KubeUnavailableError(server, `TLS 校验失败 ${code}；检查 AGENT_SANDBOX_K8S_CA_FILE`, err)
+      return new KubeUnavailableError(server, `TLS 校验失败 ${code}；检查 MODULES_AGENT_SANDBOX_K8S_CA_FILE`, err)
     }
     return err instanceof Error ? err : new Error(String(err))
   }

@@ -104,8 +104,8 @@ onMounted(async () => {
           class="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
           data-testid="login-disabled"
         >
-          服务端没有配置任何登录方式（KEYCLOAK_ISSUER / KEYCLOAK_CLIENT_ID 或
-          GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET）。
+          服务端没有配置任何登录方式（MODULES_AUTH_KEYCLOAK_ISSUER / MODULES_AUTH_KEYCLOAK_CLIENT_ID 或
+          MODULES_AUTH_GITHUB_CLIENT_ID / MODULES_AUTH_GITHUB_CLIENT_SECRET）。
         </p>
 
         <div v-if="!loading && enabled" class="grid gap-2.5">

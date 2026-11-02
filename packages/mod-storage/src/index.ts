@@ -2,7 +2,7 @@ import { CANVAS_SERVICE, underFlowGuard, type CanvasService } from '@shadecn/mod
 import { defineModule } from '@shadecn/server-kit/kernel'
 import { flowAssets } from './assets.ts'
 import { configureAssetStorage } from './client.ts'
-import { storageConfig } from './config.ts'
+import { STORAGE_MODULE, storageConfig, storageEnv } from './config.ts'
 import { STORAGE_SERVICE, type StorageService } from './contract.ts'
 import { FlowAsset } from './entities.ts'
 import { readFlowAsset, saveFlowAsset } from './generated.ts'
@@ -18,19 +18,19 @@ export const ASSETS_PATH = '/api/flows/:flowId/assets'
  * 对象存储模块（REQ-MODULES §3.5）。它是库不是角色：web 的上传接口和 agent 的看图都用它，
  * 所以随 `web` 和 `agent` 两个角色加载，各自持有一个客户端。
  *
- * - 没配齐 S3（`S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`）→ 模块关掉，原因进启动日志和 `/api/features`；
+ * - 没配齐 S3（`MODULES_STORAGE_BUCKET` / `MODULES_STORAGE_ACCESS_KEY_ID` / `MODULES_STORAGE_SECRET_ACCESS_KEY`）→ 模块关掉，原因进启动日志和 `/api/features`；
  * - 上传接口挂在画布之下（`canvas.flowGuard` 判成员），上传记录是本模块自己的表（`FlowAsset`）；
  * - 别的模块经 `storage` 服务查上传记录（`./contract.ts`），经 `./client` 拿客户端读字节。
  */
 export default defineModule({
-  name: 'storage',
+  name: STORAGE_MODULE,
   roles: ['web', 'agent'],
   dependsOn: ['canvas'],
   provides: [STORAGE_SERVICE],
   config: storageConfig,
   entities: [FlowAsset],
   routes: [{ path: ASSETS_PATH, role: 'web', access: 'user' }],
-  enabled: (config) => config.s3 !== null || '没配 S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY',
+  enabled: (config) => config.s3 !== null || `没配 ${storageEnv('bucket')} / ${storageEnv('accessKeyId')} / ${storageEnv('secretAccessKey')}`,
   setup(ctx) {
     configureAssetStorage(ctx.config.s3)
     const keyPrefix = ctx.config.keyPrefix

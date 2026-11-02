@@ -32,7 +32,7 @@ describe('isApiPath()', () => {
   })
 })
 
-describe('agentProviderApiKey()：没配 AGENT_API_KEY 时按提供方退回的环境变量', () => {
+describe('agentProviderApiKey()：没配 MODULES_AGENT_API_KEY 时按提供方退回的环境变量', () => {
   it('常用提供方读各自的变量', () => {
     expect(agentProviderApiKey('anthropic', { ANTHROPIC_API_KEY: 'sk-ant' })).toBe('sk-ant')
     expect(agentProviderApiKey('openai', { OPENAI_API_KEY: 'sk-oai' })).toBe('sk-oai')
@@ -75,7 +75,7 @@ describe('agentProviderApiKey()：没配 AGENT_API_KEY 时按提供方退回的�
 describe('模型表文件的路径（docs/26 §3.4）', () => {
   beforeEach(() => {
     vi.stubEnv('DATA_DIR', undefined)
-    vi.stubEnv('AGENT_MODELS_FILE', undefined)
+    vi.stubEnv('MODULES_AGENT_MODELS_FILE', undefined)
   })
 
   it('默认 <dataDir>/agent-models.json，跟着 DATA_DIR 走', async () => {
@@ -84,20 +84,20 @@ describe('模型表文件的路径（docs/26 §3.4）', () => {
     expect((await loadConfig()).agentModelsFile).toBe('/app/data/agent-models.json')
   })
 
-  it('AGENT_MODELS_FILE 整个换掉：相对路径按仓库根目录算，绝对路径直接用', async () => {
-    vi.stubEnv('AGENT_MODELS_FILE', 'conf/models.json')
+  it('MODULES_AGENT_MODELS_FILE 整个换掉：相对路径按仓库根目录算，绝对路径直接用', async () => {
+    vi.stubEnv('MODULES_AGENT_MODELS_FILE', 'conf/models.json')
     expect((await loadConfig()).agentModelsFile).toBe(path.join(rootDir, 'conf/models.json'))
-    vi.stubEnv('AGENT_MODELS_FILE', '/etc/agent/models.json')
+    vi.stubEnv('MODULES_AGENT_MODELS_FILE', '/etc/agent/models.json')
     expect((await loadConfig()).agentModelsFile).toBe('/etc/agent/models.json')
   })
 })
 
 describe('数据库路径解析', () => {
   beforeEach(() => {
-    // 测试环境默认给了 DATABASE_URL / DB_PROVIDER，这几个用例要从零开始算
+    // 测试环境默认给了 DATABASE_URL / DATABASE_PROVIDER，这几个用例要从零开始算
     vi.stubEnv('DATABASE_URL', undefined)
     vi.stubEnv('DATA_DIR', undefined)
-    vi.stubEnv('DB_PROVIDER', undefined)
+    vi.stubEnv('DATABASE_PROVIDER', undefined)
   })
 
   it('默认落在 <仓库根>/data/app.db', async () => {
@@ -137,7 +137,7 @@ describe('数据库 provider 解析', () => {
   beforeEach(() => {
     vi.stubEnv('DATABASE_URL', undefined)
     vi.stubEnv('DATA_DIR', undefined)
-    vi.stubEnv('DB_PROVIDER', undefined)
+    vi.stubEnv('DATABASE_PROVIDER', undefined)
   })
 
   it('什么都不设 → sqlite', async () => {
@@ -153,44 +153,44 @@ describe('数据库 provider 解析', () => {
     expect((await loadConfig()).dbProvider).toBe(expected)
   })
 
-  it('显式的 DB_PROVIDER 说了算', async () => {
-    vi.stubEnv('DB_PROVIDER', 'postgresql')
+  it('显式的 DATABASE_PROVIDER 说了算', async () => {
+    vi.stubEnv('DATABASE_PROVIDER', 'postgresql')
     vi.stubEnv('DATABASE_URL', 'postgresql://localhost:5432/app')
     expect((await loadConfig()).dbProvider).toBe('postgresql')
   })
 
-  it('DB_PROVIDER 和 DATABASE_URL 的协议对不上 → 直接抛错', async () => {
-    vi.stubEnv('DB_PROVIDER', 'sqlite')
+  it('DATABASE_PROVIDER 和 DATABASE_URL 的协议对不上 → 直接抛错', async () => {
+    vi.stubEnv('DATABASE_PROVIDER', 'sqlite')
     vi.stubEnv('DATABASE_URL', 'postgresql://localhost:5432/app')
     await expect(loadConfig()).rejects.toThrow(/不一致/)
   })
 
-  it('DB_PROVIDER 是不认识的值 → 直接抛错', async () => {
-    vi.stubEnv('DB_PROVIDER', 'mysql')
+  it('DATABASE_PROVIDER 是不认识的值 → 直接抛错', async () => {
+    vi.stubEnv('DATABASE_PROVIDER', 'mysql')
     await expect(loadConfig()).rejects.toThrow(/只能是/)
   })
 
-  it('DB_PROVIDER=postgresql 却没给 DATABASE_URL → 直接抛错', async () => {
-    vi.stubEnv('DB_PROVIDER', 'postgresql')
+  it('DATABASE_PROVIDER=postgresql 却没给 DATABASE_URL → 直接抛错', async () => {
+    vi.stubEnv('DATABASE_PROVIDER', 'postgresql')
     await expect(loadConfig()).rejects.toThrow(/必须提供 DATABASE_URL/)
   })
 })
 
 describe('静态资源目录', () => {
   it('默认是 <应用根>/output/public（`vite build` 的产物）', async () => {
-    vi.stubEnv('STATIC_DIR', undefined)
+    vi.stubEnv('SERVER_STATIC_DIR', undefined)
     const config = await loadConfig()
     expect(config.staticDir).toBe(path.join(rootDir, 'output', 'public'))
   })
 
-  it('STATIC_DIR 的相对路径按应用根目录算', async () => {
-    vi.stubEnv('STATIC_DIR', 'public-dist')
+  it('SERVER_STATIC_DIR 的相对路径按应用根目录算', async () => {
+    vi.stubEnv('SERVER_STATIC_DIR', 'public-dist')
     const config = await loadConfig()
     expect(config.staticDir).toBe(path.join(rootDir, 'public-dist'))
   })
 
-  it('STATIC_DIR 是绝对路径就直接用', async () => {
-    vi.stubEnv('STATIC_DIR', '/srv/www')
+  it('SERVER_STATIC_DIR 是绝对路径就直接用', async () => {
+    vi.stubEnv('SERVER_STATIC_DIR', '/srv/www')
     const config = await loadConfig()
     expect(config.staticDir).toBe('/srv/www')
   })
@@ -198,7 +198,7 @@ describe('静态资源目录', () => {
 
 describe('appOrigin / cookie', () => {
   it('去掉结尾的斜杠，redirect_uri 才不会出现双斜杠', async () => {
-    vi.stubEnv('APP_ORIGIN', 'https://app.example.com///')
+    vi.stubEnv('SERVER_ORIGIN', 'https://app.example.com///')
     const config = await loadConfig()
     expect(config.appOrigin).toBe('https://app.example.com')
     expect(config.callbackUriFor(config.appOrigin)).toBe(
@@ -208,48 +208,48 @@ describe('appOrigin / cookie', () => {
   })
 
   it('https 部署时 cookie 带 Secure', async () => {
-    vi.stubEnv('APP_ORIGIN', 'https://app.example.com')
+    vi.stubEnv('SERVER_ORIGIN', 'https://app.example.com')
     const config = await loadConfig()
     expect(config.authConfig.secureCookie).toBe(true)
   })
 
   it('http 部署时不带 Secure（本地 http 也能登录）', async () => {
-    vi.stubEnv('APP_ORIGIN', 'http://127.0.0.1:3000')
+    vi.stubEnv('SERVER_ORIGIN', 'http://127.0.0.1:3000')
     const config = await loadConfig()
     expect(config.authConfig.secureCookie).toBe(false)
   })
 
-  it('没设 APP_ORIGIN 就用 http://host:port 兜底', async () => {
-    vi.stubEnv('APP_ORIGIN', undefined)
-    vi.stubEnv('HOST', '0.0.0.0')
-    vi.stubEnv('PORT', '8080')
+  it('没设 SERVER_ORIGIN 就用 http://host:port 兜底', async () => {
+    vi.stubEnv('SERVER_ORIGIN', undefined)
+    vi.stubEnv('SERVER_HOST', '0.0.0.0')
+    vi.stubEnv('SERVER_PORT', '8080')
     const config = await loadConfig()
     expect(config.appOrigin).toBe('http://0.0.0.0:8080')
   })
 })
 
 /**
- * 多域名白名单（`APP_ORIGINS`）。
+ * 多域名白名单（`SERVER_ORIGINS`）。
  *
  * 一套部署常常挂在好几个域名下，而 OAuth 的 `redirect_uri`、CORS、WebSocket 的
- * `Origin` 校验都是绝对地址 —— 写死一个 `APP_ORIGIN` 的话，从别的域名进来的人
+ * `Origin` 校验都是绝对地址 —— 写死一个 `SERVER_ORIGIN` 的话，从别的域名进来的人
  * 会在另一个域名上完成回调，cookie 也就种到了那边，回来还是未登录。
  *
  * 但也**不能无脑跟着 `Host` 走**：反代后面 `Host` / `X-Forwarded-Host` 是外部
  * 可控的输入，跟着它拼 `redirect_uri` 等于把授权码送去攻击者的域名。名单就是那道闸。
  */
-describe('APP_ORIGINS 白名单 / resolveOrigin()', () => {
-  it('APP_ORIGIN 永远在名单里 —— 它是兜底目标，自己不在名单里说不通', async () => {
-    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
-    vi.stubEnv('APP_ORIGINS', undefined)
+describe('SERVER_ORIGINS 白名单 / resolveOrigin()', () => {
+  it('SERVER_ORIGIN 永远在名单里 —— 它是兜底目标，自己不在名单里说不通', async () => {
+    vi.stubEnv('SERVER_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('SERVER_ORIGINS', undefined)
     const config = await loadConfig()
     expect(config.appOrigins).toEqual(['https://a.example.com'])
     expect(config.isAllowedOrigin('https://a.example.com')).toBe(true)
   })
 
   it('逗号或空白分隔都认，顺带去重、归一化', async () => {
-    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
-    vi.stubEnv('APP_ORIGINS', 'https://B.example.com/,  https://a.example.com , https://c.io:443')
+    vi.stubEnv('SERVER_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('SERVER_ORIGINS', 'https://B.example.com/,  https://a.example.com , https://c.io:443')
     const config = await loadConfig()
     // 大小写、尾斜杠、默认端口都被抹平；重复的只留一份
     expect(config.appOrigins).toEqual([
@@ -260,16 +260,16 @@ describe('APP_ORIGINS 白名单 / resolveOrigin()', () => {
   })
 
   it('不是 http/https 的、拼不成 URL 的一律丢掉', async () => {
-    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
-    vi.stubEnv('APP_ORIGINS', 'ftp://x.example.com,不是个URL,javascript:alert(1)')
+    vi.stubEnv('SERVER_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('SERVER_ORIGINS', 'ftp://x.example.com,不是个URL,javascript:alert(1)')
     const config = await loadConfig()
     expect(config.appOrigins).toEqual(['https://a.example.com'])
     expect(config.isAllowedOrigin('ftp://x.example.com')).toBe(false)
   })
 
   it('X-Forwarded-Host 在名单里 → 就用它，回调回到人真正访问的那个域名', async () => {
-    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
-    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+    vi.stubEnv('SERVER_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('SERVER_ORIGINS', 'https://b.example.com')
     const config = await loadConfig()
 
     expect(
@@ -282,8 +282,8 @@ describe('APP_ORIGINS 白名单 / resolveOrigin()', () => {
   })
 
   it('多级反代的 X-Forwarded-* 是逗号列表，取第一个（最外层那个）', async () => {
-    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
-    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+    vi.stubEnv('SERVER_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('SERVER_ORIGINS', 'https://b.example.com')
     const config = await loadConfig()
 
     expect(
@@ -295,8 +295,8 @@ describe('APP_ORIGINS 白名单 / resolveOrigin()', () => {
   })
 
   it('没有转发头就看 Host', async () => {
-    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
-    vi.stubEnv('APP_ORIGINS', 'http://b.example.com')
+    vi.stubEnv('SERVER_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('SERVER_ORIGINS', 'http://b.example.com')
     const config = await loadConfig()
 
     expect(config.resolveOrigin({ host: 'b.example.com', protocol: 'http' })).toBe(
@@ -305,8 +305,8 @@ describe('APP_ORIGINS 白名单 / resolveOrigin()', () => {
   })
 
   it('反代终止了 https 却没给 X-Forwarded-Proto：https 那条也要试', async () => {
-    vi.stubEnv('APP_ORIGIN', 'http://127.0.0.1:3000')
-    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+    vi.stubEnv('SERVER_ORIGIN', 'http://127.0.0.1:3000')
+    vi.stubEnv('SERVER_ORIGINS', 'https://b.example.com')
     const config = await loadConfig()
 
     // 直连是 http，Host 是 b.example.com；名单里只有 https 版本
@@ -315,9 +315,9 @@ describe('APP_ORIGINS 白名单 / resolveOrigin()', () => {
     )
   })
 
-  it('Host 头是伪造的（不在名单里）→ 回落 APP_ORIGIN，绝不跟着它走', async () => {
-    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
-    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+  it('Host 头是伪造的（不在名单里）→ 回落 SERVER_ORIGIN，绝不跟着它走', async () => {
+    vi.stubEnv('SERVER_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('SERVER_ORIGINS', 'https://b.example.com')
     const config = await loadConfig()
 
     expect(config.resolveOrigin({ host: 'evil.example', protocol: 'https' })).toBe(
@@ -327,8 +327,8 @@ describe('APP_ORIGINS 白名单 / resolveOrigin()', () => {
   })
 
   it('Host 被反代改成了内网名字时，Origin 兜底', async () => {
-    vi.stubEnv('APP_ORIGIN', 'https://a.example.com')
-    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+    vi.stubEnv('SERVER_ORIGIN', 'https://a.example.com')
+    vi.stubEnv('SERVER_ORIGINS', 'https://b.example.com')
     const config = await loadConfig()
 
     expect(
@@ -351,7 +351,7 @@ describe('authEnabled / assertAuthConfig()', () => {
   })
 
   it('issuer 结尾的斜杠会被去掉（discovery 地址不能是双斜杠）', async () => {
-    vi.stubEnv('KEYCLOAK_ISSUER', 'https://kc.test/realms/demo/')
+    vi.stubEnv('MODULES_AUTH_KEYCLOAK_ISSUER', 'https://kc.test/realms/demo/')
     const config = await loadConfig()
     expect(config.authConfig.issuer).toBe('https://kc.test/realms/demo')
   })
@@ -361,36 +361,36 @@ describe('authEnabled / assertAuthConfig()', () => {
     ['只缺 clientId', 'https://kc.test/realms/demo', ''],
     ['两个都缺', '', ''],
   ])('%s 就退化成不鉴权', async (_label, issuer, clientId) => {
-    vi.stubEnv('KEYCLOAK_ISSUER', issuer)
-    vi.stubEnv('KEYCLOAK_CLIENT_ID', clientId)
+    vi.stubEnv('MODULES_AUTH_KEYCLOAK_ISSUER', issuer)
+    vi.stubEnv('MODULES_AUTH_KEYCLOAK_CLIENT_ID', clientId)
     const config = await loadConfig()
     expect(config.authEnabled).toBe(false)
   })
 
   it('开发环境配置不全只警告，不阻止启动', async () => {
     vi.stubEnv('NODE_ENV', 'development')
-    vi.stubEnv('KEYCLOAK_ISSUER', '')
+    vi.stubEnv('MODULES_AUTH_KEYCLOAK_ISSUER', '')
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     const config = await loadConfig()
     expect(() => config.assertAuthConfig()).not.toThrow()
     expect(warn).toHaveBeenCalled()
-    expect(warn.mock.calls.flat().join(' ')).toContain('KEYCLOAK_ISSUER')
+    expect(warn.mock.calls.flat().join(' ')).toContain('MODULES_AUTH_KEYCLOAK_ISSUER')
   })
 
   it('生产环境配置不全直接拒绝启动', async () => {
     vi.stubEnv('NODE_ENV', 'production')
-    vi.stubEnv('KEYCLOAK_ISSUER', '')
+    vi.stubEnv('MODULES_AUTH_KEYCLOAK_ISSUER', '')
     const config = await loadConfig()
     expect(config.isDev).toBe(false)
-    expect(() => config.assertAuthConfig()).toThrowError(/KEYCLOAK_ISSUER/)
+    expect(() => config.assertAuthConfig()).toThrowError(/MODULES_AUTH_KEYCLOAK_ISSUER/)
   })
 
-  it('生产环境缺 SESSION_SECRET 也拒绝启动', async () => {
+  it('生产环境缺 MODULES_AUTH_SESSION_SECRET 也拒绝启动', async () => {
     vi.stubEnv('NODE_ENV', 'production')
-    vi.stubEnv('SESSION_SECRET', '')
+    vi.stubEnv('MODULES_AUTH_SESSION_SECRET', '')
     const config = await loadConfig()
-    expect(() => config.assertAuthConfig()).toThrowError(/SESSION_SECRET/)
+    expect(() => config.assertAuthConfig()).toThrowError(/MODULES_AUTH_SESSION_SECRET/)
   })
 
   it('配齐了就安静通过', async () => {
@@ -407,10 +407,10 @@ describe('authEnabled / assertAuthConfig()', () => {
   describe('多登录方式', () => {
     /** 把 Keycloak 拆掉，只留 GitHub 那一组 */
     function onlyGithub() {
-      vi.stubEnv('KEYCLOAK_ISSUER', '')
-      vi.stubEnv('KEYCLOAK_CLIENT_ID', '')
-      vi.stubEnv('GITHUB_CLIENT_ID', 'gh-client')
-      vi.stubEnv('GITHUB_CLIENT_SECRET', 'gh-secret')
+      vi.stubEnv('MODULES_AUTH_KEYCLOAK_ISSUER', '')
+      vi.stubEnv('MODULES_AUTH_KEYCLOAK_CLIENT_ID', '')
+      vi.stubEnv('MODULES_AUTH_GITHUB_CLIENT_ID', 'gh-client')
+      vi.stubEnv('MODULES_AUTH_GITHUB_CLIENT_SECRET', 'gh-secret')
     }
 
     it('只配 GitHub 也算开启登录', async () => {
@@ -430,21 +430,21 @@ describe('authEnabled / assertAuthConfig()', () => {
 
     it('GitHub 只有 client id 没有 secret → 当成配错，不是「不用它」', async () => {
       vi.stubEnv('NODE_ENV', 'production')
-      vi.stubEnv('GITHUB_CLIENT_ID', 'gh-client')
-      vi.stubEnv('GITHUB_CLIENT_SECRET', '')
+      vi.stubEnv('MODULES_AUTH_GITHUB_CLIENT_ID', 'gh-client')
+      vi.stubEnv('MODULES_AUTH_GITHUB_CLIENT_SECRET', '')
       const config = await loadConfig()
       // Keycloak 是齐的，但 GitHub 配了一半 —— 静默把它关掉才是更坏的结果
       expect(config.githubEnabled).toBe(false)
-      expect(() => config.assertAuthConfig()).toThrowError(/GITHUB_CLIENT_SECRET/)
+      expect(() => config.assertAuthConfig()).toThrowError(/MODULES_AUTH_GITHUB_CLIENT_SECRET/)
     })
 
     it('两种都没配齐 → 生产拒绝启动，报的是「一个都没有」', async () => {
       vi.stubEnv('NODE_ENV', 'production')
-      vi.stubEnv('KEYCLOAK_ISSUER', '')
-      vi.stubEnv('KEYCLOAK_CLIENT_ID', '')
+      vi.stubEnv('MODULES_AUTH_KEYCLOAK_ISSUER', '')
+      vi.stubEnv('MODULES_AUTH_KEYCLOAK_CLIENT_ID', '')
       const config = await loadConfig()
       expect(config.authEnabled).toBe(false)
-      expect(() => config.assertAuthConfig()).toThrowError(/GITHUB_CLIENT_ID/)
+      expect(() => config.assertAuthConfig()).toThrowError(/MODULES_AUTH_GITHUB_CLIENT_ID/)
     })
   })
 })
@@ -452,7 +452,7 @@ describe('authEnabled / assertAuthConfig()', () => {
 describe('副本模式解析', () => {
   beforeEach(() => {
     vi.stubEnv('CLUSTER_MODE', undefined)
-    vi.stubEnv('REDIS_URL', undefined)
+    vi.stubEnv('CLUSTER_REDIS_URL', undefined)
   })
 
   it('什么都不配 → 单副本（共享状态在进程内存里）', async () => {
@@ -461,14 +461,14 @@ describe('副本模式解析', () => {
     expect(config.isClustered).toBe(false)
   })
 
-  it('给了 REDIS_URL 就按多副本走，不用再写一遍 CLUSTER_MODE', async () => {
-    vi.stubEnv('REDIS_URL', 'redis://127.0.0.1:6379')
+  it('给了 CLUSTER_REDIS_URL 就按多副本走，不用再写一遍 CLUSTER_MODE', async () => {
+    vi.stubEnv('CLUSTER_REDIS_URL', 'redis://127.0.0.1:6379')
     const config = await loadConfig()
     expect(config.clusterMode).toBe('redis')
   })
 
   it('显式的 CLUSTER_MODE 压过推断 —— 配着 Redis 也能按单副本跑', async () => {
-    vi.stubEnv('REDIS_URL', 'redis://127.0.0.1:6379')
+    vi.stubEnv('CLUSTER_REDIS_URL', 'redis://127.0.0.1:6379')
     vi.stubEnv('CLUSTER_MODE', 'single')
     const config = await loadConfig()
     expect(config.clusterMode).toBe('single')
@@ -479,15 +479,15 @@ describe('副本模式解析', () => {
     await expect(loadConfig()).rejects.toThrowError(/CLUSTER_MODE/)
   })
 
-  it('说要多副本却没给 REDIS_URL → 配置自相矛盾，任何环境都拒绝启动', async () => {
+  it('说要多副本却没给 CLUSTER_REDIS_URL → 配置自相矛盾，任何环境都拒绝启动', async () => {
     vi.stubEnv('CLUSTER_MODE', 'redis')
     const config = await loadConfig()
-    expect(() => config.assertClusterConfig()).toThrowError(/REDIS_URL/)
+    expect(() => config.assertClusterConfig()).toThrowError(/CLUSTER_REDIS_URL/)
   })
 
   it('多副本配 SQLite：开发环境只警告（单进程调试是合理姿势）', async () => {
-    vi.stubEnv('REDIS_URL', 'redis://127.0.0.1:6379')
-    vi.stubEnv('DB_PROVIDER', 'sqlite')
+    vi.stubEnv('CLUSTER_REDIS_URL', 'redis://127.0.0.1:6379')
+    vi.stubEnv('DATABASE_PROVIDER', 'sqlite')
     vi.stubEnv('DATABASE_URL', undefined)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
@@ -498,8 +498,8 @@ describe('副本模式解析', () => {
 
   it('多副本配 SQLite：生产直接拒绝启动 —— 单文件库多个 Pod 共享不了', async () => {
     vi.stubEnv('NODE_ENV', 'production')
-    vi.stubEnv('REDIS_URL', 'redis://127.0.0.1:6379')
-    vi.stubEnv('DB_PROVIDER', 'sqlite')
+    vi.stubEnv('CLUSTER_REDIS_URL', 'redis://127.0.0.1:6379')
+    vi.stubEnv('DATABASE_PROVIDER', 'sqlite')
     vi.stubEnv('DATABASE_URL', undefined)
     const config = await loadConfig()
     expect(() => config.assertClusterConfig()).toThrowError(/PostgreSQL/)
@@ -513,10 +513,10 @@ describe('副本模式解析', () => {
   })
 
   it('实例 id：没配就自己生成一个，配了就用配的', async () => {
-    vi.stubEnv('INSTANCE_ID', undefined)
+    vi.stubEnv('SERVER_INSTANCE_ID', undefined)
     expect((await loadConfig()).instanceId).toMatch(/.+-[0-9a-f]{8}$/)
 
-    vi.stubEnv('INSTANCE_ID', 'pod-7')
+    vi.stubEnv('SERVER_INSTANCE_ID', 'pod-7')
     expect((await loadConfig()).instanceId).toBe('pod-7')
   })
 })
@@ -524,11 +524,11 @@ describe('副本模式解析', () => {
 describe('对象存储的两个地址', () => {
   afterEach(() => vi.unstubAllEnvs())
 
-  it('S3_INTERNAL_ENDPOINT 不配 / 空串 = 空（和 S3_ENDPOINT 一样）；配了去掉末尾的 /；公开地址不受它影响', async () => {
-    vi.stubEnv('S3_ENDPOINT', '')
-    vi.stubEnv('S3_INTERNAL_ENDPOINT', '')
+  it('MODULES_STORAGE_INTERNAL_ENDPOINT 不配 / 空串 = 空（和 MODULES_STORAGE_ENDPOINT 一样）；配了去掉末尾的 /；公开地址不受它影响', async () => {
+    vi.stubEnv('MODULES_STORAGE_ENDPOINT', '')
+    vi.stubEnv('MODULES_STORAGE_INTERNAL_ENDPOINT', '')
     expect((await loadConfig()).s3Config).toMatchObject({ endpoint: 'https://s3.fyl080801.uk', requestEndpoint: '' })
-    vi.stubEnv('S3_INTERNAL_ENDPOINT', ' http://minio.minio.svc.cluster.local:9000/ ')
+    vi.stubEnv('MODULES_STORAGE_INTERNAL_ENDPOINT', ' http://minio.minio.svc.cluster.local:9000/ ')
     expect((await loadConfig()).s3Config).toMatchObject({
       endpoint: 'https://s3.fyl080801.uk',
       requestEndpoint: 'http://minio.minio.svc.cluster.local:9000',
@@ -537,7 +537,7 @@ describe('对象存储的两个地址', () => {
 })
 
 describe('agent 租约与时长配置', () => {
-  const names = ['AGENT_LEASE_TTL_MS', 'AGENT_RUN_IDLE_TIMEOUT_MS', 'AGENT_RUN_TOTAL_TIMEOUT_MS']
+  const names = ['MODULES_AGENT_LEASE_TTL_MS', 'MODULES_AGENT_RUN_IDLE_TIMEOUT_MS', 'MODULES_AGENT_RUN_TOTAL_TIMEOUT_MS']
   beforeEach(() => names.forEach((name) => vi.stubEnv(name, undefined)))
   afterEach(() => vi.unstubAllEnvs())
 
@@ -550,9 +550,9 @@ describe('agent 租约与时长配置', () => {
   })
 
   it('配了合法数值 → 采用', async () => {
-    vi.stubEnv('AGENT_LEASE_TTL_MS', '5000')
-    vi.stubEnv('AGENT_RUN_IDLE_TIMEOUT_MS', '60000')
-    vi.stubEnv('AGENT_RUN_TOTAL_TIMEOUT_MS', '600000')
+    vi.stubEnv('MODULES_AGENT_LEASE_TTL_MS', '5000')
+    vi.stubEnv('MODULES_AGENT_RUN_IDLE_TIMEOUT_MS', '60000')
+    vi.stubEnv('MODULES_AGENT_RUN_TOTAL_TIMEOUT_MS', '600000')
     expect((await loadConfig()).agentConfig).toMatchObject({
       leaseTtlMs: 5000,
       runIdleTimeoutMs: 60_000,

@@ -48,7 +48,7 @@
 
 ### 2.4 中间件
 
-- 日志（logger）与 CORS，CORS 只放开**自己的那些域名** —— `APP_ORIGIN` 加上 `APP_ORIGINS` 白名单（多域名部署，见 [REQ-AUTH §3.2.0](02-auth-keycloak.md)）。
+- 日志（logger）与 CORS，CORS 只放开**自己的那些域名** —— `SERVER_ORIGIN` 加上 `SERVER_ORIGINS` 白名单（多域名部署，见 [REQ-AUTH §3.2.0](02-auth-keycloak.md)）。
 - `withSession` 全局解析会话；随后对 `/api/*` 上除公开路径（`/api/health`、`/api/auth`）外的全部路由加 `requireAuth`。
 - Hono app 的类型是 `Hono<{ Bindings: HttpBindings; Variables: AuthVariables }>`：前端中间件要用 `c.env` 拿 Node 原始 `req`/`res`，鉴权中间件要往 `Variables` 里放 `session`/`user`。
 
@@ -61,7 +61,7 @@
 
 ### 2.6 生产环境的前端
 
-- 用 `serveStatic` 提供**后端的静态资源目录**（`config.staticDir`，默认 `output/public`，`STATIC_DIR` 可覆盖），未知路径回退到 `index.html`（SPA 路由）。
+- 用 `serveStatic` 提供**后端的静态资源目录**（`config.staticDir`，默认 `output/public`，`SERVER_STATIC_DIR` 可覆盖），未知路径回退到 `index.html`（SPA 路由）。
 - `vite.config.ts` 是唯一的构建配置来源，`vite build` 和 middleware 模式共用它；里面**不应该**再有 `server.proxy`。
 
 ### 2.7 API 路由约定
@@ -85,10 +85,10 @@
 
 | 变量 | 默认值 |
 |---|---|
-| `PORT` | 3000 |
-| `HOST` | 127.0.0.1（容器内为 0.0.0.0） |
+| `SERVER_PORT` | 3000 |
+| `SERVER_HOST` | 127.0.0.1（容器内为 0.0.0.0） |
 | `NODE_ENV` | 非 `production` 即开发环境 |
-| `STATIC_DIR` | `output/public`（相对路径按应用根目录算） |
+| `SERVER_STATIC_DIR` | `output/public`（相对路径按应用根目录算） |
 
 > 注意：`config.ts` 在模块加载时把环境变量固化成常量。测试中要换环境必须 `vi.resetModules()` + 动态 `import()`。
 

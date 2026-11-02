@@ -13,7 +13,7 @@ import type { AuthProvider, ProviderProfile, ProviderTokens } from './types.ts'
  * 3. **换 token 失败也返回 HTTP 200**，错误在 body 里（`{error, error_description}`），
  *    只看状态码会把「code 已经用过了」当成功；
  * 4. **OAuth App 的 token 不会过期，也没有 refresh_token** —— 所以 `refresh` 是 null，
- *    到期时间直接给 `SESSION_TTL`，会话由本地 TTL 收口而不是由对方收口。
+ *    到期时间直接给 `MODULES_AUTH_SESSION_TTL`，会话由本地 TTL 收口而不是由对方收口。
  *
  * PKCE：GitHub 的 OAuth App 不支持，传了 code_challenge 也只会被忽略，
  * 这里就不传了 —— 防重放靠 state 一次性消费（`AuthRequest` 拿到就删）。
@@ -150,7 +150,7 @@ function tokensOf(accessToken: string): ProviderTokens {
     refreshToken: null,
     idToken: null,
     // OAuth App 的 token 不会过期。给会话自己的 TTL，`loadSession` 就永远不会
-    // 走到续期分支去（那条路是 Keycloak 专属的），会话到期由 SESSION_TTL 收口
+    // 走到续期分支去（那条路是 Keycloak 专属的），会话到期由 MODULES_AUTH_SESSION_TTL 收口
     expiresAt: new Date(Date.now() + authConfig.ttl * 1000),
     refreshExpiresAt: null,
     sessionState: null,

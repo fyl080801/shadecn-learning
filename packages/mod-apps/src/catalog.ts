@@ -26,7 +26,7 @@ import {
 /**
  * 应用表与执行层（docs/29 §3.3 / §3.5）。
  *
- * 应用表是一个 YAML / JSON 文件（`APPS_FILE`，默认 `<dataDir>/apps.yaml`），两段：
+ * 应用表是一个 YAML / JSON 文件（`MODULES_APPS_FILE`，默认 `<dataDir>/apps.yaml`），两段：
  *
  * ```yaml
  * models:               # 模型档案：各代模型的参数差异（null = 没有这个参数），所有应用共用，取第一条匹配的

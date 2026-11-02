@@ -25,8 +25,8 @@ const app: ServerApp = new Hono<ServerEnv>()
 // 让链路上任何深度的日志都自动带上 requestId（见 ./logger/）
 app.use('*', httpLogger())
 // 前后端同源，CORS 只放开**自己的那些域名** —— 带 cookie 的接口不能对任意站点开。
-// 一套部署可能挂在好几个域名下（APP_ORIGINS 白名单），逐个回显；名单外的一律
-// 回 APP_ORIGIN，也就是不匹配，浏览器自己会拦下
+// 一套部署可能挂在好几个域名下（SERVER_ORIGINS 白名单），逐个回显；名单外的一律
+// 回 SERVER_ORIGIN，也就是不匹配，浏览器自己会拦下
 app.use(
   '/api/*',
   cors({

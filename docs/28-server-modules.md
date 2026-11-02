@@ -75,12 +75,12 @@
 
 | 字段 | 含义 |
 |---|---|
-| `name` | 唯一名：配置里的 `modules.<name>`、`/api/features` 的键、`<NAME>_ENABLED` 开关 |
+| `name` | 唯一名：配置里的 `modules.<name>`、`/api/features` 的键 |
 | `roles` | 随哪些角色加载。不在当前角色里的模块**不加载** |
 | `dependsOn` | 硬依赖：没加载 → 启动失败并说明缺谁、为什么缺。可以按角色生效：`{ module: 'collab', roles: ['agent'] }` = 只在本进程扮演 agent 时才要 |
 | `optional` | 软依赖：`ctx.service('x')` 可能是 `undefined`，模块自己退化 |
 | `provides` | 注册给别的模块的服务名 |
-| `config` | 本模块的配置段：`schema`（文件里的键 ↔ 环境变量）+ `parse(read, runtime)`（默认值与校验，一处解析）。内核把它挂到 `modules.<name>` 下并自动加 `enabled`（§3.3） |
+| `config` | 本模块的配置段：`schema`（文件里的键，环境变量名由路径推导）+ `parse(read, runtime)`（默认值与校验，一处解析）。内核把它挂到 `modules.<name>` 下并自动加 `enabled`（§3.3） |
 | `entities` | 本模块的表。**不论开关、角色都注册**：关掉模块不能让它的表"消失"，否则 `db:push` 判成有损变更拒绝启动（[REQ-DEPLOY §3.6](12-deployment.md)） |
 | `routes` | 本模块的入口：路径、归哪个角色、`access: 'user' \| 'public'`、`kind: 'http' \| 'upgrade'`。**路由归属表、登录闸门的放行名单、前置分流都从这里推出**（§3.9） |
 | `enabled(config)` | 按自己的配置判开不开（storage 看 S3 配齐没有）；配置里的 `enabled: false` 先于它 |
@@ -151,10 +151,11 @@
 
 ### 3.3 配置管理
 
-- **一份配置文件**：应用根目录（源码运行是仓库根，产物 / 容器里是进程 cwd）的 `server.config.yaml`（也认 `.yml` / `.json`），
+- **一份配置文件**：数据目录（`DATA_DIR`，默认 `<应用根目录>/data`）里的 `server.config.yaml`（也认 `.yml` / `.json`），
   示例 `server.config.example.yaml` 进仓库，真正的文件和 `.env` 一样不进仓库、不进镜像。
+  `.env` 不跟着数据目录走，仍在应用根目录（源码运行是仓库根，产物 / 容器里是进程 cwd）。
   ```yaml
-  server:   { port, host, roles, instanceId, dataDir, staticDir, origin, origins }
+  server:   { port, host, roles, instanceId, staticDir, origin, origins }
   database: { provider, url }
   cluster:  { mode, redisUrl, redisKeyPrefix }
   log:      { level, format, dir, http, slowMs, slowQueryMs }
@@ -167,19 +168,23 @@
     notes:   { enabled }
   ```
 - **分层**：基础文件之上叠 `server.config.<NODE_ENV>.*`（`production` / `development`，没设 `NODE_ENV` 按 development）；对象逐键合并，数组和标量整个替换。
-  同一层同时有两种扩展名 = 启动失败。`SERVER_CONFIG=a.yaml,b.yaml` 显式指定文件（按顺序叠，相对路径按应用根目录；k8s 上指到挂进来的 ConfigMap，
+  同一层同时有两种扩展名 = 启动失败。`SERVER_CONFIG=a.yaml,b.yaml` 显式指定文件（按顺序叠，相对路径按数据目录；k8s 上指到挂进来的 ConfigMap，
   例如一份公共的 + 一份按角色的），给了就不再自动找；指定的文件不存在 = 启动失败；`SERVER_CONFIG=`（空串）= 不用配置文件。
-- **环境变量仍然有效，且优先于文件**：每个配置项都对应一个环境变量（就是原来的那个名字，`modules.agent.model` ↔ `AGENT_MODEL`），
-  `.env` 和真实环境变量都算；设了就以它为准，空串也算设了。所以已有的部署不改一行照常运行，
-  按角色区分的值（`SERVER_ROLES`、`INSTANCE_ID`）仍可由 Deployment 的 env 覆盖同一份文件。对应关系见示例文件每行的注释。
+- **环境变量是同一份结构的另一种写法，且优先于文件**：配置文件的结构是唯一的定义，变量名由路径按规则推导，**没有例外、没有另一张表** ——
+  路径每一级转大写、camelCase 拆词（带数字的词不拆，`k8s` → `K8S`）、用下划线连接：
+  `server.port` → `SERVER_PORT`，`cluster.redisUrl` → `CLUSTER_REDIS_URL`，`log.slowMs` → `LOG_SLOW_MS`，
+  `modules.agent.sandbox.k8s.apiUrl` → `MODULES_AGENT_SANDBOX_K8S_API_URL`，`modules.storage.maxUploadMb` → `MODULES_STORAGE_MAX_UPLOAD_MB`。
+  给 schema 加一项，文件和环境变量就同时能配。两个路径推导出同一个名字（`a.bC` 和 `a.b.c`）或撞上下面「不放进文件的」引导变量 = 启动失败。
+  `.env` 和真实环境变量都算；设了就以它为准，空串也算设了。按角色区分的值（`SERVER_ROLES`、`SERVER_INSTANCE_ID`）可由 Deployment 的 env 覆盖同一份文件。
+  **不认识的环境变量不报错**（环境里本来就有各种别的变量）：写错或没改名的变量名只是不生效，排查时对照这条规则看。
 - **每个模块声明并解析自己那段**：底座的段由底座声明（`@shadecn/server-core` 的 `config-source.ts`）、解析（`config.ts`）；能力的段是模块声明里的 `config`
   （`schema` + `parse`），内核按模块清单挂到 `modules.<模块名>` 下。文件里出现没声明的键、或类型不对（数字写成字符串、布尔写成 `no`）→ 启动失败，
-  错误一次列出全部问题，每条带完整路径和对应的环境变量。默认值与语义解析各在一处（底座的在 `config.ts`，模块的在它的 `parse`），从文件来、从环境变量来走同一条解析。
-- **开关**：每个模块的段都自动带 `enabled`（环境变量 `<模块名大写>_ENABLED`：`CANVAS_ENABLED` / `COLLAB_ENABLED` / `STORAGE_ENABLED` / `AGENT_ENABLED`），
+  错误一次列出全部问题，每条带完整路径和推导出的环境变量名。默认值与语义解析各在一处（底座的在 `config.ts`，模块的在它的 `parse`），从文件来、从环境变量来走同一条解析。
+- **开关**：每个模块的段都自动带 `enabled`（同样按规则推导：`MODULES_CANVAS_ENABLED` / `MODULES_COLLAB_ENABLED` / `MODULES_STORAGE_ENABLED` / `MODULES_AGENT_ENABLED`），
   `false` / `0` 关掉模块，启动日志和 `/api/features` 写明「配置关闭」。`true` / 不写 = 由模块自己定（storage 看 S3 配置齐不齐）——
   **开关只能关，不能把缺配置的模块硬打开**。关掉被硬依赖的模块 → 启动失败（关 canvas 永远失败；agent 开着时在 agent 角色上关 collab 失败）。
   关掉的模块**整个不加载**：它的入口不存在（不归本进程的路由仍回 404 说明归谁），web 的面板按 `/api/features` 隐藏。
-- 不放进文件的：`NODE_ENV`（它决定叠哪层文件）、`SERVER_CONFIG` 本身、按模型提供方退回的 key（`ANTHROPIC_API_KEY` 这类各家 SDK 的约定变量；文件里要写 key 就写 `modules.agent.apiKey`）、
+- 不放进文件的：`NODE_ENV`（它决定叠哪层文件）、`DATA_DIR`（它决定到哪找文件）、`SERVER_CONFIG` 本身、按模型提供方退回的 key（`ANTHROPIC_API_KEY` 这类各家 SDK 的约定变量；文件里要写 key 就写 `modules.agent.apiKey`）、
   k8s 注入的 `POD_IP`。密钥可以写进文件，但生产上应当走环境变量 / Secret（配置文件常被整份放进 ConfigMap）。
 - 启动日志第一屏打出读到了哪些配置文件。
 - `GET /api/features` 回 `{ canvas, collab, storage, agent }` 布尔表，前端据此隐藏关掉的入口（agent 面板、上传按钮）。
@@ -242,7 +247,7 @@ web 角色不跑 agent。agent 模块随 `web` 和 `agent` 两个角色加载：
 - **只读接口留在 web**：视图、会话列表 / 详情 / 删除、`GET …/runs/:runId/events`（接回走编排层的共享补发日志，本来就跨副本）、中止
   （停止指令经共享层转给持有副本，本来就跨副本）。web 进程里的 runtime 只用来读，它从不 `start()`。
 - **网关**：`/api/agent-gateway/*` 只对 agent 角色有意义，鉴权仍是 run 令牌、不认会话（[REQ-AGENT-SANDBOX](22-agent-sandbox.md)）。
-  沙箱回连的 `AGENT_GATEWAY_URL` 按副本算（k8s 驱动用 `POD_IP`），不经 ingress。
+  沙箱回连的 `MODULES_AGENT_GATEWAY_URL` 按副本算（k8s 驱动用 `POD_IP`），不经 ingress。
 - **单进程（全部角色）也走这一条**：派发交给本进程的处理函数，事件经内存实现的派发日志回来。没有「本地就直接 start」的快路径。
 - **已知限制**：视图里的 `enabled` / 模型名由 web 进程按自己的配置算 —— web 和 agent 两种 Deployment 要用同一份 agent 配置
   （同一份配置文件 / Secret），否则面板显示和实际能不能跑会对不上。配置里关掉 agent（§3.3）是一致的：每个进程都不加载它。
@@ -273,7 +278,7 @@ web 角色不跑 agent。agent 模块随 `web` 和 `agent` 两个角色加载：
 ### 3.9 构建与部署
 
 - **仍然一个产物、一个镜像**。`pnpm build` 不变；角色只是启动时的环境变量。这保住了"一个产物两种数据库"、沙箱镜像上下文等现有约束。
-- `pnpm dev:cluster` 按角色起进程：`DEV_CLUSTER_ROLES="web:3001,collab:3002,collab:3003,agent:3004"`，前面再起一个**前置代理**听 `PORT`（默认 3000），按路径分流（HTTP 和 WebSocket，同一角色轮流分），作用等同于生产的 ingress；子进程的 `APP_ORIGIN` 都是代理地址。没配它就用 `DEV_CLUSTER_PORTS`（每个端口一个全角色进程，没有代理）。
+- `pnpm dev:cluster` 按角色起进程：`DEV_CLUSTER_ROLES="web:3001,collab:3002,collab:3003,agent:3004"`，前面再起一个**前置代理**听 `SERVER_PORT`（默认 3000），按路径分流（HTTP 和 WebSocket，同一角色轮流分），作用等同于生产的 ingress；子进程的 `SERVER_ORIGIN` 都是代理地址。没配它就用 `DEV_CLUSTER_PORTS`（每个端口一个全角色进程，没有代理）。
 - **路由归属是一张表，由入口声明推出**（`@shadecn/server-core/routes-table` 按模块清单建：底座的入口 + 清单里每个模块的 `routes`，不论本进程加载与否）：
   服务端的角色闸门（不归本进程的路由 404 并说明归谁）、登录闸门的放行名单（`access: 'public'`）、`dev:cluster` 的前置代理（经 tsx 直接 import）都读它；
   生产的 `k8s/variants/roles/ingress.yaml` 由测试按 ingress-nginx 的匹配方式（`use-regex`）逐条对着声明核对 —— 模块新声明了不归 web 的入口而清单没补，测试就红。

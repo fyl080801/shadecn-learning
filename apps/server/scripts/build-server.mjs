@@ -18,9 +18,9 @@
  *                              runner 和它 import 到的 chunk（runner/）、只含 runner 那几个第三方包的 package.json、
  *                              Dockerfile（模板在 scripts/agent-sandbox/）。不进主镜像（output/.dockerignore 排掉）
  *
- * **一个产物两种库**：实体定义和库无关，驱动在运行时按 DB_PROVIDER 动态 import
+ * **一个产物两种库**：实体定义和库无关，驱动在运行时按 DATABASE_PROVIDER 动态 import
  * （packages/server-core/src/db/orm.ts），所以构建不再按库裁剪 —— `@mikro-orm/sqlite`（连带 better-sqlite3）
- * 和 `@mikro-orm/postgresql`（连带 pg）都进运行时依赖，构建时也不用关心 DB_PROVIDER。
+ * 和 `@mikro-orm/postgresql`（连带 pg）都进运行时依赖，构建时也不用关心 DATABASE_PROVIDER。
  *
  * 打包要点：
  * - 内联仓库里的相对导入和 workspace 包（`@shadecn/*`，见下面的 externalizePackages），

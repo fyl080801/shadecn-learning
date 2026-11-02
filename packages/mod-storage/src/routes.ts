@@ -21,7 +21,7 @@ export interface AssetRoutesPorts {
   request: FlowRequestPort
   /** 上传记录（`FlowAsset` 表，实现：`./assets.ts`） */
   assets: AssetRecordStore
-  /** 整个文件的上限（`S3_MAX_UPLOAD_MB`）和素材键前缀（`S3_KEY_PREFIX`） */
+  /** 整个文件的上限（`MODULES_STORAGE_MAX_UPLOAD_MB`）和素材键前缀（`MODULES_STORAGE_KEY_PREFIX`） */
   limits: { maxUploadBytes: number; keyPrefix: string }
 }
 

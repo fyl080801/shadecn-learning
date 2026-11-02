@@ -10,7 +10,7 @@ export type AuthVariables = {
 }
 
 /**
- * Secure 按**这次请求的域名**算，不是按 `APP_ORIGIN` 一刀切。
+ * Secure 按**这次请求的域名**算，不是按 `SERVER_ORIGIN` 一刀切。
  *
  * 白名单里可以同时有 https 和 http 的域名（外网 https、内网直连 http）。
  * 一刀切的两种错法都很难查：https 那边漏了 Secure，是白丢一层保护；

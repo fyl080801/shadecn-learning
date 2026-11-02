@@ -29,7 +29,7 @@ export class EngineUnavailableError extends Error {
   readonly socketPath: string
   constructor(socketPath: string, cause: unknown) {
     const code = (cause as NodeJS.ErrnoException | null)?.code ?? (cause instanceof Error ? cause.message : String(cause))
-    super(`连不上容器引擎（${socketPath}：${code}）；确认 Docker / Podman 在运行，或用 AGENT_SANDBOX_OCI_SOCKET 指定 socket`, { cause })
+    super(`连不上容器引擎（${socketPath}：${code}）；确认 Docker / Podman 在运行，或用 MODULES_AGENT_SANDBOX_OCI_SOCKET 指定 socket`, { cause })
     this.name = 'EngineUnavailableError'
     this.socketPath = socketPath
   }
@@ -359,13 +359,13 @@ export interface EngineSocketEnv {
  *    即 `podman machine inspect` 的 `ConnectionInfo.PodmanSocket.Path`）；
  * 5. Docker Desktop（macOS）：`~/.docker/run/docker.sock`。
  *
- * **不调 podman / docker CLI**：服务端运行时不依赖它们在不在 PATH 上。找不到就让人配 `AGENT_SANDBOX_OCI_SOCKET`。
+ * **不调 podman / docker CLI**：服务端运行时不依赖它们在不在 PATH 上。找不到就让人配 `MODULES_AGENT_SANDBOX_OCI_SOCKET`。
  */
 export function engineSocketCandidates(env: EngineSocketEnv): { ok: true; candidates: string[] } | { ok: false; reason: string } {
   const dockerHost = env.DOCKER_HOST?.trim()
   if (dockerHost) {
     if (!dockerHost.startsWith('unix://')) {
-      return { ok: false, reason: `DOCKER_HOST=${dockerHost} 不是 unix:// socket；oci 沙箱驱动只连本机 socket，请配 AGENT_SANDBOX_OCI_SOCKET` }
+      return { ok: false, reason: `DOCKER_HOST=${dockerHost} 不是 unix:// socket；oci 沙箱驱动只连本机 socket，请配 MODULES_AGENT_SANDBOX_OCI_SOCKET` }
     }
     return { ok: true, candidates: [dockerHost.slice('unix://'.length)] }
   }
@@ -383,7 +383,7 @@ export function findEngineSocket(configured: string, env: EngineSocketEnv): { ok
   if (configured) {
     const explicit = configured.startsWith('unix://') ? configured.slice('unix://'.length) : configured
     if (isSocket(explicit)) return { ok: true, path: explicit }
-    return { ok: false, reason: `AGENT_SANDBOX_OCI_SOCKET=${configured} 不是一个可用的 unix socket` }
+    return { ok: false, reason: `MODULES_AGENT_SANDBOX_OCI_SOCKET=${configured} 不是一个可用的 unix socket` }
   }
   const listed = engineSocketCandidates(env)
   if (!listed.ok) return listed
@@ -391,7 +391,7 @@ export function findEngineSocket(configured: string, env: EngineSocketEnv): { ok
   if (found) return { ok: true, path: found }
   return {
     ok: false,
-    reason: `找不到容器引擎的 socket（找过：${listed.candidates.join('、')}）；请用 AGENT_SANDBOX_OCI_SOCKET 指定（podman machine 见 \`podman machine inspect\` 的 ConnectionInfo.PodmanSocket.Path）`,
+    reason: `找不到容器引擎的 socket（找过：${listed.candidates.join('、')}）；请用 MODULES_AGENT_SANDBOX_OCI_SOCKET 指定（podman machine 见 \`podman machine inspect\` 的 ConnectionInfo.PodmanSocket.Path）`,
   }
 }
 

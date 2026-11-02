@@ -6,7 +6,7 @@
 
 画布上图片 / 视频节点的资源存在 S3（集群内 MinIO，经 `s3.fyl080801.uk` 对外）。现在的做法是：
 
-- 上传经后端转存，节点的 `data.src` 里记的是 **S3 原始地址**（`<S3_ENDPOINT>/<bucket>/<key>`），浏览器直接读；
+- 上传经后端转存，节点的 `data.src` 里记的是 **S3 原始地址**（`<MODULES_STORAGE_ENDPOINT>/<bucket>/<key>`），浏览器直接读；
 - 所以桶必须**对匿名开放读**（`s3:GetObject`）。
 
 问题：
@@ -31,7 +31,7 @@
 ### 3.2 读取流程
 
 1. `GET /api/assets/<key>`：服务端解析对象键 → 查这份资源归属的项目 → 当前用户是该项目成员才继续，否则按现有约定回 **404**（非成员一律 404，不暴露资源是否存在）。
-2. 通过后服务端用 SigV4 **预签名一个 GET URL**（指向公开的 `S3_ENDPOINT`，浏览器要能访问；有效期建议 5 分钟），回 **302** 跳过去。
+2. 通过后服务端用 SigV4 **预签名一个 GET URL**（指向公开的 `MODULES_STORAGE_ENDPOINT`，浏览器要能访问；有效期建议 5 分钟），回 **302** 跳过去。
 3. 浏览器直接从 MinIO 拿字节；视频的 `Range` 请求由 MinIO 原生处理。
 4. 302 响应 `Cache-Control: private, max-age` 不超过签名有效期（建议直接 `no-store` 或略短于有效期），避免跳到已过期的签名。
 
@@ -46,7 +46,7 @@
 
 ### 3.4 旧数据兼容
 
-- 已存的节点里还是 S3 原始地址。前端渲染时把以 `<S3_ENDPOINT>/<bucket>/` 开头的地址**映射成** `/api/assets/<key>`（反解逻辑已在 `@shadecn/mod-storage/keys`，可挪到 `packages/shared` 复用）；或者一次性迁移脚本改写所有画布的 Y.Doc。二选一，实施时定。
+- 已存的节点里还是 S3 原始地址。前端渲染时把以 `<MODULES_STORAGE_ENDPOINT>/<bucket>/` 开头的地址**映射成** `/api/assets/<key>`（反解逻辑已在 `@shadecn/mod-storage/keys`，可挪到 `packages/shared` 复用）；或者一次性迁移脚本改写所有画布的 Y.Doc。二选一，实施时定。
 - 线上 2026-10-30 已换成空库，当下没有存量；从 Prisma 旧库（`app.db.prisma-backup-20261030`）导入数据时要一并处理。
 
 ### 3.4.0 下载改名

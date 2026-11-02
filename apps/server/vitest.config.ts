@@ -42,47 +42,47 @@ export default defineConfig({
     env: {
       NODE_ENV: 'test',
       /**
-       * 配置文件（docs/28 §3.3）：空串 = 不用。仓库根的 `server.config.*` 是开发者自己的（和 .env 一样不进仓库），
+       * 配置文件（docs/28 §3.3）：空串 = 不用。数据目录里的 `server.config.*` 是开发者自己的（和 .env 一样不进仓库），
        * 漏进来会改变整轮测试的行为；要测配置文件的用例自己 stubEnv 指过去。
        */
       SERVER_CONFIG: '',
       DATABASE_URL: TEST_DATABASE_URL,
-      DB_PROVIDER: TEST_DB_PROVIDER,
-      APP_ORIGIN: 'http://127.0.0.1:3000',
-      PORT: '3000',
-      HOST: '127.0.0.1',
-      SESSION_SECRET: 'test-session-secret',
-      SESSION_TTL: '3600',
-      KEYCLOAK_ISSUER: 'https://keycloak.test/realms/test',
-      KEYCLOAK_CLIENT_ID: 'test-client',
-      KEYCLOAK_CLIENT_SECRET: '',
-      KEYCLOAK_SCOPE: 'openid profile email',
+      DATABASE_PROVIDER: TEST_DB_PROVIDER,
+      SERVER_ORIGIN: 'http://127.0.0.1:3000',
+      SERVER_PORT: '3000',
+      SERVER_HOST: '127.0.0.1',
+      MODULES_AUTH_SESSION_SECRET: 'test-session-secret',
+      MODULES_AUTH_SESSION_TTL: '3600',
+      MODULES_AUTH_KEYCLOAK_ISSUER: 'https://keycloak.test/realms/test',
+      MODULES_AUTH_KEYCLOAK_CLIENT_ID: 'test-client',
+      MODULES_AUTH_KEYCLOAK_CLIENT_SECRET: '',
+      MODULES_AUTH_KEYCLOAK_SCOPE: 'openid profile email',
       /**
-       * 测试默认按单副本跑（共享状态走进程内存），和不配 REDIS_URL 的默认形态一致。
-       * REDIS_URL 显式清空，免得开发者自己 .env 里那行漏进来把整轮测试指向真 Redis。
+       * 测试默认按单副本跑（共享状态走进程内存），和不配 CLUSTER_REDIS_URL 的默认形态一致。
+       * CLUSTER_REDIS_URL 显式清空，免得开发者自己 .env 里那行漏进来把整轮测试指向真 Redis。
        *
        * 抽象层的契约测试要在真 Redis 上再跑一遍时，设 TEST_REDIS_URL
        * （和 TEST_DATABASE_URL 是同一个路数）—— 没设就只跑内存实现。
        */
       CLUSTER_MODE: 'single',
-      REDIS_URL: '',
+      CLUSTER_REDIS_URL: '',
       TEST_REDIS_URL: process.env.TEST_REDIS_URL ?? '',
       /**
        * 画布 Agent 默认按「没配模型」跑：key 一律清空，连按提供方退回的 `ANTHROPIC_API_KEY` /
        * `ANTHROPIC_OAUTH_TOKEN` 也清 —— 开发者 shell 里要是 export 过，漏进来就会让「未启用 → 503」
        * 这类断言变成碰运气。要跑 agent 的用例用 `replaceAgentRuntime()` 换一个假模型驱动的。
        */
-      AGENT_PROVIDER: 'anthropic',
-      AGENT_MODEL: 'claude-sonnet-4-6',
-      AGENT_BASE_URL: '',
-      AGENT_API: '',
-      AGENT_API_KEY: '',
-      AGENT_SANDBOX: '',
+      MODULES_AGENT_PROVIDER: 'anthropic',
+      MODULES_AGENT_MODEL: 'claude-sonnet-4-6',
+      MODULES_AGENT_BASE_URL: '',
+      MODULES_AGENT_API: '',
+      MODULES_AGENT_API_KEY: '',
+      MODULES_AGENT_SANDBOX_DRIVER: '',
       /**
        * 模型表文件（docs/26 §3.4）默认在 `<dataDir>/agent-models.json`，测试的 dataDir 是仓库的 `data/` ——
        * 开发者自己配的那份不能漏进来（坏了整轮测试起不来，多了 key 改变定义校验）。指到每次清空的 data/test 下，即「没有文件」
        */
-      AGENT_MODELS_FILE: 'data/test/agent-models.json',
+      MODULES_AGENT_MODELS_FILE: 'data/test/agent-models.json',
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_OAUTH_TOKEN: '',
       /**
@@ -90,18 +90,18 @@ export default defineConfig({
        * 地址是测试域名、密钥是假的，开发者 .env 里的真 AK/SK 漏不进来；真发出去的请求会被 `setup.ts` 的 fetch 拦截。
        * 要测上传的用例用 `replaceAssetStorage()` 换一个假的存储，测「存储不可用」的换成 null。
        */
-      S3_ENDPOINT: 'https://s3.test',
-      S3_INTERNAL_ENDPOINT: '',
-      S3_BUCKET: 'test-bucket',
-      S3_ACCESS_KEY_ID: 'test-ak',
-      S3_SECRET_ACCESS_KEY: 'test-sk',
-      S3_KEY_PREFIX: 'canvas',
+      MODULES_STORAGE_ENDPOINT: 'https://s3.test',
+      MODULES_STORAGE_INTERNAL_ENDPOINT: '',
+      MODULES_STORAGE_BUCKET: 'test-bucket',
+      MODULES_STORAGE_ACCESS_KEY_ID: 'test-ak',
+      MODULES_STORAGE_SECRET_ACCESS_KEY: 'test-sk',
+      MODULES_STORAGE_KEY_PREFIX: 'canvas',
       /**
        * 应用表（docs/29 §3.3）默认在 `<dataDir>/apps.yaml`：开发者自己那份不能漏进来。指到每次清空的 data/test 下，即「没有文件」→ 模块不加载；
        * 要测应用接口的用例（`test/routes/apps.test.ts`）stubEnv 指到 `test/fixtures/apps.yaml` 再重建 app
        */
-      APPS_FILE: 'data/test/apps.yaml',
-      APPS_TIMEOUT_MS: '',
+      MODULES_APPS_FILE: 'data/test/apps.yaml',
+      MODULES_APPS_TIMEOUT_MS: '',
     },
   },
 })

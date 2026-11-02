@@ -42,7 +42,7 @@ const record = (runId: string, extra: Partial<RunRecord> = {}): RunRecord => ({
 })
 
 describe('共享层上的运行登记', () => {
-  it('接线：宿主给编排层的就是这一份，TTL 取 AGENT_LEASE_TTL_MS，副本标识取 INSTANCE_ID', () => {
+  it('接线：宿主给编排层的就是这一份，TTL 取 MODULES_AGENT_LEASE_TTL_MS，副本标识取 SERVER_INSTANCE_ID', () => {
     expect(agentHostOptions.runRegistry).toBe(agentRunRegistry)
     expect(agentRunRegistry.ttlMs).toBe(agentPorts().config.leaseTtlMs)
     expect(agentRunRegistry.instanceId).toBe(instanceId)

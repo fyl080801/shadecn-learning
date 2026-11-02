@@ -106,7 +106,7 @@ export interface FlowAccess {
 
 export interface AgentPorts {
   config: AgentHostConfig
-  /** 这个进程的身份（`INSTANCE_ID`）：任务登记、节点占用的持有者，停止指令的频道 */
+  /** 这个进程的身份（`SERVER_INSTANCE_ID`）：任务登记、节点占用的持有者，停止指令的频道 */
   instanceId: string
   /** 服务端监听的地址：k8s 自检据此提醒「只听回环，沙箱 Pod 连不上」 */
   host: string
@@ -118,12 +118,12 @@ export interface AgentPorts {
    */
   executesRuns: boolean
   paths: AgentPaths
-  /** 没配 `AGENT_API_KEY` 时按提供方退回的 key（`./config.ts` 的 `agentProviderApiKey`）；`env` 给了就从它读（测试） */
+  /** 没配 `MODULES_AGENT_API_KEY` 时按提供方退回的 key（`./config.ts` 的 `agentProviderApiKey`）；`env` 给了就从它读（测试） */
   providerApiKey(provider: string, env?: Readonly<Record<string, string | undefined>>): string
   storage: {
     /** 本进程加载了对象存储模块：只有开了才把看图（`view_node_media`）接给编排层 */
     enabled: boolean
-    /** 画布素材的键前缀（`S3_KEY_PREFIX`）：看图时把 URL 反解回本服务的键 */
+    /** 画布素材的键前缀（`MODULES_STORAGE_KEY_PREFIX`）：看图时把 URL 反解回本服务的键 */
     keyPrefix: string
   }
   /** runner 怎么起：产物里是 `agent-runner.js`（和 index.js 同目录），源码里经 tsx 跑 `@shadecn/agent/runner/main` */

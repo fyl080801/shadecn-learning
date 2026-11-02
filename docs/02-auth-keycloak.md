@@ -111,11 +111,11 @@
 **每个提供方只有一个回调路径**（`/api/auth/callback`），靠 `AuthRequest.provider` 分发。
 这样多接一个提供方不需要去 Keycloak 那边再注册一个回调地址。
 
-#### 3.2.0 回调的**域名**跟着访问的域名走（`APP_ORIGINS` 白名单）
+#### 3.2.0 回调的**域名**跟着访问的域名走（`SERVER_ORIGINS` 白名单）
 
 回调路径只有一条，但它的**域名**不是常量。同一套部署经常挂在好几个域名下
 （外网域名、内网域名、老域名、裸 IP），而 `redirect_uri` 是个绝对地址 ——
-写死一个 `APP_ORIGIN` 的后果是：从 B 域名点「登录」，人在 A 域名上完成回调，
+写死一个 `SERVER_ORIGIN` 的后果是：从 B 域名点「登录」，人在 A 域名上完成回调，
 会话 cookie 也就种在了 A 上，回到 B 依旧是未登录。真要命的是它**看起来像成功了**：
 整条授权流程一路 302 都没报错。
 
@@ -125,18 +125,18 @@
 
 但**不能无脑跟着 `Host` 走**。反代后面 `Host` / `X-Forwarded-Host` 都是外部可控的
 输入，跟着它拼 `redirect_uri` 就是把授权码送去攻击者的域名（经典的 host header 注入）。
-收口的是 `APP_ORIGINS` 白名单（`packages/server-core/src/config.ts`）：
+收口的是 `SERVER_ORIGINS` 白名单（`packages/server-core/src/config.ts`）：
 
 - 取值顺序 `X-Forwarded-Proto` + `X-Forwarded-Host` → `Host` → `Origin`，
   取第一个**在名单里**的（整页导航根本不带 `Origin`，所以它排最后；
   反代把 `Host` 改成内网名字时，又只剩它认得对外域名）；
-- 一个都不在名单里 → 回落 `APP_ORIGIN`，也就是**和没有这份名单时行为一致**；
-- `APP_ORIGIN` 永远是名单成员（它是回落目标，自己不在名单里说不通）；
+- 一个都不在名单里 → 回落 `SERVER_ORIGIN`，也就是**和没有这份名单时行为一致**；
+- `SERVER_ORIGIN` 永远是名单成员（它是回落目标，自己不在名单里说不通）；
 - 比较前先归一化（小写、去尾斜杠、抹掉默认端口），只认 http/https；
 - **不支持通配符**：每个域名的 `/api/auth/callback` 都要在 Keycloak client 的
   *Valid redirect URIs* 里注册，通配符只会造出一批注册不了的地址。
   GitHub 的 OAuth App 只能填一个回调，多域名要么分开建 App，要么把 GitHub 入口
-  固定在 `APP_ORIGIN` 上。
+  固定在 `SERVER_ORIGIN` 上。
 
 两个细节是必须的，少一个就是 bug：
 
@@ -150,7 +150,7 @@
 
 #### 3.2.1 Keycloak（OIDC）
 
-- **端点发现**：所有端点从 `$KEYCLOAK_ISSUER/.well-known/openid-configuration` 拉取，**禁止硬编码**。发现结果缓存 10 分钟。
+- **端点发现**：所有端点从 `$MODULES_AUTH_KEYCLOAK_ISSUER/.well-known/openid-configuration` 拉取，**禁止硬编码**。发现结果缓存 10 分钟。
 - **PKCE**：`code_challenge_method=S256`，`code_verifier` 不出服务端。confidential client 也要带。
 - **id_token 校验**：用 JWKS 验签（支持 RS/PS/ES 系列），kid 未命中时允许重取一次 JWKS；随后校验 `iss` / `aud` / `azp` / `exp` / `iat` / `nonce`。
 - **角色的唯一来源**（见 §3.5）。access_token 快过期时用 refresh_token 续期。
@@ -167,7 +167,7 @@ GitHub 不是 OIDC，四个差别决定了它必须是独立实现，不能套�
 3. **换 token 失败也返回 HTTP 200**，错误在 body 里（`{error, error_description}`）——
    只看状态码会把「code 已经用过了」当成功；
 4. **OAuth App 的 token 不会过期，也没有 refresh_token** —— 所以它没有续期这回事，
-   建会话时 `expiresAt` 直接给 `SESSION_TTL`，会话由本地 TTL 收口而不是由对方收口。
+   建会话时 `expiresAt` 直接给 `MODULES_AUTH_SESSION_TTL`，会话由本地 TTL 收口而不是由对方收口。
    `Session.provider` 就是为此存在：续期得先知道该问谁。
 5. **PKCE 不支持**，传了 `code_challenge` 也会被忽略；防重放靠 state 一次性消费。
 
@@ -185,13 +185,13 @@ GitHub 上没有本应用的角色概念，用它登录拿到的 roles 恒为空
 
 ### 3.3 会话
 
-- Cookie `sid` 中存放 32 字节随机 token；数据库主键存的是 `HMAC-SHA256(SESSION_SECRET, token)`。**拖库拿不到可用 Cookie。**
+- Cookie `sid` 中存放 32 字节随机 token；数据库主键存的是 `HMAC-SHA256(MODULES_AUTH_SESSION_SECRET, token)`。**拖库拿不到可用 Cookie。**
 - Cookie 属性：`httpOnly` + `SameSite=Lax`（生产环境需 `Secure`）。
 - 读取会话时，若 access_token 距过期不足 30 秒则自动刷新；同一会话的并发刷新通过进程内 promise map 去重，只发一次刷新请求。
 - **刷新失败要分两种，混为一谈会把人无故踢下线：**
   - Keycloak 用 4xx 明确回绝（`invalid_grant` —— 用户登出 / SSO 会话超时 / 被踢）：凭证真没了，销毁会话并清 Cookie。
   - 连不上、超时、对方 5xx，或本地写库失败：什么都没证明，**保留会话**，交给下一个请求重试；同时该会话进入 15 秒冷却，免得 Keycloak 挂着时每个请求都去撞一次超时。出站请求一律带 8 秒超时（node 的 fetch 默认不超时）。
-- 会话什么时候算过期，由 refresh token 的有效期（Keycloak 的 SSO Session Idle）决定，本地就能判——不必问 Keycloak。`SESSION_TTL`（默认 7 天）只是不让它无限续下去的上限。
+- 会话什么时候算过期，由 refresh token 的有效期（Keycloak 的 SSO Session Idle）决定，本地就能判——不必问 Keycloak。`MODULES_AUTH_SESSION_TTL`（默认 7 天）只是不让它无限续下去的上限。
 - 服务端**每小时**清扫一次过期会话、未被消费的 AuthRequest、以及没人确认的 PendingLink。
 
 ### 3.4 授权请求防重放
@@ -283,7 +283,7 @@ GitHub 上没有本应用的角色概念，用它登录拿到的 roles 恒为空
 - **开发环境**：打印一行告警，全站放行（方便只跑前端 demo），`/api/auth/me` 返回 `enabled: false`；
 - **生产环境**（`NODE_ENV=production`）：**拒绝启动**。
 
-「配了一半」（只填了 `KEYCLOAK_ISSUER` 没填 client id、或只填了 `GITHUB_CLIENT_ID` 没填 secret）
+「配了一半」（只填了 `MODULES_AUTH_KEYCLOAK_ISSUER` 没填 client id、或只填了 `MODULES_AUTH_GITHUB_CLIENT_ID` 没填 secret）
 按「想配但配漏了」处理，明确报出缺哪个；两个都空才算「这次不用它」。
 
 ### 3.9 多登录方式与账号关联
@@ -390,11 +390,11 @@ authorize 端点只接受一个 `login=` 做建议；真要换号得先去 githu
 
 | 项 | 值 |
 |---|---|
-| Client ID | `shadcn-learning`（与 `KEYCLOAK_CLIENT_ID` 一致） |
-| Client authentication | 建议 **On**（confidential，secret 填进 `KEYCLOAK_CLIENT_SECRET`）；Off 也支持，走纯 PKCE |
+| Client ID | `shadcn-learning`（与 `MODULES_AUTH_KEYCLOAK_CLIENT_ID` 一致） |
+| Client authentication | 建议 **On**（confidential，secret 填进 `MODULES_AUTH_KEYCLOAK_CLIENT_SECRET`）；Off 也支持，走纯 PKCE |
 | Standard flow | 开 |
 | Direct access grants / Service accounts | 关 |
-| Valid redirect URIs | `http://127.0.0.1:3000/api/auth/callback`，线上再加 `https://<域名>/api/auth/callback`。**`APP_ORIGINS` 里的每一个域名都要单独加一条**（§3.2.0） |
+| Valid redirect URIs | `http://127.0.0.1:3000/api/auth/callback`，线上再加 `https://<域名>/api/auth/callback`。**`SERVER_ORIGINS` 里的每一个域名都要单独加一条**（§3.2.0） |
 | Valid post logout redirect URIs | **不用配**：登出只退本站，不走 RP-initiated logout（§3.2.3） |
 | Web origins | 同源部署填 `+` |
 | PKCE | Advanced → Proof Key for Code Exchange 设为 `S256`（留空也能跑） |
@@ -409,8 +409,8 @@ Keycloak 自己的 SSO Cookie 也还是 first-party，往往连密码都不用�
 
 | 项 | 值 |
 |---|---|
-| Homepage URL | `$APP_ORIGIN` |
-| Authorization callback URL | `$APP_ORIGIN/api/auth/callback` —— **和 Keycloak 共用同一个回调**，不是另一个地址 |
+| Homepage URL | `$SERVER_ORIGIN` |
+| Authorization callback URL | `$SERVER_ORIGIN/api/auth/callback` —— **和 Keycloak 共用同一个回调**，不是另一个地址 |
 | Client secret | 必须生成。GitHub 的 OAuth App 一定是 confidential client，没有 secret 换不了 token |
 
 GitHub App（不是 OAuth App）也能跑，但它发的 token 会过期、带 refresh_token，
@@ -422,17 +422,17 @@ GitHub App（不是 OAuth App）也能跑，但它发的 token 会过期、带 r
 
 | 变量 | 说明 |
 |---|---|
-| `KEYCLOAK_ISSUER` | `{keycloak}/realms/{realm}`，端点靠 discovery 自动发现 |
-| `KEYCLOAK_CLIENT_ID` | client id |
-| `KEYCLOAK_CLIENT_SECRET` | confidential client 的密钥；public client 留空 |
-| `KEYCLOAK_SCOPE` | 默认 `openid profile email` |
-| `GITHUB_CLIENT_ID` | OAuth App 的 client id |
-| `GITHUB_CLIENT_SECRET` | OAuth App 的 client secret，**必填**（没有它换不了 token） |
-| `GITHUB_SCOPE` | 默认 `read:user user:email`，只读身份 |
-| `APP_ORIGIN` | 应用对外地址，`redirect_uri` 由它拼出，必须与 Keycloak 配置一致；也是白名单认不出访问域名时的回落值 |
-| `APP_ORIGINS` | 多域名部署时的白名单（逗号/空白分隔），`APP_ORIGIN` 自动在内。见 §3.2.0 |
-| `SESSION_SECRET` | 会话 token 的 HMAC 密钥，生产必须是随机串（`openssl rand -hex 32`） |
-| `SESSION_TTL` | 会话最长存活秒数，默认 604800（7 天） |
+| `MODULES_AUTH_KEYCLOAK_ISSUER` | `{keycloak}/realms/{realm}`，端点靠 discovery 自动发现 |
+| `MODULES_AUTH_KEYCLOAK_CLIENT_ID` | client id |
+| `MODULES_AUTH_KEYCLOAK_CLIENT_SECRET` | confidential client 的密钥；public client 留空 |
+| `MODULES_AUTH_KEYCLOAK_SCOPE` | 默认 `openid profile email` |
+| `MODULES_AUTH_GITHUB_CLIENT_ID` | OAuth App 的 client id |
+| `MODULES_AUTH_GITHUB_CLIENT_SECRET` | OAuth App 的 client secret，**必填**（没有它换不了 token） |
+| `MODULES_AUTH_GITHUB_SCOPE` | 默认 `read:user user:email`，只读身份 |
+| `SERVER_ORIGIN` | 应用对外地址，`redirect_uri` 由它拼出，必须与 Keycloak 配置一致；也是白名单认不出访问域名时的回落值 |
+| `SERVER_ORIGINS` | 多域名部署时的白名单（逗号/空白分隔），`SERVER_ORIGIN` 自动在内。见 §3.2.0 |
+| `MODULES_AUTH_SESSION_SECRET` | 会话 token 的 HMAC 密钥，生产必须是随机串（`openssl rand -hex 32`） |
+| `MODULES_AUTH_SESSION_TTL` | 会话最长存活秒数，默认 604800（7 天） |
 
 数据库相关变量见 [REQ-DATA](05-data-persistence.md)。
 

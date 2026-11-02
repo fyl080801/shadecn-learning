@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ALL_ROLES, buildRouteTable } from '@shadecn/server-kit/kernel'
+import { ALL_ROLES, buildRouteTable, moduleEnvName } from '@shadecn/server-kit/kernel'
 import { AUTH_SERVICE, type RuntimeInfo } from '@shadecn/server-kit/platform'
 import { LOGIN_DONE_PATH, LOGIN_PATH } from '@shadecn/shared/auth'
 import { authConfigSection } from '../src/config.ts'
 import auth from '../src/module.ts'
 
 const parse = (env: Record<string, string>, isDev: boolean) =>
-  authConfigSection.parse((name) => env[name], { isDev } as RuntimeInfo)
+  authConfigSection.parse((path) => env[moduleEnvName('auth', path)], { isDev } as RuntimeInfo)
 
-const KEYCLOAK = { KEYCLOAK_ISSUER: 'https://kc.test/realms/demo/', KEYCLOAK_CLIENT_ID: 'c', SESSION_SECRET: 's' }
+const KEYCLOAK = { MODULES_AUTH_KEYCLOAK_ISSUER: 'https://kc.test/realms/demo/', MODULES_AUTH_KEYCLOAK_CLIENT_ID: 'c', MODULES_AUTH_SESSION_SECRET: 's' }
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -20,13 +20,13 @@ describe('登录模块的配置段', () => {
   })
 
   it('GitHub 要 id 和 secret 都有才算启用（OAuth App 没 secret 换不了 token）', () => {
-    expect(parse({ GITHUB_CLIENT_ID: 'g', GITHUB_CLIENT_SECRET: 'x', SESSION_SECRET: 's' }, false).githubEnabled).toBe(true)
-    expect(() => parse({ GITHUB_CLIENT_ID: 'g', SESSION_SECRET: 's' }, false)).toThrow(/GITHUB_CLIENT_SECRET/)
+    expect(parse({ MODULES_AUTH_GITHUB_CLIENT_ID: 'g', MODULES_AUTH_GITHUB_CLIENT_SECRET: 'x', MODULES_AUTH_SESSION_SECRET: 's' }, false).githubEnabled).toBe(true)
+    expect(() => parse({ MODULES_AUTH_GITHUB_CLIENT_ID: 'g', MODULES_AUTH_SESSION_SECRET: 's' }, false)).toThrow(/MODULES_AUTH_GITHUB_CLIENT_SECRET/)
   })
 
-  it('生产：一个提供方都没有、或缺 SESSION_SECRET → 解析就抛（进程不监听端口）', () => {
-    expect(() => parse({}, false)).toThrow(/KEYCLOAK_ISSUER \+ KEYCLOAK_CLIENT_ID/)
-    expect(() => parse({ KEYCLOAK_ISSUER: 'https://kc.test', KEYCLOAK_CLIENT_ID: 'c' }, false)).toThrow(/SESSION_SECRET/)
+  it('生产：一个提供方都没有、或缺 MODULES_AUTH_SESSION_SECRET → 解析就抛（进程不监听端口）', () => {
+    expect(() => parse({}, false)).toThrow(/MODULES_AUTH_KEYCLOAK_ISSUER \+ MODULES_AUTH_KEYCLOAK_CLIENT_ID/)
+    expect(() => parse({ MODULES_AUTH_KEYCLOAK_ISSUER: 'https://kc.test', MODULES_AUTH_KEYCLOAK_CLIENT_ID: 'c' }, false)).toThrow(/MODULES_AUTH_SESSION_SECRET/)
   })
 
   it('开发环境：没配登录只警告，登录未启用', () => {

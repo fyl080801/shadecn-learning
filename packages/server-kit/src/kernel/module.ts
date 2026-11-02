@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server } from 'node:http'
 import type { Duplex } from 'node:stream'
 import type { Hono, MiddlewareHandler } from 'hono'
-import type { ConfigSchema } from '../config.ts'
+import type { ConfigPath, ConfigReader, ConfigSchema } from '../config.ts'
 import type { Platform, RuntimeInfo } from '../platform.ts'
 import type { RouteDeclaration } from './routes.ts'
 import type { ServerRole } from './roles.ts'
@@ -22,7 +22,7 @@ import type { ServerRole } from './roles.ts'
  * **不 import 对方的内部文件**；**永远不 import `apps/server`**，也不读 `process.env`（`.claude/rules/server-modules.md`）。
  */
 export interface ServerModule<Config = unknown> {
-  /** 唯一名：配置文件里的 `modules.<name>`、`/api/features` 里的键、`<NAME>_ENABLED` 开关 */
+  /** 唯一名：配置文件里的 `modules.<name>`、`/api/features` 里的键 */
   readonly name: string
   /** 随哪些角色加载：当前进程的角色集和它有交集才加载 */
   readonly roles: readonly ServerRole[]
@@ -55,13 +55,24 @@ export type ModuleDependency = string | { readonly module: string; readonly role
 /**
  * 模块的配置段。
  *
- * `schema` 声明文件里的键和对应的环境变量（`setting('AGENT_MODEL', 'string')`）；`parse` 拿到的 `read(envName)` 是合并好的值
+ * `schema` 声明文件里的键（`model: setting('string')`），环境变量名由路径推导（`modules.agent.model` → `MODULES_AGENT_MODEL`，`envNameOf`）；
+ * `parse` 拿到的 `read(路径)` 按**相对本段的路径**（`read('sandbox.k8s.namespace')`）取合并好的值
  * （环境变量优先，其次配置文件，取出来是和环境变量同形的字符串，都没有 = undefined），默认值和校验在 `parse` 里 —— 一处解析。
  * `parse` 抛错 = 配置错，进程不监听端口。**关掉的模块也会解析**（别的进程形态要读它的配置，比如 web 上 agent 的只读接口）。
+ *
+ * 用 {@link defineModuleConfig} 写，`read` 的路径才按 schema 收窄（拼错编译不过）。
  */
-export interface ModuleConfig<Config> {
+export interface ModuleConfig<Config, Path extends string = string> {
   readonly schema: ConfigSchema
-  parse(read: (envName: string) => string | undefined, runtime: RuntimeInfo): Config
+  parse(read: ConfigReader<Path>, runtime: RuntimeInfo): Config
+}
+
+/** 只做类型推导：从 `schema` 推出 `read` 接受哪些路径 */
+export function defineModuleConfig<Schema extends ConfigSchema, Config>(section: {
+  readonly schema: Schema
+  parse(read: ConfigReader<ConfigPath<Schema>>, runtime: RuntimeInfo): Config
+}): ModuleConfig<Config, ConfigPath<Schema>> {
+  return section
 }
 
 /** HTTP 注册口：只能挂本模块声明过的入口；声明的角色不在本进程时，挂载是空操作（返回 false） */

@@ -98,7 +98,7 @@ RUN set -e; \
     fi; \
     echo "base image arch ok: $have ($(uname -m))"
 WORKDIR /app
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data
+ENV NODE_ENV=production SERVER_HOST=0.0.0.0 SERVER_PORT=3000 DATA_DIR=/app/data
 COPY --from=deps /app/node_modules ./node_modules
 # 只拷产物，源码和构建期依赖都不进运行镜像
 COPY --from=build /app/output ./

@@ -11,7 +11,7 @@ export interface FlowAssetRecord {
 }
 
 export interface StorageService {
-  /** 对象键的根目录（`S3_KEY_PREFIX`） */
+  /** 对象键的根目录（`MODULES_STORAGE_KEY_PREFIX`） */
   readonly keyPrefix: string
   /** 画布资源的上传记录 */
   readonly assets: {

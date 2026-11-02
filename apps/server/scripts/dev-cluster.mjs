@@ -17,8 +17,8 @@ const routeRole = (pathname) => routeRoleIn(table, pathname)
  * 两种形态，都是配置不是参数：
  *
  * - `DEV_CLUSTER_ROLES="web:3001,collab:3002,collab:3003,agent:3004"` —— **按角色拆分**。每项一个进程（`SERVER_ROLES` 就是那个角色），
- *   前面再起一个**前置代理**听 `PORT`（默认 3000），按路径分流到对应角色（`@shadecn/server-core/routes-table` 按模块清单建的表，服务端的角色闸门、ingress 都是这一份），
- *   同一角色多个进程时轮流分。浏览器只认代理那一个地址：子进程的 `APP_ORIGIN` 都设成它（登录回跳、cookie、WebSocket Origin 校验都按它）。
+ *   前面再起一个**前置代理**听 `SERVER_PORT`（默认 3000），按路径分流到对应角色（`@shadecn/server-core/routes-table` 按模块清单建的表，服务端的角色闸门、ingress 都是这一份），
+ *   同一角色多个进程时轮流分。浏览器只认代理那一个地址：子进程的 `SERVER_ORIGIN` 都设成它（登录回跳、cookie、WebSocket Origin 校验都按它）。
  *   agent 沙箱回连的网关地址按 agent 进程自己的端口算（不经代理）。
  * - 没配它就用 `DEV_CLUSTER_PORTS`（默认 `3000,3001`）—— 每个端口一个**全角色**进程，没有代理（原来的多副本验证方式）。
  */
@@ -59,8 +59,8 @@ if (instances.length === 0) {
 }
 
 const byRole = instances.some((instance) => instance.role !== null)
-const frontPort = Number(process.env.PORT ?? 3000)
-const frontHost = process.env.HOST ?? '127.0.0.1'
+const frontPort = Number(process.env.SERVER_PORT ?? 3000)
+const frontHost = process.env.SERVER_HOST ?? '127.0.0.1'
 const frontOrigin = `http://${frontHost === '0.0.0.0' ? '127.0.0.1' : frontHost}:${frontPort}`
 
 if (byRole) {
@@ -71,7 +71,7 @@ if (byRole) {
     }
   }
   if (instances.some((instance) => instance.port === frontPort)) {
-    console.error(`[dev:cluster] 前置代理占用 PORT=${frontPort}，角色进程换别的端口`)
+    console.error(`[dev:cluster] 前置代理占用 SERVER_PORT=${frontPort}，角色进程换别的端口`)
     process.exit(1)
   }
 }
@@ -80,7 +80,7 @@ console.log(
   `[dev:cluster] 拉起 ${instances.length} 个实例：${instances.map((i) => (i.role ? `${i.role}:${i.port}` : i.port)).join(', ')}` +
     (byRole ? `，前置代理 ${frontOrigin}` : ''),
 )
-console.log('[dev:cluster] 其余配置全部来自 .env —— 记得配好 REDIS_URL 和 PostgreSQL 的 DATABASE_URL')
+console.log('[dev:cluster] 其余配置全部来自 .env —— 记得配好 CLUSTER_REDIS_URL 和 PostgreSQL 的 DATABASE_URL')
 
 const children = instances.map((instance, index) => {
   const label = `${COLORS[index % COLORS.length]}[${instance.role ? `${instance.role}:` : ':'}${instance.port}]${RESET}`
@@ -93,16 +93,16 @@ const children = instances.map((instance, index) => {
     env: {
       ...process.env,
       // 真实环境变量压过 .env（packages/server-core/src/env.ts 用的 loadEnvFile 不覆盖已存在的变量）
-      PORT: String(instance.port),
-      INSTANCE_ID: `dev-${instance.role ?? 'all'}-${instance.port}`,
+      SERVER_PORT: String(instance.port),
+      SERVER_INSTANCE_ID: `dev-${instance.role ?? 'all'}-${instance.port}`,
       ...(instance.role
         ? {
             SERVER_ROLES: instance.role,
             // 浏览器只认前置代理的地址：登录回跳、cookie、WebSocket 的 Origin 校验都按它
-            APP_ORIGIN: frontOrigin,
+            SERVER_ORIGIN: frontOrigin,
           }
         : {}),
-      // 全角色形态下 APP_ORIGIN 不在这里定：.env 里没设的话 config.ts 会按各自的 host:port 推导
+      // 全角色形态下 SERVER_ORIGIN 不在这里定：.env 里没设的话 config.ts 会按各自的 host:port 推导
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })

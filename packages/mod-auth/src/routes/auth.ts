@@ -67,7 +67,7 @@ async function startAuthorization(
   const state = randomToken()
   const nonce = randomToken()
   const codeVerifier = randomToken(64)
-  // 从哪个域名进来的就回到哪个域名（白名单之外回落 APP_ORIGIN），见 auth/origin.ts
+  // 从哪个域名进来的就回到哪个域名（白名单之外回落 SERVER_ORIGIN），见 auth/origin.ts
   const origin = originOf(c)
 
   const em = db()

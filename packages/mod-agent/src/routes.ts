@@ -311,7 +311,7 @@ export function createAgentRoutes(ports: AgentRoutesPorts) {
  * 也没有 CSRF / Origin 的问题 —— 没有 cookie 可冒用。每次调用由网关按这一轮的 Grant 实时判权。
  *
  * 一轮只在执行它的那个进程里有登记（run 注册表在进程内存，F14），所以 runner 必须连回同一个实例
- * （`process` 驱动天然如此：`AGENT_GATEWAY_URL` 默认是本机回环；k8s 驱动用本 Pod 的 IP）。
+ * （`process` 驱动天然如此：`MODULES_AGENT_GATEWAY_URL` 默认是本机回环；k8s 驱动用本 Pod 的 IP）。
  */
 export function createAgentGatewayRoutes() {
   return new Hono().all('/*', (c) => agentRuntime().gateway.handle(c.req.raw))

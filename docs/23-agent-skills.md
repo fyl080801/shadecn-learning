@@ -103,7 +103,7 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 ### 3.4 跨轮：技能跟着会话走
 
 - 会话记录这个会话加载过的技能（`skills: AgentSkillId[]`，只增不减）。下一轮开始时预先加载，否则历史里的工具调用在新一轮找不到对应工具，模型会困惑。
-- 预加载照样过 §3.2 第 1 步：Grant 或部署条件变了（比如关掉了 `AGENT_SANDBOX_EXEC`），不提供的技能就不加载。
+- 预加载照样过 §3.2 第 1 步：Grant 或部署条件变了（比如关掉了 `MODULES_AGENT_SANDBOX_EXEC`），不提供的技能就不加载。
   这一轮的系统提示里说明「以下技能本轮不可用：…」。
 - 删除会话时一并删掉这份记录；别人只读查看会话时能看到它加载过哪些技能。
 
@@ -135,10 +135,10 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 |---|---|---|---|---|---|
 | `canvas` | 画布 | 读 `read_canvas`、`get_node`、`check_connection`；写 `add_node`、`update_node`、`duplicate_node`、`connect`、`delete_elements`、`move_nodes`、`resize_node`、`group_nodes`、`ungroup`、`auto_layout` | `flow:read`、`flow:write`、`flow:delete` | — | `always` |
 | `media-view` | 查看素材 | `view_node_media`、`view_attachment` | `flow:read` | 模型支持图片输入，并且配了对象存储（[REQ-AGENT §3.10.7](20-agent-canvas.md)；看消息附件见 §3.10.12） | `auto`：`attachmentKinds: ['image']`（提及图片附件时） |
-| `media-exec` | 媒体处理 | `run_media_command`（runner） | `sandbox:exec` | `AGENT_SANDBOX_EXEC=1` | `on-demand` |
+| `media-exec` | 媒体处理 | `run_media_command`（runner） | `sandbox:exec` | `MODULES_AGENT_SANDBOX_EXEC=1` | `on-demand` |
 | `director` | 导演台：写 + 量 | 原子操作 `get_director_scene`、`add_objects`、`transform_objects`、`place_object`、`align_objects`、`distribute_objects`、`aim_camera`、`update_objects`、`set_director_settings`、`set_keyframes`、`animate_motion`、`delete_director_elements`；测量 `measure_objects`、`measure_distance`、`check_scene`、`camera_view`（都在网关执行） | `flow:read`、`flow:write`、`flow:delete` | — | `auto`：`nodeTypes: ['director']` |
 | `director-view` | 导演台：看 | `render_view`（网关调单独部署的渲染服务，和视口共用渲染库 `@shadecn/three-render`，见 REQ-DIRECTOR §7.9） | `flow:read` | 配了渲染服务（`DIRECTOR_RENDER_URL`），并且模型支持图片输入；不需要 `sandbox:exec` | `auto`：同上 |
-| `director-script` | 导演台：脚本 | `run_scene_script`（runner，产出操作列表交网关执行） | `flow:read`、`flow:write`、`sandbox:exec` | `AGENT_SANDBOX_EXEC=1` | `on-demand` |
+| `director-script` | 导演台：脚本 | `run_scene_script`（runner，产出操作列表交网关执行） | `flow:read`、`flow:write`、`sandbox:exec` | `MODULES_AGENT_SANDBOX_EXEC=1` | `on-demand` |
 
 - `canvas` 是基础技能，不做按需加载：几乎每一轮都要读写画布，按需加载只会多一次往返。
   原先拆成只读的 `canvas` 和写入的 `canvas-edit`，是为了节点范围会话的画布只读；节点范围会话取消后（REQ-AGENT §3.10.9）合成一个。
@@ -191,5 +191,5 @@ pi 的 `Agent` 在每次 `prompt()` / `continue()` 开始时对 `state.tools` �
 2. ~~`canvas` 要不要拆~~ —— **已定**：不拆，读写合成一个 `canvas`（节点范围会话取消，REQ-AGENT §3.10.9；原先拆成 `canvas` / `canvas-edit`）；布局类暂不再拆。
 3. ~~技能能不能卸载~~ —— **已定**：不能，只增不减。
 4. ~~每轮加载上限~~ —— **已定**：3 次。
-5. 执行模型写的代码的工具（`run_scene_script`）在 `process` 驱动下怎么开：沿用 `AGENT_SANDBOX_EXEC=1` 就算开启，
+5. 执行模型写的代码的工具（`run_scene_script`）在 `process` 驱动下怎么开：沿用 `MODULES_AGENT_SANDBOX_EXEC=1` 就算开启，
    还是另设一个开关（如 `AGENT_SANDBOX_ALLOW_CODE_ON_HOST=1`），默认关闭。倾向另设开关：ffmpeg 跑的是固定程序，脚本跑的是任意代码，两者风险不同。

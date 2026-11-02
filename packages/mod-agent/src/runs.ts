@@ -29,11 +29,11 @@ import { agentPorts, lazySingleton } from './ports.ts'
  * | 任务登记 | `SharedMap` `agent-run`（TTL） | `<flowId>:<runId>` → `RunRecord` |
  * | 会话槽位 | `SharedMap` `agent-conversation`（TTL，`claim` / `compareAndSet` / `deleteIfEquals`） | `<flowId>:<conversationId>` |
  * | 补发日志 | `SharedLog` `agent-replay`（redis stream，`MAXLEN` + 整份 TTL） | runId |
- * | 停止指令 | `SharedChannel` `agent-stop`（redis pub/sub） | 频道 = 持有副本的 `INSTANCE_ID` |
+ * | 停止指令 | `SharedChannel` `agent-stop`（redis pub/sub） | 频道 = 持有副本的 `SERVER_INSTANCE_ID` |
  *
  * 值都用 `stringCodec` + 自己 `JSON.stringify`：比较后删 / 比较后写比的是编码后的字符串，
  * 持有者交回它写进去的那份对象，序列化结果逐字相同（同 `leases.ts`）。
- * TTL 全是 `AGENT_LEASE_TTL_MS`，持有副本每 1/3 TTL 续期（编排层的心跳）。
+ * TTL 全是 `MODULES_AGENT_LEASE_TTL_MS`，持有副本每 1/3 TTL 续期（编排层的心跳）。
  *
  * 表在模块顶层声明（共享层的惰性代理，`initCluster()` 之后才定后端）；测试可以 {@link createSharedRunRegistry} 自建一份。
  */
@@ -120,7 +120,7 @@ export function createSharedRunRegistry(
   }
 }
 
-/** 本服务的那一份：TTL 取 `AGENT_LEASE_TTL_MS`，副本标识取 `INSTANCE_ID` */
+/** 本服务的那一份：TTL 取 `MODULES_AGENT_LEASE_TTL_MS`，副本标识取 `SERVER_INSTANCE_ID` */
 export const agentRunRegistry: RunRegistry = lazySingleton(() =>
   createSharedRunRegistry(
     {

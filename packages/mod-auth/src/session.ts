@@ -5,18 +5,19 @@ import { platform } from '@shadecn/server-kit/platform'
 import { authConfig } from './settings.ts'
 import { AuthRequest, PendingLink, Session, User } from './entities.ts'
 import { OidcError } from './oidc.ts'
+import { authEnv } from './config.ts'
 import { type ProviderId, type ProviderTokens, getProvider } from './providers/index.ts'
 
 /**
  * 会话 HMAC 的密钥。第一次用到时才取（配置在模块 setup 时才交进来）。
- * 没配 SESSION_SECRET 时 dev 下临时生成一个：重启即所有人掉线（生产缺它在解析配置时就拒绝启动了）
+ * 没配 MODULES_AUTH_SESSION_SECRET 时 dev 下临时生成一个：重启即所有人掉线（生产缺它在解析配置时就拒绝启动了）
  */
 let fallbackSecret: string | undefined
 export function sessionSecret(): string {
   if (authConfig.secret) return authConfig.secret
-  if (!platform().runtime.isDev) throw new Error('[auth] 生产环境必须设置 SESSION_SECRET')
+  if (!platform().runtime.isDev) throw new Error(`[auth] 生产环境必须设置 ${authEnv('sessionSecret')}`)
   if (fallbackSecret === undefined) {
-    console.warn('[auth] 未设置 SESSION_SECRET，本次运行用临时密钥（重启后会话全部失效）')
+    console.warn(`[auth] 未设置 ${authEnv('sessionSecret')}，本次运行用临时密钥（重启后会话全部失效）`)
     fallbackSecret = crypto.randomBytes(32).toString('hex')
   }
   return fallbackSecret
@@ -121,7 +122,7 @@ const REFRESH_COOLDOWN_MS = 15_000
  * 还有没有可用的 refresh token —— 这一条本地就能判，不用问提供方。
  *
  * GitHub 的 OAuth App 压根不发 refresh_token（token 也不过期），所以它的会话
- * 永远走不到续期这一步：建会话时 `expiresAt` 直接给的是 `SESSION_TTL`，
+ * 永远走不到续期这一步：建会话时 `expiresAt` 直接给的是 `MODULES_AUTH_SESSION_TTL`，
  * 到那一刻会话本身也该没了。
  */
 function canRefresh(session: Session) {

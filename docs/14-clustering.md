@@ -10,7 +10,7 @@
 1. **单副本是默认形态，行为一字不改**：什么都不配就跑成一个进程，共享状态全在内存里，
    一行 Redis 代码都不加载，也不多一个外部依赖。
 2. **多副本靠配置打开**，不是靠另一套代码、另一个构建产物：同一个镜像，改环境变量就换模式。
-3. **数据库和 Redis 分开配**：`DB_PROVIDER` / `DATABASE_URL` 管库，`CLUSTER_MODE` / `REDIS_URL` 管副本，
+3. **数据库和 Redis 分开配**：`DATABASE_PROVIDER` / `DATABASE_URL` 管库，`CLUSTER_MODE` / `CLUSTER_REDIS_URL` 管副本，
    谁也不推断谁。
 4. 进程内那些 `Map` 收敛成**抽象类**，两套实现（内存 / Redis）跑同一组契约测试。
 
@@ -38,17 +38,17 @@
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `CLUSTER_MODE` | 按 `REDIS_URL` 推断 | `single` / `redis`。显式设了以它为准 |
-| `REDIS_URL` | 无 | `redis://[:password@]host:port[/db]`，密码走连接串 |
-| `REDIS_KEY_PREFIX` | `shadecn` | 多环境共用一台 Redis 时隔离键空间 |
-| `INSTANCE_ID` | `${hostname}-${8位随机}` | 实例身份，k8s 里注入 `metadata.name` |
+| `CLUSTER_MODE` | 按 `CLUSTER_REDIS_URL` 推断 | `single` / `redis`。显式设了以它为准 |
+| `CLUSTER_REDIS_URL` | 无 | `redis://[:password@]host:port[/db]`，密码走连接串 |
+| `CLUSTER_REDIS_KEY_PREFIX` | `shadecn` | 多环境共用一台 Redis 时隔离键空间 |
+| `SERVER_INSTANCE_ID` | `${hostname}-${8位随机}` | 实例身份，k8s 里注入 `metadata.name` |
 | `DEV_CLUSTER_PORTS` | `3000,3001` | 只有 `pnpm dev:cluster` 读它 |
 
-解析规则和 `DB_PROVIDER` **逐条一致**：显式变量最优先 → 看连接串在不在 → 默认最省事的那个。
+解析规则和 `DATABASE_PROVIDER` **逐条一致**：显式变量最优先 → 看连接串在不在 → 默认最省事的那个。
 
 启动时的两条校验（`assertClusterConfig()`），性质不一样：
 
-- 说要 `redis` 却没有 `REDIS_URL` —— **配置自相矛盾**，任何环境都拒绝启动；
+- 说要 `redis` 却没有 `CLUSTER_REDIS_URL` —— **配置自相矛盾**，任何环境都拒绝启动；
 - `redis` 配着 SQLite —— 真多副本时不成立，但**本地拿 SQLite + Redis 单进程验证 Redis 那条链路
   是合理的调试姿势**，所以开发环境只警告，生产才拒绝。
 
@@ -129,7 +129,7 @@ podman run -d --name shadecn-postgres -p 127.0.0.1:5432:5432 \
   -e POSTGRES_USER=app -e POSTGRES_PASSWORD=app -e POSTGRES_DB=app postgres:17-alpine
 ```
 
-然后配 `.env`（`REDIS_URL`，真多副本再加 PostgreSQL 的 `DB_PROVIDER` / `DATABASE_URL`，
+然后配 `.env`（`CLUSTER_REDIS_URL`，真多副本再加 PostgreSQL 的 `DATABASE_PROVIDER` / `DATABASE_URL`，
 换库后先 `pnpm db:push` 把表建出来 —— `pnpm dev` 本来也会先跑它），跑：
 
 ```bash
@@ -137,20 +137,20 @@ pnpm dev          # 单副本，现状
 pnpm dev:cluster  # 按 DEV_CLUSTER_PORTS 拉起多个实例
 ```
 
-`apps/server/scripts/dev-cluster.mjs` **不含任何配置**：只覆盖每实例必须不同的 `PORT` 和 `INSTANCE_ID`，
-其余全从 `.env` 读。本地多副本时把 `APP_ORIGIN` 注释掉，让它按各自端口推导，
+`apps/server/scripts/dev-cluster.mjs` **不含任何配置**：只覆盖每实例必须不同的 `SERVER_PORT` 和 `SERVER_INSTANCE_ID`，
+其余全从 `.env` 读。本地多副本时把 `SERVER_ORIGIN` 注释掉，让它按各自端口推导，
 否则 3001 上登录会跳回 3000（用 Keycloak 的话两个端口的回调都要注册，或者干脆不配 Keycloak 裸跑）。
 
 ## 6. 验收标准
 
 - [x] 不配任何 Redis 相关变量时行为与改造前完全一致，测试全绿。
 - [x] 抽象层的契约测试：同一组用例，内存实现必跑，设了 `TEST_REDIS_URL` 时 Redis 实现再跑一遍。
-- [x] `CLUSTER_MODE=redis` 缺 `REDIS_URL` → 启动失败；配 SQLite → dev 警告、prod 失败。
+- [x] `CLUSTER_MODE=redis` 缺 `CLUSTER_REDIS_URL` → 启动失败；配 SQLite → dev 警告、prod 失败。
 - [x] 两个实例（3101 / 3102）连同一个房间：内容双向同步、并发改动收敛、awareness 互相可见。
 - [x] awareness 的归属登记确实进了 Redis（`shadecn:awareness-claims:<room>:<clientID>`），断连即释放。
 - [x] 生产镜像同时支持两种模式，模式只由环境变量决定（唯一绑构建的仍是数据库 provider）。
 
-**PostgreSQL 上的完整实测**（`DB_PROVIDER=postgresql` + Redis + 两个实例）：
+**PostgreSQL 上的完整实测**（`DATABASE_PROVIDER=postgresql` + Redis + 两个实例）：
 
 - [x] PG 库从零 `db push` 建表通过，表结构正确（`Flow.ydoc` 是 `bytea`）。
       （当时走的还是迁移文件，后来项目改成了 db push —— 见 [REQ-DATA §3.3.1](05-data-persistence.md)；

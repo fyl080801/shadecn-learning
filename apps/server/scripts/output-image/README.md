@@ -13,7 +13,7 @@ Dockerfile          构建上下文就是本目录
 agent-sandbox/      画布 agent 的 oci 沙箱镜像的构建上下文（runner + 它的 4 个依赖；不进本目录的镜像）
 ```
 
-**同一份产物 SQLite 和 PostgreSQL 都能连**：连哪种由运行时的 `DB_PROVIDER` / `DATABASE_URL`
+**同一份产物 SQLite 和 PostgreSQL 都能连**：连哪种由运行时的 `DATABASE_PROVIDER` / `DATABASE_URL`
 决定（不设就是 SQLite），两种驱动（`@mikro-orm/sqlite` 连带 better-sqlite3、
 `@mikro-orm/postgresql` 连带 pg）都在依赖里，进程只加载用得上的那一个。
 
@@ -30,7 +30,7 @@ npm start                # 默认 http://0.0.0.0:3000
 而不是静默丢数据。确认过那些数据可以不要之后，手动跑一次 `npm run db:push:force`
 （`node server/db-sync.js --force`）。`--force` 也会删掉库里实体之外的表。
 
-配置全部走环境变量（`APP_ORIGIN` / `KEYCLOAK_*` / `SESSION_SECRET` / `DATA_DIR` …），
+配置全部走环境变量（`SERVER_ORIGIN` / `MODULES_AUTH_KEYCLOAK_*` / `MODULES_AUTH_SESSION_SECRET` / `DATA_DIR` …），
 也可以在本目录放一个 `.env`。**「应用根目录」是进程 cwd**，所以相对路径的
 `DATA_DIR`、`DATABASE_URL` 都相对启动时所在的目录，请在本目录里启动。
 连 PostgreSQL 只需要 `DATABASE_URL`（`postgresql://…`，可带 `?schema=xxx`），`DATA_DIR` 用不上。
@@ -40,8 +40,8 @@ npm start                # 默认 http://0.0.0.0:3000
 ```bash
 docker build -t shadecn-learning .
 docker run -p 3000:3000 -v app-data:/app/data \
-  -e APP_ORIGIN=https://example.com \
-  -e KEYCLOAK_ISSUER=... -e KEYCLOAK_CLIENT_ID=... -e SESSION_SECRET=... \
+  -e SERVER_ORIGIN=https://example.com \
+  -e MODULES_AUTH_KEYCLOAK_ISSUER=... -e MODULES_AUTH_KEYCLOAK_CLIENT_ID=... -e MODULES_AUTH_SESSION_SECRET=... \
   shadecn-learning
 ```
 

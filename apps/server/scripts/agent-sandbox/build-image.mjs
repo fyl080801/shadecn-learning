@@ -2,7 +2,7 @@
  * 构建画布 agent 的 oci 沙箱镜像（docs/22 §7.2）：`pnpm build:sandbox-image [额外的 build 参数…]`。
  *
  * 构建上下文是 `pnpm build:server` 产出的 output/agent-sandbox/（runner + 它的 4 个第三方包 + Dockerfile，模板在本目录）。
- * 用哪个 CLI：`CONTAINER_CLI`，不给就先找 podman、再找 docker。镜像名：`AGENT_SANDBOX_IMAGE`（环境变量优先，
+ * 用哪个 CLI：`CONTAINER_CLI`，不给就先找 podman、再找 docker。镜像名：`MODULES_AGENT_SANDBOX_IMAGE`（环境变量优先，
  * 其次仓库根 .env 里的同名项 —— 只读这一项），都没有就是 `shadecn-agent-sandbox:latest`（和 packages/server-core/src/config.ts 的默认值一致）。
  *
  * 命令行上多给的参数原样交给 `<cli> build`，例如走镜像代理拉基础镜像、给构建容器配出网代理：
@@ -28,13 +28,13 @@ function has(cli) {
   return spawnSync(cli, ['--version'], { stdio: 'ignore' }).status === 0
 }
 
-/** 镜像名：环境变量 > 仓库根 .env 里的 AGENT_SANDBOX_IMAGE（只取这一项，别的变量不进这个进程） > 默认 */
+/** 镜像名：环境变量 > 仓库根 .env 里的 MODULES_AGENT_SANDBOX_IMAGE（只取这一项，别的变量不进这个进程） > 默认 */
 function imageName() {
-  const fromEnv = process.env.AGENT_SANDBOX_IMAGE?.trim()
+  const fromEnv = process.env.MODULES_AGENT_SANDBOX_IMAGE?.trim()
   if (fromEnv) return fromEnv
   const envFile = path.join(rootDir, '.env')
   if (existsSync(envFile)) {
-    const value = parseEnv(readFileSync(envFile, 'utf8')).AGENT_SANDBOX_IMAGE?.trim()
+    const value = parseEnv(readFileSync(envFile, 'utf8')).MODULES_AGENT_SANDBOX_IMAGE?.trim()
     if (value) return value
   }
   return DEFAULT_IMAGE
@@ -56,4 +56,4 @@ if (built.status !== 0) fail(`构建失败（退出码 ${built.status ?? built.s
 const size = spawnSync(cli, ['image', 'inspect', image, '--format', '{{.Size}}'], { encoding: 'utf8' })
 const mb = Number(size.stdout?.trim())
 console.log(`[build:sandbox-image] 已构建 ${image}${Number.isFinite(mb) && mb > 0 ? `（${(mb / 1e6).toFixed(0)} MB）` : ''}`)
-console.log('[build:sandbox-image] 服务端用它：AGENT_SANDBOX=oci（镜像名不是默认值时另配 AGENT_SANDBOX_IMAGE）')
+console.log('[build:sandbox-image] 服务端用它：MODULES_AGENT_SANDBOX_DRIVER=oci（镜像名不是默认值时另配 MODULES_AGENT_SANDBOX_IMAGE）')

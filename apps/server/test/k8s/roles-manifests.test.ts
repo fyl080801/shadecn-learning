@@ -32,8 +32,8 @@ describe('k8s/variants/roles：三个 Deployment', () => {
     expect(env.get('SERVER_ROLES')?.value).toBe(role)
     // 拆角色必须是多副本模式 + PostgreSQL（单副本下服务端拒绝拆角色启动）
     expect(env.get('CLUSTER_MODE')?.value).toBe('redis')
-    expect(env.get('DB_PROVIDER')?.value).toBe('postgresql')
-    expect(env.get('INSTANCE_ID')?.valueFrom?.fieldRef?.fieldPath).toBe('metadata.name')
+    expect(env.get('DATABASE_PROVIDER')?.value).toBe('postgresql')
+    expect(env.get('SERVER_INSTANCE_ID')?.valueFrom?.fieldRef?.fieldPath).toBe('metadata.name')
     // app 标签：沙箱 NetworkPolicy 按它放行回连；shadecn/role：Service 按它选
     expect(doc.spec.template.metadata.labels).toEqual({ app: 'shadecn-learning', 'shadecn/role': role })
     expect(doc.spec.selector.matchLabels).toEqual({ app: 'shadecn-learning', 'shadecn/role': role })
@@ -44,7 +44,7 @@ describe('k8s/variants/roles：三个 Deployment', () => {
     expect(doc.spec.template.spec.terminationGracePeriodSeconds).toBe(60)
     expect(container(doc).lifecycle.preStop.exec.command).toEqual(['sh', '-c', 'sleep 5'])
     // 模型配置只走带外的 envFrom，env 里写了会静默盖掉管理员配的（.claude/rules/deploy.md）
-    for (const name of ['AGENT_PROVIDER', 'AGENT_MODEL', 'AGENT_BASE_URL', 'AGENT_API', 'AGENT_API_KEY', 'AGENT_TOKEN_SECRET']) {
+    for (const name of ['MODULES_AGENT_PROVIDER', 'MODULES_AGENT_MODEL', 'MODULES_AGENT_BASE_URL', 'MODULES_AGENT_API', 'MODULES_AGENT_API_KEY', 'MODULES_AGENT_TOKEN_SECRET']) {
       expect(env.has(name)).toBe(false)
     }
     // 三种角色用同一份 agent / S3 配置（web 按它显示 agent 面板）
@@ -55,11 +55,11 @@ describe('k8s/variants/roles：三个 Deployment', () => {
   it('只有 agent 带沙箱的 SA 和环境变量（POD_IP 当网关地址）；web / collab 不能起 Pod', () => {
     expect(deployments.agent.spec.template.spec.serviceAccountName).toBe('shadecn-learning')
     const agentEnv = envOf(deployments.agent)
-    expect(agentEnv.get('AGENT_SANDBOX')?.value).toBe('k8s')
+    expect(agentEnv.get('MODULES_AGENT_SANDBOX_DRIVER')?.value).toBe('k8s')
     expect(agentEnv.get('POD_IP')?.valueFrom?.fieldRef?.fieldPath).toBe('status.podIP')
     for (const role of ['web', 'collab'] as const) {
       expect(deployments[role].spec.template.spec.serviceAccountName).toBeUndefined()
-      expect(envOf(deployments[role]).has('AGENT_SANDBOX')).toBe(false)
+      expect(envOf(deployments[role]).has('MODULES_AGENT_SANDBOX_DRIVER')).toBe(false)
     }
   })
 

@@ -14,7 +14,7 @@ export const isBundle = typeof __APP_BUNDLE__ !== 'undefined' && __APP_BUNDLE__
 export const moduleDir = path.dirname(fileURLToPath(import.meta.url))
 
 /**
- * 应用根目录 —— .env、data/ 这些「运行时的东西」都以它为准。
+ * 应用根目录 —— .env、默认的 data/ 这些「运行时的东西」都以它为准（配置文件在数据目录里，`config-source.ts`）。
  *
  * - 源码运行：packages/server-core/src/ 的上三级，也就是仓库根目录（.env、data/、output/ 都在仓库根）；
  * - 构建产物：进程 cwd（本地是仓库根，容器里是 /app）。产物自己躺在 output/ 下，

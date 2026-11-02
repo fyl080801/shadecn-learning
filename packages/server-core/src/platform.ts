@@ -36,7 +36,7 @@ export const runtime: RuntimeInfo = {
   envVar: (name) => process.env[name],
 }
 
-/** 这次请求认哪个对外地址：白名单内跟着请求走，否则回落 `APP_ORIGIN`（规则在 `config.ts` 的 `resolveOrigin`） */
+/** 这次请求认哪个对外地址：白名单内跟着请求走，否则回落 `SERVER_ORIGIN`（规则在 `config.ts` 的 `resolveOrigin`） */
 function originOf(c: Context): string {
   const protocol = (() => {
     try {

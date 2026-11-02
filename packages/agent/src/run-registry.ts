@@ -49,7 +49,7 @@ export interface StopCommand {
 }
 
 export interface RunRegistry {
-  /** 登记、槽位、补发日志的 TTL（`AGENT_LEASE_TTL_MS`）；持有者每 1/3 TTL 续期 */
+  /** 登记、槽位、补发日志的 TTL（`MODULES_AGENT_LEASE_TTL_MS`）；持有者每 1/3 TTL 续期 */
   readonly ttlMs: number
   /** 本副本的标识 */
   readonly instanceId: string

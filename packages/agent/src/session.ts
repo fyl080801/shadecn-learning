@@ -325,7 +325,7 @@ export interface RunLimits {
    */
   timeoutMs: number
   /**
-   * 总时长上限（`AGENT_RUN_TOTAL_TIMEOUT_MS`）：一轮从开始算的墙钟时间，含它的全部被调用的 agent，不暂停。
+   * 总时长上限（`MODULES_AGENT_RUN_TOTAL_TIMEOUT_MS`）：一轮从开始算的墙钟时间，含它的全部被调用的 agent，不暂停。
    * 沙箱硬期限（驱动的 `deadlineMs`）和 Grant 的绝对过期时间按它算 —— 一轮开始时不知道它会不会发起任务
    */
   totalTimeoutMs: number
@@ -357,7 +357,7 @@ export interface RunLimits {
   /** 一轮里模型最多 `load_skill` 成功几次（docs/23 §3.3，防反复加载） */
   maxSkillLoads: number
   /**
-   * 空闲上限（docs/20 §3.10.8「沙箱中断」，`AGENT_RUN_IDLE_TIMEOUT_MS`）：网关上这一轮既没有在途请求、
+   * 空闲上限（docs/20 §3.10.8「沙箱中断」，`MODULES_AGENT_RUN_IDLE_TIMEOUT_MS`）：网关上这一轮既没有在途请求、
    * 也连续这么久没有新请求 → 按超时停下。模型请求算到响应流结束，长时间流式输出不算空闲
    */
   idleTimeoutMs: number
@@ -406,7 +406,7 @@ export interface OpenedCanvas extends CanvasHandle {
 
 export interface AgentRuntimeOptions {
   /**
-   * 模型表里 `default` 那一项（docs/26 §3.4，宿主的 `AGENT_PROVIDER` / `AGENT_MODEL` / …）；`null` = 没配 / 解析不出来。
+   * 模型表里 `default` 那一项（docs/26 §3.4，宿主的 `MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` / …）；`null` = 没配 / 解析不出来。
    * 入口 agent 用它（`canvas.md` 没写 `model`）时 `null` = agent 未启用
    */
   model: ResolvedAgentModel | null
@@ -507,7 +507,7 @@ export interface AgentGatewayConfig {
   secret: string | Uint8Array
   /** 服务端调上游模型用的 fetch（pi-ai 的 `ProviderRequestOptions.fetch`）；不给用 SDK 默认的全局 fetch（测试注入脚本化的上游） */
   upstreamFetch?: typeof fetch
-  /** 输出 token 的上限（`AGENT_MAX_OUTPUT_TOKENS`）：实际取 min(模型的 maxTokens, 它)，不给按 16384（docs/22 §4.3 已定第 4 条） */
+  /** 输出 token 的上限（`MODULES_AGENT_MAX_OUTPUT_TOKENS`）：实际取 min(模型的 maxTokens, 它)，不给按 16384（docs/22 §4.3 已定第 4 条） */
   maxOutputTokens?: number
 }
 

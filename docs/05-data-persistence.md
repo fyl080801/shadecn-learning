@@ -15,7 +15,7 @@
 | SQLite（默认） | 单文件、无需额外服务；配合 PVC 就能在 k8s 上跑 |
 | PostgreSQL（可选） | 需要多副本 / 并发写 / 外部托管库时切过去 |
 | MikroORM 7（`@mikro-orm/core` 7.2.5，版本锁死） | 一份实体定义（`defineEntity`），驱动在运行时选；自带按实体比对库结构的 schema 生成器 |
-| `@mikro-orm/sqlite`（连带 better-sqlite3）/ `@mikro-orm/postgresql`（连带 pg） | 两种库的驱动，`packages/server-core/src/db/orm.ts` 按 `DB_PROVIDER` **动态** import；两个都进构建产物 |
+| `@mikro-orm/sqlite`（连带 better-sqlite3）/ `@mikro-orm/postgresql`（连带 pg） | 两种库的驱动，`packages/server-core/src/db/orm.ts` 按 `DATABASE_PROVIDER` **动态** import；两个都进构建产物 |
 
 ### 2.1 为什么从 Prisma 换成 MikroORM
 
@@ -34,13 +34,13 @@ MikroORM 的实体定义本来就和库无关，驱动是运行时的一个配�
 
 ### 3.1 选哪种库
 
-`DB_PROVIDER` 只接受 `sqlite` / `postgresql`。没设就按 `DATABASE_URL` 的协议推断（`file:` → sqlite，`postgres(ql)://` → postgresql），两个都没有就是 sqlite。
+`DATABASE_PROVIDER` 只接受 `sqlite` / `postgresql`。没设就按 `DATABASE_URL` 的协议推断（`file:` → sqlite，`postgres(ql)://` → postgresql），两个都没有就是 sqlite。
 
 硬性检查（对不上直接启动失败，绝不"猜一个"继续跑）：
 
-- `DB_PROVIDER` 是别的值 → 报错；
-- `DB_PROVIDER` 和 `DATABASE_URL` 的协议不一致 → 报错；
-- `DB_PROVIDER=postgresql` 却没给 `DATABASE_URL` → 报错。
+- `DATABASE_PROVIDER` 是别的值 → 报错；
+- `DATABASE_PROVIDER` 和 `DATABASE_URL` 的协议不一致 → 报错；
+- `DATABASE_PROVIDER=postgresql` 却没给 `DATABASE_URL` → 报错。
 
 它**只决定运行时加载哪个驱动**。实体定义、构建产物、镜像都和它无关。
 
@@ -133,7 +133,7 @@ MikroORM 的 `schema.update({ safe: true })` **挡不住有损变更**（实测�
 |---|---|---|
 | `User`（`user`） | 主身份提供方落下来的用户档案 | `(issuer, subject)` 唯一；`roles` 存成 JSON 字符串 |
 | `UserIdentity`（`user_identity`） | 一条登录方式 | `(provider, subject)` 唯一 —— 关联冲突检测的全部依据；随 User 级联删除 |
-| `Session`（`session`） | 服务端会话，存 access / refresh / id token | 主键是 Cookie 中随机 token 的 **HMAC-SHA256**（密钥 `SESSION_SECRET`），token 本身不落库；`user` 建索引；随 User 级联删除 |
+| `Session`（`session`） | 服务端会话，存 access / refresh / id token | 主键是 Cookie 中随机 token 的 **HMAC-SHA256**（密钥 `MODULES_AUTH_SESSION_SECRET`），token 本身不落库；`user` 建索引；随 User 级联删除 |
 | `PendingLink`（`pending_link`） | 等用户确认的账号关联 | `user` 唯一（一人一条） |
 | `AuthRequest`（`auth_request`） | 一次授权请求的临时凭据（state / nonce / PKCE verifier / redirectTo） | `state` 唯一；回调时一次性消费（以删除成功为准）；过期由定时清扫回收 |
 | `Project` / `ProjectMember` / `ProjectInvite` | 项目、成员、分享链接 | `personal_owner_id` 唯一；`(project, user)` 唯一；邀请的 `project` 与 `token` 各自唯一 |
@@ -187,11 +187,11 @@ Prisma 时代的 `db:generate`（没有生成物了）和 `db:studio`（MikroORM
 - [ ] 未登录访问 `/api/notes` 返回 401。
 - [ ] notes 的五个端点全部符合上表的状态码与错误格式，并有对应测试覆盖。
 - [ ] 删除 `data/app.db` 后重新 `db:push` 能从零重建全部表结构；紧接着再跑一次输出「无需变更」。
-- [ ] 设 `DB_PROVIDER=postgresql` + PG 的 `DATABASE_URL` 后，`pnpm db:push && pnpm dev` 全流程可用，接口行为与 SQLite 一致。
+- [ ] 设 `DATABASE_PROVIDER=postgresql` + PG 的 `DATABASE_URL` 后，`pnpm db:push && pnpm dev` 全流程可用，接口行为与 SQLite 一致。
 - [ ] **同一份 `pnpm build` 产物**，`node server/db-sync.js && node server/index.js` 分别指向 SQLite 和 PostgreSQL 都能起来，`/api/health/ready` 为 200。
 - [ ] 实体上删一个字段：`pnpm db:push` 拒绝执行并打出 `drop column` 那一句，`pnpm db:push:force` 执行。
 - [ ] `TEST_DATABASE_URL=postgresql://… pnpm test:server` 整套后端测试在 PG 上同样全绿。
-- [ ] `DB_PROVIDER` 与 `DATABASE_URL` 协议不一致时启动直接失败，不会连错库。
+- [ ] `DATABASE_PROVIDER` 与 `DATABASE_URL` 协议不一致时启动直接失败，不会连错库。
 
 ## 5. 本期不做
 

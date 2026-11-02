@@ -34,7 +34,7 @@ export interface NodeLease {
 }
 
 export interface NodeLeaseRegistry {
-  /** 条目的 TTL（毫秒，`AGENT_LEASE_TTL_MS`）；持有者每 1/3 TTL 续期一次 */
+  /** 条目的 TTL（毫秒，`MODULES_AGENT_LEASE_TTL_MS`）；持有者每 1/3 TTL 续期一次 */
   readonly ttlMs: number
   /** 本副本的标识，写进 {@link NodeLease.instanceId} */
   readonly instanceId: string

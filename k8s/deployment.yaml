@@ -16,15 +16,15 @@ spec:
 # 它是带外创建的，用 .env 里的值：
 #   set -a; . ./.env; set +a
 #   kubectl -n dev create secret generic shadecn-learning-auth \
-#     --from-literal=KEYCLOAK_CLIENT_SECRET="$KEYCLOAK_CLIENT_SECRET" \
-#     --from-literal=SESSION_SECRET="$SESSION_SECRET" \
+#     --from-literal=MODULES_AUTH_KEYCLOAK_CLIENT_SECRET="$MODULES_AUTH_KEYCLOAK_CLIENT_SECRET" \
+#     --from-literal=MODULES_AUTH_SESSION_SECRET="$MODULES_AUTH_SESSION_SECRET" \
 #     --dry-run=client -o yaml | kubectl apply -f -
 #
 # 要开 GitHub 登录就再加这两行（下面的 envFrom 是整份 Secret 注入，
 # 所以只要键在 Secret 里就生效，Deployment 本身不用改）：
-#     --from-literal=GITHUB_CLIENT_ID="$GITHUB_CLIENT_ID" \
-#     --from-literal=GITHUB_CLIENT_SECRET="$GITHUB_CLIENT_SECRET" \
-# GitHub OAuth App 的回调填 $APP_ORIGIN/api/auth/callback —— 和 Keycloak 共用同一个。
+#     --from-literal=MODULES_AUTH_GITHUB_CLIENT_ID="$MODULES_AUTH_GITHUB_CLIENT_ID" \
+#     --from-literal=MODULES_AUTH_GITHUB_CLIENT_SECRET="$MODULES_AUTH_GITHUB_CLIENT_SECRET" \
+# GitHub OAuth App 的回调填 $SERVER_ORIGIN/api/auth/callback —— 和 Keycloak 共用同一个。
 # 画布资源上传（S3）和画布 agent 的模型配置不在这个 Secret 里：各有一对带外的 ConfigMap + Secret
 # （shadecn-learning-s3、shadecn-learning-agent），见下面 envFrom 的注释和 docs/12 §3.3。
 apiVersion: apps/v1
@@ -62,64 +62,64 @@ spec:
           env:
             - name: NODE_ENV
               value: production
-            - name: HOST
+            - name: SERVER_HOST
               value: 0.0.0.0
-            - name: PORT
+            - name: SERVER_PORT
               value: "3000"
             # SQLite 落在挂载卷上（库文件 = $DATA_DIR/app.db）
             #
             # 换 PostgreSQL：这三样一起改 ——
-            #   1. 镜像要用 DB_PROVIDER=postgresql 构建（产物绑定 provider，见 docs/12）；
+            #   1. 镜像要用 DATABASE_PROVIDER=postgresql 构建（产物绑定 provider，见 docs/12）；
             #   2. 这里删掉 DATA_DIR，连同下面的 volumeMounts / volumes 和 PVC；
             #   3. DATABASE_URL 放进 shadecn-learning-auth 这个 Secret（连接串带密码，不能写明文 env）。
             # replicas 仍然只能是 1：Yjs 文档还在进程内存里。
             - name: DATA_DIR
               value: /app/data
             # 对外地址，用来拼 redirect_uri；必须和 Keycloak client 里配的一致
-            - name: APP_ORIGIN
+            - name: SERVER_ORIGIN
               value: https://demo.fyl080801.uk
-            # 多域名访问时把每个对外域名都列进来（逗号分隔），APP_ORIGIN 自动在内。
+            # 多域名访问时把每个对外域名都列进来（逗号分隔），SERVER_ORIGIN 自动在内。
             # 配上之后 redirect_uri / CORS / WebSocket Origin / 分享链接都按访问的
-            # 域名走；名单外的 Host 回落 APP_ORIGIN。每个域名的 /api/auth/callback
+            # 域名走；名单外的 Host 回落 SERVER_ORIGIN。每个域名的 /api/auth/callback
             # 都要加进 Keycloak client 的 Valid redirect URIs。
-            # - name: APP_ORIGINS
+            # - name: SERVER_ORIGINS
             #   value: https://demo.fyl080801.uk,https://demo.internal.fyl080801.uk
-            - name: KEYCLOAK_ISSUER
+            - name: MODULES_AUTH_KEYCLOAK_ISSUER
               value: https://keycloak.fyl080801.uk/realms/master
-            - name: KEYCLOAK_CLIENT_ID
+            - name: MODULES_AUTH_KEYCLOAK_CLIENT_ID
               value: sample
-            - name: KEYCLOAK_SCOPE
+            - name: MODULES_AUTH_KEYCLOAK_SCOPE
               value: openid profile email
             # 画布资源单个文件上限（MB），分片上传开始时校验；单片大小另由 ingress 的 proxy-body-size 放行
-            - name: S3_MAX_UPLOAD_MB
+            - name: MODULES_STORAGE_MAX_UPLOAD_MB
               value: "500"
             # —— 画布 agent 的沙箱：每一轮在 dev 里建一个 Pod 跑 runner（docs/22 §7.5）——
             # 沙箱 Pod 和 gitea 等别的服务共用 dev：dev 没有 Pod Security，服务端能建什么样的 Pod 由
             # k8s/variants/agent-sandbox-vap.yaml（集群级，人工 apply）限死；它不在时启动自检不通过、agent 不启用。
-            # 模型（AGENT_PROVIDER / AGENT_MODEL / AGENT_BASE_URL / AGENT_API / AGENT_IMAGE_INPUT / AGENT_API_KEY / AGENT_TOKEN_SECRET）
+            # 模型（MODULES_AGENT_PROVIDER / MODULES_AGENT_MODEL / MODULES_AGENT_BASE_URL / MODULES_AGENT_API / MODULES_AGENT_IMAGE_INPUT / MODULES_AGENT_API_KEY / MODULES_AGENT_TOKEN_SECRET）
             # **不要写在这里**：它们来自下面 envFrom 的 shadecn-learning-agent（ConfigMap + Secret，带外资源，docs/12 §3.3），
             # 而 env 优先于 envFrom —— 在这里写一个就把那边的值盖掉了。没配 / 空值 = agent 未启用。
-            - name: AGENT_SANDBOX
+            - name: MODULES_AGENT_SANDBOX_DRIVER
               value: k8s
             # F14：一轮的令牌和网关登记只在发起它的那个副本的内存里，runner 必须直连这个 Pod ——
-            # 网关地址默认 http://$POD_IP:$PORT。不要改成 Service 的地址（多副本时会被分到别的副本，一律 401）
+            # 网关地址默认 http://$POD_IP:$SERVER_PORT。不要改成 Service 的地址（多副本时会被分到别的副本，一律 401）
             - name: POD_IP
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            - name: AGENT_SANDBOX_K8S_NAMESPACE
+            - name: MODULES_AGENT_SANDBOX_K8S_NAMESPACE
               value: dev
             # 沙箱镜像和服务端同一个 tag、同一次构建：CI 写回 tag 时这一行和上面的 image 一起改（ci/workflow-template.yaml）
-            - name: AGENT_SANDBOX_IMAGE
+            - name: MODULES_AGENT_SANDBOX_IMAGE
               value: 192.168.68.95:31443/apps/shadecn-agent-sandbox:3f6877d
             # 沙箱 Pod 拉镜像用 dev 里现成的这个（kubelet 用；服务端没有读 Secret 的权限，也不需要）
-            - name: AGENT_SANDBOX_K8S_PULL_SECRET
+            - name: MODULES_AGENT_SANDBOX_K8S_PULL_SECRET
               value: harbor-pull-secret
             # tag 是提交 hash、不会被覆盖：节点上有就不再去仓库问一次
-            - name: AGENT_SANDBOX_K8S_PULL_POLICY
+            - name: MODULES_AGENT_SANDBOX_K8S_PULL_POLICY
               value: IfNotPresent
             # 沙箱镜像也只有 arm64
-            - name: AGENT_SANDBOX_K8S_NODE_SELECTOR
+            - name: MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR
               value: kubernetes.io/arch=arm64
           envFrom:
             - secretRef:
@@ -133,10 +133,10 @@ spec:
             - secretRef:
                 name: shadecn-learning-agent
                 optional: true
-            # 画布资源上传（带外资源，docs/12 §3.3）：ConfigMap 里是 S3_ENDPOINT / S3_INTERNAL_ENDPOINT / S3_REGION / S3_BUCKET，
-            # Secret 里是 S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY。空值 = 不配（地址 / region 走默认值；桶和两项凭据缺一个 = 上传关闭）。
-            # S3_KEY_PREFIX 刻意不在里面：空串的意思是「桶根」，和不配（canvas）不一样。
-            # env 里只留 S3_MAX_UPLOAD_MB，别的 S3_* 不要写在 env（会盖掉这里）。改完同样要 rollout restart
+            # 画布资源上传（带外资源，docs/12 §3.3）：ConfigMap 里是 MODULES_STORAGE_ENDPOINT / MODULES_STORAGE_INTERNAL_ENDPOINT / MODULES_STORAGE_REGION / MODULES_STORAGE_BUCKET，
+            # Secret 里是 MODULES_STORAGE_ACCESS_KEY_ID / MODULES_STORAGE_SECRET_ACCESS_KEY。空值 = 不配（地址 / region 走默认值；桶和两项凭据缺一个 = 上传关闭）。
+            # MODULES_STORAGE_KEY_PREFIX 刻意不在里面：空串的意思是「桶根」，和不配（canvas）不一样。
+            # env 里只留 MODULES_STORAGE_MAX_UPLOAD_MB，别的 MODULES_STORAGE_* 不要写在 env（会盖掉这里）。改完同样要 rollout restart
             - configMapRef:
                 name: shadecn-learning-s3
                 optional: true

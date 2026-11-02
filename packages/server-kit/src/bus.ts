@@ -78,7 +78,7 @@ interface Pending {
 }
 
 export interface Bus {
-  /** 这个实例的身份（和 `INSTANCE_ID` 一致） */
+  /** 这个实例的身份（和 `SERVER_INSTANCE_ID` 一致） */
   readonly instanceId: string
   /** 注册处理函数并登记为提供方；返回撤销函数。同一个令牌在一个实例上只能有一个处理函数 */
   handle<Req, Res>(token: RequestToken<Req, Res>, handler: (req: Req) => Res | Promise<Res>): Promise<() => Promise<void>>

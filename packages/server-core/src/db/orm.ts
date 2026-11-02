@@ -3,7 +3,7 @@ import { databaseUrl, dbProvider, ensureDatabaseDir } from '../config.ts'
 import { ormLoggerFactory } from '../logger/db.ts'
 
 /**
- * 按配置建一个 MikroORM 实例。连哪种库由 DB_PROVIDER / DATABASE_URL 决定（解析规则在 config.ts，
+ * 按配置建一个 MikroORM 实例。连哪种库由 DATABASE_PROVIDER / DATABASE_URL 决定（解析规则在 config.ts，
  * 只有那一份），实体定义只有一份、和库无关（规矩见 `@shadecn/server-kit/db`）。实体由调用方交进来（底座的 + 模块清单里各模块声明的，`../server.ts` 的 `serverEntities`）。
  *
  * **驱动一律动态 import**：这是「一个产物两种库」的前提。`@mikro-orm/sqlite` 一加载就会

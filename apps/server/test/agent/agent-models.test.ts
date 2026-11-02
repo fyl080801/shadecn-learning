@@ -5,7 +5,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { loadAgentModelTable, parseAgentModelTable, resolveAgentModelTable } from '@shadecn/mod-agent/models'
 
 /**
- * 模型表文件（docs/26 §3.4）：`<dataDir>/agent-models.json` / `AGENT_MODELS_FILE`。文件本身不对 → 启动失败（抛）；
+ * 模型表文件（docs/26 §3.4）：`<dataDir>/agent-models.json` / `MODULES_AGENT_MODELS_FILE`。文件本身不对 → 启动失败（抛）；
  * 某一项用不了（`$ENV` 没设、注册表里没有）→ 不抛，解析结果记成不可用，到用时才报。
  */
 
@@ -32,7 +32,7 @@ describe('解析模型表文件（形状不对 → 启动失败）', () => {
   })
 
   it('写了 default、key 不合法 → 抛错', () => {
-    expect(parse({ default: { provider: 'anthropic', model: 'x' } })).toThrow(/「default」：default 不能写在文件里，它来自 AGENT_PROVIDER/)
+    expect(parse({ default: { provider: 'anthropic', model: 'x' } })).toThrow(/「default」：default 不能写在文件里，它来自 MODULES_AGENT_PROVIDER/)
     expect(parse({ Fast: { provider: 'anthropic', model: 'x' } })).toThrow(/「Fast」：key 不合法/)
     expect(parse({ 'fast model': { provider: 'anthropic', model: 'x' } })).toThrow(/key 不合法/)
   })

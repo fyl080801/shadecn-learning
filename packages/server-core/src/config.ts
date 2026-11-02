@@ -1,5 +1,5 @@
 import './env.ts'
-import { cfg, configSource } from './config-source.ts'
+import { cfg, configSource, dataDir } from './config-source.ts'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
@@ -8,8 +8,8 @@ import { parseRoles, type ServerRole } from '@shadecn/server-kit/kernel'
 import { appRoot, isBundle, moduleDir } from './runtime.ts'
 
 /**
- * **底座**的配置：每一项都经 `cfg('<环境变量名>')` 取：环境变量优先，其次配置文件 `server.config.{yaml,yml,json}`（docs/28 §3.3，`config-source.ts`），
- * 都没有才用这里写的默认值。注释里按环境变量名说的，在文件里各有对应的键（见 `config-source.ts` 的 schema）。
+ * **底座**的配置：每一项都经 `cfg('<路径>')` 取：环境变量优先（变量名由路径推导，`server.port` → `SERVER_PORT`），其次配置文件 `server.config.{yaml,yml,json}`（docs/28 §3.3，`config-source.ts`），
+ * 都没有才用这里写的默认值。注释里按环境变量名说的，在文件里各有对应的路径（见 `config-source.ts` 的 schema）。
  * 各模块的配置段（含登录：`modules.auth`）由模块自己声明并解析（模块的 `config`），不在这里。
  */
 
@@ -35,10 +35,10 @@ export const outputDir = path.join(rootDir, 'output')
  *
  * - 构建产物运行：自己旁边的 output/public（output/server/index.js → ../public）；
  * - 源码运行（tsx，NODE_ENV=production）：output/public；
- * - STATIC_DIR 可整个覆盖（相对路径按应用根目录算）。
+ * - SERVER_STATIC_DIR 可整个覆盖（相对路径按应用根目录算）。
  */
-export const staticDir = cfg('STATIC_DIR')?.trim()
-  ? resolveFromRoot(cfg('STATIC_DIR')!.trim())
+export const staticDir = cfg('server.staticDir')?.trim()
+  ? resolveFromRoot(cfg('server.staticDir')!.trim())
   : isBundle
     ? path.resolve(moduleDir, '..', 'public')
     : path.join(outputDir, 'public')
@@ -46,26 +46,21 @@ export const staticDir = cfg('STATIC_DIR')?.trim()
 /** 没显式设 NODE_ENV=production 就按开发处理（开发时由后端挂 Vite 中间件） */
 export const isDev = (process.env.NODE_ENV ?? 'development') !== 'production'
 
-export const port = Number(cfg('PORT') ?? 3000)
+export const port = Number(cfg('server.port') ?? 3000)
 
 /**
  * 这个进程扮演哪些角色（REQ-MODULES，docs/28 §3.2）：`SERVER_ROLES="web,collab"`。不配 = 全部角色一个进程。
  * 解析在 `kernel/roles.ts`；和副本模式的搭配由 `assertRolesSupported()` 在 boot 时判。
  */
-export const serverRoles: ReadonlySet<ServerRole> = parseRoles(cfg('SERVER_ROLES'))
-export const host = cfg('HOST') ?? '127.0.0.1'
+export const serverRoles: ReadonlySet<ServerRole> = parseRoles(cfg('server.roles'))
+export const host = cfg('server.host') ?? '127.0.0.1'
 
 /** /api 与 /api/* —— 这部分永远由 Hono 处理，不交给前端 */
 export function isApiPath(pathname: string) {
   return pathname === '/api' || pathname.startsWith('/api/')
 }
 
-/**
- * 运行时数据目录：SQLite 库放这儿，整个目录已 gitignore。
- * DATA_DIR 可覆盖（相对路径按仓库根目录算，绝对路径直接用），
- * 容器里就是靠它把库指到挂载卷上。
- */
-export const dataDir = resolveFromRoot(cfg('DATA_DIR') ?? 'data')
+export { dataDir }
 
 /** 支持的两种库 */
 export type DbProvider = 'sqlite' | 'postgresql'
@@ -77,7 +72,7 @@ export type DbProvider = 'sqlite' | 'postgresql'
  *
  * 只决定运行时加载哪个驱动 —— 实体定义和构建产物都和库无关。
  *
- *   1. 显式的 DB_PROVIDER 最优先；
+ *   1. 显式的 DATABASE_PROVIDER 最优先；
  *   2. 否则看 DATABASE_URL 的协议；
  *   3. 都没有 → sqlite（零外部依赖的默认形态）。
  */
@@ -107,26 +102,26 @@ function providerFromUrl(url: string | undefined): DbProvider | undefined {
 }
 
 function resolveProvider(): DbProvider {
-  const explicit = cfg('DB_PROVIDER')?.trim()
+  const explicit = cfg('database.provider')?.trim()
   if (explicit) {
     if (explicit !== 'sqlite' && explicit !== 'postgresql') {
-      throw new Error(`DB_PROVIDER 只能是 sqlite / postgresql，收到的是 "${explicit}"`)
+      throw new Error(`DATABASE_PROVIDER 只能是 sqlite / postgresql，收到的是 "${explicit}"`)
     }
     return explicit
   }
-  return providerFromUrl(cfg('DATABASE_URL')?.trim()) ?? 'sqlite'
+  return providerFromUrl(cfg('database.url')?.trim()) ?? 'sqlite'
 }
 
 function resolveDatabaseUrl() {
   // 空串当没设：`DATABASE_URL=` 常被用来在命令行上临时盖掉 .env 里的那一行
-  const configured = cfg('DATABASE_URL')?.trim() || undefined
+  const configured = cfg('database.url')?.trim() || undefined
   const scheme = providerFromUrl(configured)
   if (configured && scheme && scheme !== dbProvider) {
-    throw new Error(`DB_PROVIDER=${dbProvider} 与 DATABASE_URL 的协议（${scheme}）不一致`)
+    throw new Error(`DATABASE_PROVIDER=${dbProvider} 与 DATABASE_URL 的协议（${scheme}）不一致`)
   }
 
   if (dbProvider === 'postgresql') {
-    if (!configured) throw new Error('DB_PROVIDER=postgresql 时必须提供 DATABASE_URL')
+    if (!configured) throw new Error('DATABASE_PROVIDER=postgresql 时必须提供 DATABASE_URL')
     return configured
   }
 
@@ -150,20 +145,20 @@ export type ClusterMode = 'single' | 'redis'
  * 都没有就是最省事的那个默认值：
  *
  *   1. 显式的 CLUSTER_MODE 最优先；
- *   2. 否则看 REDIS_URL 有没有；
+ *   2. 否则看 CLUSTER_REDIS_URL 有没有；
  *   3. 都没有 → single（零外部依赖的默认形态，一行 Redis 代码都不加载）。
  *
- * **数据库和 Redis 是两件独立的事**：这里不去看 DB_PROVIDER，那边也不看 REDIS_URL。
+ * **数据库和 Redis 是两件独立的事**：这里不去看 DATABASE_PROVIDER，那边也不看 CLUSTER_REDIS_URL。
  * 两者的搭配是否合理由 `assertClusterConfig()` 判，而且只在生产才是硬错误。
  */
 export const clusterMode: ClusterMode = resolveClusterMode()
 export const isClustered = clusterMode === 'redis'
 
 /** Redis 连接串，形如 redis://[:password@]host:port[/db]。密码走连接串，不另设变量 */
-export const redisUrl = cfg('REDIS_URL')?.trim() ?? ''
+export const redisUrl = cfg('cluster.redisUrl')?.trim() ?? ''
 
 /** 键空间前缀：多个环境共用一台 Redis 时靠它隔离 */
-export const redisKeyPrefix = cfg('REDIS_KEY_PREFIX')?.trim() || 'shadecn'
+export const redisKeyPrefix = cfg('cluster.redisKeyPrefix')?.trim() || 'shadecn'
 
 /**
  * 这个进程的身份。
@@ -173,24 +168,24 @@ export const redisKeyPrefix = cfg('REDIS_KEY_PREFIX')?.trim() || 'shadecn'
  * 冒名防线会把正主的更新当成冒用丢掉。日志前缀也用它。
  */
 export const instanceId =
-  cfg('INSTANCE_ID')?.trim() || `${hostname()}-${randomUUID().slice(0, 8)}`
+  cfg('server.instanceId')?.trim() || `${hostname()}-${randomUUID().slice(0, 8)}`
 
 function resolveClusterMode(): ClusterMode {
-  const explicit = cfg('CLUSTER_MODE')?.trim()
+  const explicit = cfg('cluster.mode')?.trim()
   if (explicit) {
     if (explicit !== 'single' && explicit !== 'redis') {
       throw new Error(`CLUSTER_MODE 只能是 single / redis，收到的是 "${explicit}"`)
     }
     return explicit
   }
-  return cfg('REDIS_URL')?.trim() ? 'redis' : 'single'
+  return cfg('cluster.redisUrl')?.trim() ? 'redis' : 'single'
 }
 
 /**
  * 启动时校验一次。
  *
  * 两条的性质不一样：
- * - 说要多副本却没给 REDIS_URL —— 这是**配置自相矛盾**，任何环境都直接拒绝启动；
+ * - 说要多副本却没给 CLUSTER_REDIS_URL —— 这是**配置自相矛盾**，任何环境都直接拒绝启动；
  * - 多副本配着 SQLite —— 真跑多副本时不成立（单文件库没法被多个进程共享），
  *   但本地拿 SQLite + Redis 单进程验证 Redis 那条链路是完全合理的调试姿势，
  *   所以开发环境只警告，生产才拒绝。
@@ -198,7 +193,7 @@ function resolveClusterMode(): ClusterMode {
 export function assertClusterConfig() {
   if (!isClustered) return
 
-  if (!redisUrl) throw new Error('[cluster] CLUSTER_MODE=redis 时必须提供 REDIS_URL')
+  if (!redisUrl) throw new Error('[cluster] CLUSTER_MODE=redis 时必须提供 CLUSTER_REDIS_URL')
 
   if (dbProvider !== 'postgresql') {
     const hint =
@@ -216,14 +211,14 @@ export function assertClusterConfig() {
  * 默认 `info`（**开发环境也一样**）：`debug` 会把每条 SQL、每次落库、每帧协同事件都打出来，
  * 那是排查时临时开的档位，不是日常。
  */
-export const logLevel = cfg('LOG_LEVEL')?.trim() || 'info'
+export const logLevel = cfg('log.level')?.trim() || 'info'
 
 /**
  * 输出形态。`json` 一行一个对象（给日志采集用），`pretty` 是给人看的带色彩单行。
  *
  * 默认按环境走：生产 json，开发 pretty。容器里如果接了 Loki / ELK，保持 json。
  */
-export const logFormat = (cfg('LOG_FORMAT')?.trim() || (isDev ? 'pretty' : 'json')) as
+export const logFormat = (cfg('log.format')?.trim() || (isDev ? 'pretty' : 'json')) as
   | 'pretty'
   | 'json'
 
@@ -231,7 +226,7 @@ export const logFormat = (cfg('LOG_FORMAT')?.trim() || (isDev ? 'pretty' : 'json
  * 额外写文件的目录（相对路径按仓库根目录算）。**不设 = 只写 stdout**，这也是容器里该有的样子 ——
  * k8s 收的是 stdout，往容器内写文件只会把日志留在一个随 Pod 一起消失的层里。
  */
-export const logDir = cfg('LOG_DIR')?.trim() ? resolveFromRoot(cfg('LOG_DIR')!.trim()) : ''
+export const logDir = cfg('log.dir')?.trim() ? resolveFromRoot(cfg('log.dir')!.trim()) : ''
 
 /**
  * 请求日志记到什么程度：
@@ -240,13 +235,13 @@ export const logDir = cfg('LOG_DIR')?.trim() ? resolveFromRoot(cfg('LOG_DIR')!.t
  * - `all` —— 全记，排查静态资源 / 页面守卫时才需要。
  * - `off` —— 一条不记（失败也不记，那时靠 `app.onError`）。
  */
-export const logHttp = (cfg('LOG_HTTP')?.trim() || 'api') as 'api' | 'all' | 'off'
+export const logHttp = (cfg('log.http')?.trim() || 'api') as 'api' | 'all' | 'off'
 
 /** 超过这个毫秒数的请求单独记一条 warn，`api` 模式下即使不是 /api 也记 */
-export const logSlowRequestMs = Number(cfg('LOG_SLOW_MS') ?? 1000)
+export const logSlowRequestMs = Number(cfg('log.slowMs') ?? 1000)
 
 /** 超过这个毫秒数的数据库查询记一条 warn。0 = 不记 */
-export const logSlowQueryMs = Number(cfg('LOG_SLOW_QUERY_MS') ?? 200)
+export const logSlowQueryMs = Number(cfg('log.slowQueryMs') ?? 200)
 
 /**
  * 把一个 origin 归一化成可比较的形式：`协议://host[:非默认端口]`，全小写、去尾斜杠。
@@ -267,32 +262,32 @@ export function normalizeOrigin(value: string | null | undefined): string | null
   }
 }
 
-/** 应用对外地址：没配 `APP_ORIGIN` 时按监听地址兜底，同时也是白名单的默认成员 */
+/** 应用对外地址：没配 `SERVER_ORIGIN` 时按监听地址兜底，同时也是白名单的默认成员 */
 export const appOrigin =
-  normalizeOrigin(cfg('APP_ORIGIN')) ?? normalizeOrigin(`http://${host}:${port}`) ?? ''
+  normalizeOrigin(cfg('server.origin')) ?? normalizeOrigin(`http://${host}:${port}`) ?? ''
 
 /**
  * 允许的对外域名白名单。
  *
  * 同一套部署常常挂在好几个域名下（内网域名 / 外网域名 / 老域名 / 裸 IP），
  * 而 OAuth 的 `redirect_uri`、CORS、WebSocket 的 `Origin` 校验都是**绝对地址**，
- * 写死一个 `APP_ORIGIN` 就意味着：从别的域名进来的人，登录会被甩到另一个域名上
+ * 写死一个 `SERVER_ORIGIN` 就意味着：从别的域名进来的人，登录会被甩到另一个域名上
  * （cookie 也就落在了那个域名下），或者干脆被提供方以 redirect_uri 不匹配拒掉。
  *
  * 所以这些地方一律改成「按这次请求的域名来」，再用这份名单收口 ——
- * 名单之外的一律回落到 `APP_ORIGIN`，绝不跟着 `Host` 头走。
+ * 名单之外的一律回落到 `SERVER_ORIGIN`，绝不跟着 `Host` 头走。
  * 反代后面 `Host` 是外部可控的输入，无脑相信它就是 host header 注入。
  *
- * 写法：`APP_ORIGINS="https://a.example.com,https://b.example.com"`（逗号或空白分隔）。
+ * 写法：`SERVER_ORIGINS="https://a.example.com,https://b.example.com"`（逗号或空白分隔）。
  * **不支持通配符**：每个域名的 `/api/auth/callback` 都得在 Keycloak / GitHub 那边
  * 注册成合法回调，通配符只会造出一批注册不了的地址。
  */
 export const appOrigins: readonly string[] = (() => {
-  const listed = (cfg('APP_ORIGINS') ?? '')
+  const listed = (cfg('server.origins') ?? '')
     .split(/[\s,]+/)
     .map((item) => normalizeOrigin(item))
     .filter((item): item is string => Boolean(item))
-  // APP_ORIGIN 永远在名单里：它是兜底值，不在名单里的话回落目标自己就是非法的
+  // SERVER_ORIGIN 永远在名单里：它是兜底值，不在名单里的话回落目标自己就是非法的
   return [...new Set([appOrigin, ...listed].filter(Boolean))]
 })()
 
@@ -307,7 +302,7 @@ export function isAllowedOrigin(value: string | null | undefined): boolean {
  *
  * 依次看 `X-Forwarded-Proto` + `X-Forwarded-Host`（反代改写过的对外地址）、`Host`、
  * 最后才是 `Origin`（整页导航根本不带这个头，只在 XHR 上有）。取第一个**在白名单里**的；
- * 一个都不在就回落 `APP_ORIGIN` —— 行为和加这个特性之前完全一样。
+ * 一个都不在就回落 `SERVER_ORIGIN` —— 行为和加这个特性之前完全一样。
  */
 export function resolveOrigin(headers: {
   origin?: string | null

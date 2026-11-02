@@ -33,7 +33,7 @@ import { actor, createFlow, createProject } from '../helpers/project.ts'
  *   pnpm build:sandbox-image
  *   AGENT_SANDBOX_OCI_IT=1 TEST_DATABASE_URL= pnpm exec vitest run --project=server sandbox-oci
  *
- * 可选：`AGENT_SANDBOX_IMAGE`（默认 `shadecn-agent-sandbox:latest`）、`AGENT_SANDBOX_OCI_SOCKET`（不给按常见位置找）、
+ * 可选：`MODULES_AGENT_SANDBOX_IMAGE`（默认 `shadecn-agent-sandbox:latest`）、`MODULES_AGENT_SANDBOX_OCI_SOCKET`（不给按常见位置找）、
  * `AGENT_SANDBOX_OCI_IT_HOST`（容器里看到的宿主名，默认 `host.docker.internal`；app 只听 127.0.0.1，
  * 所以是按 podman machine / Docker Desktop 写的 —— Linux 上要改成宿主网卡地址并让 app 监听在那上面）。
  *
@@ -45,7 +45,7 @@ import { actor, createFlow, createProject } from '../helpers/project.ts'
 const enabled = process.env.AGENT_SANDBOX_OCI_IT === '1'
 /** 一个「旧版本」的镜像（没带协议版本的 runner）；给了才跑「旧镜像被拒」那条用例，如 `shadecn-agent-sandbox:pre-version` */
 const staleImage = process.env.AGENT_SANDBOX_OCI_IT_STALE_IMAGE?.trim() || ''
-const image = process.env.AGENT_SANDBOX_IMAGE?.trim() || 'shadecn-agent-sandbox:latest'
+const image = process.env.MODULES_AGENT_SANDBOX_IMAGE?.trim() || 'shadecn-agent-sandbox:latest'
 const hostName = process.env.AGENT_SANDBOX_OCI_IT_HOST?.trim() || 'host.docker.internal'
 /** 这批用例自己的实例标识：只清自己建的容器 */
 const instance = `it-${process.pid}`
@@ -76,7 +76,7 @@ function raw(method: string, requestPath: string, body?: unknown): Promise<{ sta
 
 describe.skipIf(!enabled)('oci 驱动：真实容器引擎（AGENT_SANDBOX_OCI_IT=1）', () => {
   beforeAll(async () => {
-    const found = findEngineSocket(process.env.AGENT_SANDBOX_OCI_SOCKET?.trim() ?? '', process.env)
+    const found = findEngineSocket(process.env.MODULES_AGENT_SANDBOX_OCI_SOCKET?.trim() ?? '', process.env)
     if (!found.ok) throw new Error(found.reason)
     socketPath = found.path
     engine = createEngineClient(socketPath)

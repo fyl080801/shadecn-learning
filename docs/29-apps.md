@@ -59,9 +59,9 @@
 
 | 配置项 | 环境变量 | 默认 | 说明 |
 |---|---|---|---|
-| `modules.apps.file` | `APPS_FILE` | `<dataDir>/apps.yaml` | 应用表文件（YAML / JSON），相对路径按应用根目录 |
-| `modules.apps.timeoutMs` | `APPS_TIMEOUT_MS` | `600000` | 应用没写 `timeoutMs` 时一次执行的时限 |
-| `modules.apps.enabled` | `APPS_ENABLED` | `true` | 开关 |
+| `modules.apps.file` | `MODULES_APPS_FILE` | `<dataDir>/apps.yaml` | 应用表文件（YAML / JSON），相对路径按应用根目录 |
+| `modules.apps.timeoutMs` | `MODULES_APPS_TIMEOUT_MS` | `600000` | 应用没写 `timeoutMs` 时一次执行的时限 |
+| `modules.apps.enabled` | `MODULES_APPS_ENABLED` | `true` | 开关 |
 
 完整示例：仓库根的 [`apps.example.yaml`](../apps.example.yaml)（`packages/mod-apps/test/example.test.ts` 解析它，写错了测试会红）。形状：
 

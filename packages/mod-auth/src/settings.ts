@@ -57,7 +57,7 @@ export function callbackUriFor(origin: string) {
 }
 
 /**
- * 这个 origin 下的 cookie 该不该带 Secure —— 按**这次请求的域名**算，不是按 `APP_ORIGIN` 一刀切：
+ * 这个 origin 下的 cookie 该不该带 Secure —— 按**这次请求的域名**算，不是按 `SERVER_ORIGIN` 一刀切：
  * 白名单里可以同时有 http 和 https 的域名，一刀切的话 https 那边漏了 Secure、http 那边 cookie 直接种不下去
  * （表现为「登录成功但还是未登录」）。
  */

@@ -48,7 +48,7 @@ describe('共享层上的占用登记表', () => {
     expect(await registry.list('f1')).toEqual(new Map())
   })
 
-  it('生产接线：agentHostOptions 带的就是共享层那一份，TTL 取 AGENT_LEASE_TTL_MS（默认 30 秒）', () => {
+  it('生产接线：agentHostOptions 带的就是共享层那一份，TTL 取 MODULES_AGENT_LEASE_TTL_MS（默认 30 秒）', () => {
     expect(agentHostOptions.leases).toBe(agentNodeLeases)
     expect(agentNodeLeases.ttlMs).toBe(30_000)
     expect(agentNodeLeases.instanceId).toEqual(expect.any(String))

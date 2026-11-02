@@ -28,11 +28,11 @@ export type { AgentSkillId } from '@shadecn/shared/agent'
 
 /** 部署条件：宿主的配置与模型的能力（服务端一轮开始时算好） */
 export interface SkillDeployment {
-  /** 模型支持图片输入（`model.input` 含 `image`；`AGENT_IMAGE_INPUT` 可覆盖） */
+  /** 模型支持图片输入（`model.input` 含 `image`；`MODULES_AGENT_IMAGE_INPUT` 可覆盖） */
   imageInput: boolean
   /** 宿主接了素材读取（配了对象存储，`MediaReader`） */
   mediaReader: boolean
-  /** 宿主开了沙箱里的命令执行（apps/server：`AGENT_SANDBOX_EXEC=1`） */
+  /** 宿主开了沙箱里的命令执行（apps/server：`MODULES_AGENT_SANDBOX_EXEC=1`） */
   sandboxExec: boolean
 }
 

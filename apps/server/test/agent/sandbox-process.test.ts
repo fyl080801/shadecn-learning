@@ -358,7 +358,7 @@ describe('runner 进程的退出码（协议版本）', () => {
   })
 })
 
-/** 放行 sandbox:exec 的一份 authority（生产里由 AGENT_SANDBOX_EXEC 决定，测试的环境没开） */
+/** 放行 sandbox:exec 的一份 authority（生产里由 MODULES_AGENT_SANDBOX_EXEC 决定，测试的环境没开） */
 async function mediaAuthority() {
   const { createGrantAuthority } = await import('@shadecn/mod-agent/authority')
   return createGrantAuthority({ expiryMarginMs: 60_000, entitled: () => true })

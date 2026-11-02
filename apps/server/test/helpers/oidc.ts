@@ -9,8 +9,8 @@ import { vi } from 'vitest'
  */
 export const ISSUER = 'https://keycloak.test/realms/test'
 export const CLIENT_ID = 'test-client'
-export const APP_ORIGIN = 'http://127.0.0.1:3000'
-export const REDIRECT_URI = `${APP_ORIGIN}/api/auth/callback`
+export const SERVER_ORIGIN = 'http://127.0.0.1:3000'
+export const REDIRECT_URI = `${SERVER_ORIGIN}/api/auth/callback`
 
 export const DISCOVERY_URL = `${ISSUER}/.well-known/openid-configuration`
 export const AUTHORIZATION_ENDPOINT = `${ISSUER}/protocol/openid-connect/auth`

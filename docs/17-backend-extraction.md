@@ -54,7 +54,7 @@ Node 现在直接碰持久化的只有四类。
 - Yjs 全部运行时行为 —— 合并、状态向量、增量编码、悬空边清理、`UndoManager` 语义；
 - Hocuspocus 房间生命周期、awareness、身份改写、单连接互斥、配额度量与 `readOnly` NACK；
 - OIDC：PKCE、JWKS、`id_token` 校验、token 交换与刷新（后端只存 token，不去 Keycloak）；
-- 会话 cookie 的 HMAC（`SESSION_SECRET` 不出 Node，后端只把 `HMAC(token)` 当主键）；
+- 会话 cookie 的 HMAC（`MODULES_AUTH_SESSION_SECRET` 不出 Node，后端只把 `HMAC(token)` 当主键）；
 - **鉴权判定规则**：非成员 404 不 403、个人空间拒协同、personal 项目拒成员管理。
   后端只回**事实**（角色、项目形态），不回 HTTP 语义 —— 否则那条「不泄露存在性」的铁律
   就变成两个系统共同维护的东西。
@@ -93,7 +93,7 @@ sweepExpired(before: string): Promise<{ sessions: number; authRequests: number }
 
 三个要点：
 
-- `id` 由 Node 算（`HMAC-SHA256(SESSION_SECRET, cookie token)`）。后端看不到 cookie 里的原始 token，
+- `id` 由 Node 算（`HMAC-SHA256(MODULES_AUTH_SESSION_SECRET, cookie token)`）。后端看不到 cookie 里的原始 token，
   拖库也伪造不出 cookie —— 这个性质是现在就有的，下沉后更要保住。
 - **`refreshSession` 必须原子**。它现在是一个 `em.transactional()`（session 更新 + user 更新）：
   换完 token 的同时把 Keycloak 侧可能变过的角色同步进 `User.roles`。拆成两个调用，

@@ -13,23 +13,23 @@
 # 否则它们会被 prune 掉）。
 #
 # 和单副本那份的区别只有配置，镜像是同一个：副本模式由 CLUSTER_MODE 决定，
-# 数据库种类由 DB_PROVIDER / DATABASE_URL 决定，都不是构建时绑死的
+# 数据库种类由 DATABASE_PROVIDER / DATABASE_URL 决定，都不是构建时绑死的
 # （MikroORM 的驱动在运行时按配置动态加载，同一个镜像两种库都能连）。
 #
 # ⚠️ 这一份没有跟上单副本那份后来加的东西：serviceAccountName、nodeSelector（arm64，CI 只构建 arm64）、
-# 画布 agent 沙箱的那组 env（AGENT_SANDBOX=k8s、POD_IP…，docs/22 §7.5）。覆盖之前把它们从 k8s/deployment.yaml 一起带过来；
+# 画布 agent 沙箱的那组 env（MODULES_AGENT_SANDBOX_DRIVER=k8s、POD_IP…，docs/22 §7.5）。覆盖之前把它们从 k8s/deployment.yaml 一起带过来；
 # k8s 沙箱在多副本下照常工作（每个副本用自己的 Pod IP 当网关地址）。
 #
 # 前置：集群里得有 Redis 和 PostgreSQL。这里假设它们已经存在，
 # 连接串放进 Secret（见下）——本仓库不管它们怎么部署。
 #
 #   kubectl -n dev create secret generic shadecn-learning-auth \
-#     --from-literal=KEYCLOAK_CLIENT_SECRET="$KEYCLOAK_CLIENT_SECRET" \
-#     --from-literal=SESSION_SECRET="$SESSION_SECRET" \
-# 要开 GitHub 登录就再加 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET 两个键 ——
+#     --from-literal=MODULES_AUTH_KEYCLOAK_CLIENT_SECRET="$MODULES_AUTH_KEYCLOAK_CLIENT_SECRET" \
+#     --from-literal=MODULES_AUTH_SESSION_SECRET="$MODULES_AUTH_SESSION_SECRET" \
+# 要开 GitHub 登录就再加 MODULES_AUTH_GITHUB_CLIENT_ID / MODULES_AUTH_GITHUB_CLIENT_SECRET 两个键 ——
 # 下面的 envFrom 是整份 Secret 注入，Deployment 本身不用改。回调地址和 Keycloak 共用。
 #     --from-literal=DATABASE_URL="postgresql://user:pass@postgres:5432/app?schema=public" \
-#     --from-literal=REDIS_URL="redis://redis:6379" \
+#     --from-literal=CLUSTER_REDIS_URL="redis://redis:6379" \
 #     --dry-run=client -o yaml | kubectl apply -f -
 apiVersion: apps/v1
 kind: Deployment
@@ -59,7 +59,7 @@ spec:
     spec:
       containers:
         - name: shadecn-learning
-          # 必须是 DB_PROVIDER=postgresql 构建出来的镜像，见 docs/12
+          # 必须是 DATABASE_PROVIDER=postgresql 构建出来的镜像，见 docs/12
           image: 192.168.68.95:31443/apps/shadecn-learning:b5752c6
           imagePullPolicy: Always
           ports:
@@ -67,43 +67,43 @@ spec:
           env:
             - name: NODE_ENV
               value: production
-            - name: HOST
+            - name: SERVER_HOST
               value: 0.0.0.0
-            - name: PORT
+            - name: SERVER_PORT
               value: "3000"
             # ---- 多副本 ----
             - name: CLUSTER_MODE
               value: redis
             # awareness 的归属登记要区分「哪个实例的哪条连接」，
             # 用 Pod 名当实例 id 最省事，重建也自然换新
-            - name: INSTANCE_ID
+            - name: SERVER_INSTANCE_ID
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
             # 多个环境共用一台 Redis 时改这个，别让 dev 和 prod 撞键
-            - name: REDIS_KEY_PREFIX
+            - name: CLUSTER_REDIS_KEY_PREFIX
               value: shadecn-dev
             # ---- 数据库 ----
             # DATA_DIR 和 PVC 都没了：PostgreSQL 不需要本地卷
-            - name: DB_PROVIDER
+            - name: DATABASE_PROVIDER
               value: postgresql
-            # DATABASE_URL / REDIS_URL 都在 Secret 里（连接串带密码）
-            - name: APP_ORIGIN
+            # DATABASE_URL / CLUSTER_REDIS_URL 都在 Secret 里（连接串带密码）
+            - name: SERVER_ORIGIN
               value: https://demo.fyl080801.uk
-            # 多域名访问时把每个对外域名都列进来（逗号分隔），APP_ORIGIN 自动在内。
+            # 多域名访问时把每个对外域名都列进来（逗号分隔），SERVER_ORIGIN 自动在内。
             # 配上之后 redirect_uri / CORS / WebSocket Origin / 分享链接都按访问的
-            # 域名走；名单外的 Host 回落 APP_ORIGIN。每个域名的 /api/auth/callback
+            # 域名走；名单外的 Host 回落 SERVER_ORIGIN。每个域名的 /api/auth/callback
             # 都要加进 Keycloak client 的 Valid redirect URIs。
-            # - name: APP_ORIGINS
+            # - name: SERVER_ORIGINS
             #   value: https://demo.fyl080801.uk,https://demo.internal.fyl080801.uk
-            - name: KEYCLOAK_ISSUER
+            - name: MODULES_AUTH_KEYCLOAK_ISSUER
               value: https://keycloak.fyl080801.uk/realms/master
-            - name: KEYCLOAK_CLIENT_ID
+            - name: MODULES_AUTH_KEYCLOAK_CLIENT_ID
               value: sample
-            - name: KEYCLOAK_SCOPE
+            - name: MODULES_AUTH_KEYCLOAK_SCOPE
               value: openid profile email
             # 画布资源单个文件上限（MB），分片上传开始时校验；单片大小另由 ingress 的 proxy-body-size 放行
-            - name: S3_MAX_UPLOAD_MB
+            - name: MODULES_STORAGE_MAX_UPLOAD_MB
               value: "500"
           envFrom:
             - secretRef:

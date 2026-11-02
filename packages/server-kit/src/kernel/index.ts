@@ -5,6 +5,7 @@
 export {
   DEFAULT_SHUTDOWN_TIMEOUT_MS,
   defineModule,
+  defineModuleConfig,
   type AnyServerModule,
   type ModuleConfig,
   type ModuleContext,
@@ -24,7 +25,7 @@ export {
   type RouteDeclaration,
   type RouteTable,
 } from './routes.ts'
-export { enabledEnvOf, moduleConfigSchema, parseModuleConfigs, type ModuleConfigs } from './config.ts'
+export { moduleConfigPath, moduleConfigSchema, moduleEnvName, parseModuleConfigs, type ModuleConfigs } from './config.ts'
 export { activeDependencies, resolveModules, type ResolvedModules, type SkippedModule } from './resolve.ts'
 export { startModules, withDeadline, type HttpHost, type LoadedModules, type StartContext } from './lifecycle.ts'
 export { loadedFeatures, recordFeatures, type FeatureTable } from './registry.ts'

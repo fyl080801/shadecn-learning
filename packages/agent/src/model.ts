@@ -4,8 +4,8 @@ import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all'
 /**
  * 选模型 —— 输入是一个**显式的参数对象**，本包不读 `process.env`。
  *
- * 环境变量怎么解析（`AGENT_PROVIDER` / `AGENT_MODEL` / `AGENT_BASE_URL` / `AGENT_API` /
- * `AGENT_API_KEY`，以及没给 key 时按提供方退回它自己的环境变量）是宿主的事，
+ * 环境变量怎么解析（`MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` / `MODULES_AGENT_BASE_URL` / `MODULES_AGENT_API` /
+ * `MODULES_AGENT_API_KEY`，以及没给 key 时按提供方退回它自己的环境变量）是宿主的事，
  * 在 `packages/server-core/src/config.ts` 和 `packages/mod-agent/src/` 里。这样这个包测起来不用摆弄环境，
  * 换一个宿主（CLI、别的服务）也不会被一份它不认识的环境约定绑住。
  *
@@ -87,7 +87,7 @@ const CUSTOM_DEFAULTS = {
  * pi 注册表之外、但形状固定的提供方。
  *
  * **ollama**：本机 `ollama serve` 的 OpenAI 兼容端点（`/v1`）。本地模型和 `:cloud` 云模型
- * （ollama 替你转发到 ollama.com）走的是同一个口子，所以 `AGENT_MODEL` 写 `ollama list` 里的名字即可，
+ * （ollama 替你转发到 ollama.com）走的是同一个口子，所以 `MODULES_AGENT_MODEL` 写 `ollama list` 里的名字即可，
  * 如 `deepseek-v4.1-flash:1017-cloud`。
  * - **不要 key**：本机端点不鉴权，OpenAI SDK 又要求一个非空值，给个占位；云模型的鉴权是
  *   `ollama signin` 存在 ollama 那边的，不经过我们。显式给了 key（远端带鉴权的 ollama）照样用；

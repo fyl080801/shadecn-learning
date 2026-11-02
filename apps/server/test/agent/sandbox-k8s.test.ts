@@ -34,11 +34,11 @@ import { actor, createFlow, createProject } from '../helpers/project.ts'
  *   AGENT_SANDBOX_K8S_IT=1 \
  *   AGENT_SANDBOX_K8S_IT_API_URL=http://127.0.0.1:8001 \      # 例如 kubectl proxy（⚠️ 它用的是 kubectl 当前的 context，先确认）
  *   AGENT_SANDBOX_K8S_IT_NAMESPACE=shadecn-agent-sandbox \     # 已按 k8s/variants/agent-sandbox.yaml 建好的测试命名空间
- *   AGENT_SANDBOX_IMAGE=<节点拉得到的沙箱镜像完整引用> \
+ *   MODULES_AGENT_SANDBOX_IMAGE=<节点拉得到的沙箱镜像完整引用> \
  *   TEST_DATABASE_URL= pnpm exec vitest run --project=server sandbox-k8s
  *
  * 可选：`AGENT_SANDBOX_K8S_IT_TOKEN_FILE` / `_CA_FILE`（直连 API server 时；kubectl proxy 不要）、
- * `AGENT_SANDBOX_K8S_IT_PULL_SECRET`、`AGENT_SANDBOX_K8S_IT_RUNTIME_CLASS`、`AGENT_SANDBOX_K8S_IT_NODE_SELECTOR`（同 `AGENT_SANDBOX_K8S_NODE_SELECTOR` 的写法）；
+ * `AGENT_SANDBOX_K8S_IT_PULL_SECRET`、`AGENT_SANDBOX_K8S_IT_RUNTIME_CLASS`、`AGENT_SANDBOX_K8S_IT_NODE_SELECTOR`（同 `MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR` 的写法）；
  * `AGENT_SANDBOX_K8S_IT_GATEWAY_HOST` = 集群里的 Pod 连得到本机的地址（给了才跑「完整一轮」，app 会监听 0.0.0.0）；
  * `AGENT_SANDBOX_K8S_IT_NETPOL=1` = 命名空间里已经应用了 NetworkPolicy（给了才跑「出不了网」那条）。
  *
@@ -52,7 +52,7 @@ import { actor, createFlow, createProject } from '../helpers/project.ts'
 const env = (name: string) => process.env[name]?.trim() ?? ''
 const apiUrl = env('AGENT_SANDBOX_K8S_IT_API_URL')
 const namespace = env('AGENT_SANDBOX_K8S_IT_NAMESPACE')
-const image = env('AGENT_SANDBOX_IMAGE')
+const image = env('MODULES_AGENT_SANDBOX_IMAGE')
 const gatewayHost = env('AGENT_SANDBOX_K8S_IT_GATEWAY_HOST')
 const enabled = env('AGENT_SANDBOX_K8S_IT') === '1' && Boolean(apiUrl && namespace && image)
 const itNodeSelector = parseK8sNodeSelector(env('AGENT_SANDBOX_K8S_IT_NODE_SELECTOR'))

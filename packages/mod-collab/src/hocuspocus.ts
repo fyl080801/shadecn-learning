@@ -686,7 +686,7 @@ export async function attachCollabServer(): Promise<Hocuspocus> {
  * 协同的 WebSocket 入口：交给底座的 `ctx.http.upgrade(COLLAB_PATH, …)`，底座按路径分发过来（别的路径不会进到这里）。
  *
  * upgrade 是裸的 node 事件，Hono 那条中间件链（CORS、页面守卫）一个都没经过，所以跨站握手（CSWSH）在这里自己挡，
- * 进不到 `onConnect`（规则见 `./authorize.ts` 的 `isAllowedCollabOrigin`）。回一行 403 再断开：配错 `APP_ORIGIN` 时，
+ * 进不到 `onConnect`（规则见 `./authorize.ts` 的 `isAllowedCollabOrigin`）。回一行 403 再断开：配错 `SERVER_ORIGIN` 时，
  * 这比一个 TCP reset 好查得多。
  */
 export function createCollabUpgrade(hocuspocus: Hocuspocus): (req: IncomingMessage, socket: Duplex, head: Buffer) => void {

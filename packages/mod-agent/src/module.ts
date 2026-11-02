@@ -5,7 +5,7 @@ import { users } from '@shadecn/server-kit/identity'
 import { defineModule } from '@shadecn/server-kit/kernel'
 import type { PlatformAuth, RuntimeInfo } from '@shadecn/server-kit/platform'
 import { startAgentReconciler } from './authority.ts'
-import { agentConfig, agentProviderApiKey, type AgentConfig } from './config.ts'
+import { AGENT_MODULE, agentConfig, agentProviderApiKey, type AgentConfig } from './config.ts'
 import { agentDefinitions, agentTextSkills } from './definitions.ts'
 import { handleRunDispatch } from './dispatch.ts'
 import { AgentConversation, AgentGrant, AgentGrantScope, AgentRun, AgentToolCall } from './entities.ts'
@@ -25,7 +25,7 @@ export const AGENT_PANEL_PATH = '/api/flows/:flowId/agent'
 export function wireAgent(deps: {
   config: AgentConfig
   runtime: RuntimeInfo
-  /** 没配 `AGENT_TOKEN_SECRET` 时由它从会话密钥派生签 run 令牌的密钥 */
+  /** 没配 `MODULES_AGENT_TOKEN_SECRET` 时由它从会话密钥派生签 run 令牌的密钥 */
   auth: Pick<PlatformAuth, 'deriveSecret'>
   executesRuns: boolean
   canvas: Pick<CanvasService, 'locate' | 'roleOf'>
@@ -76,7 +76,7 @@ export function wireAgent(deps: {
  * 房间随 collab 的落库一起存；这一轮的对话和运行日志要赶在关数据库之前写进去。上限 5 秒，和 collab 的 20 秒一起仍在 60 秒宽限期内。
  */
 export default defineModule({
-  name: 'agent',
+  name: AGENT_MODULE,
   roles: ['web', 'agent'],
   dependsOn: ['canvas', { module: 'collab', roles: ['agent'] }],
   optional: ['storage'],

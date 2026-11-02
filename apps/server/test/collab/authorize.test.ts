@@ -146,7 +146,7 @@ describe('isAllowedCollabOrigin', () => {
     expect(isAllowedCollabOrigin(undefined, host)).toBe(true)
   })
 
-  it('Origin 就是 APP_ORIGIN → 放行', () => {
+  it('Origin 就是 SERVER_ORIGIN → 放行', () => {
     expect(isAllowedCollabOrigin(appOrigin, host)).toBe(true)
   })
 
@@ -156,8 +156,8 @@ describe('isAllowedCollabOrigin', () => {
     expect(isAllowedCollabOrigin(`${appOrigin}.evil.example`, host)).toBe(false)
   })
 
-  it('Origin 的 host 和请求的 Host 一致 → 放行：APP_ORIGIN 没配对时也不该断线', () => {
-    // dev 下 APP_ORIGIN 默认是 127.0.0.1，人却从 localhost 打开
+  it('Origin 的 host 和请求的 Host 一致 → 放行：SERVER_ORIGIN 没配对时也不该断线', () => {
+    // dev 下 SERVER_ORIGIN 默认是 127.0.0.1，人却从 localhost 打开
     expect(isAllowedCollabOrigin('http://localhost:3000', 'localhost:3000')).toBe(true)
     // 端口不同就是不同源，不能放
     expect(isAllowedCollabOrigin('http://localhost:5173', 'localhost:3000')).toBe(false)
@@ -168,10 +168,10 @@ describe('isAllowedCollabOrigin', () => {
     expect(isAllowedCollabOrigin('不是个 URL', host)).toBe(false)
   })
 
-  it('APP_ORIGINS 里的另一个域名 → 放行；名单外的同名邻居还是拒绝', async () => {
+  it('SERVER_ORIGINS 里的另一个域名 → 放行；名单外的同名邻居还是拒绝', async () => {
     // 白名单是模块加载时算出来的常量，换一份 env 就得重新 import 一次
     vi.resetModules()
-    vi.stubEnv('APP_ORIGINS', 'https://b.example.com')
+    vi.stubEnv('SERVER_ORIGINS', 'https://b.example.com')
     // 平台（白名单在它背后）也要随新的模块图重新交一次，协同的判定经它读
     await import('@shadecn/server-core/platform')
     const ws = await import('@shadecn/mod-collab/authorize')

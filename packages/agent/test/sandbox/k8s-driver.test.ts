@@ -445,10 +445,10 @@ describe('k8s 驱动：Pod 规格', () => {
   })
 
   it('环境变量只有网关地址、一次性 token、工作目录三个；服务端进程里的密钥一个都不进请求', async () => {
-    vi.stubEnv('AGENT_API_KEY', 'sk-should-not-leak')
+    vi.stubEnv('MODULES_AGENT_API_KEY', 'sk-should-not-leak')
     vi.stubEnv('DATABASE_URL', 'postgresql://secret@db/app')
-    vi.stubEnv('SESSION_SECRET', 'session-secret')
-    vi.stubEnv('REDIS_URL', 'redis://:pw@redis:6379')
+    vi.stubEnv('MODULES_AUTH_SESSION_SECRET', 'session-secret')
+    vi.stubEnv('CLUSTER_REDIS_URL', 'redis://:pw@redis:6379')
     const api = await fakeKube()
     api.onCreate = (name) => setTimeout(() => api.exit(name, 0), 10)
     const { driver } = driverOn(api)
@@ -507,7 +507,7 @@ describe('k8s 驱动：Pod 规格', () => {
     expect(k8sPodSpec(spec(), { ...base, nodeSelector: {} }).spec).not.toHaveProperty('nodeSelector')
   })
 
-  it('AGENT_SANDBOX_K8S_NODE_SELECTOR 的解析：逗号分隔 key=value、空白忽略、空串 = 不限；格式错写明是哪一项', () => {
+  it('MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR 的解析：逗号分隔 key=value、空白忽略、空串 = 不限；格式错写明是哪一项', () => {
     expect(parseK8sNodeSelector('')).toEqual({ ok: true, value: {} })
     expect(parseK8sNodeSelector('  ')).toEqual({ ok: true, value: {} })
     expect(parseK8sNodeSelector(' kubernetes.io/arch = arm64 , node.example.com/pool=agents_1 ')).toEqual({
@@ -529,7 +529,7 @@ describe('k8s 驱动：Pod 规格', () => {
     expect(reason('a/b/c=1')).toContain('不是合法的 label 键')
     expect(reason(`${'x'.repeat(64)}=1`)).toContain('不是合法的 label 键')
     expect(reason(`arch=${'x'.repeat(64)}`)).toContain('不是合法的 label 值')
-    expect(reason('arch=arm64,arch=amd64')).toBe('AGENT_SANDBOX_K8S_NODE_SELECTOR 里 arch 出现了不止一次')
+    expect(reason('arch=arm64,arch=amd64')).toBe('MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR 里 arch 出现了不止一次')
   })
 
   it('准入兜底的反例：和正式规格只差 privileged（+ 允许提权，否则 API 先 422），别的一样', () => {
@@ -616,7 +616,7 @@ describe('k8s 驱动：生命周期', () => {
       })
     const { driver } = driverOn(api, { startTimeoutMs: 200 })
     const pulled = await (await driver.start(spec())).wait()
-    expect(pulled.reason).toMatch(/没有起来：镜像 registry\.example\/sandbox:test 拉不下来（ImagePullBackOff）.*AGENT_SANDBOX_IMAGE.*AGENT_SANDBOX_K8S_PULL_SECRET/)
+    expect(pulled.reason).toMatch(/没有起来：镜像 registry\.example\/sandbox:test 拉不下来（ImagePullBackOff）.*MODULES_AGENT_SANDBOX_IMAGE.*MODULES_AGENT_SANDBOX_K8S_PULL_SECRET/)
 
     api.onCreate = (name) =>
       setTimeout(
@@ -750,7 +750,7 @@ describe('k8s 驱动：起不来', () => {
   it('命名空间不存在 / 配额满 / RBAC / 准入拒绝：错误写明该查什么；一次性 token 不进错误信息', async () => {
     const api = await fakeKube()
     const { driver } = driverOn(api, { namespace: 'missing-ns' })
-    await expect(driver.start(spec())).rejects.toThrow(/沙箱命名空间 missing-ns 不存在（AGENT_SANDBOX_K8S_NAMESPACE/)
+    await expect(driver.start(spec())).rejects.toThrow(/沙箱命名空间 missing-ns 不存在（MODULES_AGENT_SANDBOX_K8S_NAMESPACE/)
 
     const cases: [{ code: number; reason: string; message: string }, RegExp][] = [
       [{ code: 403, reason: 'Forbidden', message: 'pods "x" is forbidden: exceeded quota: agent-sandbox, requested: pods=1, used: pods=20, limited: pods=20' }, /配额已满/],
@@ -881,7 +881,7 @@ describe('k8s 驱动：reap 与自检', () => {
     try {
       const kube = createKubeClient({ server: `http://127.0.0.1:${(denied.address() as AddressInfo).port}`, tokenFile: null, caFile: null })
       clients.push(kube)
-      await expect(createK8sDriver({ kube, image: 'r.example/s:1', instance: 'i' }).check()).rejects.toThrow(/不认服务端的凭据（401）.*AGENT_SANDBOX_K8S_TOKEN_FILE/)
+      await expect(createK8sDriver({ kube, image: 'r.example/s:1', instance: 'i' }).check()).rejects.toThrow(/不认服务端的凭据（401）.*MODULES_AGENT_SANDBOX_K8S_TOKEN_FILE/)
     } finally {
       denied.closeAllConnections()
       await new Promise((resolve) => denied.close(resolve))
@@ -902,19 +902,19 @@ describe('k8s API 客户端', () => {
     expect(api.requests.map((r) => r.auth)).toEqual(['Bearer token-1', 'Bearer token-2'])
 
     await rm(tokenFile)
-    await expect(kube.json('GET', '/version')).rejects.toThrow(/读不到 ServiceAccount token .*（ENOENT）.*AGENT_SANDBOX_K8S_TOKEN_FILE/)
+    await expect(kube.json('GET', '/version')).rejects.toThrow(/读不到 ServiceAccount token .*（ENOENT）.*MODULES_AGENT_SANDBOX_K8S_TOKEN_FILE/)
     // 不配 token（kubectl proxy）：不带 Authorization
     await client(api, null).json('GET', '/version')
     expect(api.requests.at(-1)!.auth).toBeUndefined()
   })
 
-  it('kubeConnection：集群内按 KUBERNETES_SERVICE_HOST / PORT（IPv6 加方括号）；显式地址优先；http 只许回环；token / CA 默认 ServiceAccount 的、留空 = 不用', () => {
+  it('kubeConnection：集群内按 KUBERNETES_SERVICE_HOST / SERVER_PORT（IPv6 加方括号）；显式地址优先；http 只许回环；token / CA 默认 ServiceAccount 的、留空 = 不用', () => {
     expect(kubeConnection({ apiUrl: '' }, { KUBERNETES_SERVICE_HOST: '10.96.0.1', KUBERNETES_SERVICE_PORT: '443' })).toEqual({
       ok: true,
       value: { server: 'https://10.96.0.1:443', tokenFile: SERVICE_ACCOUNT_TOKEN_FILE, caFile: SERVICE_ACCOUNT_CA_FILE },
     })
     expect(kubeConnection({ apiUrl: '' }, { KUBERNETES_SERVICE_HOST: 'fd00::1' })).toMatchObject({ ok: true, value: { server: 'https://[fd00::1]:443' } })
-    expect(kubeConnection({ apiUrl: '' }, {})).toEqual({ ok: false, reason: expect.stringContaining('AGENT_SANDBOX_K8S_API_URL') })
+    expect(kubeConnection({ apiUrl: '' }, {})).toEqual({ ok: false, reason: expect.stringContaining('MODULES_AGENT_SANDBOX_K8S_API_URL') })
     expect(kubeConnection({ apiUrl: 'http://127.0.0.1:8001/', tokenFile: '' }, { KUBERNETES_SERVICE_HOST: '10.96.0.1' })).toEqual({
       ok: true,
       value: { server: 'http://127.0.0.1:8001', tokenFile: null, caFile: null },
@@ -929,7 +929,7 @@ describe('k8s API 客户端', () => {
 
   it('CA 文件读不到：建客户端时就报错，写明该配哪一项', () => {
     expect(() => createKubeClient({ server: 'https://10.96.0.1:443', tokenFile: null, caFile: '/nonexistent/ca.crt' })).toThrow(
-      /读不到 k8s API 的 CA 证书（\/nonexistent\/ca\.crt：ENOENT）.*AGENT_SANDBOX_K8S_CA_FILE/,
+      /读不到 k8s API 的 CA 证书（\/nonexistent\/ca\.crt：ENOENT）.*MODULES_AGENT_SANDBOX_K8S_CA_FILE/,
     )
   })
 

@@ -86,7 +86,7 @@ export const K8S_PULL_POLICIES: readonly K8sPullPolicy[] = ['Always', 'IfNotPres
 
 export interface K8sDriverOptions {
   kube: KubeClient
-  /** 沙箱镜像（宿主的 `AGENT_SANDBOX_IMAGE`；集群里要写节点拉得到的完整引用） */
+  /** 沙箱镜像（宿主的 `MODULES_AGENT_SANDBOX_IMAGE`；集群里要写节点拉得到的完整引用） */
   image: string
   /**
    * 这个服务端实例的标识，打在 Pod 的 `instance` label 上（宿主用「沙箱看到的网关地址」的哈希，
@@ -102,7 +102,7 @@ export interface K8sDriverOptions {
   /** 不给用 k8s 的默认（`:latest` = Always，其余 IfNotPresent） */
   imagePullPolicy?: K8sPullPolicy
   /**
-   * 沙箱 Pod 只调度到带这些 label 的节点（宿主的 `AGENT_SANDBOX_K8S_NODE_SELECTOR`，{@link parseK8sNodeSelector} 解析）。
+   * 沙箱 Pod 只调度到带这些 label 的节点（宿主的 `MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR`，{@link parseK8sNodeSelector} 解析）。
    * 典型用途：镜像只构建了一种架构（`kubernetes.io/arch: arm64`），落到别的架构的节点上会拉不到镜像
    */
   nodeSelector?: Readonly<Record<string, string>>
@@ -194,7 +194,7 @@ function isLabelKey(key: string): boolean {
 }
 
 /**
- * `AGENT_SANDBOX_K8S_NODE_SELECTOR` 的值 → nodeSelector：逗号分隔的 `key=value`（如 `kubernetes.io/arch=arm64`），
+ * `MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR` 的值 → nodeSelector：逗号分隔的 `key=value`（如 `kubernetes.io/arch=arm64`），
  * 前后空白忽略；空串 = 不限节点。键 / 值不合法、空项、空值、重复的键都算格式错（宿主据此把 agent 标成未启用，原因写明）。
  * 本包不读 `process.env`：值由宿主传进来。
  */
@@ -203,7 +203,7 @@ export function parseK8sNodeSelector(text: string): { ok: true; value: Record<st
   if (!text.trim()) return { ok: true, value }
   for (const item of text.split(',')) {
     const entry = item.trim()
-    const where = `AGENT_SANDBOX_K8S_NODE_SELECTOR 的「${entry}」`
+    const where = `MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR 的「${entry}」`
     const eq = entry.indexOf('=')
     if (eq <= 0) return { ok: false, reason: `${where}不是 key=value（多项用逗号分隔，如 kubernetes.io/arch=arm64）` }
     const key = entry.slice(0, eq).trim()
@@ -212,7 +212,7 @@ export function parseK8sNodeSelector(text: string): { ok: true; value: Record<st
     if (!isLabelValue(label)) {
       return { ok: false, reason: `${where}：值「${label}」不是合法的 label 值（1～63 个字母数字或 - _ .，字母数字开头结尾）` }
     }
-    if (Object.hasOwn(value, key)) return { ok: false, reason: `AGENT_SANDBOX_K8S_NODE_SELECTOR 里 ${key} 出现了不止一次` }
+    if (Object.hasOwn(value, key)) return { ok: false, reason: `MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR 里 ${key} 出现了不止一次` }
     value[key] = label
   }
   return { ok: true, value }
@@ -365,7 +365,7 @@ function hopeless(pod: PodObject | undefined): string | null {
       ? '（常见原因：镜像以 root 运行而 Pod 要求 runAsNonRoot，或引用的 Secret / ConfigMap 不存在）'
       : waiting.reason === 'ErrImageNeverPull'
         ? '（imagePullPolicy 是 Never，而节点上没有这个镜像）'
-        : '（检查 AGENT_SANDBOX_IMAGE）'
+        : '（检查 MODULES_AGENT_SANDBOX_IMAGE）'
   return `沙箱 Pod 起不来（${waiting.reason}）：${clip(waiting.message)}${hint}`
 }
 
@@ -375,7 +375,7 @@ function describePending(pod: PodObject | undefined, image: string): string {
   if (scheduled?.status === 'False') return `调度不了（${scheduled.reason ?? 'Unschedulable'}）：${clip(scheduled.message)}`
   const waiting = runnerStatus(pod)?.state?.waiting
   if (waiting?.reason && PULL_WAITING.has(waiting.reason)) {
-    return `镜像 ${image} 拉不下来（${waiting.reason}）：${clip(waiting.message)}；检查 AGENT_SANDBOX_IMAGE、节点到镜像仓库的网络和 AGENT_SANDBOX_K8S_PULL_SECRET`
+    return `镜像 ${image} 拉不下来（${waiting.reason}）：${clip(waiting.message)}；检查 MODULES_AGENT_SANDBOX_IMAGE、节点到镜像仓库的网络和 MODULES_AGENT_SANDBOX_K8S_PULL_SECRET`
   }
   if (waiting?.reason) return `${waiting.reason}${waiting.message ? `：${clip(waiting.message)}` : ''}`
   return `还在 ${pod?.status?.phase ?? 'Pending'}`
@@ -409,9 +409,9 @@ function startFailure(err: unknown, namespace: string): string {
   if (err instanceof KubeUnavailableError) return err.message
   if (err instanceof KubeError) {
     const api = clip(err.apiMessage)
-    if (err.status === 401) return `k8s API 不认服务端的凭据（401）：检查 ServiceAccount token（AGENT_SANDBOX_K8S_TOKEN_FILE）`
+    if (err.status === 401) return `k8s API 不认服务端的凭据（401）：检查 ServiceAccount token（MODULES_AGENT_SANDBOX_K8S_TOKEN_FILE）`
     if (err.status === 404 && /namespace/i.test(err.apiMessage)) {
-      return `沙箱命名空间 ${namespace} 不存在（AGENT_SANDBOX_K8S_NAMESPACE；清单见 k8s/variants/agent-sandbox.yaml）：${api}`
+      return `沙箱命名空间 ${namespace} 不存在（MODULES_AGENT_SANDBOX_K8S_NAMESPACE；清单见 k8s/variants/agent-sandbox.yaml）：${api}`
     }
     if (err.status === 403 && /exceeded quota/i.test(err.apiMessage)) {
       return `沙箱命名空间 ${namespace} 的配额已满（同时在跑的沙箱太多，稍后再试）：${api}`
@@ -491,9 +491,9 @@ const EXCESS_PERMISSIONS = [
 export function createK8sDriver(options: K8sDriverOptions): K8sSandboxDriver {
   const { kube } = options
   const namespace = options.namespace ?? K8S_DEFAULT_NAMESPACE
-  if (!options.image) throw new Error('k8s 沙箱驱动没有配置镜像（AGENT_SANDBOX_IMAGE）')
+  if (!options.image) throw new Error('k8s 沙箱驱动没有配置镜像（MODULES_AGENT_SANDBOX_IMAGE）')
   if (!isLabelValue(options.instance)) throw new Error(`实例标识 ${options.instance} 不能做 label 值`)
-  if (!isNamespaceName(namespace)) throw new Error(`AGENT_SANDBOX_K8S_NAMESPACE=${namespace} 不是合法的命名空间名`)
+  if (!isNamespaceName(namespace)) throw new Error(`MODULES_AGENT_SANDBOX_K8S_NAMESPACE=${namespace} 不是合法的命名空间名`)
   for (const [key, value] of Object.entries(options.nodeSelector ?? {})) {
     if (!isLabelKey(key) || !isLabelValue(value)) throw new Error(`nodeSelector 的 ${key}=${value} 不是合法的 label`)
   }
@@ -775,7 +775,7 @@ export function createK8sDriver(options: K8sDriverOptions): K8sSandboxDriver {
         version = await kube.json<{ gitVersion?: string }>('GET', '/version')
       } catch (err) {
         if (err instanceof KubeError && err.status === 401) {
-          throw new Error(`k8s API 不认服务端的凭据（401）：检查 ServiceAccount token（AGENT_SANDBOX_K8S_TOKEN_FILE）`, { cause: err })
+          throw new Error(`k8s API 不认服务端的凭据（401）：检查 ServiceAccount token（MODULES_AGENT_SANDBOX_K8S_TOKEN_FILE）`, { cause: err })
         }
         throw err
       }
@@ -829,7 +829,7 @@ export function createK8sDriver(options: K8sDriverOptions): K8sSandboxDriver {
           if (err instanceof KubeUnavailableError) throw err
           const api = err instanceof KubeError ? err.apiMessage : message(err)
           if (err instanceof KubeError && err.status === 404 && /namespace/i.test(api)) {
-            problems.push(`沙箱命名空间 ${namespace} 不存在（AGENT_SANDBOX_K8S_NAMESPACE；清单见 k8s/variants/agent-sandbox.yaml）`)
+            problems.push(`沙箱命名空间 ${namespace} 不存在（MODULES_AGENT_SANDBOX_K8S_NAMESPACE；清单见 k8s/variants/agent-sandbox.yaml）`)
           } else if (/exceeded quota/i.test(api)) {
             warnings.push(`沙箱命名空间 ${namespace} 的配额此刻已满：${clip(api)}`)
           } else if (/dry.?run/i.test(api)) {
@@ -861,10 +861,10 @@ export function createK8sDriver(options: K8sDriverOptions): K8sSandboxDriver {
       // 节点按镜像引用去拉：不带仓库地址的名字会被当成 docker.io 上的
       const firstSegment = options.image.split('/')[0] ?? ''
       if (!options.image.includes('/') || !/[.:]|^localhost$/.test(firstSegment)) {
-        warnings.push(`沙箱镜像 ${options.image} 没写仓库地址，节点会去 docker.io 拉；集群里请给完整引用（AGENT_SANDBOX_IMAGE）`)
+        warnings.push(`沙箱镜像 ${options.image} 没写仓库地址，节点会去 docker.io 拉；集群里请给完整引用（MODULES_AGENT_SANDBOX_IMAGE）`)
       }
       if (!options.runtimeClassName) {
-        warnings.push('没有配 RuntimeClass（AGENT_SANDBOX_K8S_RUNTIME_CLASS）：沙箱用节点默认的运行时，不是 gVisor')
+        warnings.push('没有配 RuntimeClass（MODULES_AGENT_SANDBOX_K8S_RUNTIME_CLASS）：沙箱用节点默认的运行时，不是 gVisor')
       }
       return {
         server: kube.server,

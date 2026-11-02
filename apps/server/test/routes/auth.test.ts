@@ -113,18 +113,18 @@ describe('GET /api/auth/me', () => {
 })
 
 /**
- * 多域名部署（`APP_ORIGINS` 白名单）。
+ * 多域名部署（`SERVER_ORIGINS` 白名单）。
  *
  * 同一套服务挂在好几个域名下时，`redirect_uri` 不能是一个写死的常量：从 B 域名点
  * 登录却回到 A 域名，会话 cookie 就种在 A 上，人回到 B 依旧是未登录。
  * 反过来也不能无脑跟着 `Host` —— 那是外部可控的输入，跟着它就是把授权码送去别人家。
  */
-describe('多域名回跳（APP_ORIGINS 白名单）', () => {
+describe('多域名回跳（SERVER_ORIGINS 白名单）', () => {
   const ALT = 'https://alt.example.com'
 
   /** 白名单是模块加载时算出来的常量，改了 env 就得重新 import 整张模块图 */
   async function appWithWhitelist() {
-    vi.stubEnv('APP_ORIGINS', ALT)
+    vi.stubEnv('SERVER_ORIGINS', ALT)
     return importFreshApp()
   }
 
@@ -148,7 +148,7 @@ describe('多域名回跳（APP_ORIGINS 白名单）', () => {
     expect(request.origin).toBe(ALT)
   })
 
-  it('Host 不在名单里 → 回落 APP_ORIGIN，绝不跟着伪造的 Host 走', async () => {
+  it('Host 不在名单里 → 回落 SERVER_ORIGIN，绝不跟着伪造的 Host 走', async () => {
     const fresh = await appWithWhitelist()
     const res = await fresh.request('/api/auth/login', {
       headers: { host: 'evil.example', 'x-forwarded-proto': 'https' },

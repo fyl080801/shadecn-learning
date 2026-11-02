@@ -8,7 +8,7 @@ import { encodeS3Path } from './s3.ts'
  * <prefix>/assets/<uuid[0:2]>/<uuid[2:4]>/<uuid><ext>
  * ```
  *
- * - `prefix`（`S3_KEY_PREFIX`，默认 `canvas`）：桶里的根目录，几个环境共用一个桶时靠它隔开；
+ * - `prefix`（`MODULES_STORAGE_KEY_PREFIX`，默认 `canvas`）：桶里的根目录，几个环境共用一个桶时靠它隔开；
  * - 所有素材进**同一个 `assets/` 目录**，不按项目、画布、类别分；
  *   早先的键带 `projects/<projectId>/flows/<flowId>/<images|videos>/` 几层，那些对象和画布里存的地址
  *   原样保留、不迁移，只有新上传的走这里；

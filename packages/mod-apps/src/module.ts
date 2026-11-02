@@ -3,7 +3,7 @@ import { STORAGE_SERVICE, type StorageService } from '@shadecn/mod-storage/contr
 import { onAccessRevoked } from '@shadecn/server-kit/access'
 import { defineModule } from '@shadecn/server-kit/kernel'
 import { createAppsService } from './catalog.ts'
-import { appsConfig } from './config.ts'
+import { APPS_MODULE, appsConfig } from './config.ts'
 import { APPS_SERVICE } from './contract.ts'
 import { AppTask } from './entities.ts'
 import { createAppRoutes, createFlowAppRoutes } from './routes.ts'
@@ -20,14 +20,14 @@ export const FLOW_APPS_PATH = '/api/flows/:flowId/apps'
 /**
  * 应用执行模块（REQ-APPS，docs/29）：把语言 / 图像 / 视频 / 3D 等生成服务统一成 `executeApp(appId, params)`。
  *
- * - 应用和提供方在应用表文件里（`APPS_FILE`），对接服务是驱动（`drivers/`）；
+ * - 应用和提供方在应用表文件里（`MODULES_APPS_FILE`），对接服务是驱动（`drivers/`）；
  * - 别的模块经 `apps` 服务调（`./contract`），web 上另有 `/api/apps` 给前端，`/api/flows/:flowId/apps` 给画布节点
  *   （参考图按本画布资源读、产物存成本画布资源，需要 storage 模块，没有就原样）；
  * - 随 `web` 和 `agent` 两个角色加载。画布生成是**任务**（docs/29 §3.10，表 `app_task`）：web 受理、经总线派给 agent 副本，
  *   **agent 角色执行**并经 direct connection 写回节点（所以只在 agent 角色上硬依赖 collab，同 agent 模块），定时对账接手租约过期的任务。
  */
 export default defineModule({
-  name: 'apps',
+  name: APPS_MODULE,
   roles: ['web', 'agent'],
   dependsOn: ['canvas', { module: 'collab', roles: ['agent'] }],
   optional: ['storage'],

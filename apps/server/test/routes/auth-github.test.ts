@@ -7,8 +7,8 @@ import { AuthRequest, PendingLink, Session, UserIdentity } from '@shadecn/mod-au
 import { User } from '@shadecn/server-kit/identity'
 import {
   GITHUB_AUTHORIZE_URL,
-  GITHUB_CLIENT_ID,
-  GITHUB_CLIENT_SECRET,
+  MODULES_AUTH_GITHUB_CLIENT_ID,
+  MODULES_AUTH_GITHUB_CLIENT_SECRET,
   GITHUB_ISSUER,
   GITHUB_TOKEN_URL,
   githubUser,
@@ -41,8 +41,8 @@ type App = Hono<never>
 
 /** 一个「配了 GitHub」的全新 app（Keycloak 也还在，两个都启用） */
 async function githubApp(): Promise<App> {
-  vi.stubEnv('GITHUB_CLIENT_ID', GITHUB_CLIENT_ID)
-  vi.stubEnv('GITHUB_CLIENT_SECRET', GITHUB_CLIENT_SECRET)
+  vi.stubEnv('MODULES_AUTH_GITHUB_CLIENT_ID', MODULES_AUTH_GITHUB_CLIENT_ID)
+  vi.stubEnv('MODULES_AUTH_GITHUB_CLIENT_SECRET', MODULES_AUTH_GITHUB_CLIENT_SECRET)
   return (await importFreshApp()) as unknown as App
 }
 
@@ -88,7 +88,7 @@ describe('GET /api/auth/login?provider=github', () => {
 
     const location = new URL(res.headers.get('location') ?? '')
     expect(location.origin + location.pathname).toBe(GITHUB_AUTHORIZE_URL)
-    expect(location.searchParams.get('client_id')).toBe(GITHUB_CLIENT_ID)
+    expect(location.searchParams.get('client_id')).toBe(MODULES_AUTH_GITHUB_CLIENT_ID)
     expect(location.searchParams.get('redirect_uri')).toBe(
       'http://127.0.0.1:3000/api/auth/callback',
     )
@@ -237,8 +237,8 @@ describe('GitHub 登录', () => {
     await loginWithGithub(app)
 
     const call = stub.calls.find((one) => one.url.startsWith(GITHUB_TOKEN_URL))
-    expect(call?.url).not.toContain(GITHUB_CLIENT_SECRET)
-    expect(new URLSearchParams(call?.body ?? '').get('client_secret')).toBe(GITHUB_CLIENT_SECRET)
+    expect(call?.url).not.toContain(MODULES_AUTH_GITHUB_CLIENT_SECRET)
+    expect(new URLSearchParams(call?.body ?? '').get('client_secret')).toBe(MODULES_AUTH_GITHUB_CLIENT_SECRET)
   })
 })
 

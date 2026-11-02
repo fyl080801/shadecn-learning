@@ -16,7 +16,7 @@ import { TEST_DATABASE_URL, TEST_DATA_DIR, TEST_DB_PROVIDER } from './paths.ts'
  *
  * 放在子进程里跑：同步入口会读仓库根的 .env（真实 Keycloak、真实开发库…），在子进程里读
  * 就只影响那一个进程，污染不到 Vitest 主进程、也就到不了各个测试 worker。连哪个库由这里显式
- * 传的 DATABASE_URL / DB_PROVIDER 决定 —— loadEnvFile 不覆盖已存在的变量。
+ * 传的 DATABASE_URL / DATABASE_PROVIDER 决定 —— loadEnvFile 不覆盖已存在的变量。
  */
 export default function setup() {
   const serverDir = path.resolve(import.meta.dirname, '..')
@@ -37,7 +37,7 @@ export default function setup() {
       env: {
         ...process.env,
         DATABASE_URL: TEST_DATABASE_URL,
-        DB_PROVIDER: TEST_DB_PROVIDER,
+        DATABASE_PROVIDER: TEST_DB_PROVIDER,
         // 不读开发者自己的 server.config.*（docs/28 §3.3）：空串 = 不用配置文件
         SERVER_CONFIG: '',
         // 同步过程中的 SQL 日志不要混进测试输出

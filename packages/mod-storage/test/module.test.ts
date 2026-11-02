@@ -10,6 +10,7 @@ import {
   startModules,
   type ServerRole,
 } from '@shadecn/server-kit/kernel'
+import { envNameOf } from '@shadecn/server-kit/config'
 import type { Platform, RuntimeInfo } from '@shadecn/server-kit/platform'
 import storage, { assetStorage, replaceAssetStorage } from '../src/index.ts'
 
@@ -17,10 +18,10 @@ const roles = new Set<ServerRole>(ALL_ROLES)
 const runtime = {} as RuntimeInfo
 
 const S3_ENV = {
-  S3_ENDPOINT: 'https://s3.test/',
-  S3_BUCKET: 'canvas',
-  S3_ACCESS_KEY_ID: 'ak',
-  S3_SECRET_ACCESS_KEY: 'sk',
+  MODULES_STORAGE_ENDPOINT: 'https://s3.test/',
+  MODULES_STORAGE_BUCKET: 'canvas',
+  MODULES_STORAGE_ACCESS_KEY_ID: 'ak',
+  MODULES_STORAGE_SECRET_ACCESS_KEY: 'sk',
 }
 
 /** 存储硬依赖画布：给一个只提供 `canvas` 服务的假模块 */
@@ -35,7 +36,7 @@ const fakeCanvas = defineModule({
 })
 
 function configsOf(env: Record<string, string>) {
-  return parseModuleConfigs([storage], { get: (name) => env[name] }, runtime)
+  return parseModuleConfigs([storage], { get: (path) => env[envNameOf(path)] }, runtime)
 }
 
 async function boot(env: Record<string, string>) {
@@ -58,7 +59,7 @@ afterEach(() => replaceAssetStorage(undefined))
 describe('存储模块：开关跟着自己的配置段走', () => {
   it('没配 S3 → 模块关掉，原因带进能力表；客户端是 null', () => {
     const resolved = resolveModules([fakeCanvas, storage], { roles, configs: configsOf({}).values })
-    expect(resolved.skipped).toMatchObject([{ reason: 'disabled', detail: expect.stringContaining('S3_BUCKET') }])
+    expect(resolved.skipped).toMatchObject([{ reason: 'disabled', detail: expect.stringContaining('MODULES_STORAGE_BUCKET') }])
     expect(assetStorage()).toBeNull()
   })
 
@@ -75,8 +76,8 @@ describe('存储模块：开关跟着自己的配置段走', () => {
 
   it('配置段的默认值：上限 100MB、键前缀 canvas（去掉首尾斜杠）', () => {
     expect(configsOf(S3_ENV).values.get('storage')).toMatchObject({ maxUploadBytes: 100 * 1024 * 1024, keyPrefix: 'canvas' })
-    expect(configsOf({ ...S3_ENV, S3_KEY_PREFIX: '/dev/canvas/' }).values.get('storage')).toMatchObject({ keyPrefix: 'dev/canvas' })
-    expect(() => configsOf({ S3_MAX_UPLOAD_MB: 'abc' })).toThrow('S3_MAX_UPLOAD_MB')
+    expect(configsOf({ ...S3_ENV, MODULES_STORAGE_KEY_PREFIX: '/dev/canvas/' }).values.get('storage')).toMatchObject({ keyPrefix: 'dev/canvas' })
+    expect(() => configsOf({ MODULES_STORAGE_MAX_UPLOAD_MB: 'abc' })).toThrow('MODULES_STORAGE_MAX_UPLOAD_MB')
   })
 
   it('只随 web / agent 角色加载，纯协同实例不带它', () => {

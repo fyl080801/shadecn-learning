@@ -192,7 +192,7 @@ describe('exchangeCode() / refreshTokens()', () => {
   })
 
   it('配了 secret 就用 client_secret_post', async () => {
-    vi.stubEnv('KEYCLOAK_CLIENT_SECRET', 's3cret')
+    vi.stubEnv('MODULES_AUTH_KEYCLOAK_CLIENT_SECRET', 's3cret')
     const { exchangeCode } = await loadOidc()
     await exchangeCode('c', 'v', REDIRECT_URI)
 

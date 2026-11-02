@@ -12,13 +12,13 @@ import { SAFE_SEGMENT } from '../local.ts'
  * 它守住的是：
  *
  * 1. **环境从零造**（{@link runnerEnv}）：只有网关地址、一次性 bootstrap token、工作目录、`PATH`。
- *    服务端进程里的 LLM key、`DATABASE_URL`、`SESSION_SECRET`、`REDIS_URL` 一个都不继承（docs/22 §10 验收 1）；
+ *    服务端进程里的 LLM key、`DATABASE_URL`、`MODULES_AUTH_SESSION_SECRET`、`CLUSTER_REDIS_URL` 一个都不继承（docs/22 §10 验收 1）；
  * 2. **杀就是整组杀**：子进程以 `detached` 起（自己是进程组组长），`kill` 给整个组发 SIGKILL ——
  *    runner 和它正在跑的 ffmpeg 一起没，然后删工作目录（验收 5）。runner 自然退出后也补一刀，清掉漏网的孙进程；
  * 3. **时长兜底**：`resources.deadlineMs` 到点即杀（编排层自己的时长上限通常先到）。
  *
  * **`NODE_ENV=production` 时拒绝**（{@link createProcessDriver} 直接抛），除非宿主显式放行
- * （apps/server 的 `AGENT_SANDBOX_ALLOW_PROCESS=1`）。本包不读 `process.env`：生产与否、放不放行都由宿主传进来。
+ * （apps/server 的 `MODULES_AGENT_SANDBOX_ALLOW_PROCESS=1`）。本包不读 `process.env`：生产与否、放不放行都由宿主传进来。
  *
  * 跑哪个入口由宿主决定（`command`）：源码态 `node --import tsx packages/agent/src/runner/main.ts`，
  * 产物态 `node output/server/agent-runner.js`。工作目录 `<rootDir>/<flowId>/<runId>`，也是 runner 的 cwd。
@@ -47,7 +47,7 @@ export interface ProcessSandboxHandle extends SandboxHandle {
 }
 
 export const PROCESS_DRIVER_REFUSED_IN_PRODUCTION =
-  'process 沙箱驱动不是强隔离，生产环境（NODE_ENV=production）拒绝启用；确需使用请显式放行（AGENT_SANDBOX_ALLOW_PROCESS=1）'
+  'process 沙箱驱动不是强隔离，生产环境（NODE_ENV=production）拒绝启用；确需使用请显式放行（MODULES_AGENT_SANDBOX_ALLOW_PROCESS=1）'
 
 const DEFAULT_PATH = '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin'
 /** 一轮最多转发多少行输出：被攻破的 runner 不该能把服务端日志刷爆（`oci` 驱动用同一组上限） */

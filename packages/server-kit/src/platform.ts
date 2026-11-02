@@ -45,13 +45,13 @@ export interface PlatformAuth {
   deriveSecret(purpose: string): string
 }
 
-/** 对外域名（`APP_ORIGIN` / `APP_ORIGINS`）：底座的配置，拼绝对地址、校验 `Origin` 都看它 */
+/** 对外域名（`SERVER_ORIGIN` / `SERVER_ORIGINS`）：底座的配置，拼绝对地址、校验 `Origin` 都看它 */
 export interface PlatformOrigins {
-  /** 应用的主对外地址（`APP_ORIGIN`，没配按监听地址） */
+  /** 应用的主对外地址（`SERVER_ORIGIN`，没配按监听地址） */
   readonly primary: string
-  /** 这个 `Origin` 在不在对外域名白名单里（`APP_ORIGINS`，含 `APP_ORIGIN`） */
+  /** 这个 `Origin` 在不在对外域名白名单里（`SERVER_ORIGINS`，含 `SERVER_ORIGIN`） */
   isAllowed(origin: string | null | undefined): boolean
-  /** 这次请求认哪个对外地址（白名单内跟着请求走，否则回落 `APP_ORIGIN`）：OAuth 回调、分享链接、cookie 的 Secure 都按它 */
+  /** 这次请求认哪个对外地址（白名单内跟着请求走，否则回落 `SERVER_ORIGIN`）：OAuth 回调、分享链接、cookie 的 Secure 都按它 */
   of(c: Context): string
 }
 

@@ -36,7 +36,7 @@ export interface AgentConfig {
 /** 入口 agent（docs/26 §3.7）：会话固定用它，定义里必须有 */
 export const ENTRY_AGENT_NAME = 'canvas'
 
-/** 模型表里的默认项（`AGENT_PROVIDER` / `AGENT_MODEL` / … 配的那一个；定义不写 `model` 就用它）。其余的项宿主从模型表文件读（docs/26 §3.4） */
+/** 模型表里的默认项（`MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` / … 配的那一个；定义不写 `model` 就用它）。其余的项宿主从模型表文件读（docs/26 §3.4） */
 export const DEFAULT_AGENT_MODEL = 'default'
 
 /** agent 名（文字技能的名字同一条规则，`text-skills.ts`）：小写字母开头，小写字母、数字、`-`，最长 48 */

@@ -46,7 +46,7 @@ spec:
       # Harbor 的对外地址；构建时会被换成集群内的 harbor-core.harbor.svc
       - name: imageName
         value: 192.168.68.95:31443/apps/shadecn-learning
-      # 画布 agent 的沙箱镜像（docs/22 §7.5），和服务端同一个 tag。k8s/deployment.yaml 的 AGENT_SANDBOX_IMAGE、
+      # 画布 agent 的沙箱镜像（docs/22 §7.5），和服务端同一个 tag。k8s/deployment.yaml 的 MODULES_AGENT_SANDBOX_IMAGE、
       # k8s/variants/agent-sandbox-vap.yaml 的镜像规则都认这个名字，改名三处一起改
       - name: sandboxImageName
         value: 192.168.68.95:31443/apps/shadecn-agent-sandbox
@@ -386,7 +386,7 @@ spec:
 
     # GitOps 的交接点：把 k8s/deployment.yaml 里的 tag 改成刚构建出来的那个，提交并 push 回
     # 同一个分支。之后就不管了 —— ArgoCD 轮询到这个提交，由它把新镜像部署上去。
-    # 只改两行：服务端容器的 `image: <imageName>:<tag>` 和沙箱的 `value: <sandboxImageName>:<tag>`（AGENT_SANDBOX_IMAGE）。
+    # 只改两行：服务端容器的 `image: <imageName>:<tag>` 和沙箱的 `value: <sandboxImageName>:<tag>`（MODULES_AGENT_SANDBOX_IMAGE）。
     # 改出别的行就失败、不提交（防自触发循环的 paths-ignore 认的是「这个提交只动 k8s/」）。
     - name: git-update-image-tag
       inputs:
@@ -413,7 +413,7 @@ spec:
             echo "=== Updating image tag to ${IMAGE_TAG} ==="
             cd /workspace
             grep -q "value: ${SANDBOX_IMAGE_NAME}:" k8s/deployment.yaml \
-              || echo "--- 注意：k8s/deployment.yaml 里没有沙箱镜像那一行（AGENT_SANDBOX_IMAGE），只改服务端镜像"
+              || echo "--- 注意：k8s/deployment.yaml 里没有沙箱镜像那一行（MODULES_AGENT_SANDBOX_IMAGE），只改服务端镜像"
             sed -i \
               -e "s|image: ${IMAGE_NAME}:.*|image: ${IMAGE_NAME}:${IMAGE_TAG}|" \
               -e "s|value: ${SANDBOX_IMAGE_NAME}:.*|value: ${SANDBOX_IMAGE_NAME}:${IMAGE_TAG}|" \

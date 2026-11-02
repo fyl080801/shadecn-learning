@@ -26,8 +26,8 @@ describe('配置关掉的模块', () => {
     vi.resetModules()
   })
 
-  it('AGENT_ENABLED=false：agent 的入口不存在，能力表里是 false，原因写明出处', async () => {
-    vi.stubEnv('AGENT_ENABLED', 'false')
+  it('MODULES_AGENT_ENABLED=false：agent 的入口不存在，能力表里是 false，原因写明出处', async () => {
+    vi.stubEnv('MODULES_AGENT_ENABLED', 'false')
     vi.resetModules()
     const fresh = await import('@shadecn/server-core/app')
     const { assemble, prepare } = await import('@shadecn/server-core/server')
@@ -39,7 +39,7 @@ describe('配置关掉的模块', () => {
     expect(kernel.loadedFeatures()).toMatchObject({ canvas: true, agent: false })
     // 测试环境没有应用表，apps 也在跳过名单里（原因是它自己的 enabled 判定），这里只看 agent 那一条
     expect(resolved.skipped.filter((item) => item.module.name !== 'apps')).toMatchObject([
-      { module: { name: 'agent' }, detail: expect.stringContaining('AGENT_ENABLED') },
+      { module: { name: 'agent' }, detail: expect.stringContaining('MODULES_AGENT_ENABLED') },
     ])
     expect(mounted(fresh.app, '/api/flows/:flowId/agent')).toBe(false)
     expect(mounted(fresh.app, '/api/agent-gateway')).toBe(false)
@@ -48,11 +48,11 @@ describe('配置关掉的模块', () => {
   })
 
   it('关掉被硬依赖的模块（canvas）→ 装配失败，说明是配置关的', async () => {
-    vi.stubEnv('CANVAS_ENABLED', 'false')
+    vi.stubEnv('MODULES_CANVAS_ENABLED', 'false')
     vi.resetModules()
     const fresh = await import('@shadecn/server-core/app')
     const { assemble, prepare } = await import('@shadecn/server-core/server')
     await prepare((await import('../modules.ts')).modules)
-    await expect(assemble({ app: fresh.app, server: createServer() })).rejects.toThrow(/依赖 canvas.*CANVAS_ENABLED/)
+    await expect(assemble({ app: fresh.app, server: createServer() })).rejects.toThrow(/依赖 canvas.*MODULES_CANVAS_ENABLED/)
   })
 })

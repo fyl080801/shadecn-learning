@@ -178,7 +178,7 @@ describe('createS3Client GetObject（服务端自己读字节，带上限）', (
   })
 })
 
-describe('createS3Client 的内网请求地址（S3_INTERNAL_ENDPOINT）', () => {
+describe('createS3Client 的内网请求地址（MODULES_STORAGE_INTERNAL_ENDPOINT）', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   const options = {
@@ -261,7 +261,7 @@ describe('createS3Client 的内网请求地址（S3_INTERNAL_ENDPOINT）', () =>
     expect(assetKeyOfUrl(`http://minio.minio.svc.cluster.local:9000/canvas/${key}`, internal.objectUrl(''), 'canvas')).toBeNull()
   })
 
-  it('不配（空串）= 和公开地址一样：请求发到 S3_ENDPOINT', async () => {
+  it('不配（空串）= 和公开地址一样：请求发到 MODULES_STORAGE_ENDPOINT', async () => {
     const calls = capture(() => new Response(null, { status: 200 }))
     const same = createS3Client({ ...options, requestEndpoint: '' })
     expect(await same.putObject(key, new Uint8Array(), 'image/png')).toBe(`https://s3.example.test/canvas/${key}`)

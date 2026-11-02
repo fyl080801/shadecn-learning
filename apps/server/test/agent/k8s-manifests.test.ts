@@ -68,14 +68,14 @@ const occurrences = (text: string, needle: string) => text.split(needle).length 
 
 /** 驱动按 k8s/deployment.yaml 里的 env 生成的沙箱 Pod（宿主 packages/mod-agent/src/index.ts 也是这么拼的） */
 function deployedOptions(): Pick<K8sDriverOptions, 'image' | 'instance' | 'namespace' | 'imagePullSecret' | 'imagePullPolicy' | 'nodeSelector'> {
-  const nodeSelector = parseK8sNodeSelector(envValue('AGENT_SANDBOX_K8S_NODE_SELECTOR') ?? '')
+  const nodeSelector = parseK8sNodeSelector(envValue('MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR') ?? '')
   if (!nodeSelector.ok) throw new Error(nodeSelector.reason)
   return {
-    image: envValue('AGENT_SANDBOX_IMAGE')!,
+    image: envValue('MODULES_AGENT_SANDBOX_IMAGE')!,
     instance: 'abcdef0123456789',
-    namespace: envValue('AGENT_SANDBOX_K8S_NAMESPACE')!,
-    imagePullSecret: envValue('AGENT_SANDBOX_K8S_PULL_SECRET')!,
-    imagePullPolicy: envValue('AGENT_SANDBOX_K8S_PULL_POLICY') as K8sDriverOptions['imagePullPolicy'],
+    namespace: envValue('MODULES_AGENT_SANDBOX_K8S_NAMESPACE')!,
+    imagePullSecret: envValue('MODULES_AGENT_SANDBOX_K8S_PULL_SECRET')!,
+    imagePullPolicy: envValue('MODULES_AGENT_SANDBOX_K8S_PULL_POLICY') as K8sDriverOptions['imagePullPolicy'],
     nodeSelector: nodeSelector.value,
   }
 }
@@ -86,7 +86,7 @@ const sandboxSpec: SandboxSpec = {
   ownerId: 'u1',
   grantId: '9b2d7e4a-5c6f-4a3b-8d1e-0f2a3b4c5d6e',
   image: 'unused',
-  // 宿主的默认资源（AGENT_SANDBOX_CPUS / _MEMORY_MIB / _DISK_MIB）+ 默认 10 分钟一轮 + 30 秒余量
+  // 宿主的默认资源（MODULES_AGENT_SANDBOX_CPUS / MODULES_AGENT_SANDBOX_MEMORY_MIB / MODULES_AGENT_SANDBOX_DISK_MIB）+ 默认 10 分钟一轮 + 30 秒余量
   resources: { cpu: 1, memoryMiB: 512, pids: 128, diskMiB: 512, deadlineMs: 630_000 },
   gatewayUrl: 'http://10.2.3.4:3000/api/agent-gateway',
   credential: { kind: 'bootstrap', token: 'one-time' },
@@ -180,17 +180,17 @@ describe('k8s 清单：子集解析器', () => {
 })
 
 describe('k8s 清单：服务端 Deployment（dev 形态）', () => {
-  it('AGENT_SANDBOX=k8s、POD_IP 来自 status.podIP（F14：连回发起的副本）、沙箱建在服务端自己的命名空间、不写网关地址（不许是 Service）', () => {
-    expect(envValue('AGENT_SANDBOX')).toBe('k8s')
+  it('MODULES_AGENT_SANDBOX_DRIVER=k8s、POD_IP 来自 status.podIP（F14：连回发起的副本）、沙箱建在服务端自己的命名空间、不写网关地址（不许是 Service）', () => {
+    expect(envValue('MODULES_AGENT_SANDBOX_DRIVER')).toBe('k8s')
     expect(serverEnv.POD_IP).toEqual({ name: 'POD_IP', valueFrom: { fieldRef: { fieldPath: 'status.podIP' } } })
-    expect(envValue('AGENT_SANDBOX_K8S_NAMESPACE')).toBe(serverNamespace)
-    expect(serverEnv.AGENT_GATEWAY_URL).toBeUndefined()
-    // 沙箱连的是 Pod IP：服务端必须听全部地址，网关端口 = PORT
-    expect(envValue('HOST')).toBe('0.0.0.0')
-    expect(envValue('PORT')).toBe(String(serverPort))
-    expect(K8S_PULL_POLICIES).toContain(envValue('AGENT_SANDBOX_K8S_PULL_POLICY'))
+    expect(envValue('MODULES_AGENT_SANDBOX_K8S_NAMESPACE')).toBe(serverNamespace)
+    expect(serverEnv.MODULES_AGENT_GATEWAY_URL).toBeUndefined()
+    // 沙箱连的是 Pod IP：服务端必须听全部地址，网关端口 = SERVER_PORT
+    expect(envValue('SERVER_HOST')).toBe('0.0.0.0')
+    expect(envValue('SERVER_PORT')).toBe(String(serverPort))
+    expect(K8S_PULL_POLICIES).toContain(envValue('MODULES_AGENT_SANDBOX_K8S_PULL_POLICY'))
     // 拉镜像的 Secret 就是服务端自己用的那个（dev 里现成的，kubelet 用）
-    expect(envValue('AGENT_SANDBOX_K8S_PULL_SECRET')).toBe(podTemplate.spec.imagePullSecrets[0].name)
+    expect(envValue('MODULES_AGENT_SANDBOX_K8S_PULL_SECRET')).toBe(podTemplate.spec.imagePullSecrets[0].name)
   })
 
   it('模型配置只从 envFrom 的 shadecn-learning-agent（ConfigMap + Secret，optional）来、S3 只从 shadecn-learning-s3 来；env 里不写这些（env 优先于 envFrom，会把它们盖掉）', () => {
@@ -201,20 +201,20 @@ describe('k8s 清单：服务端 Deployment（dev 形态）', () => {
       { configMapRef: { name: 'shadecn-learning-s3', optional: true } },
       { secretRef: { name: 'shadecn-learning-s3', optional: true } },
     ])
-    // S3：env 里只许有上限这一项（其余来自 shadecn-learning-s3 那对 ConfigMap / Secret；S3_KEY_PREFIX 空串 = 桶根，和不配不同，所以哪儿都不写）
-    expect(Object.keys(serverEnv).filter((name) => name.startsWith('S3_'))).toEqual(['S3_MAX_UPLOAD_MB'])
-    for (const name of ['AGENT_PROVIDER', 'AGENT_MODEL', 'AGENT_BASE_URL', 'AGENT_API', 'AGENT_IMAGE_INPUT', 'AGENT_API_KEY', 'AGENT_TOKEN_SECRET']) {
+    // S3：env 里只许有上限这一项（其余来自 shadecn-learning-s3 那对 ConfigMap / Secret；MODULES_STORAGE_KEY_PREFIX 空串 = 桶根，和不配不同，所以哪儿都不写）
+    expect(Object.keys(serverEnv).filter((name) => name.startsWith('MODULES_STORAGE_'))).toEqual(['MODULES_STORAGE_MAX_UPLOAD_MB'])
+    for (const name of ['MODULES_AGENT_PROVIDER', 'MODULES_AGENT_MODEL', 'MODULES_AGENT_BASE_URL', 'MODULES_AGENT_API', 'MODULES_AGENT_IMAGE_INPUT', 'MODULES_AGENT_API_KEY', 'MODULES_AGENT_TOKEN_SECRET']) {
       expect(serverEnv[name], name).toBeUndefined()
     }
   })
 
   it('沙箱镜像：完整引用，和服务端镜像同一个 tag（同一次构建），过得了 VAP 的镜像规则；名字和 CI 模板的参数一致', () => {
     const [serverRepo, serverTag] = (serverContainer.image as string).split(/:(?=[^:/]+$)/)
-    const [sandboxRepo, sandboxTag] = envValue('AGENT_SANDBOX_IMAGE')!.split(/:(?=[^:/]+$)/)
+    const [sandboxRepo, sandboxTag] = envValue('MODULES_AGENT_SANDBOX_IMAGE')!.split(/:(?=[^:/]+$)/)
     expect(serverRepo).toBe(templateParam('imageName'))
     expect(sandboxRepo).toBe(templateParam('sandboxImageName'))
     expect(sandboxTag).toBe(serverTag)
-    expect(SANDBOX_IMAGE.test(envValue('AGENT_SANDBOX_IMAGE')!)).toBe(true)
+    expect(SANDBOX_IMAGE.test(envValue('MODULES_AGENT_SANDBOX_IMAGE')!)).toBe(true)
     // CI 的 git-update-image-tag 按这两种行改 tag：各恰好一行，别的地方（注释）不许出现同样的写法
     const text = read('k8s/deployment.yaml')
     expect(occurrences(text, `image: ${templateParam('imageName')}:`)).toBe(1)
@@ -390,14 +390,14 @@ describe('k8s 清单：独立命名空间形态（k8s/variants/agent-sandbox.yam
 })
 
 describe('k8s 清单：两种 Deployment 形态', () => {
-  it('多副本那份和单副本的服务端 Pod 标签、端口、HOST 对得上（NetworkPolicy 按它们放行）', () => {
+  it('多副本那份和单副本的服务端 Pod 标签、端口、SERVER_HOST 对得上（NetworkPolicy 按它们放行）', () => {
     for (const shape of [deployment, clusterDeployment]) {
       expect(shape.spec.template.metadata.labels).toEqual(podTemplate.metadata.labels)
       const container = shape.spec.template.spec.containers[0]
       expect(container.ports[0].containerPort).toBe(serverPort)
       const env = Object.fromEntries((container.env as any[]).map((entry) => [entry.name, entry.value]))
-      expect(env.PORT).toBe(String(serverPort))
-      expect(env.HOST).toBe('0.0.0.0')
+      expect(env.SERVER_PORT).toBe(String(serverPort))
+      expect(env.SERVER_HOST).toBe('0.0.0.0')
     }
   })
 })

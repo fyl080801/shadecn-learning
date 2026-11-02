@@ -7,7 +7,7 @@ import { assetKeyOfUrl } from '@shadecn/mod-storage/keys'
  * agent 看图（`view_node_media`，docs/20 §3.10.7）在本服务里的素材读取：**只读本服务自己的对象存储**。
  *
  * 节点里存的是 S3 原始地址（`storage.objectUrl(key)`）。这里先把地址反解成对象键（`assetKeyOfUrl`：
- * 必须是本桶、`S3_KEY_PREFIX` 的素材目录下、我们拼出来的形状），再按键签名读 —— **从不请求节点里写的那个地址**，
+ * 必须是本桶、`MODULES_STORAGE_KEY_PREFIX` 的素材目录下、我们拼出来的形状），再按键签名读 —— **从不请求节点里写的那个地址**，
  * 外部链接、`data:`、内网地址在反解那一步就是 `foreign`，一个请求都不发（防 SSRF）。
  * 判权不在这里：工具声明的 `flow:read` 由网关统一判（`session.ts`），读节点那一下另过画布的 `flow:read`。
  *

@@ -60,7 +60,7 @@ export interface CollabAuthPort {
 export interface CollabPorts {
   auth: CollabAuthPort
   flowDocs: FlowDocStore
-  /** 这个进程的身份（`INSTANCE_ID`）：socketId 前缀、Redis 扩展的实例名 */
+  /** 这个进程的身份（`SERVER_INSTANCE_ID`）：socketId 前缀、Redis 扩展的实例名 */
   instanceId: string
   /** 多副本时的 Redis（Hocuspocus 的 redis 扩展用）；单副本 = null */
   redis: { url: string; prefix: string } | null

@@ -4,7 +4,7 @@
 #
 # 镜像里不需要源码、不需要 tsx —— 后端已经打包成 server/index.js（服务）和
 # server/db-sync.js（表结构同步），这里只装 output/package.json 里那几个运行时依赖。
-# 同一个镜像连 SQLite 还是 PostgreSQL 由运行时的 DB_PROVIDER / DATABASE_URL 决定。
+# 同一个镜像连 SQLite 还是 PostgreSQL 由运行时的 DATABASE_PROVIDER / DATABASE_URL 决定。
 #
 # 基础镜像走构建参数，不写死地址（和仓库根 Dockerfile 一致）；
 # 在外网环境构建就把它换回官方的 node:22-alpine。
@@ -52,7 +52,7 @@ RUN set -e; \
     fi; \
     echo "base image arch ok: $have ($(uname -m))"
 WORKDIR /app
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data
+ENV NODE_ENV=production SERVER_HOST=0.0.0.0 SERVER_PORT=3000 DATA_DIR=/app/data
 COPY --from=deps /app/node_modules ./node_modules
 # 打包产物本身：server/（后端 + 表结构同步）、public/（前端静态资源）
 COPY . .

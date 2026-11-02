@@ -5,6 +5,8 @@ import pluginVue from "eslint-plugin-vue"
 import prettierConfig from "eslint-config-prettier"
 import vueParser from "vue-eslint-parser"
 import security from "eslint-plugin-security"
+import { importX } from "eslint-plugin-import-x"
+import { createTypeScriptImportResolver } from "eslint-import-resolver-typescript"
 import { defineConfig } from "eslint/config"
 
 export default defineConfig(
@@ -86,6 +88,38 @@ export default defineConfig(
         parser: tseslint.parser,
         extraFileExtensions: [".vue"]
       }
+    }
+  },
+
+  // 前端循环依赖：写代码时就报，不必等 `vite build` 的 onwarn（那里仍是最后一道关，只报第一个环）。
+  // 只管自家模块；第三方包自带的环改不了（ignoreExternal）。
+  {
+    files: ["apps/web/src/**/*.{ts,vue}"],
+    plugins: {
+      "import-x": importX
+    },
+    // 这条规则会顺着 import 解析别的文件，用的是**当前文件**的 parserOptions：
+    // .ts 也得带上 parser，否则它引到的 .vue 按纯 JS 解析失败，被悄悄当成没有 import，环就漏了。
+    languageOptions: {
+      parserOptions: {
+        parser: tseslint.parser
+      }
+    },
+    settings: {
+      "import-x/extensions": [".ts", ".vue", ".js"],
+      "import-x/parsers": {
+        "vue-eslint-parser": [".vue"],
+        "@typescript-eslint/parser": [".ts"]
+      },
+      "import-x/resolver-next": [
+        createTypeScriptImportResolver({
+          project: "apps/web/tsconfig.app.json",
+          extensions: [".ts", ".vue", ".js", ".json"]
+        })
+      ]
+    },
+    rules: {
+      "import-x/no-cycle": ["error", { ignoreExternal: true }]
     }
   },
 

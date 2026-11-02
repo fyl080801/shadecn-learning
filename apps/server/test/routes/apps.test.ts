@@ -15,7 +15,7 @@ let app: App
 /** 已登录的请求：先登录（写库）再重建 app —— 反过来会和新 app 装配时登录模块的过期清理抢 SQLite 的写锁 */
 async function actor() {
   const { cookie } = await signIn()
-  vi.stubEnv('APPS_FILE', 'apps/server/test/fixtures/apps.yaml')
+  vi.stubEnv('MODULES_APPS_FILE', 'apps/server/test/fixtures/apps.yaml')
   app = (await importFreshApp()) as unknown as App
   const request = (path: string, init: RequestInit = {}) => app.request(path, { ...init, headers: { ...init.headers, cookie } })
   return {

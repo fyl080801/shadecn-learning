@@ -141,7 +141,7 @@ export const AuthRequest = defineEntity({
      * 这一趟用的对外域名（`https://a.example.com`）。**必须存下来**：换 token 时带的
      * redirect_uri 要和授权那一步逐字符相同，回调这一趟重新算一遍是不保险的
      * （反代改了头、名单改了，都会算出另一个值，然后被提供方回绝）。
-     * 取值只可能是 `APP_ORIGINS` 白名单里的某一个，见 `packages/mod-auth/src/settings.ts`
+     * 取值只可能是 `SERVER_ORIGINS` 白名单里的某一个，见 `packages/mod-auth/src/settings.ts`
      */
     origin: p.text().default(''),
     createdAt: createdAtColumn(),
