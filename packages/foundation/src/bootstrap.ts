@@ -2,7 +2,7 @@ import { ConfigService } from '@learning/config'
 import type { NestApplicationOptions } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify'
-import { serverPort } from './server-options.js'
+import { serverHost, serverPort } from './server-options.js'
 
 /**
  * 浅探针：只回答「这个进程还在跑吗」，不碰数据库。
@@ -23,10 +23,10 @@ export interface BootstrapOptions {
 }
 
 /**
- * 所有 Nest 服务共用的启动流程：Fastify、关闭钩子（SIGTERM 时走完 Nest 的关闭流程）、`/api/health`、按 `server.port` 监听。
+ * 所有 Nest 服务共用的启动流程：Fastify、关闭钩子（SIGTERM 时走完 Nest 的关闭流程）、`/api/health`、按 `server.port` / `server.host` 监听。
  * 根模块要 import `ConfigModule`，端口是从它读的。
  *
- * Nest 建实例时抛的错默认走 `abortOnError`（记日志后 `process.exit(1)`），到不了这里。这里接得住的是之后的失败（端口不合法、被占用）：
+ * Nest 建实例时抛的错默认走 `abortOnError`（记日志后 `process.exit(1)`），到不了这里。这里接得住的是之后的失败（端口或地址不合法、端口被占用）：
  * 这时 ORM 之类已经建好了，先关掉再把错误交给调用方。
  */
 export async function bootstrapService(
@@ -40,7 +40,9 @@ export async function bootstrapService(
   )
 
   try {
-    await app.listen(serverPort(app.get(ConfigService)))
+    const config = app.get(ConfigService)
+    const host = serverHost(config)
+    await (host === undefined ? app.listen(serverPort(config)) : app.listen(serverPort(config), host))
   } catch (err) {
     await app.close().catch(() => undefined)
     throw err

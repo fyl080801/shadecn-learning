@@ -1,4 +1,5 @@
 import 'reflect-metadata'
+import { ClusterModule } from '@learning/cluster'
 import { testConfigModule } from '@learning/config/testing'
 import { DataAccess, DataAccessModule, User } from '@learning/data-access'
 import { Controller, Get, type INestApplicationContext, Module, UseGuards } from '@nestjs/common'
@@ -64,6 +65,7 @@ function behaviours(createFixture: () => DatabaseFixture) {
     context = await bootContext([
       sessionConfig(fixture.url, { secret: SECRET, ttlSeconds: 3600 }),
       DataAccessModule,
+      ClusterModule,
       SessionModule,
     ])
     users = context.get(UserService)
@@ -100,6 +102,7 @@ function behaviours(createFixture: () => DatabaseFixture) {
       const other = await bootContext([
         sessionConfig(fixture.url, { secret: 'another-secret' }),
         DataAccessModule,
+        ClusterModule,
         SessionModule,
       ])
       expect(await other.get(SessionService).load(token)).toBeNull()
@@ -114,10 +117,10 @@ function behaviours(createFixture: () => DatabaseFixture) {
       expect(await dataAccess.em().findOne(Session, id)).toBeNull()
     })
 
-    it('expiresAt 已过：删行并返回 null（没有提供方可以续期）', async () => {
+    it('expiresAt 已过，有 refresh token，但这个进程没有对应的 client：返回 null，不删行（别的进程可能还续得了）', async () => {
       const { token, id } = await createFor('alice', { expiresAt: new Date(Date.now() - 1000) })
       expect(await sessions.load(token)).toBeNull()
-      expect(await dataAccess.em().findOne(Session, id)).toBeNull()
+      expect(await dataAccess.em().findOne(Session, id)).not.toBeNull()
     })
 
     it('sweepExpired 只删活过 ttl 的会话和过期的授权请求，access_token 过期的留给 load 判，不碰用户', async () => {
@@ -214,6 +217,7 @@ function behaviours(createFixture: () => DatabaseFixture) {
             ProfileModule,
             sessionConfig(fixture.url, { secret: SECRET, ttlSeconds: 3600 }),
             DataAccessModule,
+            ClusterModule,
             SessionModule,
           ],
         },
@@ -292,7 +296,7 @@ describe('session 配置段', () => {
   })
 
   const bootWith = (session: { secret?: string } & Record<string, unknown>, isProduction = false) =>
-    bootContext([sessionConfig(fixture.url, session, { isProduction }), DataAccessModule, SessionModule])
+    bootContext([sessionConfig(fixture.url, session, { isProduction }), DataAccessModule, ClusterModule, SessionModule])
 
   it.each([{}, { secret: '' }, { secret: '   ' }])('生产环境缺密钥（%j）→ 启动失败', async (session) => {
     await expect(bootWith(session, true)).rejects.toThrow('PLATFORM_SESSION_SECRET')
@@ -305,6 +309,7 @@ describe('session 配置段', () => {
         { env: { PLATFORM_SESSION_SECRET: SECRET } },
       ),
       DataAccessModule,
+      ClusterModule,
       SessionModule,
     ])
     await expect(failure).rejects.toThrow('密钥不能写在 config.yaml')
@@ -348,7 +353,7 @@ describe('session 配置段', () => {
 
   it('这一段不是映射 → 启动失败', async () => {
     await expect(
-      bootContext([testConfigModule({ database: { url: fixture.url }, session: 'secret' }), DataAccessModule, SessionModule]),
+      bootContext([testConfigModule({ database: { url: fixture.url }, session: 'secret' }), DataAccessModule, ClusterModule, SessionModule]),
     ).rejects.toThrow('session 段必须是映射')
   })
 

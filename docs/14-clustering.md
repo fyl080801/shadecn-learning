@@ -173,3 +173,21 @@ pnpm dev:cluster  # 按 DEV_CLUSTER_PORTS 拉起多个实例
 ## 8. 待确认
 
 - `awaitInitialSyncTimeout` 用的是默认 1s。跨机房部署时可能要调大，本地和同机房无所谓。
+
+## 9. NestJS 服务（`apps/platform`）的多进程
+
+上面说的都是 `@shadecn/server`。`apps/platform` 用 `@learning/cluster`，配置和实现都是自己的一份，本期只有会话续期用到共享层（一把锁）。
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `cluster.mode`（`config.yaml`） | 按有没有地址推断 | `single` / `redis`，其他值拒绝启动 |
+| `cluster.url`（`config.yaml`） | 无 | 不带密码的地址 |
+| `PLATFORM_REDIS_URL`（运行目录 `.env`） | 无 | 带密码的地址，优先于 `cluster.url` |
+| `server.host`（`config.yaml`） | 只听本机 | 容器里写 `0.0.0.0` |
+| `database.schemaSync`（`config.yaml`） | `apply` | 只留一个进程 `apply`，其余 `off`（[REQ-DATA §3.4.2](05-data-persistence.md)） |
+
+- **多个进程要共用同一个库和同一台 Redis。** `redis` 没有地址、连不上 Redis 都拒绝启动；生产环境 `redis` 配 SQLite 拒绝启动，开发环境只警告（单进程验证 Redis 链路是合法用法）。
+- **同一个会话只续期一次**：两个进程同时碰到访问令牌快过期，只有一个去找身份提供方，另一个等它做完后读新的结果。
+- **Redis 故障不会把人踢下线**：续不了期，但会话保留，15 秒后再试。访问令牌在此期间继续沿用旧值。等锁的请求最多等 30 秒（持有者崩溃的最坏情况）。
+- **每个进程都要配同样的 `auth.oidc`。** 少配的进程把快过期的 OIDC 会话当作未登录（打一条限频的警告），但不删除：别的进程还能续，活过 `session.ttlSeconds` 后才回收。
+

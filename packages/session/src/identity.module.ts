@@ -15,9 +15,9 @@ import { UserService } from './user.service.js'
  * 全局模块：在根模块 import 一次，别的模块不用 import 就能注入 service、用 `@UseGuards(SessionGuard)`、`APP_GUARD` 用 `ApiSessionGuard`。
  *
  * 配置是 config.yaml 的 `session` 段和 `auth.oidc`（续期要换 token），校验和默认值在 options.ts、auth-options.ts。
- * **多进程连同一个库时**，每个进程都要有同样的 `auth.oidc`：没配的进程续不了 OIDC 会话，到 `expiresAt` 就会把它删掉；还要先解决续期的并发（`SessionService.renewing`）。
+ * **多进程连同一个库时**，每个进程都要有同样的 `auth.oidc`（没配的进程续不了 OIDC 会话，那些请求按未登录处理），并且用 `cluster.mode: redis`（续期经共享锁互斥）。
  *
- * 依赖两个全局模块：`ConfigService`（`@learning/config`）和 `DataAccess`（`@learning/data-access`）。根模块没有 import 它们时，
+ * 依赖三个全局模块：`ConfigService`（`@learning/config`）、`DataAccess`（`@learning/data-access`）和 `Cluster`（`@learning/cluster`）。根模块没有 import 它们时，
  * Nest 启动就报依赖解析错误，而 `DataAccess` 背后的 ORM 工厂先同步表结构，所以和模块在 imports 里的先后无关（测试钉着）。
  */
 @Global()

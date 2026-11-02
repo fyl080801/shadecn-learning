@@ -1,5 +1,6 @@
 ---
 paths:
+  - "packages/cluster/**"
   - "packages/server-kit/src/cluster/**"
   - "apps/server/scripts/dev-cluster.mjs"
   - "k8s/**"
@@ -20,3 +21,13 @@ paths:
 - **Quota is eventually consistent**: `quotaLocked()` runs synchronously per message on a local `Map`; the verdict is pushed to the shared layer fire-and-forget and pulled back on the 1–5s re-measure tick.
 - Local: start Redis/PostgreSQL yourself (commands in `.env.example`), then `pnpm dev` or `pnpm dev:cluster` (`scripts/dev-cluster.mjs`, all other config from `.env`). Two shapes: `DEV_CLUSTER_ROLES="web:3001,collab:3002,collab:3003,agent:3004"` = one `tsx watch dev.ts` per role entry (`SERVER_ROLES`, `SERVER_PORT`, `SERVER_INSTANCE_ID`, `SERVER_ORIGIN` = the front proxy) **plus a front proxy on `SERVER_PORT`** routing HTTP and WebSocket upgrades by the route table (`@shadecn/server-core/routes-table` built from `modules.ts`; the script runs under tsx and imports both; round-robin within a role); without it, `DEV_CLUSTER_PORTS` = one all-roles process per port, no proxy. The routing table is derived from route declarations (`server-modules.md`); only `k8s/variants/roles/ingress.yaml` is a hand-written copy, checked declaration by declaration in `test/k8s/roles-manifests.test.ts`.
 - k8s: `k8s/deployment.yaml` (single, PVC, `Recreate`) or `k8s/variants/deployment.cluster.yaml` (`replicas: 3`, `RollingUpdate`, no PVC). **The variant lives outside `k8s/`** because ArgoCD syncs that directory non-recursively (two manifests for one resource = `RepeatedResourceWarning`). Switching = copy the variant over `k8s/deployment.yaml` and commit; manual `apply` is reverted by `selfHeal`.
+
+## `@learning/cluster` (`packages/cluster`, the Nest services)
+
+- **A separate implementation, not `@shadecn/server-kit/cluster`**: same `SharedLock.run` semantics (`docs/14` §3.2), nothing shared. No lazy proxies: `Cluster` comes through DI, so it is ready before anyone can inject it.
+- **`SharedLock.run` has no default TTL**: `ttlMs` must exceed the task's worst case, or the lock expires and the task runs concurrently. A failed acquire throws `SharedLockUnavailableError` with the task not run; **never fall back to running it unlocked**, that is the bug the lock exists to prevent. `fallback` must get its answer without assuming the winner succeeded: the lock may have opened by expiry, and a Redis failure while waiting also lands there.
+- **The Redis connection is tuned for the request path, don't relax it**: `enableOfflineQueue: false` (fail instead of queueing through an outage), `commandTimeout` (the only thing that frees a command when the peer stops answering without closing, measured with a paused container), `autoResendUnfulfilledCommands: false` (a `SET NX` the caller gave up on must not be resent after a reconnect: it would leave a lock nobody releases). `apps/server`'s client differs on purpose: its callers are not on the login path.
+- **A timed-out `SET NX` may still run**: when the peer only stopped answering, the command sits in the socket and executes on recovery, leaving a lock nobody releases, and every waiter sits out the TTL (measured: pausing the Redis container). So a failed acquire also sends the token-checked release, which the same connection orders after the `SET`. If the connection dropped first, the lock simply waits out its TTL.
+- **The connection closes in `onApplicationShutdown`**, like the ORM: requests draining through HTTP close may still hold a lock.
+- **`cluster` must not import a business package**, `data-access` included. `redis` + SQLite is a rule about two sections, so the rule is `assertClusterDatabase` here and the wiring is `apps/platform`'s `ClusterDatabaseCheckModule` (same shape as `WEB_PAGE_AUTH`). **A new service must add that module too.**
+

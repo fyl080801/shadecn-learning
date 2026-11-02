@@ -3,4 +3,4 @@
  * 只依赖 `@learning/config`（peer：`ConfigService` 的类就是注入 token，进程里只能有一份）。
  */
 export { type BootstrapOptions, bootstrapService } from './bootstrap.js'
-export { serverPort } from './server-options.js'
+export { serverHost, serverPort } from './server-options.js'

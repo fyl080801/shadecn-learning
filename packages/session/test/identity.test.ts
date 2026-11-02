@@ -1,4 +1,5 @@
 import 'reflect-metadata'
+import { ClusterModule } from '@learning/cluster'
 import { ConfigService } from '@learning/config'
 import { testConfigModule } from '@learning/config/testing'
 import { DataAccess, DataAccessModule, User } from '@learning/data-access'
@@ -56,7 +57,7 @@ describe('只引入 SessionIdentityModule 的进程（协同这类服务）', ()
     testConfigModule({ database: { url: dir.url }, ...values }, { isProduction, env: { PLATFORM_SESSION_SECRET: SECRET, ...env } })
 
   it('只建 user 和 session 表；登录模块的表和清理都不在', async () => {
-    const context = await bootContext([config(), DataAccessModule, SessionIdentityModule])
+    const context = await bootContext([config(), DataAccessModule, ClusterModule, SessionIdentityModule])
     expect(await tables(context.get(DataAccess))).toEqual(['session', 'user'])
     expect(() => context.get(SessionSweeper, { strict: false })).toThrow()
     await context.close()
@@ -68,7 +69,7 @@ describe('只引入 SessionIdentityModule 的进程（协同这类服务）', ()
     const app = await NestFactory.create<NestFastifyApplication>(
       {
         module: class Root {},
-        imports: [RoutesModule, config(), DataAccessModule, SessionIdentityModule],
+        imports: [RoutesModule, config(), DataAccessModule, ClusterModule, SessionIdentityModule],
         providers: [{ provide: APP_GUARD, useClass: ApiSessionGuard }],
       },
       new FastifyAdapter(),
@@ -105,7 +106,7 @@ describe('只引入 SessionIdentityModule 的进程（协同这类服务）', ()
 
   it('不跑清理：启动时不删任何行（活过 ttl 的会话由 load 判），也不开定时器', async () => {
     const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
-    const seed = await bootContext([config(), DataAccessModule, SessionModule])
+    const seed = await bootContext([config(), DataAccessModule, ClusterModule, SessionModule])
     const em = seed.get(DataAccess).em()
     const user = em.create(User, {
       issuer: 'i',
@@ -145,7 +146,7 @@ describe('只引入 SessionIdentityModule 的进程（协同这类服务）', ()
     await seed.close()
     setIntervalSpy.mockClear()
 
-    const context = await bootContext([config(), DataAccessModule, SessionIdentityModule])
+    const context = await bootContext([config(), DataAccessModule, ClusterModule, SessionIdentityModule])
     const hourly = setIntervalSpy.mock.calls.filter((call) => call[1] === HOUR)
     expect(hourly).toEqual([])
     const rows = await context.get(DataAccess).orm.driver.getConnection().execute('select id from session')
@@ -158,11 +159,11 @@ describe('只引入 SessionIdentityModule 的进程（协同这类服务）', ()
 
   it('配置只看身份要的：auth.github 写了一半、没有 server.origins 也能起（生产环境）；auth.oidc 写一半照样拒绝', async () => {
     const github = { auth: { github: { clientId: 'g' } } }
-    const context = await bootContext([config(github, {}, true), DataAccessModule, SessionIdentityModule])
+    const context = await bootContext([config(github, {}, true), DataAccessModule, ClusterModule, SessionIdentityModule])
     await context.close()
 
     const oidcOnly = { auth: { oidc: { issuer: 'https://idp.test/realms/x', clientId: 'c' } } }
-    const noOrigins = await bootContext([config(oidcOnly, {}, true), DataAccessModule, SessionIdentityModule])
+    const noOrigins = await bootContext([config(oidcOnly, {}, true), DataAccessModule, ClusterModule, SessionIdentityModule])
     await noOrigins.close()
 
     const half = new ConfigService({
@@ -196,6 +197,7 @@ describe('只引入 SessionIdentityModule 的进程（协同这类服务）', ()
       bootContext([
         config({ auth }, { PLATFORM_OIDC_CLIENT_SECRET: 'oidc-secret-value' }),
         DataAccessModule,
+        ClusterModule,
         SessionIdentityModule,
       ])
 
@@ -245,22 +247,22 @@ describe('只引入 SessionIdentityModule 的进程（协同这类服务）', ()
   })
 
   it('全新库同步后差异为空，再启动一次打印「无需变更」：实体写法不会让每次启动都算出差异', async () => {
-    const first = await bootContext([config(), DataAccessModule, SessionModule])
+    const first = await bootContext([config(), DataAccessModule, ClusterModule, SessionModule])
     expect(await first.get(DataAccess).orm.schema.getUpdateSchemaSQL({ dropTables: false })).toBe('')
     await first.close()
 
     log.mockClear()
-    const second = await bootContext([config(), DataAccessModule, SessionModule])
+    const second = await bootContext([config(), DataAccessModule, ClusterModule, SessionModule])
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/\[data-access\] 表结构已与实体定义一致/))
     await second.close()
   })
 
   it('SessionModule = 身份 + 登录：五张表都在；单独引入 LoginModule 也能启动（它自己 import 了身份模块）', async () => {
-    const whole = await bootContext([config(), DataAccessModule, SessionModule])
+    const whole = await bootContext([config(), DataAccessModule, ClusterModule, SessionModule])
     expect(await tables(whole.get(DataAccess))).toEqual(['auth_request', 'pending_link', 'session', 'user', 'user_identity'])
     await whole.close()
 
-    const loginOnly = await bootContext([config(), DataAccessModule, LoginModule])
+    const loginOnly = await bootContext([config(), DataAccessModule, ClusterModule, LoginModule])
     expect(await tables(loginOnly.get(DataAccess))).toEqual(['auth_request', 'pending_link', 'session', 'user', 'user_identity'])
     await loginOnly.close()
   })

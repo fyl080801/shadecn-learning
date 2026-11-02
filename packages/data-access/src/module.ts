@@ -6,7 +6,7 @@ import { ModulesContainer } from '@nestjs/core'
 import { DATA_ACCESS_ORM, DataAccess } from './data-access.js'
 import { User } from './entities.js'
 import { collectEntities, DATA_ACCESS_ENTITIES, DATA_ACCESS_ENTITY_OVERRIDE, type Entities } from './entity-registry.js'
-import { openOrm, providerFromUrl } from './orm.js'
+import { type DbProvider, openOrm, providerFromUrl } from './orm.js'
 import { syncSchema } from './schema-sync.js'
 
 /**
@@ -24,6 +24,41 @@ function databaseUrl(config: ConfigService): string {
   return trimmed.startsWith('file:') ? `file:${config.resolvePath(trimmed.slice('file:'.length))}` : trimmed
 }
 
+/** 这个进程连的是哪种库。别的模块的规则要用（`redis` 不能配 SQLite），不用等 ORM 建好。连接串协议不认识时是 undefined，ORM 工厂会拒绝启动 */
+export function databaseProviderOf(config: ConfigService): DbProvider | undefined {
+  return providerFromUrl(databaseUrl(config))
+}
+
+type SchemaSyncMode = 'apply' | 'off'
+
+/**
+ * `database.schemaSync`：`apply`（默认）启动时同步表结构，`off` 只连库不同步，给 HPA 副本用（多个进程同时跑 DDL 会撞车，由一个 `apply` 的进程负责）。
+ * 写错了拒绝启动：`off` 拼错被当成默认值，副本就会去改表。
+ */
+function schemaSyncMode(config: ConfigService): SchemaSyncMode {
+  const mode = config.mapping('database').schemaSync ?? 'apply'
+  if (mode !== 'apply' && mode !== 'off') throw new Error('[data-access] database.schemaSync 只能是 apply 或 off')
+  return mode
+}
+
+/**
+ * `off` 也要验证连得上（`.claude/rules/database.md` 的约定）：`MikroORM.init()` 不连库，不验证的话要到第一个请求才知道，探针却一路是好的。
+ * 只跑 `select 1`，不产生任何 DDL。
+ */
+async function openWithoutSync(orm: MikroORM, provider: DbProvider): Promise<MikroORM> {
+  try {
+    await orm.connect()
+    const check = await orm.checkConnection()
+    if (!check.ok) throw new Error(check.reason)
+    console.log(`[data-access] 不同步表结构（database.schemaSync: off，${provider}: ${orm.config.get('dbName')}）`)
+    return orm
+  } catch (err) {
+    console.error(`[data-access] 连不上数据库，中止启动：${err instanceof Error ? err.message : String(err)}`)
+    await orm.close().catch(() => undefined)
+    throw err
+  }
+}
+
 /**
  * 建 ORM + 同步表结构。放在 ORM provider 的异步工厂里，**不放 onModuleInit**，实测（Nest 12.3.2）onModuleInit 给不了这个保证：
  * - 全局模块之间的钩子按注册顺序跑：排在 DataAccessModule 前面的全局业务模块，它的 onModuleInit 先于同步执行；
@@ -35,12 +70,15 @@ function databaseUrl(config: ConfigService): string {
  *
  * 不接受 `force`：启动路径永远不放行有损变更（SchemaDataLossError = 启动失败，一句不执行），宁可起不来也不静默丢数据。
  */
-async function openSyncedOrm(url: string, entities: Entities): Promise<MikroORM> {
+async function openStartupOrm(config: ConfigService, entities: Entities): Promise<MikroORM> {
+  const url = databaseUrl(config)
+  const mode = schemaSyncMode(config)
   const provider = providerFromUrl(url)
   // 不把连接串打出来：里面有密码
   if (!provider) throw new Error('[data-access] 连接串的协议不认识（只支持 postgres:// / postgresql:// / file:）')
 
   const orm = await openOrm({ provider, url, entities })
+  if (mode === 'off') return openWithoutSync(orm, provider)
   try {
     const result = await syncSchema(orm)
     const target = `${provider}: ${orm.config.get('dbName')}`
@@ -77,7 +115,7 @@ async function openSyncedOrm(url: string, entities: Entities): Promise<MikroORM>
       provide: DATA_ACCESS_ORM,
       inject: [ConfigService, ModulesContainer, DATA_ACCESS_ENTITY_OVERRIDE],
       useFactory: (config: ConfigService, modules: ModulesContainer, override: Entities | null) =>
-        openSyncedOrm(databaseUrl(config), override ?? collectEntities(modules)),
+        openStartupOrm(config, override ?? collectEntities(modules)),
     },
     DataAccess,
   ],

@@ -203,6 +203,52 @@ function behaviours(createFixture: () => DatabaseFixture) {
     await orm.close()
   })
 
+  describe('database.schemaSync', () => {
+    const withSync = (schemaSync: unknown) => testConfigModule({ database: { url, schemaSync } })
+
+    it('off：空库不建表、不打 DDL，能连上就启动成功；用到表时才报错', async () => {
+      const app = await boot([withSync('off'), DataAccessModule])
+      expect(await tableNames(app.get(DataAccess).orm)).toEqual([])
+      expect(printed(logSpy)).toMatch(/\[data-access\] 不同步表结构（database\.schemaSync: off/)
+      expect(printed(logSpy).toLowerCase()).not.toContain('create table')
+      await expect(app.get(DataAccess).em().count(User)).rejects.toThrow()
+      await app.close()
+    })
+
+    it('off：库里差一列也不补，已有的数据照常读写', async () => {
+      const first = await boot([databaseConfig(url), dataAccessWith([ProbeV1])])
+      await first.close()
+
+      logSpy.mockClear()
+      const app = await boot([withSync('off'), dataAccessWith([ProbeV2])])
+      expect(printed(logSpy).toLowerCase()).not.toContain('alter table')
+      const orm = await inspect(url, [ProbeV1])
+      expect((await planSchemaSync(orm)).statements).toEqual([])
+      await orm.close()
+      await app.close()
+    })
+
+    it('off：有损差异不拒绝启动（它不判也不改，判定归 apply 的进程）', async () => {
+      const first = await boot([databaseConfig(url), dataAccessWith([ProbeV1])])
+      await first.close()
+      const app = await boot([withSync('off'), dataAccessWith([ProbeV2])])
+      await app.close()
+    })
+
+    it.each([undefined, null, 'apply'])('%s：和原来一样同步', async (schemaSync) => {
+      const app = await boot([withSync(schemaSync), DataAccessModule])
+      expect(await tableNames(app.get(DataAccess).orm)).toEqual(['user'])
+      await app.close()
+    })
+
+    it.each(['Off', 'none', true, 0])('其他值（%j）→ 拒绝启动，库不动', async (schemaSync) => {
+      await expect(boot([withSync(schemaSync), DataAccessModule])).rejects.toThrow('database.schemaSync 只能是 apply 或 off')
+      const orm = await inspect(url)
+      expect(await tableNames(orm)).toEqual([])
+      await orm.close()
+    })
+  })
+
   it('实体之外的表：只提醒，不动', async () => {
     const seed = await inspect(url, [ProbeV1])
     await seed.schema.execute(`create table outside_entities (id text primary key)`)
@@ -278,6 +324,18 @@ function behaviours(createFixture: () => DatabaseFixture) {
 
 describe('DataAccessModule（SQLite）', () => {
   behaviours(sqliteFixture)
+
+  it('schemaSync: off 也要验证连得上：SQLite 路径是个目录 → 启动失败，ORM 已关', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'data-access-unreachable-'))
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const closeSpy = vi.spyOn(MikroORM.prototype, 'close')
+    await expect(boot([testConfigModule({ database: { url: `file:${dir}`, schemaSync: 'off' } }), DataAccessModule])).rejects.toThrow()
+    expect(error.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/\[data-access\] 连不上数据库，中止启动/)
+    expect(closeSpy).toHaveBeenCalledTimes(1)
+    vi.restoreAllMocks()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
 
   it('连接串协议不认识 → 启动失败，报错里不带连接串', async () => {
     const failure = boot([databaseConfig('mysql://user:secret@127.0.0.1/db'), DataAccessModule])
@@ -358,6 +416,17 @@ const postgresUrl = process.env.PLATFORM_TEST_DATABASE_URL
 
 describe.skipIf(!postgresUrl)('DataAccessModule（PostgreSQL，PLATFORM_TEST_DATABASE_URL）', () => {
   behaviours(() => postgresFixture(postgresUrl as string))
+
+  it('schemaSync: off 连不上 → 启动失败，报错不带密码', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const failure = boot([
+      testConfigModule({ database: { url: 'postgresql://user:hunter2@127.0.0.1:1/platform_test', schemaSync: 'off' } }),
+      DataAccessModule,
+    ])
+    await expect(failure).rejects.toThrow()
+    await expect(failure).rejects.not.toThrow('hunter2')
+    vi.restoreAllMocks()
+  })
 
   it('连接串里的 ?schema= 摘出来交给 MikroORM：表建在那个 schema 里', async () => {
     const url = await postgresFixture(postgresUrl as string).fresh()

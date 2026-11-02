@@ -11,3 +11,14 @@ export function serverPort(config: ConfigService): number {
   }
   return port
 }
+
+/**
+ * config.yaml 的 `server.host`。不写是 undefined：Fastify 默认只听本机（localhost），容器里要写 `0.0.0.0` 才接得到外面的流量。
+ * 写了别的类型或空白就拒绝启动：不能悄悄回到默认值，那样服务起来了却没人连得上，只有探针超时这一个线索。
+ */
+export function serverHost(config: ConfigService): string | undefined {
+  const host = config.mapping('server').host
+  if (host === undefined || host === null) return undefined
+  if (typeof host !== 'string' || !host.trim()) throw new Error('[foundation] server.host 必须是非空字符串')
+  return host.trim()
+}

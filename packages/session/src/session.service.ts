@@ -1,16 +1,25 @@
+import { Cluster, type SharedLock, SharedLockUnavailableError } from '@learning/cluster'
 import { DataAccess, User } from '@learning/data-access'
 import { Inject, Injectable } from '@nestjs/common'
 import { Session } from './entities.js'
 import { describeError } from './errors.js'
-import { OidcError, type ProviderTokens } from './oauth/index.js'
+import { HTTP_TIMEOUT, OidcError, type ProviderTokens } from './oauth/index.js'
 import { type ResolvedSessionOptions, SESSION_OPTIONS } from './options.js'
 import { newSessionToken, sessionTokenId } from './session-token.js'
-import { TokenRefresher } from './token-refresher.js'
+import { type RefreshTokens, TokenRefresher } from './token-refresher.js'
 
 /** access_token 还剩这么久以内就顺手续一次 */
 const RENEW_WINDOW_MS = 30_000
 /** 刷新暂时失败（连不上、超时、5xx）后，这段时间内不再撞第二次 */
 const REFRESH_COOLDOWN_MS = 15_000
+/**
+ * 续期锁的存活上限。**必须大于持锁期间最坏的耗时**，否则锁过期后另一个进程抢到锁，拿同一个 refresh token 再换一次，被判 `invalid_grant` 后注销会话。
+ * 最坏情况：发现文档缓存刚好过期（一次 HTTP 超时）+ token 端点（一次 HTTP 超时）+ 写库。写库没有超时上限，留出余量。
+ * 等锁的进程最多也等这么久：赢家崩溃时这是一个请求的最坏延迟，所以不能给得太大。
+ */
+export const RENEW_LOCK_TTL_MS = 2 * HTTP_TIMEOUT + 14_000
+/** 本进程续不了某个提供方的会话时，多久提醒一次：每个请求都打就是刷屏 */
+const NO_CLIENT_WARN_INTERVAL_MS = 5 * 60 * 1000
 
 /** 对应 Session 表里的 token 列 */
 export type SessionTokens = ProviderTokens
@@ -30,19 +39,28 @@ export type LoadedSession = Session & { user: User }
 @Injectable()
 export class SessionService {
   /**
-   * 同一个会话的并发刷新合并成一次：refresh token 轮换后，第二个请求拿旧的去换会被判 `invalid_grant`，把好端端的会话注销掉。
-   * **只管这一个进程**：连同一个库的第二个进程（多副本，或者只引入 SessionIdentityModule 的协同服务）要先换成共享锁，否则会抢同一个 refresh token。
-   * `apps/platform` 现在是单进程。
+   * 同一个进程里，同一个会话的并发续期合并成一次：共享锁（{@link renewLock}）也能保证不并发，
+   * 但没有这一层的话，redis 模式下同进程的后来者都要轮询 Redis 等自己进程的请求做完。
    */
   private readonly renewing = new Map<string, Promise<LoadedSession | null>>()
   /** 会话 id → 可以再试的时刻 */
   private readonly cooldown = new Map<string, number>()
+  /** 提供方 → 上次提醒的时刻，见 {@link NO_CLIENT_WARN_INTERVAL_MS} */
+  private readonly noClientWarnedAt = new Map<string, number>()
+  /**
+   * 跨进程的续期互斥：refresh token 轮换后，第二个进程拿旧的去换会被判 `invalid_grant`，把好端端的会话注销掉。
+   * `single` 模式下是进程内实现。
+   */
+  private readonly renewLock: SharedLock
 
   constructor(
     @Inject(DataAccess) private readonly dataAccess: DataAccess,
     @Inject(SESSION_OPTIONS) private readonly options: ResolvedSessionOptions,
     @Inject(TokenRefresher) private readonly refresher: TokenRefresher,
-  ) {}
+    @Inject(Cluster) cluster: Cluster,
+  ) {
+    this.renewLock = cluster.createLock('session-renew')
+  }
 
   /** 守卫要知道读哪个 cookie。放在这里而不是导出配置 token：`SessionGuard` 是在使用它的模块里实例化的，只依赖这个 service 就够了 */
   get cookieName(): string {
@@ -98,7 +116,7 @@ export class SessionService {
       await this.deleteById(id)
       return null
     }
-    if (session.expiresAt.getTime() - now > RENEW_WINDOW_MS) return session
+    if (this.isFresh(session)) return session
 
     // 上一次是「连不上」失败的：冷却期内先用着旧会话，别让每个请求都去撞一次超时
     const retryAt = this.cooldown.get(id)
@@ -112,27 +130,65 @@ export class SessionService {
     return renewal
   }
 
-  /** 还有没有可用的 refresh token：这一条本地就能判。GitHub 不发 refresh_token，会话走不到续期，到点就是到了上限 */
-  private canRefresh(session: Session): boolean {
-    if (!session.refreshToken || !this.refresher.refreshOf(session.provider)) return false
+  /** refresh token 本身还能不能用：这一条本地就能判，不用问提供方 */
+  private hasLiveRefreshToken(session: Session): boolean {
+    if (!session.refreshToken) return false
     return !session.refreshExpiresAt || session.refreshExpiresAt.getTime() > Date.now()
   }
 
+  /** 这个进程能不能续：GitHub 不发 refresh_token，会话走不到续期，到点就是到了上限 */
+  private canRefresh(session: Session): boolean {
+    return this.hasLiveRefreshToken(session) && this.refresher.refreshOf(session.provider) !== null
+  }
+
+  private isFresh(session: Session): boolean {
+    return session.expiresAt.getTime() - Date.now() > RENEW_WINDOW_MS
+  }
+
   /**
-   * **失败不是一律致命**：只有提供方明确回绝（4xx，`invalid_grant`）才删会话。连不上、超时、5xx、本地写库失败都没证明凭证失效，
-   * 这时候注销，一次网络抖动就能把人踢回登录页，所以保留会话，冷却后由下一个请求再试。
+   * 进锁之前先把本地就能判的判掉：判得出结局的会话不该因为 Redis 故障而悬着，也不必多一次 Redis 往返。
+   * - refresh token 没有了或过期了：会话确实结束了，删行；
+   * - refresh token 还好，只是**这个进程**没有对应的 client（少配了 `auth.oidc`）：本次按未登录处理，**不删行**，
+   *   别的进程可能还续得了。行最终由 `SessionSweeper` 按 TTL 回收；
+   * - 其余的经共享锁续期。
+   *
+   * **锁不可用**（Redis 故障）时不能续也不能注销：无锁去换就是这把锁要防的事，注销更没有依据。保留旧会话，进入冷却。
    */
   private async renew(id: string): Promise<LoadedSession | null> {
-    // 重新读一遍：这个请求读到旧行之后、抢到续期之前，可能刚有一次续期完成。拿旧 refresh token 再换一次就是自己注销自己
+    // 重新读一遍：这个请求读到旧行之后、抢到续期之前，可能刚有一次续期完成
     const session = await this.find(id)
     if (!session) return null
-    if (session.expiresAt.getTime() - Date.now() > RENEW_WINDOW_MS) return session
+    if (this.isFresh(session)) return session
 
+    if (!this.hasLiveRefreshToken(session)) return this.deleteUnlessRenewed(session)
     const refresh = this.refresher.refreshOf(session.provider)
-    if (!refresh || !session.refreshToken || !this.canRefresh(session)) {
-      await this.deleteById(id)
+    if (!refresh) {
+      this.warnNoClient(session.provider)
       return null
     }
+
+    try {
+      return await this.renewLock.run(id, () => this.renewHoldingLock(id, refresh), {
+        ttlMs: RENEW_LOCK_TTL_MS,
+        fallback: () => this.afterWaiting(id),
+      })
+    } catch (err) {
+      if (!(err instanceof SharedLockUnavailableError)) throw err
+      console.warn('[session] 共享锁不可用，保留会话稍后再试')
+      this.startCooldown(id)
+      return session
+    }
+  }
+
+  /**
+   * 持锁续期。**失败不是一律致命**：只有提供方明确回绝（4xx，`invalid_grant`）才删会话。连不上、超时、5xx、本地写库失败都没证明凭证失效，
+   * 这时候注销，一次网络抖动就能把人踢回登录页，所以保留会话，冷却后由下一个请求再试。
+   */
+  private async renewHoldingLock(id: string, refresh: RefreshTokens): Promise<LoadedSession | null> {
+    // 再读一遍，这次在锁里：别的进程可能在我们进锁之前刚放开锁。拿旧行上的 refresh token 去换就是自己注销自己
+    const session = await this.find(id)
+    if (!session) return null
+    if (this.isFresh(session) || !session.refreshToken) return session
 
     try {
       const { tokens, roles } = await refresh(session.refreshToken)
@@ -161,13 +217,44 @@ export class SessionService {
     } catch (err) {
       if (err instanceof OidcError && !err.retryable) {
         console.warn(`[session] 刷新会话被拒绝，已注销：${describeError(err)}`)
-        await this.deleteById(id)
-        return null
+        return this.deleteUnlessRenewed(session)
       }
       console.warn(`[session] 刷新会话暂时失败，保留会话稍后再试：${describeError(err)}`)
       this.startCooldown(id)
       return session
     }
+  }
+
+  /**
+   * 没抢到锁，等到之后（对方放锁、锁过期、或等的途中 Redis 坏了）看结果。**这里绝不拿 refresh token 去换**：此刻没有锁。
+   * 对方续好了就用新行；行没了是对方判定注销了（或用户登出了）；都不是说明对方失败或崩溃了，保留旧会话，冷却后由下一个请求重新抢锁。
+   */
+  private async afterWaiting(id: string): Promise<LoadedSession | null> {
+    const session = await this.find(id)
+    if (!session) return null
+    if (this.isFresh(session)) {
+      this.cooldown.delete(id)
+      return session
+    }
+    this.startCooldown(id)
+    return session
+  }
+
+  /**
+   * 删会话，但只删「还是我看到的那个 refresh token」的行：判定和删除之间，别的进程可能已经续好了
+   * （比如锁过期后它抢到了，我这边的 `invalid_grant` 正是被它轮换导致的）。这时候用它的结果，不注销。
+   */
+  private async deleteUnlessRenewed(session: Session): Promise<LoadedSession | null> {
+    this.cooldown.delete(session.id)
+    const deleted = await this.dataAccess.em().nativeDelete(Session, { id: session.id, refreshToken: session.refreshToken })
+    return deleted > 0 ? null : this.find(session.id)
+  }
+
+  private warnNoClient(provider: string): void {
+    const now = Date.now()
+    if (now - (this.noClientWarnedAt.get(provider) ?? -Infinity) < NO_CLIENT_WARN_INTERVAL_MS) return
+    this.noClientWarnedAt.set(provider, now)
+    console.warn(`[session] 这个进程没有配置 ${provider} 的 client，续不了它的会话：本次按未登录处理，不删行（检查 auth.oidc 和其他进程是否一致）`)
   }
 
   /** 顺手清掉到期的：人走了的会话不会再有请求来删它，这张表又没有定时任务管（只引入身份模块的进程不跑清理） */
@@ -183,6 +270,14 @@ export class SessionService {
     this.cooldown.delete(id)
     // 已经不在了（并发的另一个请求先删了）不算错：nativeDelete 删 0 行就是 0，不抛
     await this.dataAccess.em().nativeDelete(Session, { id })
+  }
+
+  /**
+   * 行还在不在。{@link load} 返回 null 不等于会话没了：这个进程续不了时也是 null，这时候不该清浏览器的 cookie，否则换个进程本来还能续的会话也丢了。
+   */
+  async exists(token: string | undefined): Promise<boolean> {
+    if (!token) return false
+    return (await this.dataAccess.em().count(Session, { id: this.idOf(token) })) > 0
   }
 
   /** 按原始 token 删会话；已经不在了也不算错 */

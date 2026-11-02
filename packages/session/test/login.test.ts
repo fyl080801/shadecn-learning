@@ -1,4 +1,5 @@
 import 'reflect-metadata'
+import { ClusterModule } from '@learning/cluster'
 import { testConfigModule } from '@learning/config/testing'
 import { DataAccess, DataAccessModule, User } from '@learning/data-access'
 import { FakeBrowser, followAuthorize, startFakeIdp, type BrowserResponse, type FakeIdp } from '@learning/session/testing'
@@ -43,6 +44,7 @@ async function bootApp(values: Record<string, unknown>, env: Record<string, stri
         RoutesModule,
         testConfigModule(values, { isProduction, env: { PLATFORM_SESSION_SECRET: SECRET, ...env } }),
         DataAccessModule,
+        ClusterModule,
         SessionModule,
       ],
       providers: [{ provide: APP_GUARD, useClass: ApiSessionGuard }],
@@ -699,10 +701,21 @@ function behaviours(createFixture: () => DatabaseFixture) {
       expect((await browser.get('/api/private')).status).toBe(401)
     })
 
-    it('会话对应的提供方后来撤了配置：到期时走不了续期，删', async () => {
+    it('会话对应的提供方这个进程没配：按未登录处理，行和 cookie 都留着（别的进程可能还续得了）', async () => {
       await login('oidc')
       await dataAccess().em().nativeUpdate(Session, {}, { provider: 'removed', expiresAt: new Date(Date.now() - 1000) })
-      expect((await me()).authenticated).toBe(false)
+      const res = await browser.get('/api/auth/me')
+      expect(JSON.parse(res.body).authenticated).toBe(false)
+      expect(res.headers['set-cookie']).toBeUndefined()
+      expect(await dataAccess().em().count(Session)).toBe(1)
+    })
+
+    it('行真的没了：/me 清 cookie', async () => {
+      await login('oidc')
+      await dataAccess().em().nativeDelete(Session, {})
+      const res = await browser.get('/api/auth/me')
+      expect(JSON.parse(res.body).authenticated).toBe(false)
+      expect(String(res.headers['set-cookie'])).toMatch(/^sid=;/)
     })
   })
 }
@@ -741,6 +754,7 @@ describe('登录配置', () => {
         { isProduction, env: { PLATFORM_SESSION_SECRET: SECRET, ...env } },
       ),
       DataAccessModule,
+      ClusterModule,
       SessionModule,
     ])
 

@@ -35,6 +35,7 @@ function writeConfig(dataDir: string, values: Record<string, unknown>) {
   vi.stubEnv('DATA_DIR', dataDir)
   vi.stubEnv('PLATFORM_SESSION_SECRET', 'test-secret')
   vi.stubEnv('PLATFORM_DATABASE_URL', '')
+  vi.stubEnv('PLATFORM_REDIS_URL', '')
   fs.writeFileSync(path.join(dataDir, 'config.yaml'), JSON.stringify(values))
 }
 
@@ -220,13 +221,14 @@ describe('模块依赖和 imports 顺序无关', () => {
     writeConfig(dir, productionConfig({ url: `file:${path.join(dir, 'order.db')}`, dir }))
     const imports = Reflect.getMetadata('imports', AppModule) as unknown[]
     const providers = Reflect.getMetadata('providers', AppModule) as unknown[]
-    expect(imports).toHaveLength(5)
+    expect(imports).toHaveLength(7)
 
     @Module({})
     class ReorderedRoot {}
     const { app, baseUrl } = await listen({
       module: ReorderedRoot,
-      imports: order.map((index) => imports[index]),
+      // 排列之外的两个（cluster 和它的检查）放在最前面，也是一种「先后无关」
+      imports: [imports[5], imports[6], ...order.map((index) => imports[index])],
       providers,
     } as never)
 
@@ -343,6 +345,46 @@ describe('bootstrapService + AppModule（main.ts 的启动路径）', () => {
     expect((await rawRequest(baseUrl, '/api/health/x')).status).toBe(401)
     expect((await rawRequest(baseUrl, '/api/none')).status).toBe(401)
     expect(JSON.parse((await rawRequest(baseUrl, '/api/auth/me')).body)).toEqual({ enabled: true, authenticated: false, user: null })
+  })
+})
+
+describe('cluster + 数据库的组合', () => {
+  let dir: string
+  const redisUrl = process.env.PLATFORM_TEST_REDIS_URL
+
+  beforeEach(() => {
+    dir = staticDir()
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.restoreAllMocks()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('默认 single：SQLite 照常启动', async () => {
+    writeConfig(dir, productionConfig({ url: `file:${path.join(dir, 'single.db')}`, dir }))
+    const { app, baseUrl } = await listen(AppModule)
+    expect((await rawRequest(baseUrl, '/api/none')).status).toBe(401)
+    await app.close()
+  })
+
+  it('cluster.mode 写错 → 启动失败', async () => {
+    writeConfig(dir, { ...productionConfig({ url: `file:${path.join(dir, 'x.db')}`, dir }), cluster: { mode: 'nope' } })
+    await expect(listen(AppModule)).rejects.toThrow('cluster.mode')
+  })
+
+  it.skipIf(!redisUrl)('生产环境 redis + SQLite → 拒绝启动', async () => {
+    writeConfig(dir, { ...productionConfig({ url: `file:${path.join(dir, 'x.db')}`, dir }), cluster: { url: redisUrl } })
+    await expect(listen(AppModule)).rejects.toThrow('生产环境拒绝启动')
+  })
+
+  it('database.schemaSync 写错 → 启动失败', async () => {
+    writeConfig(dir, {
+      database: { url: `file:${path.join(dir, 'x.db')}`, schemaSync: 'nope' },
+      web: { root: dir },
+    })
+    await expect(listen(AppModule)).rejects.toThrow('database.schemaSync')
   })
 })
 

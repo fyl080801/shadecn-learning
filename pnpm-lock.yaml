@@ -81,6 +81,9 @@ importers:
 
   apps/platform:
     dependencies:
+      '@learning/cluster':
+        specifier: workspace:*
+        version: link:../../packages/cluster
       '@learning/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -407,6 +410,40 @@ importers:
       yjs:
         specifier: ^13.6.32
         version: 13.6.32
+
+  packages/cluster:
+    dependencies:
+      ioredis:
+        specifier: ^5.6.1
+        version: 5.6.1
+    devDependencies:
+      '@learning/config':
+        specifier: workspace:*
+        version: link:../config
+      '@nestjs/common':
+        specifier: ^12.3.2
+        version: 12.3.2(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@nestjs/core':
+        specifier: ^12.3.2
+        version: 12.3.2(@nestjs/common@12.3.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@swc/core':
+        specifier: ^1.15.18
+        version: 1.16.21(@swc/helpers@0.5.19)
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.12.0
+      reflect-metadata:
+        specifier: ^0.2.2
+        version: 0.2.2
+      rxjs:
+        specifier: ^7.8.2
+        version: 7.8.2
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+      unplugin-swc:
+        specifier: ^1.5.9
+        version: 1.6.0(@swc/core@1.16.21(@swc/helpers@0.5.19))(esbuild@0.28.2)(rolldown@1.2.16)(rollup@4.59.0)(vite@7.3.1(@types/node@24.12.0)(jiti@2.7.0)(lightningcss@1.31.1)(stylus@0.57.0)(tsx@4.23.12)(yaml@2.8.2))
 
   packages/config:
     dependencies:
@@ -769,6 +806,9 @@ importers:
 
   packages/session:
     devDependencies:
+      '@learning/cluster':
+        specifier: workspace:*
+        version: link:../cluster
       '@learning/config':
         specifier: workspace:*
         version: link:../config

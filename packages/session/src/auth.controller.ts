@@ -104,8 +104,8 @@ export class AuthController {
     const token = readCookie(request.headers.cookie, this.options.cookieName)
     const session = await this.sessions.load(token)
     reply.header('cache-control', 'no-store')
-    // cookie 还在但会话已经没了（过期 / 被登出）
-    if (token && !session) reply.header('set-cookie', this.clearSessionCookie(request))
+    // cookie 还在但会话已经没了（过期 / 被登出）。行还在就不清：只是这个进程续不了（少配了 auth.oidc），换个进程还能用
+    if (token && !session && !(await this.sessions.exists(token))) reply.header('set-cookie', this.clearSessionCookie(request))
     return { enabled: true, authenticated: Boolean(session), user: session ? toSessionUser(session.user) : null }
   }
 

@@ -6,6 +6,8 @@
 server:
   # 监听端口，默认 3001（3000 是 @shadecn/server 的）
   port: 3001
+  # 监听地址。不写 = 只听本机；容器里写 0.0.0.0
+  # host: 0.0.0.0
   # 对外域名的白名单：登录回调的域名和 cookie 的 Secure 都按它判定，第一个是默认（请求的域名都不在名单里时用它）。不支持通配符。
   # 不写时开发环境默认 http://localhost:<port> 和 http://127.0.0.1:<port>；生产环境配了登录方式却不写 = 拒绝启动
   # origins:
@@ -16,6 +18,16 @@ database:
   # 带密码的连接串放 .env 的 PLATFORM_DATABASE_URL，它优先于这里
   # 启动时自动把表结构对齐到实体定义，有损变更会拒绝启动 —— 不要指向别的服务在用的库
   # url: file:data/platform.db
+  # 启动时要不要同步表结构：apply（默认）或 off。多副本（HPA）下只留一个进程 apply，其他写 off：只验证连得上，不执行任何 DDL
+  # schemaSync: apply
+
+# 多进程部署才需要。不写这一段 = 单进程。
+# cluster:
+#   # single 或 redis。不写时按有没有地址推断：有就是 redis
+#   mode: redis
+#   # 不带密码的地址。带密码的放 .env 的 PLATFORM_REDIS_URL，它优先于这里
+#   # redis 模式连不上 = 拒绝启动；生产环境 redis 配 SQLite = 拒绝启动（多个进程要共用一个库）
+#   url: redis://127.0.0.1:6379
 
 session:
   # 密钥在 .env 的 PLATFORM_SESSION_SECRET，写在这里会拒绝启动

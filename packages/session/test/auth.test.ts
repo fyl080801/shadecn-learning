@@ -1,5 +1,6 @@
 import 'reflect-metadata'
 import http from 'node:http'
+import { ClusterModule } from '@learning/cluster'
 import { DataAccess, DataAccessModule } from '@learning/data-access'
 import { Controller, Get, Module } from '@nestjs/common'
 import { APP_GUARD, NestFactory } from '@nestjs/core'
@@ -87,7 +88,7 @@ function behaviours(createFixture: () => DatabaseFixture) {
     app = await NestFactory.create<NestFastifyApplication>(
       {
         module: Root,
-        imports: [RoutesModule, sessionConfig(fixture.url, { secret: SECRET }), DataAccessModule, SessionModule],
+        imports: [RoutesModule, sessionConfig(fixture.url, { secret: SECRET }), DataAccessModule, ClusterModule, SessionModule],
         providers: [{ provide: APP_GUARD, useClass: ApiSessionGuard }],
       },
       new FastifyAdapter(),
@@ -233,13 +234,19 @@ describe.skipIf(!postgresUrl)('登录态端点和全局守卫（PostgreSQL，PLA
 
 describe('模块依赖由 Nest 解析', () => {
   it('缺 DataAccessModule → 启动时报明确的依赖解析错误，点名 DataAccess', async () => {
-    await expect(bootContext([sessionConfig('file:unused.db', { secret: SECRET }), SessionModule])).rejects.toThrow(
+    await expect(bootContext([sessionConfig('file:unused.db', { secret: SECRET }), ClusterModule, SessionModule])).rejects.toThrow(
       /can't resolve dependencies of the \w+ \(\?.*\)[\s\S]*DataAccess/,
     )
   })
 
   it('缺 ConfigModule → 启动时报依赖解析错误，点名 ConfigService', async () => {
-    await expect(bootContext([SessionModule])).rejects.toThrow(/can't resolve dependencies[\s\S]*ConfigService/)
+    await expect(bootContext([ClusterModule, SessionModule])).rejects.toThrow(/can't resolve dependencies[\s\S]*ConfigService/)
+  })
+
+  it('缺 ClusterModule → 启动时报依赖解析错误，点名 Cluster，不会变成无锁续期', async () => {
+    await expect(
+      bootContext([sessionConfig('file:unused.db', { secret: SECRET }), DataAccessModule, SessionModule]),
+    ).rejects.toThrow(/can't resolve dependencies[\s\S]*Cluster/)
   })
 
   it('缺 SessionModule → ApiSessionGuard 启动时报依赖解析错误，不会变成不校验', async () => {
@@ -263,6 +270,7 @@ describe('模块依赖由 Nest 解析', () => {
     const context = await bootContext([
       sessionConfig(fixture.url, { secret: SECRET }),
       ...(order(DataAccessModule, SessionModule) as never[]),
+      ClusterModule,
     ])
     expect(await context.get(SessionPageAuth).isAuthenticated({ headers: { cookie: 'sid=whatever' } })).toBe(false)
     await context.close()

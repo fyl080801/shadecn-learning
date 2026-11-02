@@ -9,7 +9,7 @@ import { type CanActivate, Controller, Get, Injectable, Module, type OnApplicati
 import { APP_GUARD } from '@nestjs/core'
 import type { NestFastifyApplication } from '@nestjs/platform-fastify'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { bootstrapService, serverPort } from '../src/index.js'
+import { bootstrapService, serverHost, serverPort } from '../src/index.js'
 
 let shutdowns = 0
 
@@ -112,6 +112,27 @@ describe('bootstrapService', () => {
     expect(shutdowns).toBe(1)
   })
 
+  it('server.host 写了就听它：只听 127.0.0.1 时 IPv6 回环连不上；0.0.0.0 监听所有 IPv4 地址', async () => {
+    app = await bootstrapService(rootWith({ port: 0, host: '127.0.0.1' }), { name: 'probe', ...SILENT })
+    const { port } = new URL(await app.getUrl())
+    expect((app.getHttpServer().address() as net.AddressInfo).address).toBe('127.0.0.1')
+    expect((await fetch(`http://127.0.0.1:${port}/api/health`)).status).toBe(200)
+    await app.close()
+
+    app = await bootstrapService(rootWith({ port: 0, host: '0.0.0.0' }), { name: 'probe', ...SILENT })
+    expect((app.getHttpServer().address() as net.AddressInfo).address).toBe('0.0.0.0')
+  })
+
+  it('server.host 不写：保持默认，只听本机', async () => {
+    app = await bootstrapService(rootWith({ port: 0 }), { name: 'probe', ...SILENT })
+    expect(['127.0.0.1', '::1']).toContain((app.getHttpServer().address() as net.AddressInfo).address)
+  })
+
+  it('server.host 不合法 → 把错误交给调用方，已建好的模块先关掉', async () => {
+    await expect(bootstrapService(rootWith({ port: 0, host: 80 }), { name: 'probe', ...SILENT })).rejects.toThrow('server.host')
+    expect(shutdowns).toBe(1)
+  })
+
   it('端口不合法 → 把错误交给调用方，已建好的模块先关掉', async () => {
     await expect(bootstrapService(rootWith({ port: 'abc' }), { name: 'probe', ...SILENT })).rejects.toThrow('server.port')
     expect(shutdowns).toBe(1)
@@ -159,6 +180,23 @@ describe('serverPort', () => {
 
   it.each(['3001', 3.5, -1, 65536])('不合法（%j）→ 抛错', (port) => {
     expect(() => portOf({ port })).toThrow('server.port')
+  })
+})
+
+describe('serverHost', () => {
+  const hostOf = (server: unknown) =>
+    serverHost(new ConfigService({ rootDir: '/', dataDir: '/data', isProduction: false, values: { server } }))
+
+  it('不写是 undefined；写了就用（去掉前后空白）', () => {
+    expect(hostOf(undefined)).toBeUndefined()
+    expect(hostOf({})).toBeUndefined()
+    expect(hostOf({ host: null })).toBeUndefined()
+    expect(hostOf({ host: '0.0.0.0' })).toBe('0.0.0.0')
+    expect(hostOf({ host: ' ::1 ' })).toBe('::1')
+  })
+
+  it.each(['', '   ', 80, true, []])('不合法（%j）→ 抛错', (host) => {
+    expect(() => hostOf({ host })).toThrow('server.host')
   })
 })
 

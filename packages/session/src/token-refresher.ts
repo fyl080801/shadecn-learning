@@ -18,7 +18,7 @@ export class TokenRefresher {
     this.oidc = options ? createOidcClient(() => options) : null
   }
 
-  /** 这个提供方的会话能不能续、怎么续。`null`：续不了（GitHub，或者这个提供方已经不配了），会话到 `expiresAt` 就结束 */
+  /** 这个提供方的会话这个进程能不能续、怎么续。`null`：续不了（GitHub，或者这个进程没配）。怎么处理由 `SessionService.renew` 按会话有没有 refresh token 决定 */
   refreshOf(provider: string): RefreshTokens | null {
     return provider === 'oidc' ? (this.oidc?.refresh ?? null) : null
   }
