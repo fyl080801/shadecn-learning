@@ -1,0 +1,54 @@
+import fs from 'node:fs'
+import { builtinModules } from 'node:module'
+import path from 'node:path'
+import { describe, expect, it } from 'vitest'
+
+const packageDir = path.resolve(import.meta.dirname, '..')
+const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'))
+
+function sources(dir: string) {
+  return fs
+    .readdirSync(path.join(packageDir, dir), { recursive: true, encoding: 'utf8' })
+    .filter((file) => file.endsWith('.ts'))
+    .map((file) => ({ file, code: fs.readFileSync(path.join(packageDir, dir, file), 'utf8') }))
+}
+
+describe('包的依赖边界', () => {
+  it('不依赖 @shadecn/*：package.json 不声明，源码和测试不 import', () => {
+    const declared = Object.keys({ ...manifest.dependencies, ...manifest.devDependencies, ...manifest.peerDependencies })
+    expect(declared.filter((name) => name.startsWith('@shadecn/'))).toEqual([])
+    for (const { file, code } of [...sources('src'), ...sources('test')]) {
+      if (file === 'package.test.ts') continue
+      expect(code, file).not.toMatch(/(from|import\()\s*'@shadecn\//)
+    }
+  })
+
+  it('@mikro-orm/* 精确锁定 7.2.5，两个驱动本包自己声明（动态 import 从这里解析）', () => {
+    expect(manifest.dependencies).toMatchObject({
+      '@mikro-orm/core': '7.2.5',
+      '@mikro-orm/postgresql': '7.2.5',
+      '@mikro-orm/sqlite': '7.2.5',
+    })
+  })
+
+  it('注入 token 所在的包是 peer：@nestjs/core 的 ModulesContainer 和 @learning/config 的 ConfigService 进程里只能有一份', () => {
+    for (const name of ['@learning/config', '@nestjs/common', '@nestjs/core']) {
+      expect(manifest.peerDependencies[name], name).toBeDefined()
+      expect(manifest.dependencies[name], name).toBeUndefined()
+    }
+  })
+
+  it('src 里 import 的每个包都声明了：tsc 不查这个，缺了到产物运行时才炸', () => {
+    const declared = new Set([...Object.keys(manifest.dependencies), ...Object.keys(manifest.peerDependencies)])
+    const imported = new Set<string>()
+    for (const { code } of sources('src')) {
+      for (const [, specifier] of code.matchAll(/(?:from|import\()\s*'([^'.][^']*)'/g)) {
+        if (specifier.startsWith('node:') || builtinModules.includes(specifier)) continue
+        const parts = specifier.split('/')
+        imported.add(specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0])
+      }
+    }
+    expect([...imported].filter((name) => !declared.has(name))).toEqual([])
+    expect(imported.has('@mikro-orm/sqlite')).toBe(true)
+  })
+})

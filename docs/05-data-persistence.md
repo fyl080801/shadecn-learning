@@ -125,10 +125,10 @@ MikroORM 的 `schema.update({ safe: true })` **挡不住有损变更**（实测�
 
 #### 3.4.2 NestJS 服务（`apps/platform`）：启动时同步
 
-`apps/platform` 经 `@learning/data-access` 用同一批实体和同一道守卫，连的是**它自己的库**，和 `@shadecn/server` 互不相干：
+`apps/platform` 经 `@learning/data-access` 用同样的规则和守卫，连的是**它自己的库**，和 `@shadecn/server` 互不相干。它**只管理自己用到的表**：`user` 和登录相关的四张（`user_identity`、`session`、`pending_link`、`auth_request`）；画布、存储、agent、应用的表等对应功能迁过来时再由各模块带回。
 
 - 连接串优先取运行目录 `.env`（或环境变量）的 `PLATFORM_DATABASE_URL`，带密码的放这里；否则是 `config.yaml` 的 `database.url`（文件在 `<数据目录>/config.yaml`，数据目录是 `DATA_DIR`，默认 `<仓库根>/data`，示例见 `apps/platform/config.example.yaml`；PostgreSQL 或 `file:` SQLite，相对路径按仓库根解析），没写时用 `<数据目录>/platform.db`。**不读 `DATABASE_URL`**。
-- 没有单独的同步步骤，**启动时自动同步**：能建的表、能加的列当场执行并打印语句；已经一致就打印「无需变更」；实体之外的表只提醒、不动。
+- 没有单独的同步步骤，**启动时自动同步**：能建的表、能加的列当场执行并打印语句；已经一致就打印「无需变更」；实体之外的表（比如旧库里的画布表）只提醒、不动，数据和外键都保留。
 - **有损变更拒绝启动**，把语句打印出来，一句不执行，进程退出码 1。这条路径没有 `--force`，要手工处理库之后再启动。库连不上同样启动失败。
 - 其他模块经依赖注入拿 `DataAccess`，注入时表已对齐。
 

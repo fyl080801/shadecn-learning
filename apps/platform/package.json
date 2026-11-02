@@ -4,16 +4,18 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @learning/config --filter @learning/web --filter @learning/data-access --filter @learning/session build && nest start --watch",
-    "build": "pnpm --filter @learning/config --filter @learning/web --filter @learning/data-access --filter @learning/session build && nest build",
+    "dev": "pnpm --filter @learning/config --filter @learning/foundation --filter @learning/web --filter @learning/data-access --filter @learning/session build && nest start --watch",
+    "build": "pnpm --filter @learning/config --filter @learning/foundation --filter @learning/web --filter @learning/data-access --filter @learning/session build && nest build",
     "start": "NODE_ENV=production node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@learning/config": "workspace:*",
     "@learning/data-access": "workspace:*",
+    "@learning/foundation": "workspace:*",
     "@learning/session": "workspace:*",
     "@learning/web": "workspace:*",
+    "@mikro-orm/core": "7.2.5",
     "@nestjs/common": "^12.3.2",
     "@nestjs/core": "^12.3.2",
     "@nestjs/platform-fastify": "^12.3.2",

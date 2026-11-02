@@ -3,18 +3,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { testConfigModule } from '@learning/config/testing'
-import { defineEntity, MikroORM, p } from '@mikro-orm/core'
+import { defineEntity, type EntityManager, MikroORM, p } from '@mikro-orm/core'
 import { Global, Injectable, Module, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
-import { planSchemaSync } from '@shadecn/server-kit/schema-sync'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
-import {
-  DataAccess,
-  DataAccessModule,
-  SchemaDataLossError,
-  User,
-  dataAccessEntities,
-  type EntityManager,
-} from '../src/index.js'
+import { DataAccess, DataAccessModule, User } from '../src/index.js'
+import { planSchemaSync, SchemaDataLossError } from '../src/schema-sync.js'
 import {
   boot,
   databaseConfig,
@@ -94,12 +87,12 @@ function behaviours(createFixture: () => DatabaseFixture) {
     vi.restoreAllMocks()
   })
 
-  it('首次启动：执行建表语句并打印，表数量和实体一致；二次启动：无语句', async () => {
+  it('首次启动：执行建表语句并打印，没有模块登记时只有 user 表；二次启动：无语句', async () => {
     const first = await boot([databaseConfig(url), DataAccessModule])
     expect(printed(logSpy)).toMatch(/\[data-access\] 已同步表结构/)
     expect(printed(logSpy).toLowerCase()).toContain('create table')
     const orm = first.get(DataAccess).orm
-    expect((await tableNames(orm)).length).toBe((dataAccessEntities as unknown[]).length)
+    expect(await tableNames(orm)).toEqual(['user'])
     await first.close()
 
     logSpy.mockClear()
@@ -219,6 +212,41 @@ function behaviours(createFixture: () => DatabaseFixture) {
     expect(printed(warnSpy)).toMatch(/\[data-access\] 库里有 1 张实体之外的表.*outside_entities/)
     expect(await tableNames(app.get(DataAccess).orm)).toContain('outside_entities')
     await app.close()
+  })
+
+  it('实体被移出实体集：一句都不执行（外键也不动），只提醒，数据还在；放回来之后差异为空', async () => {
+    // 模拟 canvas 这类实体从 platform 拿走之后的旧库：子表 → 父表 → user。
+    // 实测 MikroORM 算差异时即使 dropTables: false 也会在 PG 上删掉指向「模型之外的表」的外键，见 schema-sync.ts
+    const Parent = defineEntity({
+      name: 'ParentProbe',
+      properties: { id: p.text().primary(), owner: () => p.manyToOne(User).deleteRule('cascade') },
+    })
+    const Child = defineEntity({
+      name: 'ChildProbe',
+      properties: { id: p.text().primary(), parent: () => p.manyToOne(Parent).deleteRule('cascade') },
+    })
+    const first = await boot([databaseConfig(url), dataAccessWith([User, Parent, Child])])
+    const seed = first.get(DataAccess).em()
+    const owner = newUser(seed, 'owner')
+    const parent = seed.create(Parent, { id: 'p', owner })
+    seed.create(Child, { id: 'c', parent })
+    await seed.flush()
+    await first.close()
+
+    warnSpy.mockClear()
+    logSpy.mockClear()
+    const app = await boot([databaseConfig(url), DataAccessModule])
+    expect(printed(logSpy)).toMatch(/\[data-access\] 表结构已与实体定义一致.*无需变更/)
+    expect(printed(logSpy)).not.toMatch(/已同步表结构/)
+    expect(printed(warnSpy)).toMatch(/\[data-access\] 库里有 2 张实体之外的表.*child_probe, parent_probe/)
+    const connection = app.get(DataAccess).orm.driver.getConnection()
+    expect(await connection.execute('select id from child_probe')).toEqual([{ id: 'c' }])
+    await app.close()
+
+    // 模块带着实体回来：外键一条没少，没有差异
+    const restored = await boot([databaseConfig(url), dataAccessWith([User, Parent, Child])])
+    expect(await restored.get(DataAccess).orm.schema.getUpdateSchemaSQL({ dropTables: false })).toBe('')
+    await restored.close()
   })
 
   it('关闭：ORM 已断开；关两次不出错、只真正关一次；消费者的 onModuleDestroy 还能查库', async () => {
@@ -347,5 +375,57 @@ describe.skipIf(!postgresUrl)('DataAccessModule（PostgreSQL，PLATFORM_TEST_DAT
     await cleanup.driver.getConnection().execute('drop schema data_access_probe cascade')
     await cleanup.close()
     log.mockRestore()
+  })
+
+  it('别的 schema 里有同名表：自己的表照样建（skipTables 只按表名匹配，不能把它排除掉）', async () => {
+    const url = await postgresFixture(postgresUrl as string).fresh()
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const seed = await inspect(url)
+    const connection = seed.driver.getConnection()
+    await connection.execute('create schema if not exists data_access_other')
+    await connection.execute('create table data_access_other."user" (id text primary key)')
+    await seed.close()
+
+    try {
+      const app = await boot([databaseConfig(url), DataAccessModule])
+      const rows = await app.get(DataAccess).orm.driver.getConnection().execute(`select count(*)::int as n from public."user"`)
+      expect(rows).toEqual([{ n: 0 }])
+      await app.close()
+    } finally {
+      const cleanup = await inspect(url)
+      await cleanup.driver.getConnection().execute('drop schema data_access_other cascade')
+      await cleanup.close()
+      log.mockRestore()
+    }
+  })
+
+  it('连接串带 ?schema= 时也认得出模型之外的表（语句里的表名带 schema 前缀）：外键不动，名字报对', async () => {
+    const url = await postgresFixture(postgresUrl as string).fresh()
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const Parent = defineEntity({ name: 'ParentProbe', properties: { id: p.text().primary() } })
+    const Child = defineEntity({
+      name: 'ChildProbe',
+      properties: { id: p.text().primary(), parent: () => p.manyToOne(Parent).deleteRule('cascade') },
+    })
+    const scoped = `${url}?schema=data_access_scoped`
+
+    const first = await boot([databaseConfig(scoped), dataAccessWith([User, Parent, Child])])
+    await first.close()
+
+    log.mockClear()
+    try {
+      const app = await boot([databaseConfig(scoped), DataAccessModule])
+      expect(log.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/无需变更/)
+      expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/2 张实体之外的表.*child_probe, parent_probe/)
+      await app.close()
+    } finally {
+      const cleanup = await inspect(url)
+      await cleanup.driver.getConnection().execute('drop schema data_access_scoped cascade')
+      await cleanup.close()
+      log.mockRestore()
+      warn.mockRestore()
+    }
   })
 })

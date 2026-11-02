@@ -4,20 +4,17 @@ import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common'
 /** ORM 实例的注入 token。只在模块内部用，对外的入口是 {@link DataAccess} */
 export const DATA_ACCESS_ORM = Symbol('DATA_ACCESS_ORM')
 
-/** 要管理的实体，默认 `dataAccessEntities`。yaml 表达不了实体对象，所以是模块内部的 token，不对外导出 */
-export const DATA_ACCESS_ENTITIES = Symbol('DATA_ACCESS_ENTITIES')
-
 /**
  * 其他模块经依赖注入拿到的数据访问能力。能注入到它，就说明 ORM 已建好、表结构已对齐（见 module.ts）。
  *
  * 全局 EntityManager 默认禁用（`allowGlobalContext: false`），一律经 {@link em} 或 {@link transactional} 拿 fork 出来的，
- * 身份映射不跨操作共享，语义和 `@shadecn/server-kit/db` 的 `db()` 一致。
+ * 身份映射不跨操作共享：同一个实例被并发的请求共用时，一个请求读到的实体会被另一个请求的 flush 带出去。
+ * 这里也不靠 RequestContext 中间件，脱离 HTTP 请求（定时清理）也一样能用。
  */
 @Injectable()
 export class DataAccess implements OnApplicationShutdown {
   private closing: Promise<void> | undefined
 
-  // esbuild 不输出 emitDecoratorMetadata，构造函数参数必须显式 @Inject
   constructor(@Inject(DATA_ACCESS_ORM) readonly orm: MikroORM) {}
 
   /** 每次都 fork 一个干净的 EntityManager：一次操作（或一组要放进同一事务的操作）一个 */

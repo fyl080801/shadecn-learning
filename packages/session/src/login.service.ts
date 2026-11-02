@@ -1,13 +1,11 @@
-import {
-  AuthRequest,
-  DataAccess,
-  randomToken,
-  resolveLoginIdentity,
-  UniqueConstraintViolationException,
-} from '@learning/data-access'
+import { DataAccess } from '@learning/data-access'
+import { UniqueConstraintViolationException } from '@mikro-orm/core'
 import { Inject, Injectable } from '@nestjs/common'
 import type { LoginProvider } from './auth-providers.js'
+import { AuthRequest } from './entities.js'
 import { describeError } from './errors.js'
+import { resolveLoginIdentity } from './login-identity.js'
+import { randomToken } from './oauth/index.js'
 import { SessionService } from './session.service.js'
 
 /** 授权请求的有效期：从点「登录」到提供方跳回来 */

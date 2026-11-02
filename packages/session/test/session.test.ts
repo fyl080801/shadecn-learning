@@ -1,11 +1,14 @@
 import 'reflect-metadata'
 import { testConfigModule } from '@learning/config/testing'
-import { AuthRequest, DataAccess, DataAccessModule, Session, sessionTokenId, User, type SessionUser } from '@learning/data-access'
+import { DataAccess, DataAccessModule, User } from '@learning/data-access'
 import { Controller, Get, type INestApplicationContext, Module, UseGuards } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CurrentUser, SessionGuard, SessionModule, SessionService, UserService } from '../src/index.js'
+import { AuthRequest, Session } from '../src/entities.js'
+import { CurrentUser, SessionGuard, SessionModule, SessionService, type SessionUser, UserService } from '../src/index.js'
+import { SessionSweeper } from '../src/session-sweeper.js'
+import { sessionTokenId } from '../src/session-token.js'
 import { readCookie } from '../src/session.guard.js'
 import { bootContext, postgresFixture, sessionConfig, sqliteFixture, type DatabaseFixture } from './helpers.js'
 
@@ -137,7 +140,8 @@ function behaviours(createFixture: () => DatabaseFixture) {
       em0.create(AuthRequest, authRequest(new Date(Date.now() + HOUR), 'pending'))
       await em0.flush()
 
-      expect(await sessions.sweepExpired()).toEqual({ sessions: 1, authRequests: 1 })
+      const sweeper = context.get(SessionSweeper, { strict: false })
+      expect(await sweeper.sweepExpired()).toEqual({ sessions: 1, authRequests: 1 })
 
       const em = dataAccess.em()
       expect(await em.findOne(Session, live.id)).not.toBeNull()
@@ -145,7 +149,7 @@ function behaviours(createFixture: () => DatabaseFixture) {
       expect(await em.findOne(Session, lapsed.id)).not.toBeNull()
       expect((await em.find(AuthRequest, {})).map((row) => row.state)).toEqual(['pending'])
       expect(await em.count(User)).toBe(3)
-      expect(await sessions.sweepExpired()).toEqual({ sessions: 0, authRequests: 0 })
+      expect(await sweeper.sweepExpired()).toEqual({ sessions: 0, authRequests: 0 })
     })
 
     it('deleteByToken 幂等：删过再删、不存在、undefined 都不抛', async () => {

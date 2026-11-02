@@ -1,13 +1,11 @@
 {
   /*
    * customConditions: source —— 类型从 @learning/data-access、@learning/config 的源码来，编译本包不用先构建它们。
-   * rewriteRelativeImportExtensions —— 跟进去之后要读 @shadecn/* 带 `.ts` 扩展名的相对 import（TS5097），和 apps/platform 同一个办法。
    */
   "compilerOptions": {
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "customConditions": ["source"],
-    "rewriteRelativeImportExtensions": true,
     "esModuleInterop": true,
     "isolatedModules": true,
     "declaration": true,

@@ -1,5 +1,5 @@
-import type { SessionUser } from '@learning/data-access'
 import { createParamDecorator, type ExecutionContext } from '@nestjs/common'
+import type { SessionUser } from './session-token.js'
 import type { SessionRequest } from './session.guard.js'
 
 /**

@@ -9,6 +9,7 @@ import { defineConfig } from 'vitest/config'
  *   platform —— apps/platform/vitest.config.ts：Node 环境，测 NestJS 服务（@learning/platform）
  *   config —— packages/config/vitest.config.ts：Node 环境，测配置的 Nest 模块（@learning/config）
  *   learning-web —— packages/web/vitest.config.ts：Node 环境，测托管前端的 Nest 模块（@learning/web）
+ *   foundation —— packages/foundation/vitest.config.ts：Node 环境，测服务的启动底座（@learning/foundation）
  *   data-access —— packages/data-access/vitest.config.ts：Node 环境，测数据访问的 Nest 模块（@learning/data-access）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL
  *   session —— packages/session/vitest.config.ts：Node 环境，测用户和会话的 Nest 模块（@learning/session）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL
  *   agent-sandbox —— apps/agent-sandbox/vitest.config.ts：Node 环境，测沙箱镜像的构建脚本（runner 的边界判定、共用的打包逻辑）
@@ -36,6 +37,7 @@ export default defineConfig({
       'apps/platform/vitest.config.ts',
       'packages/config/vitest.config.ts',
       'packages/web/vitest.config.ts',
+      'packages/foundation/vitest.config.ts',
       'packages/data-access/vitest.config.ts',
       'packages/session/vitest.config.ts',
       'packages/server-kit/vitest.config.ts',
@@ -58,6 +60,7 @@ export default defineConfig({
         'apps/platform/src/**/*.ts',
         'packages/config/src/**/*.ts',
         'packages/web/src/**/*.ts',
+        'packages/foundation/src/**/*.ts',
         'packages/data-access/src/**/*.ts',
         'packages/session/src/**/*.ts',
         'scripts/**/*.mjs',

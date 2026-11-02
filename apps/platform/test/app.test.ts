@@ -3,15 +3,14 @@ import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import { ConfigService } from '@learning/config'
 import { DataAccess } from '@learning/data-access'
+import { bootstrapService } from '@learning/foundation'
 import { SessionService, UserService } from '@learning/session'
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify'
 import { NestFactory } from '@nestjs/core'
 import { Module } from '@nestjs/common'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppModule } from '../src/app.module.js'
-import { serverPort } from '../src/server-options.js'
 
 const SECRET_PAGE = 'PROTECTED-INDEX'
 const LOGIN_PAGE = 'LOGIN-ENTRY'
@@ -56,7 +55,9 @@ async function listen(moduleDefinition: Parameters<typeof NestFactory.create>[0]
 function rawRequest(baseUrl: string, target: string, cookie?: string) {
   const { hostname, port } = new URL(baseUrl)
   return new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>((resolve, reject) => {
-    const req = http.request({ hostname, port, path: target, headers: cookie ? { cookie } : {} }, (res) => {
+    // URL 里的 IPv6 地址带方括号（默认监听 localhost 时是 [::1]），http.request 不认
+    const host = hostname.replace(/^\[|\]$/g, '')
+    const req = http.request({ hostname: host, port, path: target, headers: cookie ? { cookie } : {} }, (res) => {
       let body = ''
       res.on('data', (chunk) => (body += chunk))
       res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }))
@@ -312,27 +313,41 @@ describe('config.yaml', () => {
   })
 })
 
-describe('server.port', () => {
-  const portOf = (server: unknown) =>
-    serverPort(new ConfigService({ rootDir: '/', dataDir: '/data', isProduction: false, values: { server } }))
+describe('bootstrapService + AppModule（main.ts 的启动路径）', () => {
+  let dir: string
+  let app: NestFastifyApplication
 
-  it('默认 3001：3000 是 @shadecn/server 的', () => {
-    expect(portOf(undefined)).toBe(3001)
-    expect(portOf({})).toBe(3001)
+  beforeAll(async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    dir = staticDir()
+    writeConfig(dir, { ...productionConfig({ url: `file:${path.join(dir, 'boot.db')}`, dir }), server: { port: 0 } })
+    app = await bootstrapService(AppModule, { name: 'platform', nest: { logger: false, abortOnError: false } })
+  })
+  afterAll(async () => {
+    await app.close()
+    vi.unstubAllEnvs()
+    vi.restoreAllMocks()
+    fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  it('配了就用；0 是系统分配，合法', () => {
-    expect(portOf({ port: 4000 })).toBe(4000)
-    expect(portOf({ port: 0 })).toBe(0)
+  it('/api/health 匿名 200：ApiSessionGuard 和页面闸门都不插手，也不会落到 HTML 回退', async () => {
+    const res = await rawRequest(await app.getUrl(), '/api/health')
+    expect(res.status).toBe(200)
+    expect(res.headers['content-type']).toContain('application/json')
+    expect(JSON.parse(res.body)).toMatchObject({ status: 'ok' })
+    expect(res.body).not.toContain(SECRET_PAGE)
   })
 
-  it.each(['3001', 3.5, -1, 65536])('不合法（%j）→ 抛错', (port) => {
-    expect(() => portOf({ port })).toThrow('server.port')
+  it('/api/health 之外的 /api 照样要登录，子路径也不算公开', async () => {
+    const baseUrl = await app.getUrl()
+    expect((await rawRequest(baseUrl, '/api/health/x')).status).toBe(401)
+    expect((await rawRequest(baseUrl, '/api/none')).status).toBe(401)
+    expect(JSON.parse((await rawRequest(baseUrl, '/api/auth/me')).body)).toEqual({ enabled: true, authenticated: false, user: null })
   })
 })
 
-describe('数据访问的单例不变式', () => {
-  it('platform 不依赖、不 import @shadecn/*：产物里实体只能有 @learning/data-access 内联的那一份', () => {
+describe('依赖边界', () => {
+  it('platform 不依赖、不 import @shadecn/*', () => {
     const appDir = path.resolve(import.meta.dirname, '..')
     const manifest = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8'))
     const declared = Object.keys({ ...manifest.dependencies, ...manifest.devDependencies })

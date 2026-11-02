@@ -1,12 +1,21 @@
 import type { ConfigService } from '@learning/config'
-import { GITHUB_DEFAULT_SCOPE, normalizeOrigin } from '@learning/data-access'
+import { GITHUB_DEFAULT_SCOPE, normalizeOrigin } from './oauth/index.js'
+import { stringOption } from './options.js'
 
-/** 登录相关的配置：config.yaml 的 `auth`、`server.origins` 两段，密钥只从 .env 取 */
-export interface ResolvedAuthOptions {
+/** `auth.oidc` 解析之后的样子，没配是 null。身份模块也要它：续期要换 token，换 token 要 OIDC 的 client（token-refresher.ts） */
+export const OIDC_OPTIONS = Symbol('OIDC_OPTIONS')
+
+/** 登录模块的配置，见 {@link ResolvedLoginOptions} */
+export const LOGIN_OPTIONS = Symbol('LOGIN_OPTIONS')
+
+/** 登录相关的配置：config.yaml 的 `auth`、`server.origins` 和 `session.loginPath`，密钥只从 .env 取 */
+export interface ResolvedLoginOptions {
   /** 回调 origin 的白名单，已归一化。第一个是默认（请求的域名都不在名单里时用它） */
   origins: string[]
   oidc: OidcProviderOptions | null
   github: GithubProviderOptions | null
+  /** 登出和登录失败后回到的登录页，默认 `/login` */
+  loginPath: string
 }
 
 export interface OidcProviderOptions {
@@ -28,7 +37,7 @@ const OIDC_SECRET_ENV = 'PLATFORM_OIDC_CLIENT_SECRET'
 const GITHUB_SECRET_ENV = 'PLATFORM_GITHUB_CLIENT_SECRET'
 const SECRET_KEYS = ['clientSecret', 'client_secret', 'secret']
 
-// server.port 的校验归 apps/platform 的 serverPort；这里只拿它拼开发环境的默认 origin，默认值要和那边一样
+// server.port 的校验归 @learning/foundation 的 serverPort；这里只拿它拼开发环境的默认 origin，默认值要和那边一样
 const DEFAULT_PORT = 3001
 
 /**
@@ -60,8 +69,8 @@ function assertComplete(path: string, missing: string[]) {
   if (missing.length > 0) throw new Error(`[session] ${path} 配置不全，缺少 ${missing.join('、')}`)
 }
 
-function resolveOidc(config: ConfigService, auth: Record<string, unknown>): OidcProviderOptions | null {
-  const section = providerSection(auth, 'oidc', OIDC_SECRET_ENV)
+export function resolveOidcOptions(config: ConfigService): OidcProviderOptions | null {
+  const section = providerSection(config.mapping('auth'), 'oidc', OIDC_SECRET_ENV)
   const clientSecret = config.env(OIDC_SECRET_ENV) ?? ''
   if (!section) {
     // 只有密钥没有配置：多半是配置段写漏了，当成没配就成了「配了登录却没有按钮」
@@ -87,8 +96,8 @@ function resolveOidc(config: ConfigService, auth: Record<string, unknown>): Oidc
   }
 }
 
-function resolveGithub(config: ConfigService, auth: Record<string, unknown>): GithubProviderOptions | null {
-  const section = providerSection(auth, 'github', GITHUB_SECRET_ENV)
+function resolveGithub(config: ConfigService): GithubProviderOptions | null {
+  const section = providerSection(config.mapping('auth'), 'github', GITHUB_SECRET_ENV)
   const clientSecret = config.env(GITHUB_SECRET_ENV) ?? ''
   const clientId = section ? stringField(section, 'auth.github', 'clientId') : ''
   if (!section && !clientSecret) return null
@@ -112,7 +121,7 @@ function parseOrigin(value: unknown): string {
 
 function resolveOrigins(config: ConfigService, hasProvider: boolean): string[] {
   const server = config.mapping('server')
-  // @shadecn/server 的写法是单数的 SERVER_ORIGIN，抄过来不会生效，而且不报错
+  // apps/server 的写法是单数的 SERVER_ORIGIN，抄过来不会生效，而且不报错
   if (server.origin !== undefined) console.warn('[session] server.origin 不会被读取，白名单要写在列表 server.origins 里')
   const listed = server.origins
   if (listed !== undefined && listed !== null && !Array.isArray(listed)) {
@@ -133,12 +142,15 @@ function resolveOrigins(config: ConfigService, hasProvider: boolean): string[] {
  * 两个提供方都没配不算错：登录不可用（`/api/auth/config` 说 `enabled: false`），页面和 /api 仍然全部拦住。
  * 配了一半、把密钥写进 yaml、生产没有白名单都拒绝启动。
  */
-export function resolveAuthOptions(config: ConfigService): ResolvedAuthOptions {
-  const auth = config.mapping('auth')
-  const oidc = resolveOidc(config, auth)
-  const github = resolveGithub(config, auth)
+export function resolveLoginOptions(config: ConfigService, oidc: OidcProviderOptions | null): ResolvedLoginOptions {
+  const github = resolveGithub(config)
   if (!oidc && !github) {
     console.warn('[session] 没有配置登录方式（auth.oidc / auth.github）：没有人能登录，页面和 /api 全部拦住')
   }
-  return { origins: resolveOrigins(config, Boolean(oidc || github)), oidc, github }
+  return {
+    origins: resolveOrigins(config, Boolean(oidc || github)),
+    oidc,
+    github,
+    loginPath: stringOption(config.mapping('session'), 'loginPath', '/login'),
+  }
 }

@@ -12,7 +12,7 @@ export interface ConfigServiceInit {
 
 /**
  * 进程的配置来源，经依赖注入拿到。**类本身就是注入 token**，所以进程里只能有一份：
- * 业务包把 `@learning/config` 声明成 peerDependency，`@learning/data-access` 的 esbuild 产物也不能内联它。
+ * 业务包把 `@learning/config` 声明成 peerDependency。
  *
  * 这里只管文件和目录，不校验各段内容：每段的校验和默认值归读它的模块。
  */

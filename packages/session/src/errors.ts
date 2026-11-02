@@ -1,4 +1,4 @@
-import { OidcError } from '@learning/data-access'
+import { OidcError } from './oauth/index.js'
 
 /**
  * 写日志用。只有协议错误带 message：它们是这里的代码自己拼的，不含 token / code / client secret。

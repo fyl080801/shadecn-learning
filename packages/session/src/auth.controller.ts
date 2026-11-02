@@ -1,11 +1,14 @@
-import { LOGIN_DONE_PATH, pickOrigin, renderLoginDonePage, toSessionUser } from '@learning/data-access'
 import { Controller, Get, Inject, Query, Req, Res } from '@nestjs/common'
+import { LOGIN_OPTIONS, type ResolvedLoginOptions } from './auth-options.js'
 import { AuthProviders } from './auth-providers.js'
 import { describeError, loginFailureMessage } from './errors.js'
+import { LOGIN_DONE_PATH, renderLoginDonePage } from './login-done-page.js'
 import { AUTH_REQUEST_TTL_SECONDS, LoginService } from './login.service.js'
+import { pickOrigin } from './oauth/index.js'
 import { type ResolvedSessionOptions, SESSION_OPTIONS } from './options.js'
 import { Public } from './public.decorator.js'
 import { safeRedirect } from './redirect.js'
+import { toSessionUser } from './session-token.js'
 import { readCookie, type SessionRequest } from './session.guard.js'
 import { SessionService } from './session.service.js'
 
@@ -25,7 +28,7 @@ const TX_COOKIE = 'oidc_tx'
 const TX_COOKIE_PATH = '/api/auth'
 
 /**
- * 登录窗口的落点。前端（`@shadecn/shared/auth`）让它落在 `LOGIN_DONE_PATH`，但那个路径不是后端路由：
+ * 登录窗口的落点。前端（`packages/shared/src/auth.ts`）让它落在 `LOGIN_DONE_PATH`，但那个路径不是后端路由：
  * dev 下 Vite 在路由匹配之前就答完了 `/api` 以外的所有请求，static 下它是受保护的 HTML 回退。
  * 所以在跳转时换成 `/api` 下的同一张页面，两种模式都走得到。
  */
@@ -48,6 +51,7 @@ export class AuthController {
   constructor(
     @Inject(SessionService) private readonly sessions: SessionService,
     @Inject(SESSION_OPTIONS) private readonly options: ResolvedSessionOptions,
+    @Inject(LOGIN_OPTIONS) private readonly loginOptions: ResolvedLoginOptions,
     @Inject(AuthProviders) private readonly providers: AuthProviders,
     @Inject(LoginService) private readonly login: LoginService,
   ) {}
@@ -55,7 +59,7 @@ export class AuthController {
   /** 这次请求认哪个对外地址：只在白名单内跟着请求走，绝不盲信 Host */
   private originOf(request: HttpRequest): string {
     const { headers } = request
-    const { origins } = this.options.auth
+    const { origins } = this.loginOptions
     return pickOrigin(
       {
         origin: headerValue(headers.origin),
@@ -90,7 +94,7 @@ export class AuthController {
   /** 失败回登录页显示原因。带上 `redirect`：在那里重试之后还能回到原处（登录窗口里也还是落到 login-done） */
   private loginPageWithError(message: string, redirectTo = '/') {
     const redirect = redirectTo === '/' ? '' : `&redirect=${encodeURIComponent(redirectTo)}`
-    return `${this.options.loginPath}?error=${encodeURIComponent(message)}${redirect}`
+    return `${this.loginOptions.loginPath}?error=${encodeURIComponent(message)}${redirect}`
   }
 
   /** 当前登录态，始终 200。`enabled: true` 表示闸门开着：前端靠它决定 401 时弹重新登录、首屏未登录时去登录页 */
@@ -213,8 +217,8 @@ export class AuthController {
   async logout(@Req() request: HttpRequest, @Query('redirect') redirect: unknown, @Res() reply: HttpReply) {
     await this.sessions.deleteByToken(readCookie(request.headers.cookie, this.options.cookieName))
     const location = redirect
-      ? `${this.options.loginPath}?redirect=${encodeURIComponent(safeRedirect(redirect))}`
-      : this.options.loginPath
+      ? `${this.loginOptions.loginPath}?redirect=${encodeURIComponent(safeRedirect(redirect))}`
+      : this.loginOptions.loginPath
     return this.redirect(reply, location, [this.clearSessionCookie(request)])
   }
 }

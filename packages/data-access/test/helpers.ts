@@ -6,10 +6,10 @@ import { testConfigModule } from '@learning/config/testing'
 import type { DynamicModule, INestApplicationContext, ModuleMetadata } from '@nestjs/common'
 import { Module } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
-import { openOrm, providerFromUrl } from '@shadecn/server-kit/orm'
 import { defineEntity, p, type MikroORM, type Options } from '@mikro-orm/core'
-import { DATA_ACCESS_ENTITIES } from '../src/data-access.js'
+import { DATA_ACCESS_ENTITY_OVERRIDE } from '../src/entity-registry.js'
 import { DataAccessModule } from '../src/module.js'
+import { openOrm, providerFromUrl } from '../src/orm.js'
 
 @Module({})
 class Root {}
@@ -23,12 +23,12 @@ export function boot(imports: NonNullable<ModuleMetadata['imports']>): Promise<I
 export const databaseConfig = (url: unknown): DynamicModule => testConfigModule({ database: { url } })
 
 /**
- * 换掉要管理的实体：同一个模块、同一个 ORM 工厂，只是 DATA_ACCESS_ENTITIES 换了值（动态元数据的 provider 排在静态的后面，同 token 后者生效）。
+ * 换掉要管理的实体：同一个模块、同一个 ORM 工厂，只是不走模块收集（动态元数据的 provider 排在静态的后面，同 token 后者生效）。
  * 用工厂而不是 useValue：动态元数据要算哈希，实体对象又深又有环。
  */
 export const dataAccessWith = (entities: NonNullable<Options['entities']>): DynamicModule => ({
   module: DataAccessModule,
-  providers: [{ provide: DATA_ACCESS_ENTITIES, useFactory: () => entities }],
+  providers: [{ provide: DATA_ACCESS_ENTITY_OVERRIDE, useFactory: () => entities }],
 })
 
 // MikroORM 不接受空实体集；只想拿连接跑 SQL 时用这个占位，它的表不会被建

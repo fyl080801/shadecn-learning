@@ -1,13 +1,16 @@
 import 'reflect-metadata'
 import { testConfigModule } from '@learning/config/testing'
-import { AuthRequest, DataAccess, DataAccessModule, Session, sessionTokenId, User, UserIdentity } from '@learning/data-access'
+import { DataAccess, DataAccessModule, User } from '@learning/data-access'
 import { FakeBrowser, followAuthorize, startFakeIdp, type BrowserResponse, type FakeIdp } from '@learning/session/testing'
 import { Controller, Get, Module } from '@nestjs/common'
 import { APP_GUARD, NestFactory } from '@nestjs/core'
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AuthRequest, Session, UserIdentity } from '../src/entities.js'
 import { ApiSessionGuard, SessionModule, SessionService } from '../src/index.js'
 import { LoginService } from '../src/login.service.js'
+import { SessionSweeper } from '../src/session-sweeper.js'
+import { sessionTokenId } from '../src/session-token.js'
 import { bootContext, postgresFixture, sqliteFixture, type DatabaseFixture } from './helpers.js'
 
 const SECRET = 'test-secret'
@@ -907,7 +910,7 @@ describe('登录配置', () => {
 
     it('清理失败只记日志：不挡启动', async () => {
       const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
-      const sweep = vi.spyOn(SessionService.prototype, 'sweepExpired').mockRejectedValueOnce(new Error('select leaked-token-value'))
+      const sweep = vi.spyOn(SessionSweeper.prototype, 'sweepExpired').mockRejectedValueOnce(new Error('select leaked-token-value'))
       const context = await boot({})
       expect(error).toHaveBeenCalledWith(expect.stringContaining('清理过期数据失败'))
       expect(error).not.toHaveBeenCalledWith(expect.stringContaining('leaked-token-value'))

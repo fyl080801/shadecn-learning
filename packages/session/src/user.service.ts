@@ -1,4 +1,5 @@
-import { DataAccess, UniqueConstraintViolationException, User } from '@learning/data-access'
+import { DataAccess, User } from '@learning/data-access'
+import { UniqueConstraintViolationException } from '@mikro-orm/core'
 import { Inject, Injectable } from '@nestjs/common'
 
 export interface FindOrCreateUserInput {
@@ -20,7 +21,7 @@ export class UserService {
   }
 
   /**
-   * 身份只认 `(issuer, subject)`，不认邮箱（`.claude/rules/auth.md`）。已存在的行一个字段都不改：登录时刷新档案不是这里的事。
+   * 按 `(issuer, subject)` 找或建，不认邮箱（`.claude/rules/auth.md`）。已存在的行一个字段都不改：登录时刷新档案不是这里的事。
    * 并发的两个调用同时建时，输的那个撞唯一约束后重查，只 catch 这一种错误。
    */
   async findOrCreate(input: FindOrCreateUserInput): Promise<User> {

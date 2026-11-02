@@ -3,13 +3,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { testConfigModule } from '@learning/config/testing'
-import { AuthRequest, DataAccess, DataAccessModule, Session, User } from '@learning/data-access'
+import { DATA_ACCESS_ENTITIES, DataAccess, DataAccessModule, User } from '@learning/data-access'
 import type { DynamicModule, INestApplicationContext, ModuleMetadata } from '@nestjs/common'
 import { Module } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
+import { AuthRequest, PendingLink, Session, UserIdentity } from '../src/entities.js'
 
 @Module({})
 class Root {}
+
+/** fixture 自己的连接要看得到全部的表：不引入 session 的模块（它们有配置要求），直接登记实体 */
+@Module({ providers: [{ provide: DATA_ACCESS_ENTITIES, useValue: [UserIdentity, Session, PendingLink, AuthRequest] }] })
+class AllTables {}
 
 export function bootContext(imports: NonNullable<ModuleMetadata['imports']>): Promise<INestApplicationContext> {
   return NestFactory.createApplicationContext({ module: Root, imports }, { logger: false, abortOnError: false })
@@ -66,7 +71,7 @@ function fixture(
   return {
     url,
     async open() {
-      admin = await bootContext([testConfigModule({ database: { url } }), DataAccessModule])
+      admin = await bootContext([testConfigModule({ database: { url } }), DataAccessModule, AllTables])
     },
     async clear() {
       const em = (admin as INestApplicationContext).get(DataAccess).em()

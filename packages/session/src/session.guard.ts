@@ -1,5 +1,5 @@
-import { type SessionUser, toSessionUser } from '@learning/data-access'
 import { type CanActivate, type ExecutionContext, Inject, Injectable, UnauthorizedException } from '@nestjs/common'
+import { type SessionUser, toSessionUser } from './session-token.js'
 import { SessionService } from './session.service.js'
 
 /** 守卫要读写的那部分请求对象。不依赖 Fastify 的类型，`headers.cookie` 是 Node 的原始请求头 */
@@ -29,7 +29,7 @@ export function readCookie(header: unknown, name: string): string | undefined {
   return undefined
 }
 
-/** 前端按状态码判断（`apiFetch`），`error` 是 `api.ts` 读的字段，和 mod-auth 的 401 同形 */
+/** 前端按状态码判断（`apiFetch`），`error` 是 `api.ts` 读的字段，和 `apps/server` 的 401 同形 */
 function unauthorized() {
   return new UnauthorizedException({ statusCode: 401, error: 'Unauthorized', message: '需要登录' })
 }

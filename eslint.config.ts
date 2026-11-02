@@ -17,6 +17,7 @@ export default defineConfig(
       "apps/platform/dist",
       "packages/config/dist",
       "packages/web/dist",
+      "packages/foundation/dist",
       "packages/data-access/dist",
       "packages/session/dist",
       // `pnpm build` 的产物
@@ -70,7 +71,8 @@ export default defineConfig(
       "apps/platform/**/*.ts",
       "packages/config/**/*.ts",
       "packages/web/**/*.ts",
-      "packages/data-access/**/*.{ts,mjs}",
+      "packages/foundation/**/*.ts",
+      "packages/data-access/**/*.ts",
       "packages/session/**/*.ts",
       "scripts/**/*.mjs",
       // provider / 连接串解析，prisma.config.ts 和构建脚本共用的那份
