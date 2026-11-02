@@ -152,6 +152,21 @@ function behaviours(createUrl: (dir: string) => string, cleanup?: (app: NestFast
     expect(missing.headers['content-type']).toContain('application/json')
   })
 
+  it('画布 REST 接进来了：匿名 401；登录后建项目、建画布、看列表，个人空间懒创建', async () => {
+    expect((await get('/api/projects')).status).toBe(401)
+
+    const send = (method: string, target: string, body: unknown) =>
+      app.inject({ method: method as 'POST', url: target, headers: { cookie, 'content-type': 'application/json' }, payload: JSON.stringify(body) })
+    const project = await send('POST', '/api/projects', { name: '项目' })
+    expect(project.statusCode).toBe(201)
+    const { id } = project.json<{ id: string }>()
+    expect((await send('POST', `/api/projects/${id}/flows`, { name: '画布' })).statusCode).toBe(201)
+
+    expect(JSON.parse((await get('/api/projects', cookie)).body).total).toBeGreaterThan(0)
+    expect(JSON.parse((await get(`/api/projects/${id}/flows`, cookie)).body).total).toBe(1)
+    expect(JSON.parse((await get('/api/projects/personal', cookie)).body).kind).toBe('personal')
+  })
+
   it('登出之后回到匿名状态', async () => {
     const user = await app.get(UserService).findOrCreate({ issuer: 'https://issuer.test', subject: 'bob' })
     const other = `sid=${await app.get(SessionService).create({
@@ -222,14 +237,14 @@ describe('模块依赖和 imports 顺序无关', () => {
     writeConfig(dir, productionConfig({ url: `file:${path.join(dir, 'order.db')}`, dir }))
     const imports = Reflect.getMetadata('imports', AppModule) as unknown[]
     const providers = Reflect.getMetadata('providers', AppModule) as unknown[]
-    expect(imports).toHaveLength(7)
+    expect(imports).toHaveLength(8)
 
     @Module({})
     class ReorderedRoot {}
     const { app, baseUrl } = await listen({
       module: ReorderedRoot,
-      // 排列之外的两个（cluster 和它的检查）放在最前面，也是一种「先后无关」
-      imports: [imports[5], imports[6], ...order.map((index) => imports[index])],
+      // 排列之外的三个（cluster、它的检查、画布 REST）放在最前面，也是一种「先后无关」
+      imports: [imports[5], imports[6], imports[7], ...order.map((index) => imports[index])],
       providers,
     } as never)
 

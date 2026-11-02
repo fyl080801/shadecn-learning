@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { p } from '@mikro-orm/core'
+import { p, raw } from '@mikro-orm/core'
 
 /**
  * 写实体用的列。**一份定义，两种库**：实体定义里不出现任何数据库专属的东西，运行时由连接串选驱动，同一个构建产物既能连 SQLite 也能连 PostgreSQL。
@@ -25,12 +25,15 @@ import { p } from '@mikro-orm/core'
  * - 用 `insert` / `upsert` 建行时要显式给 `id` 和 `createdAt`。
  */
 
-/** 文本主键：服务端生成的 UUID 文本，在建行时生成 */
+/** 服务端生成的 UUID 文本。`insert` / `upsert` 建行时自己给 id 用它 */
+export const newId = () => randomUUID()
+
+/** 文本主键：在建行时生成 */
 export const idColumn = () =>
   p
     .text()
     .primary()
-    .onCreate(() => randomUUID())
+    .onCreate(() => newId())
 
 /** 建行时刻 */
 export const createdAtColumn = () => p.datetime().onCreate(() => new Date())
@@ -41,3 +44,17 @@ export const updatedAtColumn = () =>
     .datetime()
     .onCreate(() => new Date())
     .onUpdate(() => new Date())
+
+/**
+ * 大小写不敏感的「包含」查询，两种库通用：`$ilike` 是 PostgreSQL 专属，SQLite 上直接是语法错误。
+ * 关键字里的 `%` `_` `\` 转义掉 —— 搜「100%」就是字面的 100%。
+ *
+ * 用法：铺进 where 里，`{ deletedAt: null, ...containsIgnoreCase('name', keyword) }`。
+ * 参数是**列名**（`UnderscoreNamingStrategy` 之后的名字），不是属性名；两者不同时要写列名。
+ */
+export function containsIgnoreCase(column: string, keyword: string) {
+  const pattern = `%${keyword.replace(/[\\%_]/g, (char) => `\\${char}`)}%`
+  return {
+    [raw((alias: string) => `lower(${alias}.${column}) like lower(?) escape '\\'`, [pattern])]: [],
+  }
+}

@@ -1,12 +1,13 @@
 import 'reflect-metadata'
 import { Cluster, type ClusterBackend, createMemoryBackend, SharedLock } from '@learning/cluster'
+import { ConfigService } from '@learning/config'
 import { testConfigModule } from '@learning/config/testing'
 import { DataAccess, DataAccessModule } from '@learning/data-access'
 import { startFakeIdp, type FakeIdp } from '@learning/session/testing'
 import type { DynamicModule, INestApplicationContext } from '@nestjs/common'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Session } from '../src/entities.js'
-import { displayNameOf, normalizeOrigin, readCookie, SessionIdentityModule, SessionService, type SessionTokens, UserService } from '../src/index.js'
+import { displayNameOf, normalizeOrigin, readCookie, RequestOrigins, SessionIdentityModule, SessionService, type SessionTokens, UserService } from '../src/index.js'
 import { sessionTokenId } from '../src/session-token.js'
 import { bootContext, sqliteFixture } from './helpers.js'
 
@@ -176,6 +177,15 @@ describe('给协同用的导出', () => {
     expect(displayNameOf({ name: null, username: null, email: null })).toBe('匿名用户')
     // 空串不是缺失：和原实现、前端的 ?? 一致
     expect(displayNameOf({ name: '', username: 'U', email: 'E' })).toBe('')
+  })
+
+  it('RequestOrigins：白名单内跟着请求走，白名单外回落第一个，绝不盲信 Host；没配白名单时回落本机地址', () => {
+    const origins = new RequestOrigins(new ConfigService({ rootDir: '/x', dataDir: '/x', isProduction: true, values: { server: { origins: ['https://a.test', 'https://b.test'] } } }))
+    expect(origins.of({ headers: { host: 'b.test' }, protocol: 'https' })).toBe('https://b.test')
+    expect(origins.of({ headers: { host: 'evil.test', 'x-forwarded-host': 'evil.test' }, protocol: 'https' })).toBe('https://a.test')
+
+    const local = new RequestOrigins(new ConfigService({ rootDir: '/x', dataDir: '/x', isProduction: true, values: { server: { port: 4000 } } }))
+    expect(local.list).toEqual(['http://localhost:4000', 'http://127.0.0.1:4000'])
   })
 
   it('readCookie、normalizeOrigin 从入口可用', () => {

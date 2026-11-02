@@ -4,6 +4,7 @@ import { Global, Module } from '@nestjs/common'
 import { OIDC_OPTIONS, resolveOidcOptions } from './auth-options.js'
 import { Session } from './entities.js'
 import { resolveSessionOptions, SESSION_OPTIONS } from './options.js'
+import { RequestOrigins } from './request-origins.js'
 import { SessionPageAuth } from './session-page-auth.js'
 import { SessionGuard } from './session.guard.js'
 import { SessionService } from './session.service.js'
@@ -26,12 +27,13 @@ import { UserService } from './user.service.js'
     { provide: DATA_ACCESS_ENTITIES, useValue: [Session] },
     { provide: SESSION_OPTIONS, inject: [ConfigService], useFactory: resolveSessionOptions },
     { provide: OIDC_OPTIONS, inject: [ConfigService], useFactory: resolveOidcOptions },
+    RequestOrigins,
     TokenRefresher,
     UserService,
     SessionService,
     SessionGuard,
     SessionPageAuth,
   ],
-  exports: [SESSION_OPTIONS, OIDC_OPTIONS, TokenRefresher, UserService, SessionService, SessionGuard, SessionPageAuth],
+  exports: [SESSION_OPTIONS, OIDC_OPTIONS, RequestOrigins, TokenRefresher, UserService, SessionService, SessionGuard, SessionPageAuth],
 })
 export class SessionIdentityModule {}

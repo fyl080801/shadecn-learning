@@ -5,18 +5,15 @@ import { AuthProviders } from './auth-providers.js'
 import { describeError, loginFailureMessage } from './errors.js'
 import { renderLoginDonePage } from './login-done-page.js'
 import { AUTH_REQUEST_TTL_SECONDS, LoginService } from './login.service.js'
-import { pickOrigin } from './oauth/index.js'
 import { type ResolvedSessionOptions, SESSION_OPTIONS } from './options.js'
 import { Public } from './public.decorator.js'
 import { safeRedirect } from './redirect.js'
+import { headerValue, type OriginRequest, originOfRequest } from './request-origins.js'
 import { toSessionUser } from './session-token.js'
 import { readCookie, type SessionRequest } from './session.guard.js'
 import { SessionService } from './session.service.js'
 
-interface HttpRequest extends SessionRequest {
-  /** Fastify：直连时看连接本身，开了 trustProxy 才看 X-Forwarded-Proto。只用来给 Host 补 scheme，Secure 看白名单判定出的 origin */
-  protocol?: string
-}
+type HttpRequest = SessionRequest & OriginRequest
 
 interface HttpReply {
   header(name: string, value: string | string[]): this
@@ -36,11 +33,6 @@ const TX_COOKIE_PATH = '/api/auth'
 const LOGIN_DONE_ROUTE = '/api/auth/login-done'
 const afterLogin = (redirectTo: string) => (redirectTo === LOGIN_DONE_PATH ? LOGIN_DONE_ROUTE : redirectTo)
 
-function headerValue(value: unknown): string | null {
-  if (typeof value === 'string') return value
-  return Array.isArray(value) && typeof value[0] === 'string' ? value[0] : null
-}
-
 const queryValue = (value: unknown) => (typeof value === 'string' && value ? value : null)
 
 /**
@@ -59,19 +51,7 @@ export class AuthController {
 
   /** 这次请求认哪个对外地址：只在白名单内跟着请求走，绝不盲信 Host */
   private originOf(request: HttpRequest): string {
-    const { headers } = request
-    const { origins } = this.loginOptions
-    return pickOrigin(
-      {
-        origin: headerValue(headers.origin),
-        forwardedProto: headerValue(headers['x-forwarded-proto']),
-        forwardedHost: headerValue(headers['x-forwarded-host']),
-        host: headerValue(headers.host),
-        protocol: request.protocol,
-      },
-      origins,
-      origins[0],
-    )
+    return originOfRequest(request, this.loginOptions.origins)
   }
 
   /**

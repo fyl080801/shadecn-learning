@@ -119,7 +119,7 @@ function parseOrigin(value: unknown): string {
   return origin
 }
 
-function resolveOrigins(config: ConfigService, hasProvider: boolean): string[] {
+export function resolveOrigins(config: ConfigService, hasProvider: boolean): string[] {
   const server = config.mapping('server')
   // apps/server 的写法是单数的 SERVER_ORIGIN，抄过来不会生效，而且不报错
   if (server.origin !== undefined) console.warn('[session] server.origin 不会被读取，白名单要写在列表 server.origins 里')

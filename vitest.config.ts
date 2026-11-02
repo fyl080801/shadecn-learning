@@ -14,6 +14,7 @@ import { defineConfig } from 'vitest/config'
  *   foundation —— packages/foundation/vitest.config.ts：Node 环境，测服务的启动底座（@learning/foundation）
  *   data-access —— packages/data-access/vitest.config.ts：Node 环境，测数据访问的 Nest 模块（@learning/data-access）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL
  *   session —— packages/session/vitest.config.ts：Node 环境，测用户和会话的 Nest 模块（@learning/session）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL
+ *   canvas —— packages/canvas/vitest.config.ts：Node 环境，测项目、邀请、画布的 Nest 模块（@learning/canvas）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL，设了 PLATFORM_TEST_REDIS_URL 才连 Redis
  *   agent-sandbox —— apps/agent-sandbox/vitest.config.ts：Node 环境，测沙箱镜像的构建脚本（runner 的边界判定、共用的打包逻辑）
  *   server-kit —— packages/server-kit/vitest.config.ts：Node 环境，测服务端底座的运行时库（模块内核、共享层契约、总线、权限撤销信号）
  *   server-core —— packages/server-core/vitest.config.ts：Node 环境，测服务端底座不碰数据库的部分（集成测试在 server project）
@@ -44,6 +45,7 @@ export default defineConfig({
       'packages/foundation/vitest.config.ts',
       'packages/data-access/vitest.config.ts',
       'packages/session/vitest.config.ts',
+      'packages/canvas/vitest.config.ts',
       'packages/server-kit/vitest.config.ts',
       'packages/server-core/vitest.config.ts',
       'packages/mod-auth/vitest.config.ts',
@@ -69,6 +71,7 @@ export default defineConfig({
         'packages/foundation/src/**/*.ts',
         'packages/data-access/src/**/*.ts',
         'packages/session/src/**/*.ts',
+        'packages/canvas/src/**/*.ts',
         'scripts/**/*.mjs',
         'apps/web/src/**/*.ts',
         'apps/web/src/**/*.vue',

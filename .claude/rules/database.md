@@ -12,6 +12,7 @@ paths:
   - "packages/server-kit/src/orm.ts"
   - "packages/server-kit/src/schema-sync.ts"
   - "packages/data-access/**"
+  - "packages/canvas/src/flow-doc.store.ts"
   - "apps/platform/src/app.module.ts"
   - "packages/config/**"
   - "packages/mod-collab/src/flow-writer.ts"
@@ -67,3 +68,9 @@ paths:
 - **The ORM closes in `onApplicationShutdown`**, the last phase: `onModuleDestroy` and requests still draining use the database. A *global* module imported before `DataAccessModule` gets its `onApplicationShutdown` after the close (hooks run in reverse order).
 - **`PLATFORM_DATABASE_URL` from the working directory's `.env` (wins, for URLs with a password), else `database.url` in `config.yaml` (`@learning/config`), never `DATABASE_URL`**: the root `.env`'s value is `@shadecn/server`'s database, and this process would sync it. Each service owns its database. The default is `<dataDir>/platform.db`; a relative `file:` resolves against the repo root, not cwd.
 - `PLATFORM_TEST_DATABASE_URL` turns on the PostgreSQL suite. It drops the `public` schema between tests, so the fixture refuses a database whose name doesn't contain both `platform` and `test`.
+
+## `@learning/canvas` — a second definition of the canvas tables
+
+- **`packages/canvas/src/entities.ts` and `packages/mod-canvas/src/entities.ts` are two definitions, not one with a copy.** They produce the same DDL today (compared on SQLite and PostgreSQL when the package was added), but a change to one does not go into the other: the services never share a database (`docs/30` §1), so nothing pins them together and they may drift. Only the `CAS` and `updatedAt` rules above apply to both.
+- `containsIgnoreCase` and `newId` have their own copy in `@learning/data-access`'s `columns.ts`, next to the column helpers.
+- `parseGraph` here accepts only the current `GRAPH_SCHEMA_VERSION`: this service has no old rows, so mod-canvas's v1 / v2 tolerance wasn't carried over. `FlowDocStore.read`'s `legacy` only reads the `graph` of a canvas that has no `ydoc` yet.

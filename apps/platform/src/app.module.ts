@@ -1,3 +1,4 @@
+import { CanvasApiModule } from '@learning/canvas'
 import { ClusterModule } from '@learning/cluster'
 import { ConfigModule } from '@learning/config'
 import { DataAccessModule } from '@learning/data-access'
@@ -13,7 +14,7 @@ import { PageAuthModule } from './page-auth.module.js'
  * 模块之间的依赖全由 Nest 解析，和这里的先后无关。
  */
 @Module({
-  imports: [ConfigModule, DataAccessModule, SessionModule, PageAuthModule, WebModule, ClusterModule, ClusterDatabaseCheckModule],
+  imports: [ConfigModule, DataAccessModule, SessionModule, PageAuthModule, WebModule, ClusterModule, ClusterDatabaseCheckModule, CanvasApiModule],
   // /api 下默认要登录；开发环境同样校验，没有「未配置就放行」
   providers: [{ provide: APP_GUARD, useClass: ApiSessionGuard }],
 })
