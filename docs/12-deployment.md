@@ -230,32 +230,33 @@ GitHub OAuth App 的 Authorization callback URL 填 `$SERVER_ORIGIN/api/auth/cal
 
 | 资源 | key | 说明 |
 |---|---|---|
-| ConfigMap `dev/shadecn-learning-agent` | `MODULES_AGENT_PROVIDER`、`MODULES_AGENT_MODEL`、`MODULES_AGENT_BASE_URL`、`MODULES_AGENT_API`、`MODULES_AGENT_IMAGE_INPUT` | 非密钥的模型配置（需要时可另加 `MODULES_AGENT_CONTEXT_WINDOW`、`MODULES_AGENT_MAX_TOKENS`：自建端点的上下文窗口 / 单次输出，不配按 128000 / 8192） |
-| Secret `dev/shadecn-learning-agent` | `MODULES_AGENT_API_KEY`、`MODULES_AGENT_TOKEN_SECRET` | 模型 key、签 run 短令牌的密钥 |
+| ConfigMap `dev/shadecn-learning-agent` | `LLM_PROVIDERS`、`MODULES_AGENT_PROVIDER`、`MODULES_AGENT_MODEL` | 语言服务提供方（一段 JSON，[REQ-MODULES §3.3](28-server-modules.md)：地址、线协议、模型能力，key 只写 `"$环境变量名"`）和 agent 用哪个 |
+| Secret `dev/shadecn-learning-agent` | `MODULES_AGENT_API_KEY`、`MODULES_AGENT_TOKEN_SECRET` | 模型 key（名字已经不是配置项，只是被 `LLM_PROVIDERS` 的 `"apiKey": "$MODULES_AGENT_API_KEY"` 引用，沿用原来的键；要多把 key 就加别的键再引用）、签 run 短令牌的密钥 |
 | ConfigMap `dev/shadecn-learning-s3` | `MODULES_STORAGE_ENDPOINT`、`MODULES_STORAGE_INTERNAL_ENDPOINT`、`MODULES_STORAGE_REGION`、`MODULES_STORAGE_BUCKET` | 画布资源（图片 / 视频）上传的对象存储（[13-flow-canvas-management.md](13-flow-canvas-management.md)「资源上传」） |
 | Secret `dev/shadecn-learning-s3` | `MODULES_STORAGE_ACCESS_KEY_ID`、`MODULES_STORAGE_SECRET_ACCESS_KEY` | 对象存储的凭据 |
 
-- **空值 = 不配**：每一项都按「没设这个变量」处理（`MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` 落回默认的 anthropic 模型、`MODULES_AGENT_IMAGE_INPUT` 按模型元数据、
+- **空值 = 不配**：每一项都按「没设这个变量」处理（`LLM_PROVIDERS` 是空表、`MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` 落回默认的 anthropic 模型、
   `MODULES_AGENT_TOKEN_SECRET` 由 `MODULES_AUTH_SESSION_SECRET` 派生）。全部为空时没有任何 key，agent 显示为未启用（`GET …/agent` 的 `enabled: false`），别的功能不受影响。
 - **Deployment 的 `env` 里不写这几项**：`env` 优先于 `envFrom`，写一个就把这几份资源里的值盖掉了（清单测试钉住；`env` 里的 S3 只有 `MODULES_STORAGE_MAX_UPLOAD_MB`）。
   `envFrom` 里同名的键以后面的为准（`shadecn-learning-auth` → agent 的 ConfigMap → agent 的 Secret → S3 的 ConfigMap → S3 的 Secret）。
 - **改完要重启才生效**：`envFrom` 只在容器启动时读一次 —— `kubectl -n dev rollout restart deploy/shadecn-learning`（`Recreate`，有短暂中断）。
 - **`default` 以外的模型**（给不同的 agent 定义用不同模型，[REQ-AGENT-DEF](26-agent-definitions.md) §3.4）在模型表文件里，默认 `<DATA_DIR>/agent-models.json`，
   即数据卷上的 `/app/data/agent-models.json`（放进 PVC 即可，同样启动时读一次）；要放进 ConfigMap 就把它挂成文件、再在 agent 的 ConfigMap 里加 `MODULES_AGENT_MODELS_FILE=<挂载路径>`
-  （清单里目前没有这个挂载，需要时再加）。文件里的 `apiKey` 只能写 `"$环境变量名"`，对应的 key 照样放进 Secret `shadecn-learning-agent`（`envFrom` 整份注入）。
-  文件格式不对服务端起不来；引用的变量没设只是那一项不可用（启动日志有警告）。
-- 例：用集群里 `dev` 命名空间的 ollama（不要 key，`MODULES_AGENT_API_KEY` 留空即可）：
+  （清单里目前没有这个挂载，需要时再加）。文件每项只选 `provider` / `model` / `thinking`，连接信息和 key 都在 `LLM_PROVIDERS`；`$` 引用的 key 照样放进 Secret `shadecn-learning-agent`（`envFrom` 整份注入）。
+  `LLM_PROVIDERS` 或文件格式不对服务端起不来；引用的变量没设只是那一项不可用（启动日志有警告）。
+- 从旧配置迁移：`modules.agent` 下的 `baseUrl` / `api` / `apiKey` / `imageInput` / `contextWindow` / `maxTokens` 六项已经删除。写在文件里启动失败；**对应的环境变量留在 ConfigMap 里不报错、只是不生效**（docs/28 §3.3），把值写进 `LLM_PROVIDERS` 再删掉。
+- 例：用集群里 `dev` 命名空间的 ollama（不要 key，`LLM_PROVIDERS` 里不写 `apiKey`）；带 `models` 的提供方同时成为文本节点能选的语言服务（[REQ-APPS §3.8](29-apps.md)）：
 
   ```bash
   kubectl -n dev patch configmap shadecn-learning-agent --type merge -p '{"data":{
+    "LLM_PROVIDERS":"{\"ollama\":{\"baseUrl\":\"http://ollama.dev.svc.cluster.local/v1\",\"api\":\"openai-completions\",\"models\":[{\"id\":\"<ollama list 里的模型名>\"}]}}",
     "MODULES_AGENT_PROVIDER":"ollama",
-    "MODULES_AGENT_MODEL":"<ollama list 里的模型名>",
-    "MODULES_AGENT_BASE_URL":"http://ollama.dev.svc.cluster.local/v1"}}'
+    "MODULES_AGENT_MODEL":"<ollama list 里的模型名>"}}'
   kubectl -n dev rollout restart deploy/shadecn-learning
   ```
 
   走 ollama 的是服务端（模型请求由服务端发，REQ-AGENT-SANDBOX §4.3），不是沙箱 —— 沙箱的 NetworkPolicy 只放行到服务端，它直接连不到 ollama。
-  用别的提供方时 key 放进 Secret：`kubectl -n dev edit secret shadecn-learning-agent`（`data` 里是 base64），或从一份本地文件生成
+  用别的提供方时 key 放进 Secret（`LLM_PROVIDERS` 里写 `"apiKey": "$MODULES_AGENT_API_KEY"`，或不写走提供方自己的变量）：`kubectl -n dev edit secret shadecn-learning-agent`（`data` 里是 base64），或从一份本地文件生成
   `kubectl -n dev create secret generic shadecn-learning-agent --from-env-file=<本地文件> --dry-run=client -o yaml | kubectl apply -f -`（会去掉 `app` 标签，记得补回）；值不进 git。
 - **S3**：
   - `MODULES_STORAGE_ENDPOINT` 是**公开地址**：上传后节点的 `data.src` 存的是原始地址 `<endpoint>/<bucket>/<key>`，浏览器直接去那里取，不经后端转发；

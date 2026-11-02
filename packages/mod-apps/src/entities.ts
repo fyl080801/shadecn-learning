@@ -23,7 +23,7 @@ export const AppTask = defineEntity({
     /** 发起人 */
     userId: p.text(),
     appId: p.text(),
-    /** 定下来的模型（多模型应用、单模型应用都记；不要模型的操作为 null） */
+    /** 这个应用的模型（提交时记下；不要模型的操作为 null） */
     model: p.text().strictNullable(),
     /** 调用方给的参数（JSON 对象字符串，参考图还是地址 —— 换字节在执行时做） */
     params: p.text(),

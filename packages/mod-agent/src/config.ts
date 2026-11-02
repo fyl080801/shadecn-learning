@@ -4,12 +4,15 @@ import { defineModuleConfig, moduleEnvName } from '@shadecn/server-kit/kernel'
 import type { RuntimeInfo } from '@shadecn/server-kit/platform'
 import type { AgentHostConfig, AgentSandboxDriver } from './ports.ts'
 
+export { AGENT_PROVIDER_KEY_ENV, agentProviderApiKey } from '@shadecn/agent/llm-providers'
+
 /**
  * 画布 agent 模块的配置段：`modules.agent`（docs/28 §3.3）。环境变量名由路径推导（`modules.agent.model` → `MODULES_AGENT_MODEL`），环境变量优先于文件；
  * 默认值和校验都在这里，一处解析。
  *
- * 不在 schema 里的：按提供方退回的 key（`ANTHROPIC_API_KEY` 这类，{@link AGENT_PROVIDER_KEY_ENV}）—— 那是各家 SDK 的约定变量名，
- * 只认环境变量（经平台的 `envVar`）；文件里要写 key 就写 `apiKey`。`POD_IP` 是 Downward API 注入的运行环境，也不是配置。
+ * **连接信息不在这一段**：地址、线协议、key、模型能力在底座的 `llm.providers`（`LLM_PROVIDERS`），这里的 `provider` 只是引用它的 key（或 pi 的内置提供方）。
+ * 不在任何 schema 里的：按提供方退回的 key（`ANTHROPIC_API_KEY` 这类，`@shadecn/agent/llm-providers` 的 {@link AGENT_PROVIDER_KEY_ENV}）—— 那是各家 SDK 的约定变量名，
+ * 只认环境变量（经平台的 `envVar`）。`POD_IP` 是 Downward API 注入的运行环境，也不是配置。
  */
 
 export interface AgentPaths {
@@ -37,12 +40,6 @@ export interface AgentConfig {
 const schema = {
   provider: setting('string'),
   model: setting('string'),
-  baseUrl: setting('string'),
-  api: setting('string'),
-  apiKey: setting('string'),
-  imageInput: setting('boolean'),
-  contextWindow: setting('number'),
-  maxTokens: setting('number'),
   thinking: setting('string'),
   titleModel: setting('string'),
   maxOutputTokens: setting('number'),
@@ -113,27 +110,18 @@ export const agentConfig = defineModuleConfig({
 /**
  * 画布 Agent 的模型配置（REQ-AGENT，`docs/20-agent-canvas.md`）。
  *
- * 这里只做**环境变量 → 参数对象**这一步；拿它选模型（注册表 / 自定义端点 / 缺 key）是
- * `@shadecn/agent/model` 的事；没给 `MODULES_AGENT_API_KEY` 时按提供方退回它自己的环境变量
- * （`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`…，映射见 {@link AGENT_PROVIDER_KEY_ENV}，经平台的 `envVar` 读）。
+ * 这里只做**配置 → 参数对象**这一步；拿它选模型是 `@shadecn/agent/llm-providers` 的 `resolveProviderModel` 的事（和模型表、应用表的 `llm` 驱动同一条路）。
  *
  * **拿不到模型或 key = agent 没开**，不是配错了：`GET …/agent` 回 `enabled: false`，
  * 发消息 503，**不影响启动** —— 这个仓库里大多数人不会配 LLM key。
  *
- * - `MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL`：pi 注册表里的提供方与模型 id；`ollama` 是内置预设
- *   （本机 `/v1`、不要 key），模型名照 `ollama list`；
- * - `MODULES_AGENT_BASE_URL` + `MODULES_AGENT_API`：自建 / 代理端点（`openai-completions` | `anthropic-messages`），
- *   此时按这两项构造一个自定义模型，`MODULES_AGENT_PROVIDER` 只当名字用；
- * - `MODULES_AGENT_IMAGE_INPUT`：模型吃不吃图片（`1` / `0`）。不配按 pi 注册表的元数据，自建端点和 ollama 默认只吃文字；
- *   吃图片的模型才拿得到 `view_node_media`（看节点上的图，docs/20 §3.10.7），所以自建的多模态端点要显式配 `1`；
- * - `MODULES_AGENT_CONTEXT_WINDOW` / `MODULES_AGENT_MAX_TOKENS`：模型的上下文窗口、单次最多输出多少 token（正整数）。不配按 pi 注册表的元数据，
- *   自建端点和 ollama 按 128000 / 8192。窗口决定跨轮历史留多少、什么时候算超长；`MODULES_AGENT_MAX_TOKENS` 是模型的能力，
- *   每次请求实际的输出上限是 min(它, `MODULES_AGENT_MAX_OUTPUT_TOKENS` ?? 16384)；
+ * - `MODULES_AGENT_PROVIDER`：引用 `llm.providers` 的 key（连接信息、key、模型能力都在那边）；表里没有就当 pi 的内置提供方（`anthropic`、`ollama` 预设…），
+ *   key 按提供方退回（{@link AGENT_PROVIDER_KEY_ENV}）。**只在服务端**：沙箱里的 runner 拿到的是 run 短令牌，真实 key 由网关的模型代理注入（docs/22 §4.1）；
+ * - `MODULES_AGENT_MODEL`：模型 id；`ollama` 照 `ollama list`。模型的图片输入、上下文窗口、输出上限写在 `llm.providers.<id>.models` 里。
+ *   每次请求实际的输出上限是 min(模型的 maxTokens, `MODULES_AGENT_MAX_OUTPUT_TOKENS` ?? 16384)；
  * - `MODULES_AGENT_THINKING`：请模型思考的等级（`minimal` | `low` | `medium` | `high` | `xhigh`）。不配 = 不请求思考（有的端点不请求也会吐思考，照样显示）；
  *   配了不认识的值等于没配，并在启动时警告。思考随对话流显示、落库（docs/20 §3.10.13）；
- * - `MODULES_AGENT_API_KEY`：显式的 key，优先于按提供方的环境变量（{@link AGENT_PROVIDER_KEY_ENV}）。**只在服务端**：沙箱里的 runner 拿到的是 run 短令牌，
- *   真实 key 由网关的模型代理注入（docs/22 §4.1）；
- * - 以上几项是模型表里的 `default`（docs/26 §3.4）。其余的项在模型表文件里（`MODULES_AGENT_MODELS_FILE` 可换路径，见 {@link AgentPaths.modelsFile}），
+ * - 这三项是模型表里的 `default`（docs/26 §3.4）。其余的项在模型表文件里（`MODULES_AGENT_MODELS_FILE` 可换路径，见 {@link AgentPaths.modelsFile}），
  *   解析在 `./models.ts`；
  * - `MODULES_AGENT_SANDBOX_DRIVER`：沙箱驱动（docs/22 §7）—— pi 的推理循环跑在每轮一个的沙箱里：
  *   `process`（默认：本机 `node` 子进程，**不是强隔离**，`NODE_ENV=production` 时拒绝，除非 `MODULES_AGENT_SANDBOX_ALLOW_PROCESS=1`）；
@@ -180,12 +168,6 @@ function parseHostConfig(read: Read, runtime: RuntimeInfo): AgentHostConfig {
   return {
   provider: read('provider')?.trim() || 'anthropic',
   model: read('model')?.trim() || 'claude-sonnet-4-6',
-  baseUrl: read('baseUrl')?.trim() ?? '',
-  api: read('api')?.trim() ?? '',
-  apiKey: read('apiKey')?.trim() ?? '',
-  imageInput: flag(read('imageInput')),
-  contextWindow: positiveInteger(read('contextWindow')),
-  maxTokens: positiveInteger(read('maxTokens')),
   /** 原样的字符串；合法性由 `@shadecn/agent/model` 判（`agent/index.ts` 里不合法就警告并当没配） */
   thinking: read('thinking')?.trim() || undefined,
   sandbox: resolveSandboxDriver(read('sandbox.driver')),
@@ -235,75 +217,6 @@ function resolveTitleModel(raw: string | undefined): string | undefined {
   return ['off', 'none', '0', 'false'].includes(value.toLowerCase()) ? undefined : value
 }
 
-/**
- * 没配 `MODULES_AGENT_API_KEY` 时，按 `MODULES_AGENT_PROVIDER` 退回的环境变量（按顺序取第一个非空的）。
- *
- * 我们自己维护这份表，不用 pi 的 `getEnvApiKey`（pi 1.x 起它只在 `/compat` 兼容层里）：取值照 pi 0.73.1 / 1.4.0
- * `env-api-keys` 里纯 key 的那些提供方抄的，两版不一致时保持 0.73.1 的行为（我们之前一直按它跑）。
- * 刻意**不收**的：
- * - `google-vertex` / `amazon-bedrock` 的 ADC / AWS 凭据链（pi 那边回一个 `<authenticated>` 占位）——
- *   网关的模型代理只会把 key 注入成 `Authorization` / `x-api-key`，这两家的线协议它也不转发；
- * - `ANTHROPIC_AUTH_TOKEN`（pi 1.x 新加，它把它当 Bearer 头而不是 key 用），同理。
- *
- * **不要 key 的本地端点**（`ollama`）：列成空表 —— 不读任何变量，由 `@shadecn/agent/model` 的预设补占位 key；
- * 远端带鉴权的 ollama 用 `MODULES_AGENT_API_KEY`。表里没有的提供方（自建端点只拿 `MODULES_AGENT_PROVIDER` 当名字）同样只认 `MODULES_AGENT_API_KEY`。
- */
-export const AGENT_PROVIDER_KEY_ENV: Readonly<Record<string, readonly string[]>> = {
-  // OAuth token 在前（pi 0.73 的顺序）
-  anthropic: ['ANTHROPIC_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'],
-  openai: ['OPENAI_API_KEY'],
-  'azure-openai-responses': ['AZURE_OPENAI_API_KEY'],
-  azure: ['AZURE_OPENAI_API_KEY'],
-  deepseek: ['DEEPSEEK_API_KEY'],
-  google: ['GEMINI_API_KEY'],
-  groq: ['GROQ_API_KEY'],
-  cerebras: ['CEREBRAS_API_KEY'],
-  xai: ['XAI_API_KEY'],
-  openrouter: ['OPENROUTER_API_KEY'],
-  'vercel-ai-gateway': ['AI_GATEWAY_API_KEY'],
-  zai: ['ZAI_API_KEY'],
-  'zai-coding-cn': ['ZAI_CODING_CN_API_KEY'],
-  mistral: ['MISTRAL_API_KEY'],
-  minimax: ['MINIMAX_API_KEY'],
-  'minimax-cn': ['MINIMAX_CN_API_KEY'],
-  moonshotai: ['MOONSHOT_API_KEY'],
-  'moonshotai-cn': ['MOONSHOT_API_KEY'],
-  'kimi-coding': ['KIMI_API_KEY'],
-  huggingface: ['HF_TOKEN'],
-  fireworks: ['FIREWORKS_API_KEY'],
-  together: ['TOGETHER_API_KEY'],
-  baseten: ['BASETEN_API_KEY'],
-  nvidia: ['NVIDIA_API_KEY'],
-  opencode: ['OPENCODE_API_KEY'],
-  'opencode-go': ['OPENCODE_API_KEY'],
-  'cloudflare-workers-ai': ['CLOUDFLARE_API_KEY'],
-  'cloudflare-ai-gateway': ['CLOUDFLARE_API_KEY'],
-  'qwen-token-plan': ['QWEN_TOKEN_PLAN_API_KEY'],
-  'qwen-token-plan-cn': ['QWEN_TOKEN_PLAN_CN_API_KEY'],
-  'qwen-token-plan-individual': ['QWEN_TOKEN_PLAN_API_KEY'],
-  xiaomi: ['XIAOMI_API_KEY'],
-  'xiaomi-token-plan-cn': ['XIAOMI_TOKEN_PLAN_CN_API_KEY'],
-  'xiaomi-token-plan-ams': ['XIAOMI_TOKEN_PLAN_AMS_API_KEY'],
-  'xiaomi-token-plan-sgp': ['XIAOMI_TOKEN_PLAN_SGP_API_KEY'],
-  'github-copilot': ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'],
-  // 本机端点不鉴权：不读变量，预设补占位
-  ollama: [],
-}
-
-/**
- * 按 {@link AGENT_PROVIDER_KEY_ENV} 从环境变量取 `provider` 的 key；没有（表里没有 / 都没配 / 只有空白）= `''`。
- * `MODULES_AGENT_API_KEY` 不在这里：它优先，由调用方先看（`agentConfig.apiKey || agentProviderApiKey(…)`）。
- */
-export function agentProviderApiKey(provider: string, envVar: (name: string) => string | undefined): string {
-  const names = (Object.hasOwn(AGENT_PROVIDER_KEY_ENV, provider) && AGENT_PROVIDER_KEY_ENV[provider]) || []
-  for (const name of names) {
-    const value = envVar(name)?.trim()
-    if (value) return value
-  }
-  return ''
-}
-
-
 function resolveSandboxDriver(raw: string | undefined): AgentSandboxDriver {
   const value = raw?.trim() || 'process'
   if (value === 'process' || value === 'oci' || value === 'k8s') return value
@@ -317,14 +230,6 @@ function resolveSandboxDriver(raw: string | undefined): AgentSandboxDriver {
 
 function isOn(raw: string | undefined): boolean {
   return ['1', 'true', 'on', 'yes'].includes(raw?.trim().toLowerCase() ?? '')
-}
-
-/** 三态开关：没配 / 认不出 = undefined（按默认），其余按开 / 关 */
-function flag(raw: string | undefined): boolean | undefined {
-  const value = raw?.trim().toLowerCase() ?? ''
-  if (['1', 'true', 'on', 'yes'].includes(value)) return true
-  if (['0', 'false', 'off', 'no'].includes(value)) return false
-  return undefined
 }
 
 /** 监听全部地址时，同机的沙箱从回环地址进来 */

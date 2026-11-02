@@ -4,10 +4,9 @@ import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all'
 /**
  * 选模型 —— 输入是一个**显式的参数对象**，本包不读 `process.env`。
  *
- * 环境变量怎么解析（`MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` / `MODULES_AGENT_BASE_URL` / `MODULES_AGENT_API` /
- * `MODULES_AGENT_API_KEY`，以及没给 key 时按提供方退回它自己的环境变量）是宿主的事，
- * 在 `packages/server-core/src/config.ts` 和 `packages/mod-agent/src/` 里。这样这个包测起来不用摆弄环境，
- * 换一个宿主（CLI、别的服务）也不会被一份它不认识的环境约定绑住。
+ * 配置和环境变量是宿主的事：连接信息在 `llm.providers`（`LLM_PROVIDERS`，`@shadecn/server-kit/llm`），key 由 `./llm-providers.ts` 的
+ * `resolveProviderModel` 按宿主给的 `envVar` 读好（`$ENV` 引用，或按提供方退回它自己的环境变量），它是配置通向这里的唯一一条路。
+ * 这样这个包测起来不用摆弄环境，换一个宿主（CLI、别的服务）也不会被一份它不认识的环境约定绑住。
  *
  * 三条路：
  * - **内置预设**（目前只有 `ollama`，见 {@link PROVIDER_PRESETS}）：pi 的注册表里没有它，
@@ -25,6 +24,8 @@ export type CustomModelApi = (typeof CUSTOM_MODEL_APIS)[number]
 export interface AgentModelOptions {
   provider: string
   model: string
+  /** 给人看的模型名（决定 `label` / `model.name`）；不给 = 注册表里的名字，没有就是模型 id */
+  name?: string
   /** 给了就是自定义端点 */
   baseUrl?: string
   /** 自定义端点的线协议；不给时取注册表里同名模型的，没有则 `openai-completions` */
@@ -45,6 +46,8 @@ export interface AgentModelOptions {
    * 每次请求实际的输出上限还要再和宿主的上限取小（`model-stream.ts` 的 `outputTokenLimit`）
    */
   maxTokens?: number
+  /** 模型支不支持思考（覆盖注册表的 `reasoning`）。不给 = 按注册表，自定义端点 / 预设默认不支持；{@link thinking} 给了仍然标成支持 */
+  reasoning?: boolean
   /**
    * 请模型思考的等级（pi-ai 的 `reasoning` 选项）。不给 = 不请求思考（同以前）——
    * 有的端点（DeepSeek / Qwen / llama.cpp 的 `reasoning_content`）不请求也会吐思考，照样显示。
@@ -195,6 +198,8 @@ export function resolveAgentModel(options: AgentModelOptions): ModelResolution {
   }
   if (options.contextWindow !== undefined) model = { ...model, contextWindow: options.contextWindow }
   if (options.maxTokens !== undefined) model = { ...model, maxTokens: options.maxTokens }
+  if (options.reasoning !== undefined) model = { ...model, reasoning: options.reasoning }
+  if (options.name?.trim()) model = { ...model, name: options.name.trim() }
   if (model.maxTokens >= model.contextWindow) {
     return { ok: false, reason: `maxTokens（${model.maxTokens}）必须小于 contextWindow（${model.contextWindow}）` }
   }

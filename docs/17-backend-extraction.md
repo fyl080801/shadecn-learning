@@ -32,8 +32,6 @@ Node 现在直接碰持久化的只有四类。
 | 共享协调状态 | 7 张 `SharedMap` + 1 把 `SharedLock`（内存 or Redis） | `cluster/`，使用方见 §4.6 |
 | 文件存储 | **没有**。头像是 identicon 现算现返，不落盘 | `packages/mod-auth/src/avatar/` |
 
-`packages/mod-notes/src/store.ts` 是内存 `Map` 的 API 样板，不在迁移范围内。
-
 ### 2.1 按调用频率排序的热路径
 
 下沉之后这几条会从「一次本地查询」变成「一次 RTT」，是整个改造的性能主线：

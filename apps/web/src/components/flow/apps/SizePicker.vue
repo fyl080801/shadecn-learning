@@ -13,7 +13,7 @@ import { NODE_APP_PARAM_PREFIX } from "./node-app"
 /**
  * 生成节点的尺寸选择（docs/29 §3.9）：一个按钮显示当前尺寸，点开是「分辨率 × 比例」的弹出框。
  *
- * 一切都按参数说明来（`size` 类型：`tiers` 档位、`presets` 比例 → 每档的宽高），说明来自应用表的模型档案 —— 这里不认识任何模型：
+ * 一切都按参数说明来（`size` 类型：`tiers` 档位、`presets` 比例 → 每档的宽高），说明来自 `modules.apps` 条目的 `params` —— 这里不认识任何模型：
  * - **分辨率**：`tiers` 里的档位；换分辨率时比例保持（换成同一比例的另一档），这一档没有那个比例的参考值就回到「自动」；
  * - **比例**：「自动」= 只传档位，比例由模型按提示词定（方舟推荐的写法）；其余是 `presets` 的比例，选了传这一档那一格的宽高；
  *   这一档没有参考值的比例不可选；
@@ -26,7 +26,7 @@ const ctx = useNodePart()
 const key = computed(() => `${NODE_APP_PARAM_PREFIX}${props.name}`)
 
 const stored = computed(() => ctx.node.data.value[key.value])
-/** 节点上存的值对这个模型合不合（换了模型，旧值可能超出新模型的范围） */
+/** 节点上存的值对这个应用合不合（换了应用，旧值可能超出新应用的范围） */
 const storedProblem = computed(() =>
   stored.value === undefined ? null : checkParamValue(props.name, props.spec, stored.value)
 )
@@ -105,13 +105,13 @@ const TRIGGER_CLASS =
 
 <template>
   <Popover v-model:open="open">
-    <!-- 外观和旁边的应用 / 模型下拉（SelectTrigger）一致：同样的边框、底色、高度、字号和右侧箭头 -->
+    <!-- 外观和旁边的应用下拉（SelectTrigger）一致：同样的边框、底色、高度、字号和右侧箭头 -->
     <PopoverTrigger as-child>
       <button
         type="button"
         :class="cn(TRIGGER_CLASS, 'h-7 max-w-36 shrink-0 px-2 text-xs')"
         :aria-invalid="storedProblem ? true : undefined"
-        :title="storedProblem ? `节点上的尺寸不适用于这个模型，改用默认：${storedProblem}` : (spec.description ?? '尺寸')"
+        :title="storedProblem ? `节点上的尺寸不适用于这个应用，改用默认：${storedProblem}` : (spec.description ?? '尺寸')"
         data-testid="size-picker"
       >
         <span>{{ label }}</span>

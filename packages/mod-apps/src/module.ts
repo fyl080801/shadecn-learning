@@ -20,7 +20,7 @@ export const FLOW_APPS_PATH = '/api/flows/:flowId/apps'
 /**
  * 应用执行模块（REQ-APPS，docs/29）：把语言 / 图像 / 视频 / 3D 等生成服务统一成 `executeApp(appId, params)`。
  *
- * - 应用和提供方在应用表文件里（`MODULES_APPS_FILE`），对接服务是驱动（`drivers/`）；
+ * - 应用和提供方在配置段 `modules.apps` 里（`config.ts`），对接服务是驱动（`drivers/`）；
  * - 别的模块经 `apps` 服务调（`./contract`），web 上另有 `/api/apps` 给前端，`/api/flows/:flowId/apps` 给画布节点
  *   （参考图按本画布资源读、产物存成本画布资源，需要 storage 模块，没有就原样）；
  * - 随 `web` 和 `agent` 两个角色加载。画布生成是**任务**（docs/29 §3.10，表 `app_task`）：web 受理、经总线派给 agent 副本，
@@ -38,13 +38,13 @@ export default defineModule({
     { path: APPS_PATH, role: 'web', access: 'user' },
     { path: FLOW_APPS_PATH, role: 'web', access: 'user' },
   ],
-  enabled: (config) => config.catalog.apps.size > 0 || `应用表 ${config.file} 不存在或没有应用`,
+  enabled: (config) => config.catalog.apps.size > 0 || 'modules.apps 里没有配置应用，llm.providers 里也没有带模型的提供方',
   async setup(ctx) {
     const service = createAppsService(ctx.config.catalog)
     for (const app of service.list()) {
       if (app.unavailable) console.warn(`[apps] 应用 ${app.id} 现在不可用（执行会回 unavailable）：${app.unavailable}`)
     }
-    console.info(`[apps] 应用表 ${ctx.config.file}：${service.list().map((app) => app.id).join('、')}`)
+    console.info(`[apps] 应用：${service.list().map((app) => app.id).join('、')}`)
     ctx.provide(APPS_SERVICE, service)
     ctx.http.route(APPS_PATH, createAppRoutes(service, (c) => ctx.platform.auth.userId(c)))
     const canvas = ctx.service<CanvasService>(CANVAS_SERVICE)!

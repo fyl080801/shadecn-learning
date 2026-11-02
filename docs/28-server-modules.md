@@ -119,7 +119,6 @@
 | `@shadecn/server-kit` | 集成协议与内核（`./kernel`：声明、入口与归属表、配置段、选模块与排序、生命周期）、平台契约（`./platform`）、数据库（`./db`）、`User`（`./identity`）、配置层（`./config`）、共享层（`./cluster`）、总线（`./bus`）、撤权信号（`./access`） | 所有服务端包 |
 | `@shadecn/server-core` | 底座：HTTP 管线、配置（`./config`、`./config-source`）、数据库（`./db`、`./db-sync`、`./schema-sync`）、日志、前端托管（`./frontend/static`；`./frontend/dev` 只给开发入口）、平台契约的实现（`./platform`）、装配（`./server`）、路由归属表（`./routes-table`）、启动（`./boot`）。**不 import 任何模块包** | `apps/server` |
 | `@shadecn/mod-auth` | 登录：Keycloak / GitHub、会话、身份绑定、默认头像、页面守卫与登录页的两条路由、本地开发用户、`modules.auth` 配置段；向平台提供 `auth` | — |
-| `@shadecn/mod-notes` | 笔记示例（内存里的 `/api/notes`）：最小的模块 | — |
 | `@shadecn/mod-canvas` | 项目 / 成员 / 邀请 / 画布元数据的表、store、REST（`/api/projects`、`/api/invites`、`/api/flows`）、成员判定；`canvas` 服务（`flowGuard`、`locate`、`roleOf`、画布内容的存取 `docs`）；契约 `./contract`（服务接口 + "复制前落库"的总线请求 `flushFlowContent`）、`./entities` | 契约与实体：其它模块包 |
 | `@shadecn/mod-storage` | S3 客户端、对象键、缩略图、上传接口、上传记录表；`storage` 服务（`./contract`） | 契约、`./client`、`./keys`：其它模块包 |
 | `@shadecn/mod-collab` | 协同（Hocuspocus、落库、配额、撤权复验、headless）、握手鉴权、协同日志扩展、`/doc` 与监控接口；给 agent 的活房间入口（`./canvas-host`） | `canvas-host`：mod-agent |
@@ -152,20 +151,20 @@
 ### 3.3 配置管理
 
 - **一份配置文件**：数据目录（`DATA_DIR`，默认 `<应用根目录>/data`）里的 `server.config.yaml`（也认 `.yml` / `.json`），
-  示例 `server.config.example.yaml` 进仓库，真正的文件和 `.env` 一样不进仓库、不进镜像。
+  示例 `sample/server.config.example.yaml` 进仓库（`apps/server/test/config-example.test.ts` 钉住：去掉注释后能过校验），真正的文件和 `.env` 一样不进仓库、不进镜像。
   `.env` 不跟着数据目录走，仍在应用根目录（源码运行是仓库根，产物 / 容器里是进程 cwd）。
   ```yaml
   server:   { port, host, roles, instanceId, staticDir, origin, origins }
   database: { provider, url }
   cluster:  { mode, redisUrl, redisKeyPrefix }
   log:      { level, format, dir, http, slowMs, slowQueryMs }
+  llm:      { providers: { <id>: { name, baseUrl, api, apiKey, models: [...] } } }
   modules:
     auth:    { enabled, sessionSecret, sessionTtl, keycloak: {...}, github: {...} }
     canvas:  { enabled }
     collab:  { enabled }
     storage: { enabled, endpoint, internalEndpoint, region, bucket, accessKeyId, secretAccessKey, maxUploadMb, keyPrefix }
     agent:   { enabled, provider, model, …, sandbox: { driver, …, oci: {...}, k8s: {...} } }
-    notes:   { enabled }
   ```
 - **分层**：基础文件之上叠 `server.config.<NODE_ENV>.*`（`production` / `development`，没设 `NODE_ENV` 按 development）；对象逐键合并，数组和标量整个替换。
   同一层同时有两种扩展名 = 启动失败。`SERVER_CONFIG=a.yaml,b.yaml` 显式指定文件（按顺序叠，相对路径按数据目录；k8s 上指到挂进来的 ConfigMap，
@@ -184,8 +183,29 @@
   `false` / `0` 关掉模块，启动日志和 `/api/features` 写明「配置关闭」。`true` / 不写 = 由模块自己定（storage 看 S3 配置齐不齐）——
   **开关只能关，不能把缺配置的模块硬打开**。关掉被硬依赖的模块 → 启动失败（关 canvas 永远失败；agent 开着时在 agent 角色上关 collab 失败）。
   关掉的模块**整个不加载**：它的入口不存在（不归本进程的路由仍回 404 说明归谁），web 的面板按 `/api/features` 隐藏。
-- 不放进文件的：`NODE_ENV`（它决定叠哪层文件）、`DATA_DIR`（它决定到哪找文件）、`SERVER_CONFIG` 本身、按模型提供方退回的 key（`ANTHROPIC_API_KEY` 这类各家 SDK 的约定变量；文件里要写 key 就写 `modules.agent.apiKey`）、
+- 不放进文件的：`NODE_ENV`（它决定叠哪层文件）、`DATA_DIR`（它决定到哪找文件）、`SERVER_CONFIG` 本身、按模型提供方退回的 key（`ANTHROPIC_API_KEY` 这类各家 SDK 的约定变量；文件里 `llm.providers` 的 `apiKey` 只认 `"$环境变量名"`）、
   k8s 注入的 `POD_IP`。密钥可以写进文件，但生产上应当走环境变量 / Secret（配置文件常被整份放进 ConfigMap）。
+- **语言服务提供方 `llm.providers`**（底座的段，`LLM_PROVIDERS`）：大语言模型服务的连接信息和模型清单，形状是 pi `models.json` 的子集，agent（[REQ-AGENT-DEF §3.4](26-agent-definitions.md)）和应用表（`modules.apps`，[REQ-APPS §3.3](29-apps.md)）都引用它。同样是一整段结构化配置（`setting('json')`）的还有 `modules.apps.providers`、`modules.apps.apps`（`MODULES_APPS_PROVIDERS`、`MODULES_APPS_APPS`）。
+  底座解析后放在平台的 `runtime.llmProviders` —— core 和模块互不 import，模块在 `config.parse(read, runtime)` 里经它读。
+  这是配置层里唯一一种 `json` 类型的项：文件里写结构化的对象（对象逐键合并，分层文件可以各写几个提供方），环境变量的值是同形的 JSON 字符串（设了就整段盖掉文件里的）。**只有这一项结构化，里面的键不各自推导环境变量。**
+  ```yaml
+  llm:
+    providers:
+      ollama:                     # id：小写字母开头，小写字母、数字、-，最长 48
+        name: 本机 ollama          # 可选，显示名
+        baseUrl: http://127.0.0.1:11434/v1   # 给了就是自建 / 代理端点
+        api: openai-completions   # openai-completions / anthropic-messages，解析模型时判
+        apiKey: $OLLAMA_API_KEY   # 只认 "$环境变量名"；不写 = 按提供方退回约定变量
+        models:
+          - id: deepseek-v4.1-flash:1017-cloud   # 必填
+            name: DeepSeek V4.1 flash            # 可选
+            input: [text, image]                 # 可选，默认按 pi 注册表 / 只吃文字
+            reasoning: true                      # 可选
+            contextWindow: 128000                # 可选
+            maxTokens: 8192                      # 可选
+  ```
+  形状不对 = 启动失败，带路径、**不回显值和整段 JSON**：不合法的 JSON、不认识的字段（pi 的 `headers` / `compat` / `cost` / `modelOverrides` 不支持）、类型不对、`apiKey` 写了明文（含 pi 的 `!command`）、重复的模型 id、不合法的 id。
+  配置对但现在用不了（引用的变量没设、线协议不支持、模型解析不了）不是启动错误，由用到它的那一方标成不可用。
 - 启动日志第一屏打出读到了哪些配置文件。
 - `GET /api/features` 回 `{ canvas, collab, storage, agent }` 布尔表，前端据此隐藏关掉的入口（agent 面板、上传按钮）。
   **这是"显示什么"，不是权限**：关掉的模块的接口本来就不存在；开着的模块里暂时不可用的（agent 没配模型）回 503 并说明原因；不归本进程角色的路由回 404（§3.9）。
@@ -331,4 +351,4 @@ web 角色不跑 agent。agent 模块随 `web` 和 `agent` 两个角色加载：
 | 7 | **已做**：能力的 HTTP 接口搬进各自的包（`@shadecn/mod-collab/routes`、`@shadecn/mod-storage/routes`、`@shadecn/mod-agent/routes`），请求者身份经 `@shadecn/server-kit/http` 的 `FlowRequestPort` 从宿主拿；`apps/server/routes/` 只剩底座路由 | ✓ | 能力代码全部离开 `apps/server` |
 | 8 | **已做**：配置文件（§3.3）：`@shadecn/server-kit/config`（找文件、YAML / JSON 解析、分层合并、按 schema 校验、和环境变量合层），各能力包的 `./config` 声明自己那段，宿主声明底座的段；`modules.<name>.enabled` 开关进内核的 `resolveModules` | ✓ | 一份文件配一个进程 |
 | 9 | **已做**：**集成协议**（§3.1）：模块默认导出声明（配置段、表、入口、角色、依赖），`setup` 里经 `ctx.http` 自己挂路由 / WebSocket；平台能力经 `@shadecn/server-kit/platform` 交给模块（宿主实现在 `apps/server/platform.ts`）；项目 / 画布成为 `@shadecn/mod-canvas`；各模块的表、store、配置解析、鉴权细节回到各自的包；路由归属表与登录放行名单从声明推出（删掉手写的 `routes/ownership.ts`、`scripts/dev-route.mjs`、`PUBLIC_API`）；宿主的 `modules/*.ts` 装配文件全部删除，只剩模块清单 `apps/server/modules.ts` | ✓ | 加一个能力只改清单一行 |
-| 10 | **已做**：底座成包（`@shadecn/server-core`，不认识任何模块，清单由入口交给 `prepare`）；登录成为模块（`@shadecn/mod-auth`，向平台提供 `auth`，配置段移到 `modules.auth`）、笔记成为模块（`@shadecn/mod-notes`）；`apps/server` 只剩入口、模块清单、`db-sync` 入口、脚本与集成测试 | ✓ | 底座和业务彻底分开 |
+| 10 | **已做**：底座成包（`@shadecn/server-core`，不认识任何模块，清单由入口交给 `prepare`）；登录成为模块（`@shadecn/mod-auth`，向平台提供 `auth`，配置段移到 `modules.auth`）、笔记示例成为模块（`@shadecn/mod-notes`，后来已整体移除）；`apps/server` 只剩入口、模块清单、`db-sync` 入口、脚本与集成测试 | ✓ | 底座和业务彻底分开 |

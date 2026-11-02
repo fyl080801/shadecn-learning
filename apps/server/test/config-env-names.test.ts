@@ -33,13 +33,15 @@ const NOT_IN_SCHEMA = new Set<string>([
   'DEV_ALLOWED_HOSTS',
   'TEST_DATABASE_URL',
   'TEST_REDIS_URL',
-  // 示例里应用表 / 模型表 `$变量` 引用的名字：写表的人自己定的
+  // 示例里应用表 / 语言服务提供方 `$变量` 引用的名字：写表的人自己定的
   'ARK_API_KEY',
-  'AGENT_FAST_KEY',
+  'MY_LLM_API_KEY',
+  'LLM_PROXY', // 不是配置：docs/22 的迁移记录里提到的旧代码常量
+  'MODULES_AGENT_API_KEY', // 线上 Secret 的键名没改，LLM_PROVIDERS 里 `$MODULES_AGENT_API_KEY` 引用它（docs/12 §3.3）；它已经不是配置项
 ])
 
 /** 配置变量的前缀：这些前缀下的大写词都应该是推导出来的名字 */
-const CONFIG_TOKEN = /(?<![A-Za-z0-9_$])(?:MODULES|SERVER|DATABASE|CLUSTER|LOG)_[A-Z0-9_]+\*?/g
+const CONFIG_TOKEN = /(?<![A-Za-z0-9_$])(?:MODULES|SERVER|DATABASE|CLUSTER|LOG|LLM)_[A-Z0-9_]+\*?/g
 
 const read = (file: string) => readFileSync(path.join(rootDir, file), 'utf8')
 
@@ -76,6 +78,7 @@ describe('环境变量名由配置路径推导', () => {
     ['modules.auth.keycloak.issuer', 'MODULES_AUTH_KEYCLOAK_ISSUER'],
     ['modules.storage.bucket', 'MODULES_STORAGE_BUCKET'],
     ['modules.storage.maxUploadMb', 'MODULES_STORAGE_MAX_UPLOAD_MB'],
+    ['llm.providers', 'LLM_PROVIDERS'],
   ])('真实的 schema：%s 由 %s 配置', (leaf, name) => {
     const source = resolveConfig(schema, empty, { [name]: 'from-env' })
     expect(source.get(leaf)).toBe('from-env')
@@ -83,7 +86,7 @@ describe('环境变量名由配置路径推导', () => {
   })
 
   it('schema 的每一项都同时能从环境变量和文件配（环境变量优先）', () => {
-    const fileValue = { string: 'x', number: 1, boolean: true, list: ['a'], map: { a: 'b' } } as const
+    const fileValue = { string: 'x', number: 1, boolean: true, list: ['a'], map: { a: 'b' }, json: { a: { b: 1 } } } as const
     expect(allLeaves.length).toBeGreaterThan(70)
     for (const leaf of allLeaves) {
       const data: Record<string, unknown> = {}
@@ -158,7 +161,7 @@ describe('仓库里提到的配置变量都对得上 schema（写错了不报错
       'apps/server/scripts/agent-sandbox/build-image.mjs',
       'apps/server/vitest.config.ts',
       'apps/server/test/global-setup.ts',
-      'server.config.example.yaml',
+      'sample/server.config.example.yaml',
       '.env.example',
       'apps/web/src/login/LoginPage.vue',
       ...filesUnder('k8s', /\.yaml$/),

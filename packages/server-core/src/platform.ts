@@ -9,6 +9,7 @@ import {
   isAllowedOrigin,
   isClustered,
   isDev,
+  llmProviders,
   port,
   redisKeyPrefix,
   redisUrl,
@@ -33,6 +34,7 @@ export const runtime: RuntimeInfo = {
   isBundle,
   moduleDir,
   redis: isClustered ? { url: redisUrl, prefix: redisKeyPrefix } : null,
+  llmProviders,
   envVar: (name) => process.env[name],
 }
 

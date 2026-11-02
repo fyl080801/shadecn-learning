@@ -140,13 +140,24 @@ describe("默认注册表的组合", () => {
     }
   })
 
-  it("可运行只给图片 / 视频（运行器是 app-run，docs/29 §3.8）；产出预览是登记着的通用能力，眼下没有类型启用", () => {
+  it("文本的输入框：没正文时有；有正文收起；有正文但生成失败时留着（runtime 只有执行副本写，重新生成是清掉错误的唯一办法）", () => {
+    const part = createDefaultNodeKit().partsFor("text", "composer")[0]!
+    const shows = (data: Record<string, unknown>, status: string) =>
+      part.when!({ type: "text", node: { data: { value: data }, runtime: { value: { status } } } } as never)
+    expect(shows({ text: "" }, "idle")).toBe(true)
+    expect(shows({ text: "正文" }, "completed")).toBe(false)
+    expect(shows({ text: "生成期间写的字" }, "error")).toBe(true)
+  })
+
+  it("可运行只给文本 / 图片 / 视频（运行器是 app-run，docs/29 §3.8），生成历史只给图片 / 视频；产出预览是登记着的通用能力，眼下没有类型启用", () => {
     const kit = createDefaultNodeKit()
     for (const type of Object.keys(FLOW_NODE_TYPES)) {
       const media = type === "image" || type === "video"
+      const generates = media || type === "text"
       expect(kit.partsFor(type, "side"), type).toHaveLength(0)
-      expect(kit.hasFeature(type, "runnable"), type).toBe(media)
-      expect(kit.hasFeature(type, "app-run"), type).toBe(media)
+      expect(kit.hasFeature(type, "runnable"), type).toBe(generates)
+      expect(kit.hasFeature(type, "app-run"), type).toBe(generates)
+      expect(kit.hasFeature(type, "generations"), type).toBe(media)
       expect(kit.hasFeature(type, "output-preview"), type).toBe(false)
     }
   })

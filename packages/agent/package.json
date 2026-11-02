@@ -9,6 +9,7 @@
     "./tools": "./src/tools.ts",
     "./events": "./src/events.ts",
     "./model": "./src/model.ts",
+    "./llm-providers": "./src/llm-providers.ts",
     "./model-stream": "./src/model-stream.ts",
     "./media": "./src/media.ts",
     "./occupancy": "./src/occupancy.ts",

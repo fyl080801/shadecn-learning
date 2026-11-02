@@ -47,7 +47,7 @@ const props = defineProps<{
   field: string
   placeholder?: string
   /**
-   * 发送按钮左边那一块（默认是键位提示）换成这个组件 —— 生成节点在这里放「用哪个应用 / 模型」（`apps/AppPicker.vue`）。
+   * 发送按钮左边那一块（默认是键位提示）换成这个组件 —— 生成节点在这里放「用哪个应用」（`apps/AppPicker.vue`）。
    * 它和部件一样不收 props、自己 `useNodePart()`
    */
   controls?: Component
@@ -250,7 +250,7 @@ function iconOf(nodeId: string) {
   <!--
     nodrag / nopan / nowheel：在框里拖选文字、拖格子排序、滚动不该变成拖节点、拖画布、缩放。
     固定宽 520px（屏幕像素：宿主的 composer 区在 NodeToolbar 里，不随缩放变）：一排放得下七格预览 + 加号，
-    底下一行放得下生成节点的应用 / 模型 / 尺寸选择（`controls`），
+    底下一行放得下生成节点的应用 / 尺寸选择（`controls`），
     再多就横向滚；输入框 2 行起步、最高 5 行后滚动 —— 面板总高封顶，不会把节点下面一大片盖住。
   -->
   <Teleport :to="dialogSlot" :disabled="!expanded">

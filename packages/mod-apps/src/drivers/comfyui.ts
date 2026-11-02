@@ -2,18 +2,18 @@ import { randomInt, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { APP_CATEGORIES, AppError, type AppOutput, type ParamSpec, type ParamType } from '../contract.ts'
-import { defineDriver, isRecord, type Fields, type RunContext } from '../driver.ts'
+import { defineDriver, isRecord, type Fields, type Operation, type RunContext } from '../driver.ts'
 import { decodeDataUrl, fileTypeOf, requestBytes, requestJson, requestOk } from '../http.ts'
 import { readParamSpec } from '../params.ts'
 
 /**
  * ComfyUI（docs/29 §4.2）：一个应用 = 一份 **API 格式**的工作流（ComfyUI 里「导出（API）」存下来的 JSON）+ 参数到节点输入的映射。
- * 出图、出视频、出 3D 都是这一个操作，类别由应用自己声明 —— 加一种生成能力 = 加一份工作流和一段应用配置，不改代码。
+ * 出图、出视频、出 3D 都是同一份逻辑，每个类别一个操作，条目的 `type` 选 —— 加一种生成能力 = 加一份工作流和一项配置，不改代码。
+ * 模型在工作流里，所以条目不写 `model`，写 `id`（应用 id 是 `<provider>:<id>`）。
  *
  * ```yaml
  * options:
  *   workflow: data/comfy/sdxl.json      # 相对应用根目录
- *   category: image
  *   inputs:                              # 参数名 → 节点输入；其余字段同参数表（type / description / required / default / enum / min / max）
  *     prompt: { node: "6", field: text, type: string, required: true }
  *     seed:   { node: "3", field: seed, type: integer, random: true }   # 没给就随机（同参数的请求 ComfyUI 会直接回缓存）
@@ -116,6 +116,95 @@ function errorOf(entry: ComfyHistoryEntry): string {
   return typeof message?.exception_message === 'string' ? message.exception_message : '执行出错'
 }
 
+/** 每个类别都是这一份：工作流出什么由工作流定 */
+const workflowOperation: Operation<ComfyProvider> = {
+  description: '执行一份 API 格式的工作流',
+  // 模型在工作流里（Checkpoint 节点）：要让调用方选，就在 inputs 里把 ckpt_name 映射成带 enum 的参数
+  requiresModel: false,
+  prepare(options, provider, env) {
+    const file = path.resolve(env.appRoot, options.string('workflow', { required: true }))
+    const graph = loadWorkflow(file, options.at)
+    const maxOutputBytes = options.integer('maxOutputMb', { default: DEFAULT_MAX_OUTPUT_MB })! * 1024 * 1024
+    const outputsList = options.list('outputs')
+    const missingNode = outputsList?.find((id) => !graph[id])
+    if (missingNode) throw new Error(`${options.at}：outputs 里的节点 ${missingNode} 不在工作流里`)
+    const outputNodes = outputsList ? new Set(outputsList) : null
+
+    const inputs = options.nested('inputs')
+    const bindings = new Map<string, InputBinding>()
+    const params: Record<string, ParamSpec> = {}
+    for (const name of Object.keys(inputs.raw)) {
+      const { binding, spec } = parseInput(inputs.nested(name), graph)
+      bindings.set(name, binding)
+      params[name] = spec
+    }
+
+    return {
+      params,
+      pollIntervalMs: provider.pollIntervalMs,
+      async submit(values, ctx) {
+        const prompt = structuredClone(graph)
+        for (const [name, binding] of bindings) {
+          let value = values[name]
+          if (value === undefined && binding.random) value = randomInt(0, MAX_RANDOM_SEED)
+          if (value === undefined) continue
+          if (binding.type === 'image') value = await uploadImage(provider, value as string, ctx)
+          const node = prompt[binding.node]!
+          node.inputs = { ...node.inputs, [binding.field]: value }
+        }
+        const queued = await requestJson<{ prompt_id?: string; node_errors?: Record<string, unknown> }>(
+          ctx,
+          'ComfyUI 提交工作流',
+          `${provider.baseUrl}/prompt`,
+          { method: 'POST', headers: authHeaders(provider), body: { prompt, client_id: `shadecn-${randomUUID()}` } },
+        )
+        if (!queued.prompt_id) throw new AppError('upstream', 'ComfyUI 没有返回 prompt_id', queued.node_errors)
+        return { done: false, handle: { upstreamId: queued.prompt_id } }
+      },
+      async poll(handle, ctx) {
+        const promptId = handle.upstreamId
+        const history = await requestJson<Record<string, ComfyHistoryEntry>>(
+          ctx,
+          'ComfyUI 查询结果',
+          `${provider.baseUrl}/history/${encodeURIComponent(promptId)}`,
+          { headers: authHeaders(provider) },
+        )
+        const entry = history[promptId]
+        if (!entry) return { done: false, status: 'queued' }
+        if (entry.status?.status_str === 'error') throw new AppError('upstream', `ComfyUI 执行失败：${errorOf(entry)}`, { promptId })
+        if (!entry.status?.completed) return { done: false, status: 'running' }
+
+        const outputs: AppOutput[] = []
+        for (const [nodeId, nodeOutput] of Object.entries(entry.outputs ?? {})) {
+          if (outputNodes && !outputNodes.has(nodeId)) continue
+          for (const file of filesOf(nodeOutput)) {
+            const query = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder ?? '', type: file.type ?? 'output' })
+            const { data, contentType } = await requestBytes(ctx, 'ComfyUI 取产物', `${provider.baseUrl}/view?${query}`, {
+              maxBytes: maxOutputBytes,
+              headers: authHeaders(provider),
+            })
+            const guessed = fileTypeOf(file.filename)
+            outputs.push({
+              kind: guessed.kind,
+              data,
+              mimeType: guessed.mimeType ?? contentType,
+              meta: { node: nodeId, filename: file.filename },
+            })
+          }
+        }
+        if (outputs.length === 0) throw new AppError('upstream', 'ComfyUI 执行完了，但没有产物（工作流里有保存节点吗？）', { promptId })
+        return { done: true, value: { outputs, upstreamId: promptId } }
+      },
+      async cancel(handle, ctx) {
+        const headers = authHeaders(provider)
+        // 还在排队：从队列删掉；已经在跑：打断它（带 prompt_id，不打断别人的）
+        await requestOk(ctx, 'ComfyUI 取消排队', `${provider.baseUrl}/queue`, { method: 'POST', headers, body: { delete: [handle.upstreamId] } })
+        await requestOk(ctx, 'ComfyUI 打断执行', `${provider.baseUrl}/interrupt`, { method: 'POST', headers, body: { prompt_id: handle.upstreamId } })
+      },
+    }
+  },
+}
+
 export const comfyuiDriver = defineDriver<ComfyProvider>({
   type: 'comfyui',
   description: 'ComfyUI（按工作流出图 / 视频 / 3D）',
@@ -127,95 +216,5 @@ export const comfyuiDriver = defineDriver<ComfyProvider>({
       ...(apiKey ? { apiKey } : {}),
     }
   },
-  operations: {
-    workflow: {
-      description: '执行一份 API 格式的工作流',
-      // 模型在工作流里（Checkpoint 节点）：要让调用方选，就在 inputs 里把 ckpt_name 映射成带 enum 的参数
-      requiresModel: false,
-      prepare(options, provider, env) {
-        const file = path.resolve(env.appRoot, options.string('workflow', { required: true }))
-        const graph = loadWorkflow(file, options.at)
-        const category = options.oneOf('category', APP_CATEGORIES, { required: true })
-        const maxOutputBytes = options.integer('maxOutputMb', { default: DEFAULT_MAX_OUTPUT_MB })! * 1024 * 1024
-        const outputsList = options.list('outputs')
-        const missingNode = outputsList?.find((id) => !graph[id])
-        if (missingNode) throw new Error(`${options.at}：outputs 里的节点 ${missingNode} 不在工作流里`)
-        const outputNodes = outputsList ? new Set(outputsList) : null
-
-        const inputs = options.nested('inputs')
-        const bindings = new Map<string, InputBinding>()
-        const params: Record<string, ParamSpec> = {}
-        for (const name of Object.keys(inputs.raw)) {
-          const { binding, spec } = parseInput(inputs.nested(name), graph)
-          bindings.set(name, binding)
-          params[name] = spec
-        }
-
-        return {
-          category,
-          params,
-          pollIntervalMs: provider.pollIntervalMs,
-          async submit(values, ctx) {
-            const prompt = structuredClone(graph)
-            for (const [name, binding] of bindings) {
-              let value = values[name]
-              if (value === undefined && binding.random) value = randomInt(0, MAX_RANDOM_SEED)
-              if (value === undefined) continue
-              if (binding.type === 'image') value = await uploadImage(provider, value as string, ctx)
-              const node = prompt[binding.node]!
-              node.inputs = { ...node.inputs, [binding.field]: value }
-            }
-            const queued = await requestJson<{ prompt_id?: string; node_errors?: Record<string, unknown> }>(
-              ctx,
-              'ComfyUI 提交工作流',
-              `${provider.baseUrl}/prompt`,
-              { method: 'POST', headers: authHeaders(provider), body: { prompt, client_id: `shadecn-${randomUUID()}` } },
-            )
-            if (!queued.prompt_id) throw new AppError('upstream', 'ComfyUI 没有返回 prompt_id', queued.node_errors)
-            return { done: false, handle: { upstreamId: queued.prompt_id } }
-          },
-          async poll(handle, ctx) {
-            const promptId = handle.upstreamId
-            const history = await requestJson<Record<string, ComfyHistoryEntry>>(
-              ctx,
-              'ComfyUI 查询结果',
-              `${provider.baseUrl}/history/${encodeURIComponent(promptId)}`,
-              { headers: authHeaders(provider) },
-            )
-            const entry = history[promptId]
-            if (!entry) return { done: false, status: 'queued' }
-            if (entry.status?.status_str === 'error') throw new AppError('upstream', `ComfyUI 执行失败：${errorOf(entry)}`, { promptId })
-            if (!entry.status?.completed) return { done: false, status: 'running' }
-
-            const outputs: AppOutput[] = []
-            for (const [nodeId, nodeOutput] of Object.entries(entry.outputs ?? {})) {
-              if (outputNodes && !outputNodes.has(nodeId)) continue
-              for (const file of filesOf(nodeOutput)) {
-                const query = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder ?? '', type: file.type ?? 'output' })
-                const { data, contentType } = await requestBytes(ctx, 'ComfyUI 取产物', `${provider.baseUrl}/view?${query}`, {
-                  maxBytes: maxOutputBytes,
-                  headers: authHeaders(provider),
-                })
-                const guessed = fileTypeOf(file.filename)
-                outputs.push({
-                  kind: guessed.kind,
-                  data,
-                  mimeType: guessed.mimeType ?? contentType,
-                  meta: { node: nodeId, filename: file.filename },
-                })
-              }
-            }
-            if (outputs.length === 0) throw new AppError('upstream', 'ComfyUI 执行完了，但没有产物（工作流里有保存节点吗？）', { promptId })
-            return { done: true, value: { outputs, upstreamId: promptId } }
-          },
-          async cancel(handle, ctx) {
-            const headers = authHeaders(provider)
-            // 还在排队：从队列删掉；已经在跑：打断它（带 prompt_id，不打断别人的）
-            await requestOk(ctx, 'ComfyUI 取消排队', `${provider.baseUrl}/queue`, { method: 'POST', headers, body: { delete: [handle.upstreamId] } })
-            await requestOk(ctx, 'ComfyUI 打断执行', `${provider.baseUrl}/interrupt`, { method: 'POST', headers, body: { prompt_id: handle.upstreamId } })
-          },
-        }
-      },
-    },
-  },
+  operations: Object.fromEntries(APP_CATEGORIES.map((category) => [category, workflowOperation])),
 })

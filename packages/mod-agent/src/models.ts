@@ -1,61 +1,48 @@
 import { readFileSync } from 'node:fs'
 import { DEFAULT_AGENT_MODEL } from '@shadecn/agent/agents'
+import { resolveProviderModel, type EnvReader, type ProviderTable } from '@shadecn/agent/llm-providers'
 import {
   AGENT_THINKING_LEVELS,
   isAgentThinkingLevel,
-  resolveAgentModel,
-  type AgentModelOptions,
   type AgentThinkingLevel,
   type ModelResolution,
 } from '@shadecn/agent/model'
-import { platform } from '@shadecn/server-kit/platform'
 import { agentEnv } from './config.ts'
 import { agentPorts, lazySingleton } from './ports.ts'
 
 /**
  * 模型表（docs/26 §3.4）里 `default` 以外的项：读 {@link agentModelsFile}（默认 `<dataDir>/agent-models.json`，`MODULES_AGENT_MODELS_FILE` 可换）。
- * `default` 照旧来自 `MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` / …（`config.ts` 的 `agentConfig`，在 `agent/index.ts` 里解析）。
+ * `default` 来自 `MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` / `MODULES_AGENT_THINKING`（`config.ts` 的 `agentConfig`，在 `agent/index.ts` 里解析）。
  *
  * ```json
- * { "fast":   { "provider": "anthropic", "model": "claude-haiku-5-5", "apiKey": "$AGENT_FAST_KEY" },
- *   "vision": { "provider": "my-proxy", "model": "qwen-vl", "baseUrl": "https://…", "api": "openai-completions",
- *               "apiKey": "$AGENT_VISION_KEY", "imageInput": true, "contextWindow": 32768, "maxTokens": 4096, "thinking": "low" } }
+ * { "fast":   { "provider": "anthropic", "model": "claude-haiku-5-5" },
+ *   "vision": { "provider": "my-proxy", "model": "qwen-vl", "thinking": "low" } }
  * ```
  *
- * 解析文件、读环境变量是宿主的事（`@shadecn/agent/model` 只收显式的参数对象）。两类错误分开：
+ * **每一项只选「哪个提供方的哪个模型」**：`provider` 引用 `llm.providers` 的 key（或 pi 的内置提供方），地址、key、模型能力都在那边，
+ * 和 `default`、应用表的 `llm` 驱动走同一条解析（`@shadecn/agent/llm-providers` 的 `resolveProviderModel`）。两类错误分开：
  * - **文件本身不对 → 启动失败**（同 agent 定义，`definitions.ts` 在 import 时就读它）：不是合法 JSON、顶层不是对象、key 不合法、
- *   写了 `default`、不认识的字段、字段类型不对、`apiKey` 写了明文（**只认 `"$环境变量名"`**：密钥不进文件）；
+ *   写了 `default`、不认识的字段（连接信息写回这里也算，报错指向 `llm.providers`）、字段类型不对；
  *   定义里引用了表里没有的 key 由 `createAgentRegistry` 判，同样起不来；
  * - **某一项用不了 → 不是启动错误**：`$ENV` 引用的变量没设 / 为空、pi 注册表里没有、线协议不支持……解析结果记成不可用（带原因），
  *   启动时打一行 `[agent]` 警告；到有 agent 用它时才报（入口 agent 的 = 这一轮不开始，被调用的 = 那次 `run_agent` 返回错误）。
- * 不写 `apiKey` = 同 `default` 的退回规则：按提供方自己的环境变量（`config.ts` 的 `AGENT_PROVIDER_KEY_ENV`）。
  */
 
-/** 文件里的一项（`apiKey` 还是 `$NAME` 引用，没解析） */
+/** 文件里的一项 */
 export interface AgentModelSpec {
   provider: string
   model: string
-  baseUrl?: string
-  api?: string
-  /** 环境变量名（文件里写 `"$NAME"`）；不写 = 按提供方退回 */
-  apiKeyEnv?: string
-  imageInput?: boolean
-  /** 上下文窗口 / 单次最多输出（正整数）；不写 = 按注册表元数据，自建端点按保守默认（同 `default` 的 `MODULES_AGENT_CONTEXT_WINDOW` / `MODULES_AGENT_MAX_TOKENS`） */
-  contextWindow?: number
-  maxTokens?: number
   /** 请模型思考的等级；不写 = 不请求（同 `default` 的 `MODULES_AGENT_THINKING`） */
   thinking?: AgentThinkingLevel
 }
 
 /** 模型表的 key：同 agent 定义的 `name`（小写字母开头，小写字母、数字、`-`） */
 const MODEL_KEY_REGEX = /^[a-z][a-z0-9-]{0,47}$/
-/** `apiKey` 只能是环境变量引用 */
-const ENV_REF_REGEX = /^\$([A-Za-z_][A-Za-z0-9_]*)$/
 
-const STRING_FIELDS = ['provider', 'model', 'baseUrl', 'api', 'apiKey'] as const
-const INTEGER_FIELDS = ['contextWindow', 'maxTokens'] as const
-const KNOWN_FIELDS = new Set<string>([...STRING_FIELDS, 'imageInput', ...INTEGER_FIELDS, 'thinking'])
-const FIELD_LIST = 'provider / model / baseUrl / api / apiKey / imageInput / contextWindow / maxTokens / thinking'
+const KNOWN_FIELDS = new Set<string>(['provider', 'model', 'thinking'])
+const FIELD_LIST = 'provider / model / thinking'
+/** 这些字段搬去了 `llm.providers`：单独报，告诉人该写到哪（不回显值：`apiKey` 可能是明文） */
+const CONNECTION_FIELDS = new Set<string>(['baseUrl', 'api', 'apiKey', 'imageInput', 'contextWindow', 'maxTokens'])
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -74,21 +61,20 @@ export function parseAgentModelTable(text: string, filePath: string): Record<str
   for (const [key, value] of Object.entries(parsed)) {
     const at = `${where} 的「${key}」`
     if (key === DEFAULT_AGENT_MODEL) {
-      throw new Error(`${at}：${DEFAULT_AGENT_MODEL} 不能写在文件里，它来自 ${agentEnv('provider')} / ${agentEnv('model')} / ${agentEnv('baseUrl')} / ${agentEnv('api')} / ${agentEnv('apiKey')}`)
+      throw new Error(`${at}：${DEFAULT_AGENT_MODEL} 不能写在文件里，它来自 ${agentEnv('provider')} / ${agentEnv('model')}`)
     }
     if (!MODEL_KEY_REGEX.test(key)) throw new Error(`${at}：key 不合法（小写字母开头，只能有小写字母、数字、-，最长 48）`)
     if (!isRecord(value)) throw new Error(`${at}：必须是对象（${FIELD_LIST}）`)
+    const connection = Object.keys(value).filter((field) => CONNECTION_FIELDS.has(field))
+    if (connection.length > 0) {
+      throw new Error(`${at}：${connection.join('、')} 不写在模型表里 —— 连接信息在 llm.providers（docs/26 §3.4），这里只认 ${FIELD_LIST}`)
+    }
     const unknown = Object.keys(value).filter((field) => !KNOWN_FIELDS.has(field))
     if (unknown.length > 0) {
       throw new Error(`${at}：不认识的字段 ${unknown.join('、')}（只认 ${FIELD_LIST}）`)
     }
-    for (const field of STRING_FIELDS) {
+    for (const field of ['provider', 'model'] as const) {
       if (value[field] !== undefined && typeof value[field] !== 'string') throw new Error(`${at}：${field} 必须是字符串`)
-    }
-    if (value.imageInput !== undefined && typeof value.imageInput !== 'boolean') throw new Error(`${at}：imageInput 必须是 true / false`)
-    for (const field of INTEGER_FIELDS) {
-      const raw = value[field]
-      if (raw !== undefined && !(typeof raw === 'number' && Number.isInteger(raw) && raw > 0)) throw new Error(`${at}：${field} 必须是正整数`)
     }
     if (value.thinking !== undefined && !isAgentThinkingLevel(value.thinking)) {
       throw new Error(`${at}：thinking 只能是 ${AGENT_THINKING_LEVELS.join(' / ')}`)
@@ -97,22 +83,9 @@ export function parseAgentModelTable(text: string, filePath: string): Record<str
     const model = (value.model as string | undefined)?.trim() ?? ''
     if (!provider) throw new Error(`${at}：缺少 provider`)
     if (!model) throw new Error(`${at}：缺少 model`)
-    let apiKeyEnv: string | undefined
-    if (value.apiKey !== undefined) {
-      const ref = ENV_REF_REGEX.exec((value.apiKey as string).trim())
-      // 不把写错的值打进报错：它可能就是一把明文 key
-      if (!ref) throw new Error(`${at}：apiKey 只能写成 "$环境变量名"（密钥不进文件），不写则按提供方的环境变量`)
-      apiKeyEnv = ref[1]!
-    }
     table[key] = {
       provider,
       model,
-      ...(typeof value.baseUrl === 'string' && value.baseUrl.trim() ? { baseUrl: value.baseUrl.trim() } : {}),
-      ...(typeof value.api === 'string' && value.api.trim() ? { api: value.api.trim() } : {}),
-      ...(apiKeyEnv ? { apiKeyEnv } : {}),
-      ...(typeof value.imageInput === 'boolean' ? { imageInput: value.imageInput } : {}),
-      ...(typeof value.contextWindow === 'number' ? { contextWindow: value.contextWindow } : {}),
-      ...(typeof value.maxTokens === 'number' ? { maxTokens: value.maxTokens } : {}),
       ...(isAgentThinkingLevel(value.thinking) ? { thinking: value.thinking } : {}),
     }
   }
@@ -132,39 +105,24 @@ export function loadAgentModelTable(filePath: string): Record<string, AgentModel
 }
 
 /**
- * 每一项解析成模型（同 `default` 的解析：`resolveAgentModel`）：`$ENV` 换成环境变量的值，没写 `apiKey` 按提供方的环境变量退回。
- * 用不了的项是 `{ ok: false, reason }`，不抛 —— 不可用不是启动错误（见文件头）
+ * 每一项解析成模型（和 `default` 同一条路：`resolveProviderModel`）。用不了的项是 `{ ok: false, reason }`，不抛 —— 不可用不是启动错误（见文件头）。
+ * 提供方表和环境变量没给就经端口读（测试直接给）
  */
 export function resolveAgentModelTable(
   specs: Readonly<Record<string, AgentModelSpec>>,
-  env?: Readonly<Record<string, string | undefined>>,
+  options: { table?: ProviderTable; envVar?: EnvReader } = {},
 ): Record<string, ModelResolution> {
-  // 没给就经平台读：模型表里引用的变量名是写表的人定的，不在任何配置 schema 里
-  const read = (name: string) => (env ? env[name] : platform().runtime.envVar(name))
+  const providers = options.table ?? agentPorts().llmProviders
+  const envVar = options.envVar ?? agentPorts().envVar
   const table: Record<string, ModelResolution> = {}
   for (const [key, spec] of Object.entries(specs)) {
-    let apiKey: string
-    if (spec.apiKeyEnv !== undefined) {
-      apiKey = read(spec.apiKeyEnv)?.trim() ?? ''
-      if (!apiKey) {
-        table[key] = { ok: false, reason: `apiKey 引用的环境变量 ${spec.apiKeyEnv} 没有设置` }
-        continue
-      }
-    } else {
-      apiKey = agentPorts().providerApiKey(spec.provider, env)
-    }
-    const options: AgentModelOptions = {
+    table[key] = resolveProviderModel({
+      table: providers,
       provider: spec.provider,
       model: spec.model,
-      ...(spec.baseUrl !== undefined ? { baseUrl: spec.baseUrl } : {}),
-      ...(spec.api !== undefined ? { api: spec.api } : {}),
-      apiKey,
-      ...(spec.imageInput !== undefined ? { imageInput: spec.imageInput } : {}),
-      ...(spec.contextWindow !== undefined ? { contextWindow: spec.contextWindow } : {}),
-      ...(spec.maxTokens !== undefined ? { maxTokens: spec.maxTokens } : {}),
+      envVar,
       ...(spec.thinking !== undefined ? { thinking: spec.thinking } : {}),
-    }
-    table[key] = resolveAgentModel(options)
+    })
   }
   return table
 }

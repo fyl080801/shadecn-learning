@@ -32,7 +32,7 @@ describe('isApiPath()', () => {
   })
 })
 
-describe('agentProviderApiKey()：没配 MODULES_AGENT_API_KEY 时按提供方退回的环境变量', () => {
+describe('agentProviderApiKey()：llm.providers 没写 apiKey 时按提供方退回的环境变量', () => {
   it('常用提供方读各自的变量', () => {
     expect(agentProviderApiKey('anthropic', { ANTHROPIC_API_KEY: 'sk-ant' })).toBe('sk-ant')
     expect(agentProviderApiKey('openai', { OPENAI_API_KEY: 'sk-oai' })).toBe('sk-oai')

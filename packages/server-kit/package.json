@@ -12,6 +12,7 @@
     "./access": "./src/access.ts",
     "./http": "./src/http.ts",
     "./config": "./src/config.ts",
+    "./llm": "./src/llm.ts",
     "./db": "./src/db.ts",
     "./identity": "./src/identity.ts",
     "./platform": "./src/platform.ts"

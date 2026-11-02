@@ -27,6 +27,7 @@ import {
   NODE_PROMPT_KEY,
   nodeFormOf,
   nodeSizeOf,
+  portsOf,
   readGenerations,
   resolveConnection,
   type ConnectionContext,
@@ -300,6 +301,21 @@ export function recordGeneration(
     set: { ...seed, [collectionKey(NODE_GENERATION_PREFIX, generation.id)]: entry },
   })
   return form
+}
+
+/**
+ * 记下一次文字生成的结果：写进节点的 `data.text`（只有输出文字的节点类型才收，否则返回 `false`、什么都不写）。
+ * 只有服务端写回生成结果时调。**节点上已有非空正文就接在后面**（空一行）：生成期间有人写了字不能被盖掉，
+ * 而服务端的写回不进任何人的撤销栈，盖掉了也撤不回来。文字节点没有生成历史。
+ */
+export function appendGeneratedText(ctx: FlowOpContext, nodeId: string, text: string): boolean {
+  const node = requireNodeRecord(ctx, nodeId)
+  if (portsOf(node.type, 'outputs')[0]?.dataType !== 'text') return false
+  const generated = text.trim()
+  if (!generated) return false
+  const current = typeof node.data.text === 'string' ? node.data.text.trimEnd() : ''
+  writeNodeFields(ctx, nodeId, 'data', { set: { text: current.trim() ? `${current}\n\n${generated}` : generated } })
+  return true
 }
 
 /**

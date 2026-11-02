@@ -1,3 +1,4 @@
+import type { LlmProviderTable } from '@shadecn/server-kit/llm'
 import type { AppCategory, AppOutput, AppProgress, AppUsage, ParamSchema, ParamSpec, TaskHandle } from './contract.ts'
 
 export type { TaskHandle } from './contract.ts'
@@ -11,16 +12,18 @@ export type { TaskHandle } from './contract.ts'
  * - 请求上游 —— `http.ts`；轮询的循环、间隔、时限 —— 执行层（驱动只「查一次」，见 {@link PreparedApp.poll}）。
  *
  * 驱动只回答三件事：提供方实例要哪些字段（`parseProvider`）、有哪些操作（`operations`）、
- * 每个操作在某个应用的 `options` 下收哪些参数、怎么把参数变成上游请求再把回包变成 {@link AppOutput}（`prepare` → `run`）。
- * 一个操作可以服务很多模型：驱动只给基础参数表，模型之间的差异写在应用表的 `models` 段（docs/29 §3.7），由执行层套用。
+ * 每个操作在某个应用的 `options` 下收哪些参数、怎么把参数变成上游请求再把回包变成 {@link AppOutput}（`prepare` → `submit`）。
+ * 操作的键就是应用的类别（`type`）。一个操作可以服务很多模型：驱动只给基础参数表，每个模型的差异写在 `apps` 条目的 `params` 里（docs/29 §3.7），由执行层套用。
  */
 
-/** 驱动能拿到的运行环境：只有这两样，驱动不读 `process.env`、不 import 平台 */
+/** 驱动能拿到的运行环境：只有这几样，驱动不读 `process.env`、不 import 平台 */
 export interface DriverEnv {
   /** 读 `$ENV` 引用的环境变量（名字由写应用表的人定，不在配置 schema 里） */
   envVar(name: string): string | undefined
-  /** 应用根目录：应用表里的相对路径（ComfyUI 的工作流文件）按它算 */
+  /** 应用根目录：配置里的相对路径（ComfyUI 的工作流文件）按它算 */
   appRoot: string
+  /** 语言服务提供方（配置的 `llm.providers`，平台的 `runtime.llmProviders`）：`llm` 驱动引用它，有模型的提供方自动成为 text 类应用（`llm-apps.ts`） */
+  llmProviders: LlmProviderTable
 }
 
 /** 执行时交给驱动的上下文 */
@@ -45,20 +48,18 @@ export type Submission = { done: true; output: RunOutput } | { done: false; hand
 export type PollStep<T> = { done: true; value: T } | ({ done: false } & AppProgress)
 
 /**
- * 一个应用在启动时准备好的样子：类别、基础参数表、执行函数（已经绑定了提供方实例和应用的 `options`）。
- * 用哪个模型、这个模型的参数表长什么样由执行层按模型档案算好（docs/29 §3.7），`run` 拿到的是定下来的模型和校验过的参数。
+ * 一个应用在启动时准备好的样子：基础参数表、执行函数（已经绑定了提供方实例和应用的 `options`）。类别就是操作的键。
+ * 模型和最终的参数表由执行层按条目算好（docs/29 §3.7），`submit` 拿到的是条目上的模型和校验过的参数。
  */
 export interface PreparedApp {
-  category: AppCategory
-  /** 基础参数表：模型档案在它之上改 */
+  /** 基础参数表：条目的 `params` 在它之上改 */
   params: ParamSchema
   /**
-   * 启动时对应用列出的每个模型问一次：这个模型现在用得了吗（LLM 驱动在这里解析模型）。用不了回原因，
-   * 这个模型标成不可用，不连累同一应用里的其他模型。不给 = 都用得了
+   * 启动时问一次：条目上的模型现在用得了吗（LLM 驱动在这里解析模型）。用不了回原因，这个应用标成不可用（不是启动错误）。不给 = 用得了
    */
   checkModel?(model: string): string | null
   /**
-   * 提交：`values` 已按这个模型的参数表校验、补齐默认值；`model` 是定下来的模型（不要模型的操作是 undefined）。
+   * 提交：`values` 已按这一项的参数表校验、补齐默认值；`model` 是条目上的模型（不要模型的操作是 undefined）。
    * 同步上游直接回 `{ done: true, output }`；任务型上游建好任务就回 `{ done: false, handle }`，之后由执行层调 {@link poll}
    */
   submit(values: Readonly<Record<string, unknown>>, ctx: RunContext, model: string | undefined): Promise<Submission>
@@ -73,13 +74,13 @@ export interface PreparedApp {
 /**
  * 参数表的改动：每一项要么是对该参数的部分覆盖（和基础说明合并，`enum` 等数组整个替换），
  * 要么是 `null` = 这个模型没有这个参数（调用方传了会报「不认识的参数」，列表里也不出现）。
- * 也可以加基础参数表里没有的参数（那时必须给 `type`）。**模型的参数差异只写在应用表里**（`models` 段），驱动不认识具体模型
+ * 也可以加基础参数表里没有的参数（那时必须给 `type`）。**模型的参数差异只写在配置里**（`apps` 条目的 `params`），驱动不认识具体模型
  */
 export type ParamPatch = Readonly<Record<string, Partial<ParamSpec> | null>>
 
 export interface Operation<Provider> {
   description: string
-  /** 应用要不要写 `model`。默认要；ComfyUI 不要（模型在工作流里，要选就映射成参数） */
+  /** 条目要不要写 `model`。默认要；ComfyUI 不要（模型在工作流里，要选就映射成参数），条目改写 `id` */
   requiresModel?: boolean
   /** 读应用的 `options`（驱动特有的配置）。形状不对抛 Error；配置对但现在用不了记 {@link Fields.unavailable}、照常返回 */
   prepare(options: Fields, provider: Provider, env: DriverEnv): PreparedApp
@@ -91,7 +92,8 @@ export interface ProviderDriver<Provider = unknown> {
   readonly description: string
   /** 读提供方实例的字段（`type` 之外的）。形状不对抛 Error；配置对但现在用不了记 {@link Fields.unavailable}、照常返回 */
   parseProvider(fields: Fields, env: DriverEnv): Provider
-  readonly operations: Readonly<Record<string, Operation<Provider>>>
+  /** 键是类别：条目的 `type` 选的就是它。能做哪几类就有哪几个键 */
+  readonly operations: Readonly<Partial<Record<AppCategory, Operation<Provider>>>>
 }
 
 /** 只做类型约束：注册表里的驱动各自的提供方类型不同，执行层按 unknown 看待 */
@@ -116,7 +118,7 @@ interface FieldOptions<T> {
 
 /**
  * 一段配置对象的读取器：每读一个字段就记一笔，最后 {@link Fields.done} 把没读过的字段当「不认识」报出来 ——
- * 拼错的键悄悄不生效是最难查的配置错误。报错都带上位置（`应用表 x 的 providers.ark`）。
+ * 拼错的键悄悄不生效是最难查的配置错误。报错都带上位置（`modules.apps.providers.ark`）。
  */
 export class Fields {
   private readonly seen = new Set<string>()

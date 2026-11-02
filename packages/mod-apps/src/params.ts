@@ -7,7 +7,7 @@ import type { Fields, ParamPatch } from './driver.ts'
  * 驱动里不再判「prompt 是不是字符串」。不认识的参数也报错（拼错的参数悄悄被忽略，生成出来的东西不对还查不出为什么）。
  */
 
-/** 单个值的校验和前端是同一份（`@shadecn/shared/apps`）：前端的尺寸选择器据此判「这个值对这个模型合不合」 */
+/** 单个值的校验和前端是同一份（`@shadecn/shared/apps`）：前端的尺寸选择器据此判「这个值对这个应用合不合」 */
 const checkOne = checkParamValue
 
 /** 空值：没给、null、空串、空数组都当没给（表单提交上来的空输入框不该算「给了一个空 prompt」） */
@@ -83,7 +83,7 @@ export function publicParams(schema: ParamSchema, defaults: Readonly<Record<stri
   return out
 }
 
-/** 从配置里读一条参数说明的部分字段（模型档案的覆盖用）：没写的字段不出现 */
+/** 从配置里读一条参数说明的部分字段（条目 `params` 的覆盖用）：没写的字段不出现 */
 export function readPartialSpec(fields: Fields): Partial<ParamSpec> {
   const spec: Partial<ParamSpec> = {}
   const type = fields.oneOf('type', PARAM_TYPES)
@@ -156,9 +156,4 @@ export function applyParamPatch(schema: ParamSchema, patch: ParamPatch | undefin
     out[name] = { ...base, ...change } as ParamSpec
   }
   return out
-}
-
-/** 只留参数表里有的那些默认值（某个模型去掉了一个参数，应用表里给它的默认值对这个模型不生效） */
-export function defaultsFor(schema: ParamSchema, defaults: Readonly<Record<string, unknown>>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(defaults).filter(([name]) => name in schema))
 }

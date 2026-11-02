@@ -48,19 +48,6 @@ export interface ParamSpec {
 
 export type ParamSchema = Readonly<Record<string, ParamSpec>>
 
-/** 多模型应用里选模型的那个参数名：执行层统一加，驱动的参数表里不能有它 */
-export const MODEL_PARAM = 'model'
-
-/** 应用里的一个模型（docs/29 §3.7）：参数表按模型档案算好 */
-export interface AppModelInfo {
-  id: string
-  title?: string
-  /** 选了这个模型时的参数表（不含 `model` 本身） */
-  params: ParamSchema
-  /** 这个模型现在用不了的原因 */
-  unavailable?: string
-}
-
 /** `GET /api/apps` 的一项：给调用方看的应用信息（不含提供方地址、密钥、驱动内部配置） */
 export interface AppInfo {
   id: string
@@ -69,16 +56,11 @@ export interface AppInfo {
   category: AppCategory
   /** 驱动类型（`ark` / `comfyui` / `ollama`…），给人看的 */
   driver: string
-  /**
-   * 默认模型下的参数表。应用列了不止一个模型时多一个 {@link MODEL_PARAM}（`enum` = 可选的模型，`default` = 默认模型）；
-   * 换了模型要按 {@link models} 里那一项的 `params` 渲染 / 校验
-   */
+  /** 这个应用的模型（给人看的）；不要模型的操作（如 ComfyUI）没有 */
+  model?: string
+  /** 参数表：驱动的基础表 + 条目的 `params`，`default` 已合进条目的 `defaults` */
   params: ParamSchema
-  /** 应用的模型（不要模型的操作 —— 如 ComfyUI —— 是空数组） */
-  models: AppModelInfo[]
-  /** 没传 `model` 时用的模型 */
-  defaultModel?: string
-  /** 不可用的原因（缺密钥、所有模型都用不了…）；可用 = 不带 */
+  /** 不可用的原因（缺密钥、模型解析不了…）；可用 = 不带 */
   unavailable?: string
 }
 
@@ -205,14 +187,6 @@ export function sizeValueOf(spec: ParamSpec, tier: string, ratio: string | null)
   return index >= 0 ? (spec.presets?.[ratio]?.[index] ?? null) : null
 }
 
-/** 这个应用在某个模型下的参数表（没有这个模型 / 不要模型 = 默认的那份，不含 `model` 本身） */
-export function appParamsFor(app: AppInfo, model: string | undefined): ParamSchema {
-  const found = model ? app.models.find((item) => item.id === model) : undefined
-  if (found) return found.params
-  const { [MODEL_PARAM]: _model, ...rest } = app.params
-  return rest
-}
-
 /** 节点交给应用的输入：提示词 + 连进来的参考图（按连入顺序） */
 export interface NodeAppInputs {
   prompt: string
@@ -229,26 +203,23 @@ export interface NodeAppParams {
  * 画布节点的输入 → 应用参数（docs/29 §3.8）。按参数表认，不按驱动认：
  * - 提示词进 `prompt`（参数表里有才放；空串不放，交给校验报「缺少参数」）；
  * - 参考图进参数表里**第一个** `images` 参数（截到 `maxLength`）；没有 `images` 就进第一个 `image` 参数（只放第一张）；
- * - 选了模型且应用是多模型的，带上 {@link MODEL_PARAM}；
- * - `overrides`：节点上单独设的其余参数（`data` 里 `appParam.<名字>` 那些，如尺寸），只带这个模型有、值也合说明的。
+ * - `overrides`：节点上单独设的其余参数（`data` 里 `appParam.<名字>` 那些，如尺寸），只带这个应用有、值也合说明的。
  * 应用要求但节点给不了的参数（比如必填的图）不在这里补 —— 服务端的校验会给出准确的那句话。
  */
 export function nodeAppParams(
   app: AppInfo,
-  model: string | undefined,
   inputs: NodeAppInputs,
   overrides: Readonly<Record<string, unknown>> = {},
 ): NodeAppParams {
-  const schema = appParamsFor(app, model)
+  const schema = app.params
   const params: Record<string, unknown> = {}
-  // 节点上单独设的参数（尺寸…）：这个模型有这个参数、值也合它的说明才带上 —— 换了模型、旧值不合的，退回应用的默认
+  // 节点上单独设的参数（尺寸…）：这个应用有这个参数、值也合它的说明才带上 —— 换了应用、旧值不合的，退回应用的默认
   for (const [name, value] of Object.entries(overrides)) {
     const spec = schema[name]
     if (spec && name !== 'prompt' && spec.type !== 'image' && spec.type !== 'images' && checkParamValue(name, spec, value) === null) {
       params[name] = value
     }
   }
-  if (model && MODEL_PARAM in app.params) params[MODEL_PARAM] = model
   const prompt = inputs.prompt.trim()
   if (prompt && schema.prompt?.type === 'string') params.prompt = prompt
 

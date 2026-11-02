@@ -120,9 +120,6 @@ importers:
       '@shadecn/mod-collab':
         specifier: workspace:*
         version: link:../../packages/mod-collab
-      '@shadecn/mod-notes':
-        specifier: workspace:*
-        version: link:../../packages/mod-notes
       '@shadecn/mod-storage':
         specifier: workspace:*
         version: link:../../packages/mod-storage
@@ -489,21 +486,6 @@ importers:
       yjs:
         specifier: ^13.6.32
         version: 13.6.32
-
-  packages/mod-notes:
-    devDependencies:
-      '@shadecn/server-kit':
-        specifier: workspace:*
-        version: link:../server-kit
-      '@types/node':
-        specifier: ^24.10.1
-        version: 24.12.0
-      hono:
-        specifier: ^4.13.2
-        version: 4.13.2
-      typescript:
-        specifier: ~5.9.3
-        version: 5.9.3
 
   packages/mod-storage:
     devDependencies:

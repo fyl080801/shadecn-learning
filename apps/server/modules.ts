@@ -3,7 +3,6 @@ import apps from '@shadecn/mod-apps'
 import auth from '@shadecn/mod-auth'
 import canvas from '@shadecn/mod-canvas'
 import collab from '@shadecn/mod-collab'
-import notes from '@shadecn/mod-notes'
 import storage from '@shadecn/mod-storage'
 import type { AnyServerModule } from '@shadecn/server-kit/kernel'
 
@@ -14,4 +13,4 @@ import type { AnyServerModule } from '@shadecn/server-kit/kernel'
  * 清单是静态的：产物由 esbuild 打包，不能按配置文件里写的包名动态 import；配置只负责开关（`modules.<name>.enabled`）。
  * 顺序不重要 —— 内核按依赖排序。
  */
-export const modules: readonly AnyServerModule[] = [auth, canvas, storage, collab, agent, notes, apps]
+export const modules: readonly AnyServerModule[] = [auth, canvas, storage, collab, agent, apps]

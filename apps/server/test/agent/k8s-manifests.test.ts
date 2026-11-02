@@ -203,7 +203,7 @@ describe('k8s 清单：服务端 Deployment（dev 形态）', () => {
     ])
     // S3：env 里只许有上限这一项（其余来自 shadecn-learning-s3 那对 ConfigMap / Secret；MODULES_STORAGE_KEY_PREFIX 空串 = 桶根，和不配不同，所以哪儿都不写）
     expect(Object.keys(serverEnv).filter((name) => name.startsWith('MODULES_STORAGE_'))).toEqual(['MODULES_STORAGE_MAX_UPLOAD_MB'])
-    for (const name of ['MODULES_AGENT_PROVIDER', 'MODULES_AGENT_MODEL', 'MODULES_AGENT_BASE_URL', 'MODULES_AGENT_API', 'MODULES_AGENT_IMAGE_INPUT', 'MODULES_AGENT_API_KEY', 'MODULES_AGENT_TOKEN_SECRET']) {
+    for (const name of ['LLM_PROVIDERS', 'MODULES_AGENT_PROVIDER', 'MODULES_AGENT_MODEL', 'MODULES_AGENT_API_KEY', 'MODULES_AGENT_TOKEN_SECRET']) {
       expect(serverEnv[name], name).toBeUndefined()
     }
   })

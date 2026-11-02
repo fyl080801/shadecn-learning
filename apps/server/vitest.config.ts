@@ -74,10 +74,9 @@ export default defineConfig({
        */
       MODULES_AGENT_PROVIDER: 'anthropic',
       MODULES_AGENT_MODEL: 'claude-sonnet-4-6',
-      MODULES_AGENT_BASE_URL: '',
-      MODULES_AGENT_API: '',
-      MODULES_AGENT_API_KEY: '',
       MODULES_AGENT_SANDBOX_DRIVER: '',
+      /** 语言服务提供方：开发者 .env 里那份不能漏进来（它会让应用模块整个启用、改变 agent 的模型解析） */
+      LLM_PROVIDERS: '',
       /**
        * 模型表文件（docs/26 §3.4）默认在 `<dataDir>/agent-models.json`，测试的 dataDir 是仓库的 `data/` ——
        * 开发者自己配的那份不能漏进来（坏了整轮测试起不来，多了 key 改变定义校验）。指到每次清空的 data/test 下，即「没有文件」
@@ -97,10 +96,9 @@ export default defineConfig({
       MODULES_STORAGE_SECRET_ACCESS_KEY: 'test-sk',
       MODULES_STORAGE_KEY_PREFIX: 'canvas',
       /**
-       * 应用表（docs/29 §3.3）默认在 `<dataDir>/apps.yaml`：开发者自己那份不能漏进来。指到每次清空的 data/test 下，即「没有文件」→ 模块不加载；
-       * 要测应用接口的用例（`test/routes/apps.test.ts`）stubEnv 指到 `test/fixtures/apps.yaml` 再重建 app
+       * 应用在配置段 `modules.apps` 里（docs/29 §3.3）：这里没有配置文件（`SERVER_CONFIG` 是空串），也就没有应用 → 模块不加载；
+       * 要测应用接口的用例 `helpers/apps-config.ts` 的 `stubAppsConfig()` 配上，再重建 app
        */
-      MODULES_APPS_FILE: 'data/test/apps.yaml',
       MODULES_APPS_TIMEOUT_MS: '',
     },
   },

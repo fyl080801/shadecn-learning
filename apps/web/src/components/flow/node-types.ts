@@ -120,13 +120,17 @@ export function defineNodeType(
 }
 
 /**
- * 底部输入框（按类型注册）。文本**有了正文就收起**（`hasNodeResource`）：输入框是「还没有内容时描述想要什么」用的。
+ * 底部输入框（按类型注册）。文本**有了正文就收起**（`hasNodeResource`）：输入框是「还没有内容时描述想要什么」用的；
+ * 例外是生成失败时（生成期间有人写了字）：`runtime` 只有执行副本写，重新生成是清掉错误的唯一办法，所以输入框要留着。
  * 图片 / 视频看**形态**（`nodeFormOf`）：generate 一直有（哪怕已经放了一张图），asset（独立素材）没有。导演台一直有。
  *
- * 眼下只到「写进 `data.prompt`、Shift+回车发 `composer:submit`」为止 —— 没有谁接这个事件，提交不会触发任何运行。
+ * 文本 / 图片 / 视频的输入框旁边是选应用的 `AppPicker`，Shift+回车 = 用选中的应用生成（`runnable` + `app-run`，docs/29 §3.8）。
  */
 const whenEmpty = (part: Parameters<typeof definePromptComposerPart>[0]) =>
-  definePromptComposerPart({ ...part, when: (ctx) => !hasNodeResource(ctx.type, ctx.node.data.value) })
+  definePromptComposerPart({
+    ...part,
+    when: (ctx) => !hasNodeResource(ctx.type, ctx.node.data.value) || ctx.node.runtime.value.status === "error"
+  })
 
 const whenGenerate = (part: Parameters<typeof definePromptComposerPart>[0]) =>
   definePromptComposerPart({ ...part, when: (ctx) => nodeFormOf(ctx.type, ctx.node.data.value) === "generate" })
@@ -175,6 +179,7 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
    * 文本 —— body 是一个输入框样子的正文区（`TextBody`，正文按 Markdown 渲染；双击就地编辑原文，失焦提交一次），
    * 正文在 `data.text`。右上角（角标区）一枚「弹出编辑」按钮：盖一层 backdrop、在面板里编辑原文 + 实时预览
    * （`popup/`，docs/21 §4.10）；正在双击就地编辑时这枚按钮收起（两种编辑不同时露出入口）。只有输出：文本是源头。
+   * 还没有正文时底部有输入框：描述想写的内容，用语言服务生成（`runnable` + `app-run`，docs/29 §3.8），结果由服务端写进 `data.text`。没有生成历史。
    *
    * **可拉伸**（`resizable`，右下角一个手柄，自由拉伸、Shift 锁比例）。尺寸的三种情况都由这一串 class 接住：
    * - 没拉过（布局里没有 width / height，Vue Flow 的外层不定宽高）：宽 320、高随内容、至少 120；
@@ -191,9 +196,9 @@ export const FLOW_NODE_TYPES: Record<string, FlowNodeTypeDef> = {
       fallbackLabel: "文本",
       resize: { minWidth: 160, minHeight: 120 }
     },
-    features: [...COMPOSER_FEATURES, "edit-body", "resizable"],
+    features: [...COMPOSER_FEATURES, "runnable", "app-run", "edit-body", "resizable"],
     parts: [
-      whenEmpty({ id: "text.composer", placeholder: "描述想写的内容（Shift+回车发送）" }),
+      whenEmpty({ id: "text.composer", placeholder: "描述想写的内容（Shift+回车生成）", controls: markRaw(AppPicker) }),
       popupOpenPart({
         id: "text.open-editor",
         event: TEXT_OPEN_EDITOR_EVENT,

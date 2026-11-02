@@ -5,7 +5,7 @@ import { moduleConfigSchema, type AnyServerModule } from '@shadecn/server-kit/ke
 import { appRoot } from './runtime.ts'
 
 /**
- * 运行时数据目录：SQLite 库、配置文件、应用表、模型表都放这儿，整个目录已 gitignore。
+ * 运行时数据目录：SQLite 库、配置文件、模型表都放这儿，整个目录已 gitignore。
  * DATA_DIR 可覆盖（相对路径按应用根目录算，绝对路径直接用），容器里就是靠它指到挂载卷上。
  *
  * **只认环境变量（含 `.env`），不进配置文件的 schema**：配置文件就在这个目录里，读它之前必须已经知道目录在哪。
@@ -52,6 +52,10 @@ export const coreConfigSchema = {
     http: setting('string', 'api / all / off'),
     slowMs: setting('number'),
     slowQueryMs: setting('number'),
+  },
+  /** 语言服务提供方（形状照 pi 的 models.json，校验在 `@shadecn/server-kit/llm`）；agent 和应用表都引用它 */
+  llm: {
+    providers: setting('json', '提供方 id → { name, baseUrl, api, apiKey, models }'),
   },
 } satisfies ConfigSchema
 

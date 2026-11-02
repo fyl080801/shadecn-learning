@@ -98,25 +98,28 @@ model: default                                          # 可省略 = default
 
 ### 3.4 模型
 
-- 服务端配置一张**模型表**：每项一个 key，内容同 `AgentModelOptions`（provider / model / baseUrl / api / apiKey / imageInput / contextWindow / maxTokens / thinking）。
-  `contextWindow` / `maxTokens` 不写按 pi 注册表的元数据，注册表里没有的（自建端点、ollama）按保守默认 128000 / 8192；`default` 用 `MODULES_AGENT_CONTEXT_WINDOW` / `MODULES_AGENT_MAX_TOKENS`。
-  `maxTokens` 必须小于 `contextWindow`，否则这一项不可用（同解析不出来的模型）。
+- **语言服务的连接信息在配置的 `llm.providers`**（[REQ-MODULES §3.3](28-server-modules.md)，形状是 pi `models.json` 的子集）：地址、线协议、key、模型能力（`input` / `reasoning` / `contextWindow` / `maxTokens`）只写在那一处，
+  agent 和应用表（[REQ-APPS §4.3](29-apps.md)）都引用它、走同一条解析（`@shadecn/agent/llm-providers` 的 `resolveProviderModel`）：
+  - **表里有这个提供方**：连接信息照表里的。`apiKey: $NAME` 写了只认那个环境变量（没设 = 不可用，不再退回）；没写 = 按提供方自己的环境变量退回（`ANTHROPIC_API_KEY` 这类）。
+    `models` 非空时模型要在列表里，或者是 pi 注册表认得的 id；`models` 为空不限模型（只换地址 / key）；
+  - **表里没有**：同 pi 的内置提供方，`provider` + `model` 走注册表 / 预设（`anthropic`、`ollama`），key 按提供方退回。
+  - `contextWindow` / `maxTokens` 不写按 pi 注册表的元数据，注册表里没有的（自建端点、ollama）按保守默认 128000 / 8192；`maxTokens` 必须小于 `contextWindow`，否则这一项不可用（同解析不出来的模型）。
+    `input` 不写按注册表，自建端点只吃文字。
+- 服务端配置一张**模型表**：每项一个 key，只选「哪个提供方的哪个模型」（`provider` / `model` / `thinking`）。
   `thinking` 是请模型思考的等级（`minimal` / `low` / `medium` / `high` / `xhigh`），不写 = 不请求；写了不认识的值文件就不合法（启动失败）。
   `default` 用 `MODULES_AGENT_THINKING`（写错了只警告、当没配，不让 agent 整个关掉）。思考怎么显示见 docs/20 §3.10.13。
-  - **`default`** 就是 `MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` / `MODULES_AGENT_BASE_URL` / `MODULES_AGENT_API` / `MODULES_AGENT_API_KEY` / `MODULES_AGENT_IMAGE_INPUT`（行为不变，含没给 key 时按提供方自己的环境变量退回）；
+  - **`default`** 就是 `MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` / `MODULES_AGENT_THINKING`；
   - **其余的项**在一个 JSON 文件里，默认 `<DATA_DIR>/agent-models.json`（不在仓库里），`MODULES_AGENT_MODELS_FILE` 可换路径（相对路径按应用根目录算；k8s 上可以挂一个 ConfigMap 文件）。
     文件不存在 = 模型表只有 `default`：
 
     ```json
-    { "fast":   { "provider": "anthropic", "model": "claude-haiku-4-5", "apiKey": "$AGENT_FAST_KEY" },
-      "vision": { "provider": "my-proxy", "model": "qwen-vl", "baseUrl": "https://llm.internal/v1",
-                  "api": "openai-completions", "apiKey": "$AGENT_VISION_KEY", "imageInput": true } }
+    { "fast":   { "provider": "anthropic", "model": "claude-haiku-4-5" },
+      "vision": { "provider": "my-proxy", "model": "qwen-vl", "thinking": "low" } }
     ```
 
-  - key 同 agent 名（小写字母开头，小写字母、数字、`-`）；文件里不能有 `default`；只认上面六个字段。
-  - **`apiKey` 只能写成 `"$环境变量名"`**，写明文启动失败 —— **密钥只在服务端的环境变量里**，不进模型表文件、不进定义文件、不进沙箱。
-    不写 `apiKey` = 同 `default` 的退回规则（按提供方自己的环境变量）；写了引用而那个变量没设 = 这一项不可用（不再退回）。
-- **启动时校验**：文件不是合法 JSON、key 不合法、写了 `default`、不认识的字段、类型不对、`apiKey` 写了明文、定义的 `model` 引用了表里没有的 key
+  - key 同 agent 名（小写字母开头，小写字母、数字、`-`）；文件里不能有 `default`；只认上面三个字段，写 `baseUrl` / `api` / `apiKey` / `imageInput` / `contextWindow` / `maxTokens` 启动失败并提示「连接信息在 llm.providers」。
+  - **密钥只在服务端的环境变量里**：不进配置文件、不进模型表文件、不进定义文件、不进沙箱。
+- **启动时校验**：`llm.providers` 形状不对（REQ-MODULES §3.3）、模型表文件不是合法 JSON、key 不合法、写了 `default`、不认识的字段、类型不对、定义的 `model` 引用了表里没有的 key
   → 服务端起不来（同定义文件，§3.1）。一项**能读懂但用不了**（引用的环境变量没设、pi 的注册表里没有、线协议服务端调不了）不是启动错误：启动时打一行警告，到用时才报（见本节最后一条）。
 - 每个 agent 用自己定义里的模型：服务端按 agent 调上游（网关的模型路由本来就带 `agentId`），runner 只拿到它那一份模型的元数据（`RunnerModel`，`streamProxy` 要用）。
 - 跟着模型走的东西按 **agent 自己的模型**算：看不看得了图（`media-view` 只给吃图片的模型；这一轮提供的是各 agent 的并，每个 agent 只拿到自己那份）、

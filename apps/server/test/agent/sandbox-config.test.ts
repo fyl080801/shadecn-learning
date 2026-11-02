@@ -250,9 +250,9 @@ describe('装配', () => {
   }
 
   // ollama 预设不要 key：模型这一关一定过，测的是驱动那一关
-  const ollama = { MODULES_AGENT_PROVIDER: 'ollama', MODULES_AGENT_MODEL: 'qwen3', MODULES_AGENT_BASE_URL: '' }
+  const ollama = { MODULES_AGENT_PROVIDER: 'ollama', MODULES_AGENT_MODEL: 'qwen3' }
 
-  it('key：MODULES_AGENT_API_KEY 优先；没配时退回提供方自己的变量（ANTHROPIC_API_KEY）；都没有 → 未启用并写明', async () => {
+  it('key：llm.providers 引用的变量优先；没写引用时退回提供方自己的变量（ANTHROPIC_API_KEY）；都没有 → 未启用并写明', async () => {
     const none = await runtimeWith({ MODULES_AGENT_SANDBOX_DRIVER: 'process' })
     expect(none.enabled).toBe(false)
     expect(none.disabledReason).toBe('没有 anthropic 的 API key')
@@ -261,8 +261,21 @@ describe('装配', () => {
     expect(fromProvider.enabled).toBe(true)
 
     vi.unstubAllEnvs()
-    const explicit = await runtimeWith({ MODULES_AGENT_SANDBOX_DRIVER: 'process', MODULES_AGENT_API_KEY: 'sk-explicit' })
+    const explicit = await runtimeWith({
+      MODULES_AGENT_SANDBOX_DRIVER: 'process',
+      LLM_PROVIDERS: JSON.stringify({ anthropic: { apiKey: '$MY_ANTHROPIC_KEY' } }),
+      MY_ANTHROPIC_KEY: 'sk-explicit',
+    })
     expect(explicit.enabled).toBe(true)
+
+    // 写了引用就只认它：变量没设 = 未启用，不再退回 ANTHROPIC_API_KEY
+    const unset = await runtimeWith({
+      MODULES_AGENT_SANDBOX_DRIVER: 'process',
+      LLM_PROVIDERS: JSON.stringify({ anthropic: { apiKey: '$MISSING_KEY' } }),
+      ANTHROPIC_API_KEY: 'sk-ant-test',
+    })
+    expect(unset.enabled).toBe(false)
+    expect(unset.disabledReason).toContain('MISSING_KEY')
   })
 
   it('开发环境：process 驱动，启用', async () => {

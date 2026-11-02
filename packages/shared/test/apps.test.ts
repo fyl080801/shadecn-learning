@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  appParamsFor,
   checkParamValue,
   formatAppTasksMessage,
   nodeAppParams,
@@ -11,49 +10,40 @@ import {
   type ParamSpec,
 } from '../src/apps.ts'
 
-const multiModel: AppInfo = {
-  id: 'seedream',
-  title: 'Seedream',
+const seedream: AppInfo = {
+  id: 'ark:pro',
+  title: 'Seedream 5.0',
   category: 'image',
   driver: 'ark',
+  model: 'pro',
   params: {
-    model: { type: 'string', enum: ['pro', 'v45'], default: 'pro' },
     prompt: { type: 'string', required: true },
     image: { type: 'images', maxLength: 10 },
   },
-  models: [
-    { id: 'pro', params: { prompt: { type: 'string', required: true }, image: { type: 'images', maxLength: 10 } } },
-    { id: 'v45', params: { prompt: { type: 'string', required: true }, image: { type: 'images', maxLength: 14 } } },
-  ],
-  defaultModel: 'pro',
 }
 
 describe('nodeAppParams', () => {
-  it('提示词进 prompt、参考图进第一个 images 参数，按所选模型的上限截断并报出丢了几张', () => {
+  it('提示词进 prompt、参考图进第一个 images 参数，按这个应用的上限截断并报出丢了几张', () => {
     const images = Array.from({ length: 12 }, (_, i) => `https://s3/${i}.png`)
-    const pro = nodeAppParams(multiModel, 'pro', { prompt: '  一只猫 ', images })
-    expect(pro.params).toEqual({ model: 'pro', prompt: '一只猫', image: images.slice(0, 10) })
+    const pro = nodeAppParams(seedream, { prompt: '  一只猫 ', images })
+    expect(pro.params).toEqual({ prompt: '一只猫', image: images.slice(0, 10) })
     expect(pro.droppedImages).toBe(2)
-    const v45 = nodeAppParams(multiModel, 'v45', { prompt: 'x', images })
-    expect(v45.params.image).toHaveLength(12)
-    expect(v45.droppedImages).toBe(0)
+    const wider: AppInfo = { ...seedream, params: { ...seedream.params, image: { type: 'images', maxLength: 14 } } }
+    const wide = nodeAppParams(wider, { prompt: 'x', images })
+    expect(wide.params.image).toHaveLength(12)
+    expect(wide.droppedImages).toBe(0)
   })
 
   it('没有 images 参数时进第一个 image 参数（只放第一张）；没有图片参数的应用一张都不放', () => {
-    const single: AppInfo = { ...multiModel, params: { prompt: { type: 'string' }, image: { type: 'image' } }, models: [] }
-    expect(nodeAppParams(single, undefined, { prompt: 'x', images: ['a', 'b'] })).toEqual({ params: { prompt: 'x', image: 'a' }, droppedImages: 1 })
+    const single: AppInfo = { ...seedream, params: { prompt: { type: 'string' }, image: { type: 'image' } } }
+    expect(nodeAppParams(single, { prompt: 'x', images: ['a', 'b'] })).toEqual({ params: { prompt: 'x', image: 'a' }, droppedImages: 1 })
     const text: AppInfo = { ...single, params: { prompt: { type: 'string' } } }
-    expect(nodeAppParams(text, undefined, { prompt: 'x', images: ['a'] })).toEqual({ params: { prompt: 'x' }, droppedImages: 1 })
+    expect(nodeAppParams(text, { prompt: 'x', images: ['a'] })).toEqual({ params: { prompt: 'x' }, droppedImages: 1 })
   })
 
-  it('单模型的应用不带 model；空提示词不放（交给服务端报缺少参数）', () => {
-    const one: AppInfo = { ...multiModel, params: { prompt: { type: 'string', required: true } }, models: [{ id: 'pro', params: { prompt: { type: 'string' } } }] }
-    expect(nodeAppParams(one, 'pro', { prompt: '  ', images: [] }).params).toEqual({})
-  })
-
-  it('appParamsFor：按模型取参数表；不认识的模型退回默认那份（去掉 model）', () => {
-    expect(appParamsFor(multiModel, 'v45').image!.maxLength).toBe(14)
-    expect(Object.keys(appParamsFor(multiModel, 'nope'))).toEqual(['prompt', 'image'])
+  it('模型不是参数，不进请求；空提示词不放（交给服务端报缺少参数）', () => {
+    expect(nodeAppParams(seedream, { prompt: '  ', images: [] }).params).toEqual({})
+    expect(nodeAppParams(seedream, { prompt: 'x', images: [] }).params).not.toHaveProperty('model')
   })
 })
 
@@ -86,15 +76,14 @@ describe('尺寸', () => {
     expect(checkParamValue('size', SIZE, '4K')).toMatch(/只能是 1K \/ 2K，或 宽x高/)
   })
 
-  it('节点上单独设的参数：这个模型有、值也合才带上；提示词 / 图片参数不让覆盖', () => {
-    const app: AppInfo = { ...multiModel, models: [{ id: 'pro', params: { prompt: { type: 'string' }, size: SIZE } }] }
-    expect(nodeAppParams(app, 'pro', { prompt: 'x', images: [] }, { size: '2816x1584', prompt: 'evil', style: 'a' }).params).toEqual({
-      model: 'pro',
+  it('节点上单独设的参数：这个应用有、值也合才带上；提示词 / 图片参数不让覆盖', () => {
+    const app: AppInfo = { ...seedream, params: { prompt: { type: 'string' }, size: SIZE } }
+    expect(nodeAppParams(app, { prompt: 'x', images: [] }, { size: '2816x1584', prompt: 'evil', style: 'a' }).params).toEqual({
       prompt: 'x',
       size: '2816x1584',
     })
-    // 换了模型、旧值不合 → 不带，退回应用的默认
-    expect(nodeAppParams(app, 'pro', { prompt: 'x', images: [] }, { size: '4096x4096' }).params).not.toHaveProperty('size')
+    // 换了应用、旧值不合 → 不带，退回应用的默认
+    expect(nodeAppParams(app, { prompt: 'x', images: [] }, { size: '4096x4096' }).params).not.toHaveProperty('size')
   })
 })
 

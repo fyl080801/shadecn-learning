@@ -14,10 +14,10 @@ describe('火山方舟', () => {
         json({ data: [{ url: 'https://ark/1.png', size: '2048x2048' }, { error: { message: '审核未通过' } }], usage: { generated_images: 1, output_tokens: 16384, total_tokens: 16384 } }),
     })
     const service = serviceOf(
-      { providers, apps: { img: { provider: 'ark', operation: 'image', model: 'seedream-4', options: { body: { model: 'evil', optimize_prompt_options: { mode: 'fast' } } } } } },
+      { providers, apps: [{ provider: 'ark', type: 'image', model: 'seedream-4', options: { body: { model: 'evil', optimize_prompt_options: { mode: 'fast' } } } }] },
       { env, fetch: upstream.fetch },
     )
-    const result = await service.executeApp('img', { prompt: '一只猫', maxImages: 2, image: ['https://a/ref.png'] })
+    const result = await service.executeApp('ark:seedream-4', { prompt: '一只猫', maxImages: 2, image: ['https://a/ref.png'] })
     const request = upstream.requests[0]!
     expect(request.headers.get('authorization')).toBe('Bearer secret-key')
     expect(request.body).toMatchObject({
@@ -41,9 +41,9 @@ describe('火山方舟', () => {
       'GET /api/v3/contents/generations/tasks/cgt-1': () =>
         json(++polls < 3 ? { id: 'cgt-1', status: polls === 1 ? 'queued' : 'running' } : { id: 'cgt-1', status: 'succeeded', content: { video_url: 'https://ark/v.mp4' }, usage: { completion_tokens: 10, total_tokens: 10 } }),
     })
-    const service = serviceOf({ providers, apps: { vid: { provider: 'ark', operation: 'video', model: 'seedance' } } }, { env, fetch: upstream.fetch })
+    const service = serviceOf({ providers, apps: [{ provider: 'ark', type: 'video', model: 'seedance' }] }, { env, fetch: upstream.fetch })
     const progress: string[] = []
-    const result = await service.executeApp('vid', { prompt: '海浪', firstFrame: 'https://a/f.png', duration: 5 }, { onProgress: (p) => progress.push(p.status) })
+    const result = await service.executeApp('ark:seedance', { prompt: '海浪', firstFrame: 'https://a/f.png', duration: 5 }, { onProgress: (p) => progress.push(p.status) })
     expect(upstream.requests[0]!.body).toMatchObject({
       model: 'seedance',
       duration: 5,
@@ -58,10 +58,10 @@ describe('火山方舟', () => {
       'POST /api/v3/contents/generations/tasks': () => json({ id: 'cgt-2' }),
       'GET /api/v3/contents/generations/tasks/cgt-2': () => json({ status: 'failed', error: { message: '输入图片不合规' } }),
     })
-    const service = serviceOf({ providers, apps: { vid: { provider: 'ark', operation: 'video', model: 'm' } } }, { env, fetch: upstream.fetch })
-    await expect(service.executeApp('vid', { prompt: 'x' })).rejects.toMatchObject({ code: 'upstream', message: expect.stringContaining('输入图片不合规') })
+    const service = serviceOf({ providers, apps: [{ provider: 'ark', type: 'video', model: 'm' }] }, { env, fetch: upstream.fetch })
+    await expect(service.executeApp('ark:m', { prompt: 'x' })).rejects.toMatchObject({ code: 'upstream', message: expect.stringContaining('输入图片不合规') })
     const before = upstream.requests.length
-    await expect(service.executeApp('vid', { lastFrame: 'https://a/l.png' })).rejects.toMatchObject({ code: 'invalid_params' })
+    await expect(service.executeApp('ark:m', { lastFrame: 'https://a/l.png' })).rejects.toMatchObject({ code: 'invalid_params' })
     expect(upstream.requests.length).toBe(before)
   })
 
@@ -73,21 +73,21 @@ describe('火山方舟', () => {
         json(++polls < 2 ? { status: 'running' } : { status: 'succeeded', content: { video_url: 'https://ark/v.mp4' } }),
       'DELETE /api/v3/contents/generations/tasks/cgt-9': () => new Response(null, { status: 200 }),
     })
-    const service = serviceOf({ providers, apps: { vid: { provider: 'ark', operation: 'video', model: 'm' } } }, { env, fetch: upstream.fetch })
+    const service = serviceOf({ providers, apps: [{ provider: 'ark', type: 'video', model: 'm' }] }, { env, fetch: upstream.fetch })
     const handles: unknown[] = []
-    await service.executeApp('vid', { prompt: '海浪' }, { onSubmitted: (handle) => void handles.push(handle) })
+    await service.executeApp('ark:m', { prompt: '海浪' }, { onSubmitted: (handle) => void handles.push(handle) })
     expect(handles).toEqual([{ upstreamId: 'cgt-9' }])
 
     polls = 0
     const created = upstream.requests.filter((request) => request.method === 'POST').length
-    const resumed = await service.resumeApp('vid', { upstreamId: 'cgt-9' })
+    const resumed = await service.resumeApp('ark:m', { upstreamId: 'cgt-9' })
     expect(resumed).toMatchObject({ upstreamId: 'cgt-9', outputs: [{ kind: 'video', url: 'https://ark/v.mp4' }] })
     expect(upstream.requests.filter((request) => request.method === 'POST')).toHaveLength(created)
 
     // 开始得太早（超过应用时限）：续查直接 timeout
-    await expect(service.resumeApp('vid', { upstreamId: 'cgt-9' }, { startedAt: Date.now() - 60 * 60_000 })).rejects.toMatchObject({ code: 'timeout' })
+    await expect(service.resumeApp('ark:m', { upstreamId: 'cgt-9' }, { startedAt: Date.now() - 60 * 60_000 })).rejects.toMatchObject({ code: 'timeout' })
 
-    await service.cancelUpstream('vid', { upstreamId: 'cgt-9' })
+    await service.cancelUpstream('ark:m', { upstreamId: 'cgt-9' })
     expect(upstream.requests.at(-1)).toMatchObject({ method: 'DELETE', url: expect.stringContaining('/tasks/cgt-9') })
   })
 
@@ -96,9 +96,9 @@ describe('火山方舟', () => {
       'GET /api/v3/contents/generations/tasks/cgt-3': () => json({ status: 'succeeded', content: { file_url: 'https://ark/m.zip' } }),
       'DELETE /api/v3/contents/generations/tasks/cgt-3': () => json({ error: { message: '运行中的任务不能删除' } }, 400),
     })
-    const service = serviceOf({ providers, apps: { mesh: { provider: 'ark', operation: '3d', model: 'seed3d' } } }, { env, fetch: upstream.fetch })
-    await expect(service.cancelUpstream('mesh', { upstreamId: 'cgt-3' })).resolves.toBeUndefined()
-    const result = await service.resumeApp('mesh', { upstreamId: 'cgt-3', state: { fileFormat: 'obj' } })
+    const service = serviceOf({ providers, apps: [{ provider: 'ark', type: '3d', model: 'seed3d' }] }, { env, fetch: upstream.fetch })
+    await expect(service.cancelUpstream('ark:seed3d', { upstreamId: 'cgt-3' })).resolves.toBeUndefined()
+    const result = await service.resumeApp('ark:seed3d', { upstreamId: 'cgt-3', state: { fileFormat: 'obj' } })
     expect(result.outputs[0]).toMatchObject({ meta: { fileFormat: 'obj' } })
   })
 
@@ -107,8 +107,8 @@ describe('火山方舟', () => {
       'POST /api/v3/contents/generations/tasks': () => json({ id: 'cgt-3' }),
       'GET /api/v3/contents/generations/tasks/cgt-3': () => json({ status: 'succeeded', content: { file_url: 'https://ark/m.zip' } }),
     })
-    const service = serviceOf({ providers, apps: { mesh: { provider: 'ark', operation: '3d', model: 'seed3d' } } }, { env, fetch: upstream.fetch })
-    const result = await service.executeApp('mesh', { image: 'data:image/png;base64,iVBORw0KGgo=' })
+    const service = serviceOf({ providers, apps: [{ provider: 'ark', type: '3d', model: 'seed3d' }] }, { env, fetch: upstream.fetch })
+    const result = await service.executeApp('ark:seed3d', { image: 'data:image/png;base64,iVBORw0KGgo=' })
     expect(upstream.requests[0]!.body).toMatchObject({ content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } }], file_format: 'glb' })
     expect(result.outputs[0]).toMatchObject({ kind: '3d', url: 'https://ark/m.zip', mimeType: 'application/zip' })
   })
@@ -127,10 +127,10 @@ describe('ComfyUI', () => {
   )
   const app = {
     provider: 'comfy',
-    operation: 'workflow',
+    id: 'sdxl',
+    type: 'image',
     options: {
       workflow: 'wf.json',
-      category: 'image',
       inputs: {
         prompt: { node: '6', field: 'text', type: 'string', required: true },
         seed: { node: '3', field: 'seed', type: 'integer', random: true },
@@ -158,9 +158,9 @@ describe('ComfyUI', () => {
         ),
       'GET /view': () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/png' } }),
     })
-    const service = serviceOf({ providers, apps: { sd: app } }, { fetch: upstream.fetch, appRoot: dir })
-    expect(Object.keys(service.get('sd')!.params)).toEqual(['prompt', 'seed', 'image'])
-    const result = await service.executeApp('sd', { prompt: '猫', image: 'data:image/png;base64,iVBORw0KGgo=' })
+    const service = serviceOf({ providers, apps: [app] }, { fetch: upstream.fetch, appRoot: dir })
+    expect(Object.keys(service.get('comfy:sdxl')!.params)).toEqual(['prompt', 'seed', 'image'])
+    const result = await service.executeApp('comfy:sdxl', { prompt: '猫', image: 'data:image/png;base64,iVBORw0KGgo=' })
 
     const submitted = upstream.requests.find((r) => r.url.endsWith('/prompt'))!.body as { prompt: Record<string, { inputs: Record<string, unknown> }> }
     expect(submitted.prompt['6']!.inputs.text).toBe('猫')
@@ -178,11 +178,11 @@ describe('ComfyUI', () => {
       'POST /queue': () => json({}),
       'POST /interrupt': () => new Response('', { status: 200 }),
     })
-    const service = serviceOf({ providers, apps: { sdxl: app } }, { appRoot: dir, fetch: upstream.fetch, defaultTimeoutMs: 50 })
+    const service = serviceOf({ providers, apps: [app] }, { appRoot: dir, fetch: upstream.fetch, defaultTimeoutMs: 50 })
     const handles: unknown[] = []
-    await expect(service.executeApp('sdxl', { prompt: 'x' }, { onSubmitted: (handle) => void handles.push(handle) })).rejects.toMatchObject({ code: 'timeout' })
+    await expect(service.executeApp('comfy:sdxl', { prompt: 'x' }, { onSubmitted: (handle) => void handles.push(handle) })).rejects.toMatchObject({ code: 'timeout' })
     expect(handles).toEqual([{ upstreamId: 'p-7' }])
-    await service.cancelUpstream('sdxl', { upstreamId: 'p-7' })
+    await service.cancelUpstream('comfy:sdxl', { upstreamId: 'p-7' })
     expect(upstream.requests.slice(-2).map((request) => [request.url, request.body])).toEqual([
       ['http://comfy:8188/queue', { delete: ['p-7'] }],
       ['http://comfy:8188/interrupt', { prompt_id: 'p-7' }],
@@ -191,9 +191,20 @@ describe('ComfyUI', () => {
 
   it('图片参数给外部地址 → invalid_params，不替调用方去抓', async () => {
     const upstream = scriptedFetch({})
-    const service = serviceOf({ providers, apps: { sd: app } }, { fetch: upstream.fetch, appRoot: dir })
-    await expect(service.executeApp('sd', { prompt: 'x', image: 'http://169.254.169.254/a.png' })).rejects.toMatchObject({ code: 'invalid_params' })
+    const service = serviceOf({ providers, apps: [app] }, { fetch: upstream.fetch, appRoot: dir })
+    await expect(service.executeApp('comfy:sdxl', { prompt: 'x', image: 'http://169.254.169.254/a.png' })).rejects.toMatchObject({ code: 'invalid_params' })
     expect(upstream.requests).toHaveLength(0)
+  })
+
+  it('type 选类别：同一份工作流可以是任何类别；options.category 已删除，写了是不认识的字段', () => {
+    const service = serviceOf(
+      { providers, apps: [{ ...app, id: 'clip', type: 'video' }, { ...app, id: 'mesh', type: '3d' }] },
+      { appRoot: dir },
+    )
+    expect(service.get('comfy:clip')).toMatchObject({ category: 'video', driver: 'comfyui' })
+    expect(service.get('comfy:mesh')).toMatchObject({ category: '3d' })
+    expect(service.get('comfy:clip')!.model).toBeUndefined()
+    expect(() => serviceOf({ providers, apps: [{ ...app, options: { ...app.options, category: 'image' } }] }, { appRoot: dir })).toThrow(/不认识的字段 category/)
   })
 
   it('执行出错 → upstream 带上 ComfyUI 的异常信息；映射到不存在的节点是启动错误', async () => {
@@ -201,10 +212,10 @@ describe('ComfyUI', () => {
       'POST /prompt': () => json({ prompt_id: 'p2' }),
       'GET /history/p2': () => json({ p2: { status: { status_str: 'error', messages: [['execution_error', { exception_message: '显存不足' }]] } } }),
     })
-    const service = serviceOf({ providers, apps: { sd: app } }, { fetch: upstream.fetch, appRoot: dir })
-    await expect(service.executeApp('sd', { prompt: 'x' })).rejects.toMatchObject({ code: 'upstream', message: expect.stringContaining('显存不足') })
+    const service = serviceOf({ providers, apps: [app] }, { fetch: upstream.fetch, appRoot: dir })
+    await expect(service.executeApp('comfy:sdxl', { prompt: 'x' })).rejects.toMatchObject({ code: 'upstream', message: expect.stringContaining('显存不足') })
     const broken = { ...app, options: { ...app.options, inputs: { prompt: { node: '99', field: 'text' } } } }
-    expect(() => serviceOf({ providers, apps: { sd: broken } }, { appRoot: dir })).toThrow(/没有节点 99/)
+    expect(() => serviceOf({ providers, apps: [broken] }, { appRoot: dir })).toThrow(/没有节点 99/)
   })
 })
 
@@ -223,13 +234,13 @@ describe('ollama', () => {
         ),
     })
     const service = serviceOf(
-      { providers: { local: { type: 'ollama' } }, apps: { chat: { provider: 'local', operation: 'chat', model: 'qwen3', options: { system: '你是助手' } } } },
+      { providers: { local: { type: 'ollama' } }, apps: [{ provider: 'local', type: 'text', model: 'qwen3', options: { system: '你是助手' } }] },
       { fetch: upstream.fetch },
     )
-    expect(service.get('chat')).toMatchObject({ category: 'text', driver: 'ollama' })
-    // 应用表里写死了 system，就不再把 system 当参数
-    expect(Object.keys(service.get('chat')!.params)).toEqual(['prompt', 'temperature'])
-    const result = await service.executeApp('chat', { prompt: '嗨' })
+    expect(service.get('local:qwen3')).toMatchObject({ category: 'text', driver: 'ollama' })
+    // 条目里写死了 system，就不再把 system 当参数
+    expect(Object.keys(service.get('local:qwen3')!.params)).toEqual(['prompt', 'temperature'])
+    const result = await service.executeApp('local:qwen3', { prompt: '嗨' })
     const request = upstream.requests[0]!
     expect(request.url).toBe('http://127.0.0.1:11434/v1/chat/completions')
     expect(request.body).toMatchObject({

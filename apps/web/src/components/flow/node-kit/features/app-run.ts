@@ -2,10 +2,10 @@ import { toast } from "vue-sonner"
 import { nodeAppParams } from "@shadecn/shared/apps"
 
 import {
-  choiceUnavailable,
   collectNodeAppInputs,
   nodeAppOverrides,
   nodeAppCategory,
+  noAppHint,
   resolveNodeApp
 } from "@/components/flow/apps/node-app"
 import { useApps } from "@/composables/useApps"
@@ -16,7 +16,7 @@ import { defineNodeFeature, defineNodeHandler, type NodeEventSource } from "../p
 
 /**
  * 用应用生成节点内容（docs/29 §3.8、§3.10）—— `runnable` 的运行器：接住 `node:run`，
- * 拿节点选的应用 / 模型（`components/flow/apps/node-app.ts`）、节点的提示词和连进来的参考图，
+ * 拿节点选的应用（`components/flow/apps/node-app.ts`）、节点的提示词和连进来的参考图，
  * **提交一个生成任务**（`POST /api/flows/:flowId/apps/:appId/execute`）就返回 —— 执行、存资源、把产物挂回节点都在服务端，
  * 关掉页面也照样挂回去。
  *
@@ -55,24 +55,23 @@ export async function runNodeApp(ctx: NodeEventSource, promptOverride?: string):
   const unmark = tasks?.markSubmitting(ctx.id)
   try {
     await ensure()
-    const choice = resolveNodeApp(apps.value, category, node.data)
-    if (!choice) {
-      toast.error("还没有可用的生成应用", { description: "在服务端的应用表（data/apps.yaml）里配一个，见 docs/29" })
+    const app = resolveNodeApp(apps.value, category, node.data)
+    if (!app) {
+      toast.error("还没有可用的生成应用", { description: noAppHint(category) })
       return
     }
-    const unavailable = choiceUnavailable(choice)
-    if (unavailable) {
-      toast.error(`「${choice.app.title}」现在用不了`, { description: unavailable })
+    if (app.unavailable) {
+      toast.error(`「${app.title}」现在用不了`, { description: app.unavailable })
       return
     }
 
     const prompt = promptOverride ?? (typeof node.data.prompt === "string" ? node.data.prompt : "")
     const inputs = collectNodeAppInputs(node, prompt, store.nodeById)
-    const { params, droppedImages } = nodeAppParams(choice.app, choice.model, inputs, nodeAppOverrides(node.data))
+    const { params, droppedImages } = nodeAppParams(app, inputs, nodeAppOverrides(node.data))
     if (droppedImages > 0) toast.warning(`有 ${droppedImages} 张参考图超出了这个模型的上限，没有用上`)
 
     try {
-      const task = await appApi.submitOnFlow(flowId, choice.app.id, { params, nodeId: ctx.id })
+      const task = await appApi.submitOnFlow(flowId, app.id, { params, nodeId: ctx.id })
       tasks?.upsert(task)
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {

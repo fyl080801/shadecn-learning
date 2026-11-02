@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import path from 'node:path'
 import { parseRoles, type ServerRole } from '@shadecn/server-kit/kernel'
+import { parseLlmProviders } from '@shadecn/server-kit/llm'
 import { appRoot, isBundle, moduleDir } from './runtime.ts'
 
 /**
@@ -15,6 +16,9 @@ import { appRoot, isBundle, moduleDir } from './runtime.ts'
 
 /** 读到的配置文件（启动日志打出来；没有 = 空） */
 export const configFiles = configSource.files
+
+/** 语言服务提供方（`llm.providers` / `LLM_PROVIDERS`）。不合法 = 启动失败；经平台的 `runtime.llmProviders` 交给模块 */
+export const llmProviders = parseLlmProviders(cfg('llm.providers'))
 
 /** 应用根目录：.env、data/、output/ 都以它为准 */
 export const rootDir = appRoot

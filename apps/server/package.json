@@ -37,7 +37,6 @@
     "@shadecn/mod-auth": "workspace:*",
     "@shadecn/mod-canvas": "workspace:*",
     "@shadecn/mod-collab": "workspace:*",
-    "@shadecn/mod-notes": "workspace:*",
     "@shadecn/mod-storage": "workspace:*",
     "@shadecn/server-core": "workspace:*",
     "@shadecn/server-kit": "workspace:*",

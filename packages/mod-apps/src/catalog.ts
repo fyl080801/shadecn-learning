@@ -1,86 +1,73 @@
-import { existsSync } from 'node:fs'
-import { parseConfigFile } from '@shadecn/server-kit/config'
 import {
+  APP_CATEGORIES,
   AppError,
-  MODEL_PARAM,
   type AppInfo,
-  type AppModelInfo,
   type ParamSchema,
   type AppResult,
   type AppsService,
   type ExecuteOptions,
   type TaskHandle,
 } from './contract.ts'
-import { Fields, isRecord, type AnyProviderDriver, type ParamPatch, type DriverEnv, type PreparedApp, type RunContext, type RunOutput } from './driver.ts'
+import { Fields, isRecord, type AnyProviderDriver, type DriverEnv, type PreparedApp, type RunContext, type RunOutput } from './driver.ts'
 import { sleep } from './http.ts'
-import {
-  applyParamPatch,
-  assertDefaults,
-  assertParamSchema,
-  defaultsFor,
-  publicParams,
-  readParamPatch,
-  resolveParams,
-} from './params.ts'
+import { withLlmProviderApps } from './llm-apps.ts'
+import { applyParamPatch, assertDefaults, assertParamSchema, publicParams, readParamPatch, resolveParams } from './params.ts'
 
 /**
  * 应用表与执行层（docs/29 §3.3 / §3.5）。
  *
- * 应用表是一个 YAML / JSON 文件（`MODULES_APPS_FILE`，默认 `<dataDir>/apps.yaml`），两段：
+ * 应用表是配置段 `modules.apps`（`server.config`，`config.ts` 读），和语言服务一个形状：
  *
  * ```yaml
- * models:               # 模型档案：各代模型的参数差异（null = 没有这个参数），所有应用共用，取第一条匹配的
- *   doubao-seedream-5-0*: { title: Seedream 5.0, params: { image: { maxLength: 10 }, maxImages: null } }
- * providers:            # 对接服务的实例：同一种驱动可以有多个实例（两套 ComfyUI、两个方舟账号）
- *   ark:      { type: ark, apiKey: $ARK_API_KEY }
- *   comfy:    { type: comfyui, baseUrl: http://127.0.0.1:8188 }
- *   ollama:   { type: ollama }
- * apps:                 # 应用 = 提供方实例 + 操作 + 模型（一个或多个）+ 驱动特有的 options + 参数默认值
- *   seedream:
- *     provider: ark
- *     operation: image
- *     model: [doubao-seedream-5-0-pro-260628, doubao-seedream-4-5-…]   # 多个 = 调用方可选（参数 `model`）
- *     models: { doubao-seedream-4-5-…: { title: 4.5, params: { size: { default: 4K } } } }   # 可选：补 / 改某个模型的参数差异
- *     defaults: { size: 2K }
+ * modules:
+ *   apps:
+ *     providers:          # 对接服务的实例：同一种驱动可以有多个实例（两套 ComfyUI、两个方舟账号）
+ *       ark:   { type: ark, apiKey: $ARK_API_KEY }
+ *       comfy: { type: comfyui, baseUrl: http://127.0.0.1:8188 }
+ *     apps:               # 平铺的数组，每项 = 一个提供方 + 一个模型；type 是类别，也就是驱动的操作
+ *       - provider: ark
+ *         model: doubao-seedream-5-0-pro-260628
+ *         type: image
+ *         title: Seedream 5.0 pro
+ *         defaults: { size: 2K }
+ *         params: { image: { maxLength: 10 }, maxImages: null }   # 这个模型和驱动基础表的差异（null = 没有这个参数）
+ *       - { provider: comfy, id: sdxl, type: image, options: { workflow: data/comfy/sdxl.json, inputs: { … } } }   # 模型在工作流里的操作写 id
  * ```
  *
- * 模型的参数差异是**配置**，不在驱动代码里：顶层 `models` 段是共用的模型档案（按 id / 前缀匹配），应用里的 `models.<id>` 再覆盖。
- * 每个模型的参数表 = 驱动的基础表 → 第一条匹配的模型档案 → 应用的 `models.<id>.params`。
+ * 应用 id 自动生成：`<provider>:<model>`，不要模型的操作是 `<provider>:<id>`。
+ * 模型的参数差异是**配置**，不在驱动代码里：参数表 = 驱动的基础表 → 条目的 `params`。
  *
- * 两类错误分开（同 agent 模型表）：**文件形状不对 → 启动失败**（不认识的字段、类型、引用了不存在的提供方 / 操作、明文密钥）；
- * **配置对但现在用不了**（缺环境变量）→ 应用标成不可用，启动打警告，执行回 `unavailable`。
+ * 两类错误分开（同 agent 模型表）：**形状不对 → 启动失败**（不认识的字段、类型、引用了不存在的提供方 / 操作、明文密钥、重复的应用）；
+ * **配置对但现在用不了**（缺环境变量、模型解析不了）→ 应用标成不可用，启动打警告，执行回 `unavailable`。
  */
 
-/** 应用 / 提供方的 id：小写字母开头，小写字母、数字、`-` */
+/** 配置段的位置：报错都从这里说起 */
+export const APPS_CONFIG_PATH = 'modules.apps'
+
+/** 提供方的 id、不要模型的操作写的 `id`：小写字母开头，小写字母、数字、`-`（没有 `:`，所以应用 id 拆得开） */
 const ID_REGEX = /^[a-z][a-z0-9-]{0,47}$/
+const ID_RULE = '小写字母开头，只能有小写字母、数字、-，最长 48'
 
 export interface CatalogEntry {
   info: AppInfo
   prepared: PreparedApp
-  /** 应用表的 `defaults`（不含 `model`） */
+  /** 这一项的参数表（驱动的基础表 + 条目的 `params`） */
+  schema: ParamSchema
+  /** 条目的 `defaults` */
   defaults: Readonly<Record<string, unknown>>
-  /** 应用的模型，按应用表的顺序；不要模型的操作是空表 */
-  models: ReadonlyMap<string, ModelEntry>
-  defaultModel?: string
+  /** 这一项的模型；不要模型的操作没有 */
+  model?: string
   timeoutMs: number
 }
 
-interface ModelEntry {
-  info: AppModelInfo
-  /** 这个模型的参数表（基础表 + 驱动的模型档案 + 应用表的覆盖） */
-  schema: ParamSchema
-}
-
 export interface Catalog {
-  /** 读的哪个文件；没有文件 = null */
-  readonly file: string | null
   readonly apps: ReadonlyMap<string, CatalogEntry>
 }
 
 export interface CatalogOptions {
   drivers: readonly AnyProviderDriver[]
   env: DriverEnv
-  /** 应用没写 `timeoutMs` 时的时限 */
+  /** 条目没写 `timeoutMs` 时的时限 */
   defaultTimeoutMs: number
 }
 
@@ -90,7 +77,7 @@ interface ProviderEntry {
   problems: readonly string[]
 }
 
-/** 解析应用表的内容。形状不对抛 Error（带文件和位置） */
+/** 解析应用表的内容（`{ providers, apps }`）。形状不对抛 Error（带位置，不带值：里面可能有密钥） */
 export function buildCatalog(data: unknown, where: string, options: CatalogOptions): Catalog {
   const byType = new Map<string, AnyProviderDriver>()
   for (const driver of options.drivers) {
@@ -99,14 +86,14 @@ export function buildCatalog(data: unknown, where: string, options: CatalogOptio
   }
   const root = new Fields(data, where, options.env)
   const providersRaw = root.object('providers') ?? {}
-  const profiles = readModelProfiles(root.nested('models'))
-  const appsRaw = root.object('apps') ?? {}
+  const appsRaw = root.value('apps') ?? []
   root.done()
+  if (!Array.isArray(appsRaw)) throw new Error(`${where}.apps 必须是数组（每项一个提供方 + 一个模型）`)
 
   const providers = new Map<string, ProviderEntry>()
   for (const [id, raw] of Object.entries(providersRaw)) {
-    const at = `${where} 的 providers.${id}`
-    if (!ID_REGEX.test(id)) throw new Error(`${at}：id 不合法（小写字母开头，只能有小写字母、数字、-，最长 48）`)
+    const at = `${where}.providers.${id}`
+    if (!ID_REGEX.test(id)) throw new Error(`${at}：id 不合法（${ID_RULE}）`)
     if (!isRecord(raw)) throw new Error(`${at}：必须是对象`)
     const { type, ...rest } = raw
     const driver = typeof type === 'string' ? byType.get(type) : undefined
@@ -118,142 +105,83 @@ export function buildCatalog(data: unknown, where: string, options: CatalogOptio
   }
 
   const apps = new Map<string, CatalogEntry>()
-  for (const [id, raw] of Object.entries(appsRaw)) {
-    const at = `${where} 的 apps.${id}`
-    if (!ID_REGEX.test(id)) throw new Error(`${at}：id 不合法（小写字母开头，只能有小写字母、数字、-，最长 48）`)
-    const app = new Fields(raw, at, options.env)
-    const title = app.string('title', { default: id })
-    const description = app.string('description')
-    const providerId = app.string('provider', { required: true })
-    const operationName = app.string('operation', { required: true })
-    const timeoutMs = app.integer('timeoutMs', { default: options.defaultTimeoutMs })!
-    const defaults = app.object('defaults') ?? {}
-    const modelIds = readModelList(app)
-    const overrides = app.nested('models')
-    const appOptions = app.nested('options')
-
-    const provider = providers.get(providerId)
-    if (!provider) throw new Error(`${at}：provider ${providerId} 不在 providers 里`)
-    const operation = provider.driver.operations[operationName]
-    if (!operation) {
-      throw new Error(`${at}：${provider.driver.type} 没有操作 ${operationName}（只有 ${Object.keys(provider.driver.operations).join(' / ')}）`)
-    }
-    const requiresModel = operation.requiresModel ?? true
-    if (requiresModel && modelIds.length === 0) throw new Error(`${at}：缺少 model（一个模型 id，或模型 id 的数组）`)
-    if (!requiresModel && modelIds.length > 0) throw new Error(`${at}：${provider.driver.type} 的 ${operationName} 不用 model（模型在它自己的配置里）`)
-
-    const prepared = operation.prepare(appOptions, provider.value, options.env)
-    if (MODEL_PARAM in prepared.params) throw new Error(`${at}：驱动的参数表里不能有 ${MODEL_PARAM}（它由执行层统一加）`)
-    assertParamSchema(prepared.params, at)
-
-    const models = new Map<string, ModelEntry>()
-    for (const modelId of modelIds) {
-      const modelAt = `${at} 的模型 ${modelId}`
-      const override = overrides.raw[modelId] === undefined ? null : overrides.nested(modelId)
-      const overrideTitle = override?.string('title')
-      const overridePatch = override ? readParamPatch(override.nested('params')) : undefined
-      const profile = profiles.find((rule) => profileMatches(rule.match, modelId))
-      const schema = applyParamPatch(applyParamPatch(prepared.params, profile?.params, modelAt), overridePatch, modelAt)
-      if (MODEL_PARAM in schema) throw new Error(`${modelAt}：参数表里不能有 ${MODEL_PARAM}`)
-      assertParamSchema(schema, modelAt)
-      const titleOf = overrideTitle ?? profile?.title
-      const problem = prepared.checkModel?.(modelId) ?? null
-      models.set(modelId, { info: { id: modelId, ...(titleOf ? { title: titleOf } : {}), params: schema, ...(problem ? { unavailable: problem } : {}) }, schema })
-    }
-    const strayOverride = Object.keys(overrides.raw).find((key) => !models.has(key))
-    if (strayOverride) throw new Error(`${at}：models 里的 ${strayOverride} 不在 model 列表里`)
-    app.done()
-
-    // defaults：model 单独处理；其余每一项至少要是某个模型（或不要模型时的基础表）的参数，且对有它的模型类型都对
-    const { [MODEL_PARAM]: defaultModelRaw, ...paramDefaults } = defaults
-    const schemas = models.size > 0 ? [...models.values()].map((entry) => entry.schema) : [prepared.params]
-    for (const [name, value] of Object.entries(paramDefaults)) {
-      const owners = schemas.filter((schema) => name in schema)
-      if (owners.length === 0) throw new Error(`${at}：defaults 里的 ${name} 不是这个应用的参数`)
-      for (const schema of owners) assertDefaults(schema, { [name]: value }, at)
-    }
-    if (defaultModelRaw !== undefined && (typeof defaultModelRaw !== 'string' || !models.has(defaultModelRaw))) {
-      throw new Error(`${at}：defaults.model 必须是 model 列表里的一个`)
-    }
-    const usable = [...models.values()].filter((entry) => !entry.info.unavailable).map((entry) => entry.info.id)
-    const defaultModel = (defaultModelRaw as string | undefined) ?? usable[0] ?? modelIds[0]
-
-    const problems = [...provider.problems.map((problem) => `提供方 ${providerId}：${problem}`), ...appOptions.problems]
-    if (models.size > 0 && usable.length === 0) {
-      problems.push([...models.values()].map((entry) => `模型 ${entry.info.id}：${entry.info.unavailable}`).join('；'))
-    }
-    const defaultSchema = defaultModel ? models.get(defaultModel)!.schema : prepared.params
-    apps.set(id, {
-      info: {
-        id,
-        title,
-        ...(description ? { description } : {}),
-        category: prepared.category,
-        driver: provider.driver.type,
-        params: publicParams(withModelParam(defaultSchema, modelIds, defaultModel), paramDefaults),
-        models: [...models.values()].map((entry) => ({ ...entry.info, params: publicParams(entry.schema, paramDefaults) })),
-        ...(defaultModel ? { defaultModel } : {}),
-        ...(problems.length > 0 ? { unavailable: problems.join('；') } : {}),
-      },
-      prepared,
-      defaults: paramDefaults,
-      models,
-      ...(defaultModel ? { defaultModel } : {}),
-      timeoutMs,
-    })
-  }
-  return { file: where, apps }
-}
-
-/**
- * 模型档案：应用表顶层的 `models` 段，key 是模型 id 或以 `*` 结尾的前缀，值是 `{ title?, params? }`。
- * 所有应用共用；**按文件里的顺序取第一条匹配的**，所以更具体的写在前面（`doubao-seedream-5-0-lite*` 在 `doubao-seedream-5-0*` 之前）。
- * 不匹配任何一条的模型用驱动的基础参数表。
- */
-interface ModelProfile {
-  match: string
-  title?: string
-  params?: ParamPatch
-}
-
-function readModelProfiles(section: Fields): ModelProfile[] {
-  return Object.keys(section.raw).map((match) => {
-    if (!/^[^*\s]+\*?$/.test(match)) throw new Error(`${section.at}：${match} 不合法（模型 id，或以 * 结尾的前缀；* 只能在最后）`)
-    const fields = section.nested(match)
-    const title = fields.string('title')
-    const params = fields.raw.params === undefined ? undefined : readParamPatch(fields.nested('params'))
-    return { match, ...(title ? { title } : {}), ...(params ? { params } : {}) }
+  const positions = new Map<string, number>()
+  appsRaw.forEach((raw: unknown, index) => {
+    const at = `${where}.apps[${index}]`
+    if (!isRecord(raw)) throw new Error(`${at}：必须是对象`)
+    const entry = buildEntry(raw, at, providers, options)
+    const previous = positions.get(entry.info.id)
+    if (previous !== undefined) throw new Error(`${at}：应用 ${entry.info.id} 和 apps[${previous}] 重复（同一个提供方的同一个模型只写一项）`)
+    positions.set(entry.info.id, index)
+    apps.set(entry.info.id, entry)
   })
+  return { apps }
 }
 
-function profileMatches(match: string, model: string): boolean {
-  return match.endsWith('*') ? model.startsWith(match.slice(0, -1)) : match === model
-}
+/** `apps` 的一项：一个提供方 + 一个模型（模型在别处的操作写 `id`） */
+function buildEntry(raw: Record<string, unknown>, at: string, providers: ReadonlyMap<string, ProviderEntry>, options: CatalogOptions): CatalogEntry {
+  const app = new Fields(raw, at, options.env)
+  const providerId = app.string('provider', { required: true })
+  const category = app.oneOf('type', APP_CATEGORIES, { required: true })
+  if (Array.isArray(raw.model)) throw new Error(`${at}：model 只能是一个模型 id，每个模型写一项`)
+  const model = app.string('model')
+  const localId = app.string('id')
+  const title = app.string('title')
+  const description = app.string('description')
+  const timeoutMs = app.integer('timeoutMs', { default: options.defaultTimeoutMs })!
+  const defaults = app.object('defaults') ?? {}
+  const patch = readParamPatch(app.nested('params'))
+  const appOptions = app.nested('options')
 
-/** `model`：一个模型 id，或模型 id 的数组（不重复） */
-function readModelList(app: Fields): string[] {
-  const raw = app.value('model')
-  if (raw === undefined || raw === null) return []
-  const list = typeof raw === 'string' ? [raw] : raw
-  if (!Array.isArray(list) || list.length === 0 || list.some((item) => typeof item !== 'string' || !item.trim())) {
-    throw new Error(`${app.at}：model 必须是模型 id，或模型 id 的非空数组`)
+  const provider = providers.get(providerId)
+  if (!provider) throw new Error(`${at}：provider ${providerId} 不在 providers 里`)
+  const { type: driverType, operations } = provider.driver
+  const operation = operations[category]
+  if (!operation) throw new Error(`${at}：${driverType} 不能做 type ${category}（只有 ${Object.keys(operations).join(' / ')}）`)
+  if (operation.requiresModel ?? true) {
+    if (!model) throw new Error(`${at}：缺少 model`)
+    if (localId) throw new Error(`${at}：${driverType} 的 ${category} 要写 model，应用 id 自动生成（<provider>:<model>），不要写 id`)
+  } else {
+    if (model) throw new Error(`${at}：${driverType} 的 ${category} 不用 model（模型在它自己的配置里），写 id`)
+    if (!localId) throw new Error(`${at}：缺少 id（${driverType} 的 ${category} 不用 model，应用 id 是 <provider>:<id>）`)
+    if (!ID_REGEX.test(localId)) throw new Error(`${at}：id 不合法（${ID_RULE}）`)
   }
-  const ids = list.map((item: string) => item.trim())
-  const duplicate = ids.find((item, index) => ids.indexOf(item) !== index)
-  if (duplicate) throw new Error(`${app.at}：model 里 ${duplicate} 写了两次`)
-  return ids
+
+  const prepared = operation.prepare(appOptions, provider.value, options.env)
+  app.done()
+  // `model` 是保留的参数名：模型由条目定（驱动的第三个入参），调用方传了算不认识的参数
+  if ('model' in prepared.params) throw new Error(`${at}：驱动的参数表里不能有 model（模型写在条目上）`)
+  assertParamSchema(prepared.params, at)
+  const schema = applyParamPatch(prepared.params, patch, at)
+  if ('model' in schema) throw new Error(`${at}：params 里不能有 model（模型写在条目上）`)
+  assertParamSchema(schema, at)
+  assertDefaults(schema, defaults, at)
+
+  const problems = [...provider.problems.map((problem) => `提供方 ${providerId}：${problem}`), ...appOptions.problems]
+  const modelProblem = model ? (prepared.checkModel?.(model) ?? null) : null
+  if (modelProblem) problems.push(`模型 ${model}：${modelProblem}`)
+  return {
+    info: {
+      id: `${providerId}:${model ?? localId}`,
+      title: title ?? model ?? localId!,
+      ...(description ? { description } : {}),
+      category,
+      driver: driverType,
+      ...(model ? { model } : {}),
+      params: publicParams(schema, defaults),
+      ...(problems.length > 0 ? { unavailable: problems.join('；') } : {}),
+    },
+    prepared,
+    schema,
+    defaults,
+    ...(model ? { model } : {}),
+    timeoutMs,
+  }
 }
 
-/** 多模型的应用在参数表最前面加一个选模型的参数；单模型 / 不要模型的不加 */
-function withModelParam(schema: ParamSchema, modelIds: readonly string[], defaultModel: string | undefined): ParamSchema {
-  if (modelIds.length < 2) return schema
-  return { [MODEL_PARAM]: { type: 'string', enum: [...modelIds], default: defaultModel, description: '模型' }, ...schema }
-}
-
-/** 读应用表文件：不存在 = 空表；读得到却不合法就抛 */
-export function loadCatalog(file: string, options: CatalogOptions): Catalog {
-  if (!existsSync(file)) return { file: null, apps: new Map() }
-  return buildCatalog(parseConfigFile(file), `应用表 ${file}`, options)
+/** 配置段 → 应用表：先把语言服务提供方合成进去（`llm-apps.ts`），再一起解析 */
+export function catalogFromConfig(section: { providers?: unknown; apps?: unknown }, options: CatalogOptions): Catalog {
+  return buildCatalog(withLlmProviderApps({ ...section }, options.env.llmProviders, APPS_CONFIG_PATH), APPS_CONFIG_PATH, options)
 }
 
 // ---------------------------------------------------------------- 执行层
@@ -307,7 +235,6 @@ export function createAppsService(catalog: Catalog, options: ServiceOptions = {}
   async function guarded(
     appId: string,
     entry: CatalogEntry,
-    model: string | undefined,
     execute: ExecuteOptions,
     body: (ctx: RunContext) => Promise<RunOutput>,
   ): Promise<AppResult> {
@@ -321,7 +248,7 @@ export function createAppsService(catalog: Catalog, options: ServiceOptions = {}
     try {
       const output = await body(ctx)
       const durationMs = Date.now() - startedAt
-      console.info(`[apps] ${appId}${model ? `（${model}）` : ''} 完成：${output.outputs.length} 个产物，${durationMs}ms${execute.userId ? `（${execute.userId}）` : ''}`)
+      console.info(`[apps] ${appId} 完成：${output.outputs.length} 个产物，${durationMs}ms${execute.userId ? `（${execute.userId}）` : ''}`)
       return { appId, ...output, durationMs }
     } catch (err) {
       const error = normalizeError(err, appId, timeout, entry.timeoutMs, execute.signal)
@@ -335,14 +262,16 @@ export function createAppsService(catalog: Catalog, options: ServiceOptions = {}
     get: (appId) => catalog.apps.get(appId)?.info,
     validate(appId, params) {
       if (!isRecord(params)) throw new AppError('invalid_params', '参数必须是对象')
-      return { model: pickModel(entryOf(appId), params).model }
+      const entry = entryOf(appId)
+      resolveParams(entry.schema, entry.defaults, params)
+      return { model: entry.model }
     },
     async executeApp(appId, params, execute: ExecuteOptions = {}): Promise<AppResult> {
       const entry = entryOf(appId)
       if (!isRecord(params)) throw new AppError('invalid_params', '参数必须是对象')
-      const { model, values } = pickModel(entry, params)
-      return guarded(appId, entry, model, execute, async (ctx) => {
-        const submission = await entry.prepared.submit(values, ctx, model)
+      const values = resolveParams(entry.schema, entry.defaults, params)
+      return guarded(appId, entry, execute, async (ctx) => {
+        const submission = await entry.prepared.submit(values, ctx, entry.model)
         if (submission.done) return submission.output
         await execute.onSubmitted?.(submission.handle)
         const output = await pollUntilDone(entry, submission.handle, ctx, execute)
@@ -351,7 +280,7 @@ export function createAppsService(catalog: Catalog, options: ServiceOptions = {}
     },
     async resumeApp(appId, handle, execute = {}): Promise<AppResult> {
       const entry = entryOf(appId)
-      return guarded(appId, entry, undefined, execute, async (ctx) => ({
+      return guarded(appId, entry, execute, async (ctx) => ({
         upstreamId: handle.upstreamId,
         ...(await pollUntilDone(entry, handle, ctx, execute)),
       }))
@@ -366,27 +295,6 @@ export function createAppsService(catalog: Catalog, options: ServiceOptions = {}
       }
     },
   }
-}
-
-/**
- * 定下这次用哪个模型，再按这个模型的参数表校验参数。`model` 只在多模型的应用里是参数（单模型的传了算不认识的参数，
- * 和列表里的参数表一致）；选了用不了的模型回 `unavailable`
- */
-function pickModel(entry: CatalogEntry, params: Readonly<Record<string, unknown>>): { model: string | undefined; values: Record<string, unknown> } {
-  if (entry.models.size === 0) return { model: undefined, values: resolveParams(entry.prepared.params, entry.defaults, params) }
-  const ids = [...entry.models.keys()]
-  const { [MODEL_PARAM]: requested, ...rest } = params
-  let model = entry.defaultModel!
-  if (ids.length > 1 && requested !== undefined && requested !== null && requested !== '') {
-    if (typeof requested !== 'string' || !entry.models.has(requested)) {
-      throw new AppError('invalid_params', `${MODEL_PARAM} 只能是 ${ids.join(' / ')}`)
-    }
-    model = requested
-  }
-  const chosen = entry.models.get(model)!
-  if (chosen.info.unavailable) throw new AppError('unavailable', `模型 ${model} 现在用不了：${chosen.info.unavailable}`)
-  const input = ids.length > 1 ? rest : params
-  return { model, values: resolveParams(chosen.schema, defaultsFor(chosen.schema, entry.defaults), input) }
 }
 
 function normalizeError(err: unknown, appId: string, timeout: AbortSignal, timeoutMs: number, caller?: AbortSignal): AppError {

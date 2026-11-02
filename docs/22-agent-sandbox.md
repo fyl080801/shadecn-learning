@@ -714,8 +714,8 @@ VAP 没 apply 或没匹配上这个 SA —— 这时服务端的 `pods create` �
 
 - `k8s/deployment.yaml`（ArgoCD 同步）：服务端的 `serviceAccountName`、`nodeSelector: kubernetes.io/arch: arm64`，和 env（`MODULES_AGENT_SANDBOX_DRIVER=k8s`、`POD_IP`、
   `MODULES_AGENT_SANDBOX_K8S_NAMESPACE=dev`、`MODULES_AGENT_SANDBOX_IMAGE`（和服务端镜像同一个 tag，CI 一起写回）、`MODULES_AGENT_SANDBOX_K8S_PULL_SECRET=harbor-pull-secret`、
-  `MODULES_AGENT_SANDBOX_K8S_PULL_POLICY=IfNotPresent`、`MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR=kubernetes.io/arch=arm64`）。模型的配置（`MODULES_AGENT_PROVIDER` / `MODULES_AGENT_MODEL` /
-  `MODULES_AGENT_API_KEY`…）不在这里：来自带外的 ConfigMap / Secret `dev/shadecn-learning-agent`（`envFrom`、`optional`，REQ-DEPLOY §3.3），空值 / 没配 = agent 未启用。
+  `MODULES_AGENT_SANDBOX_K8S_PULL_POLICY=IfNotPresent`、`MODULES_AGENT_SANDBOX_K8S_NODE_SELECTOR=kubernetes.io/arch=arm64`）。模型的配置（`LLM_PROVIDERS` / `MODULES_AGENT_PROVIDER` /
+  `MODULES_AGENT_MODEL`，以及 `LLM_PROVIDERS` 里 `$` 引用的 key）不在这里：来自带外的 ConfigMap / Secret `dev/shadecn-learning-agent`（`envFrom`、`optional`，REQ-DEPLOY §3.3），空值 / 没配 = agent 未启用。
 - `k8s/agent-sandbox.yaml`（ArgoCD 同步）：当前形态在 `dev` 里的配套（见「部署形态」）。和 Deployment 同一次 sync，ArgoCD 按 kind 先建 ServiceAccount，
   所以 `serviceAccountName` 不会让 ReplicaSet 建不出 Pod（`dev` 的 AppProject 放行命名空间级的任意资源）。
 - `k8s/variants/agent-sandbox-vap.yaml`（集群级，不进 ArgoCD）：VAP + 绑定，管理员 `kubectl apply`；`agent-sandbox-vap-samples/` 是验证用的样例 Pod。

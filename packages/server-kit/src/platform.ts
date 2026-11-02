@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler } from 'hono'
+import type { LlmProviderTable } from './llm.ts'
 
 /**
  * 底座交给模块的平台能力（docs/28 §3.1.2）—— 模块碰「人、请求、运行环境」只经这里，不 import `apps/server`。
@@ -73,6 +74,11 @@ export interface RuntimeInfo {
   readonly moduleDir: string
   /** 多副本时共享层用的 Redis；单副本 = null */
   readonly redis: { readonly url: string; readonly prefix: string } | null
+  /**
+   * 语言服务提供方（配置的 `llm.providers`，`./llm.ts`）：底座解析好的表。core 和模块互不 import，这是模块拿到它的唯一入口 ——
+   * 模块在 `config.parse(read, runtime)` 里经这里读（agent 的模型、应用表的 text 类应用）
+   */
+  readonly llmProviders: LlmProviderTable
   /**
    * 读一个**不属于任何配置 schema** 的环境变量 —— 只给两类东西用：名字由别处约定的密钥（各家 SDK 的 `OPENAI_API_KEY`、
    * 模型表里写的 `$ENV`），和编排系统注入的运行环境事实（Downward API 的 `POD_IP`）。

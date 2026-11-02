@@ -29,6 +29,30 @@ const write = (name: string, text: string) => writeFileSync(path.join(dir, name)
 const load = (mode = 'development', explicit?: string) =>
   readConfigFiles({ dir, mode, ...(explicit !== undefined ? { explicit } : {}) })
 
+describe('json 类型的配置项', () => {
+  const jsonSchema = { llm: { providers: setting('json') } } satisfies ConfigSchema
+  const data = (value: unknown) => ({ files: ['server.config.yaml'], data: { llm: { providers: value } } })
+
+  it('文件里写对象 / 数组 → JSON 字符串；写字符串原样；环境变量就是那段 JSON，优先', () => {
+    expect(resolveConfig(jsonSchema, data({ a: { models: [{ id: 'x' }] } }), {}).get('llm.providers')).toBe('{"a":{"models":[{"id":"x"}]}}')
+    expect(resolveConfig(jsonSchema, data([1, 2]), {}).get('llm.providers')).toBe('[1,2]')
+    expect(resolveConfig(jsonSchema, data('{"a":{}}'), {}).get('llm.providers')).toBe('{"a":{}}')
+    expect(resolveConfig(jsonSchema, data({ a: {} }), { LLM_PROVIDERS: '{"b":{}}' }).get('llm.providers')).toBe('{"b":{}}')
+  })
+
+  it('标量 → 启动失败，说明要对象或数组、对应哪个环境变量', () => {
+    expect(() => resolveConfig(jsonSchema, data(3), {})).toThrow(/llm\.providers 应该是 对象或数组（或一段 JSON 字符串）（对应环境变量 LLM_PROVIDERS）/)
+    expect(() => resolveConfig(jsonSchema, data(true), {})).toThrow(/llm\.providers 应该是/)
+  })
+
+  it('分层文件的对象逐键合并（提供方可以分开写）', () => {
+    write('server.config.yaml', 'llm:\n  providers:\n    a: { baseUrl: "http://a/v1" }\n')
+    write('server.config.production.yaml', 'llm:\n  providers:\n    b: { baseUrl: "http://b/v1" }\n')
+    const merged = resolveConfig(jsonSchema, load('production'), {}).get('llm.providers')
+    expect(JSON.parse(merged!)).toEqual({ a: { baseUrl: 'http://a/v1' }, b: { baseUrl: 'http://b/v1' } })
+  })
+})
+
 describe('envNameOf：路径 → 环境变量名', () => {
   it.each([
     ['server.port', 'SERVER_PORT'],

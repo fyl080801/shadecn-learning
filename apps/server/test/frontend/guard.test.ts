@@ -54,7 +54,7 @@ describe('页面闸门', () => {
   })
 
   it('/api/* 不走页面闸门，匿名拿到的仍然是 JSON 401', async () => {
-    const res = await app.request('/api/notes', { headers: NAVIGATION })
+    const res = await app.request('/api/projects', { headers: NAVIGATION })
 
     expect(res.status).toBe(401)
     await expect(res.json()).resolves.toMatchObject({ error: 'Unauthorized' })

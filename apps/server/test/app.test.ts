@@ -26,7 +26,7 @@ describe('/api/* 的登录闸门', () => {
     },
   )
 
-  it.each([['/api/notes'], ['/api/collab/rooms']])('%s 匿名访问 → 401', async (path) => {
+  it.each([['/api/projects'], ['/api/collab/rooms']])('%s 匿名访问 → 401', async (path) => {
     const res = await app.request(path)
 
     expect(res.status).toBe(401)
@@ -36,9 +36,9 @@ describe('/api/* 的登录闸门', () => {
   it('登录之后受保护接口正常返回', async () => {
     const { cookie } = await signIn()
 
-    const res = await app.request('/api/notes', { headers: { cookie } })
+    const res = await app.request('/api/projects', { headers: { cookie } })
     expect(res.status).toBe(200)
-    await expect(res.json()).resolves.toBeInstanceOf(Array)
+    await expect(res.json()).resolves.toMatchObject({ items: [] })
   })
 
   it('公开前缀是按路径段匹配的，/api/healthz 骗不过闸门', async () => {

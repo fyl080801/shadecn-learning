@@ -25,7 +25,7 @@ import { useFlowStore } from "@/stores/flow"
 /**
  * 底部输入框（REQ-NODEKIT §6，按类型注册）：文本 / 图片 / 视频 / 导演台各有一个；文本有了正文就收起，
  * 图片 / 视频看形态（generate 有、asset 没有），导演台一直有；
- * 提交写回 `data.prompt` 并发 `composer:submit`；图片 / 视频启用了 `runnable`，它转成 `node:run`，
+ * 提交写回 `data.prompt` 并发 `composer:submit`；文本 / 图片 / 视频启用了 `runnable`，它转成 `node:run`，
  * 运行器 `app-run` 接住去生成（那一段在 `app-run.test.ts`；这里把应用列表打桩成空，运行器只会提示「没有可用的应用」）。
  *
  * `output-preview`（产出列表与侧边大图）是登记着的通用能力，默认类型都没启用 —— 在测试里给 `image`
@@ -373,6 +373,22 @@ describe("各类型的底部输入框：文本有了正文就收起，图片 / �
       w.unmount()
       wrapper = null
     }
+  })
+
+  it("文本：输入框旁是选应用的 AppPicker，没有 text 类应用时指向语言服务；Shift+回车转成 node:run", async () => {
+    const { store, w } = mountNode(nodeOf("text"))
+    await flushPromises()
+    expect(w.get('[data-testid="app-picker-empty"]').text()).toBe("服务端还没有配置语言服务")
+    const runs: (string | undefined)[] = []
+    runtime.kit.on("node:run", ({ prompt }) => runs.push(prompt))
+
+    const composer = composerOf(w)
+    await composer.focus()
+    await composer.type("写一首诗")
+    await composer.key("Enter", { shiftKey: true })
+
+    expect(store.nodeById.get("gen")?.data.prompt).toBe("写一首诗")
+    expect(runs).toEqual(["写一首诗"])
   })
 
   it("文本：双击进入正文编辑时收起输入框，退出编辑后（仍为空）重新出现", async () => {

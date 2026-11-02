@@ -1,4 +1,4 @@
-import { AppError, type AppCategory, type AppOutput, type AppUsage, type ParamSchema } from '../contract.ts'
+import { AppError, type AppOutput, type AppUsage, type ParamSchema } from '../contract.ts'
 import {
   defineDriver,
   type Fields,
@@ -19,8 +19,8 @@ import { requestJson, requestOk } from '../http.ts'
  *   产物 `content.video_url`；取消是 `DELETE …/tasks/{id}`（方舟只撤得掉排队中的）；
  * - `3d`：3D 生成任务（Seed3D），同一组任务接口，产物 `content.file_url`（zip）。
  *
- * 模型写在应用上（`model`，一个或多个，模型 id 或推理接入点 id）。这里的参数表是**各代模型的并集**（取最宽的上限）；
- * 某一代不支持的参数、更紧的上限写在应用表的 `models` 段（docs/29 §3.7，示例见仓库根的 `apps.example.yaml`）——
+ * 模型写在条目上（`model`，模型 id 或推理接入点 id）。这里的参数表是**各代模型的并集**（取最宽的上限）；
+ * 某一代不支持的参数、更紧的上限写在条目的 `params` 里（docs/29 §3.7，示例见 `sample/server.config.example.yaml`）——
  * 上游出了新模型只改配置，不改代码。
  * 每个操作的 `options` 只有 `body`（原样并进请求体的固定字段，不常用的参数写进去就行；盖不掉 `model` 和已映射的参数）。
  * 产物地址 24 小时内有效（要长期留存得转存，docs/29 §5）。
@@ -69,7 +69,6 @@ function pick(values: Readonly<Record<string, unknown>>, mapping: Readonly<Recor
 /** 每个操作的共同部分：读 `body`，组装成 PreparedApp；模型由执行层定 */
 function arkOperation(
   description: string,
-  category: AppCategory,
   params: ParamSchema,
   submit: (request: { provider: ArkProvider; model: string; body: Record<string, unknown> }, values: Readonly<Record<string, unknown>>, ctx: RunContext) => Promise<Submission>,
   task?: { label: string; outputsOf: TaskOutputs },
@@ -79,7 +78,6 @@ function arkOperation(
     prepare(options: Fields, provider): PreparedApp {
       const body = options.object('body') ?? {}
       return {
-        category,
         params,
         submit: (values, ctx, model) => submit({ provider, model: model!, body }, values, ctx),
         ...(task
@@ -105,11 +103,10 @@ interface ArkImageResponse {
 
 const image = arkOperation(
   '图片生成（文生图 / 图生图 / 组图）',
-  'image',
   {
     prompt: { type: 'string', required: true, description: '提示词', maxLength: 4000 },
     image: { type: 'images', description: '参考图（图生图），最多 14 张', maxLength: 14 },
-    // 各代的并集：档位、像素范围取最宽；每一代的档位、常用宽高表、范围在应用表的模型档案里（apps.example.yaml）
+    // 各代的并集：档位、像素范围取最宽；每一代的档位、常用宽高表、范围写在条目的 params 里（sample/server.config.example.yaml）
     size: {
       type: 'size',
       description: '分辨率档位（比例由模型按提示词定），或 宽x高',
@@ -211,7 +208,6 @@ const MODEL3D_LABEL = '火山方舟 3D 生成'
 
 const video = arkOperation(
   '视频生成（文生视频 / 首帧 / 首尾帧 / 参考图）',
-  'video',
   {
     prompt: { type: 'string', description: '提示词', maxLength: 4000 },
     firstFrame: { type: 'image', description: '首帧图' },
@@ -268,7 +264,6 @@ const video = arkOperation(
 
 const model3d = arkOperation(
   '3D 生成（图生 3D）',
-  '3d',
   {
     image: { type: 'image', required: true, description: '主体图片' },
     fileFormat: { type: 'string', enum: ['glb', 'obj', 'usd', 'usdz'], default: 'glb' },

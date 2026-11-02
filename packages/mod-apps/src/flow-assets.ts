@@ -19,11 +19,10 @@ const MAX_INPUT_BYTES = 30 * 1024 * 1024
 const MAX_OUTPUT_BYTES = 200 * 1024 * 1024
 const OUTPUT_FETCH_TIMEOUT_MS = 120_000
 
-const isImageParam = (app: AppInfo, name: string) =>
-  [app.params, ...app.models.map((model) => model.params)].some((schema) => {
-    const type = schema[name]?.type
-    return type === 'image' || type === 'images'
-  })
+const isImageParam = (app: AppInfo, name: string) => {
+  const type = app.params[name]?.type
+  return type === 'image' || type === 'images'
+}
 
 export async function inlineFlowAssets(
   storage: StorageService | undefined,

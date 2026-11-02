@@ -577,6 +577,36 @@ describe('形态：attachAsset / 连入改回 generate', () => {
   })
 })
 
+describe('文字生成的写回：appendGeneratedText', () => {
+  const textNode = (text?: string) => ({ ...record('txt', 'text'), data: text === undefined ? {} : { text } })
+
+  it('没有正文：写进 data.text（去掉首尾空白）；不留生成历史', () => {
+    const { run, node } = setup([textNode()])
+    expect(run((ctx) => ops.appendGeneratedText(ctx, 'txt', '  生成的文字\n'))).toBe(true)
+    expect(node('txt')!.data).toEqual({ text: '生成的文字' })
+  })
+
+  it('已有非空正文：接在后面（空一行），不覆盖生成期间写的字；只有空白的正文不算', () => {
+    const filled = setup([textNode('我写的字\n')])
+    filled.run((ctx) => ops.appendGeneratedText(ctx, 'txt', '生成的文字'))
+    expect(filled.node('txt')!.data.text).toBe('我写的字\n\n生成的文字')
+    const blank = setup([textNode('  \n')])
+    blank.run((ctx) => ops.appendGeneratedText(ctx, 'txt', '生成的文字'))
+    expect(blank.node('txt')!.data.text).toBe('生成的文字')
+  })
+
+  it('空文字、不输出文字的节点：返回 false，什么都不写；节点不存在按规矩抛', () => {
+    const { run, node, transactions } = setup([textNode('原文'), record('img', 'image')])
+    transactions.length = 0
+    expect(run((ctx) => ops.appendGeneratedText(ctx, 'txt', '  \n'))).toBe(false)
+    expect(run((ctx) => ops.appendGeneratedText(ctx, 'img', '文字'))).toBe(false)
+    expect(node('txt')!.data.text).toBe('原文')
+    expect(node('img')!.data.text).toBeUndefined()
+    expect(transactions).toEqual([])
+    expect(codeOf(() => run((ctx) => ops.appendGeneratedText(ctx, 'gone', '文字')))).toBe('NODE_NOT_FOUND')
+  })
+})
+
 describe('生成历史：recordGeneration / selectGeneration', () => {
   it('记一次生成 = 挂素材 + 留一条 gen.<id>，同一个事务；同一个 id 再记只覆盖那一条', () => {
     const { run, node, transactions } = setup([record('t', 'text'), record('img', 'image')], [edge('in', 't', 'img')])

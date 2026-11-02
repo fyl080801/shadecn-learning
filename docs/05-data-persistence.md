@@ -1,6 +1,6 @@
 # REQ-DATA 数据存储与业务 API
 
-> 状态：**部分实现** —— 鉴权与画布数据已落库（SQLite / PostgreSQL 二选一）；业务数据（notes）仍是内存实现，作为 API 形态的样板。
+> 状态：**部分实现** —— 鉴权与画布数据已落库（SQLite / PostgreSQL 二选一）；业务数据同样落库。
 
 ## 1. 目标
 
@@ -159,33 +159,23 @@ MikroORM 的 `schema.update({ safe: true })` **挡不住有损变更**（实测�
 
 Prisma 时代的 `db:generate`（没有生成物了）和 `db:studio`（MikroORM 没有等价的可视化工具）**已删除**；看数据用各库自己的客户端（`sqlite3 data/app.db`、`psql`）。
 
-### 3.9 业务 API 样板：`/api/notes`
+### 3.9 业务路由约定
 
-当前是内存 `Map` 实现（`packages/mod-notes/src/store.ts`），进程重启即清空，启动时预置两条示例数据。它的价值是定义**业务路由应该长什么样**：
+业务路由（如 `/api/projects`、`/api/flows`）统一遵守下面的形态：
 
-| 方法 | 路径 | 行为 |
-|---|---|---|
-| GET | `/api/notes` | 列表，按 `createdAt` 升序 |
-| GET | `/api/notes/:id` | 单条；不存在 → 404 `{ error: 'Note not found' }` |
-| POST | `/api/notes` | 新建，成功返回 **201** + 实体 |
-| PATCH | `/api/notes/:id` | 局部更新；不存在 → 404 |
-| DELETE | `/api/notes/:id` | 删除，成功返回 **204** 空 body；不存在 → 404 |
+- 创建成功返回 **201** + 实体；删除成功返回 **204** 空 body；单条不存在 → 404。
+- 请求体不是合法 JSON → 400 `{ error: '请求体不是合法 JSON' }`；字段校验失败 → 400。
+- PATCH 是局部更新，字段全部可缺省；资源和权限由路由守卫先行判定，守卫通过后才校验 body。
+- 所有错误响应都带 `error` 字符串，可另带 `message` 说明。
 
-校验要求：
-
-- 请求体不是合法 JSON → 400 `{ error: '请求体不是合法 JSON' }`；
-- `title` 必须是非空字符串（POST 必填，PATCH 可缺省），否则 400；
-- `content` 必须是字符串，POST 缺省时默认为 `''`；
-- 所有错误响应统一为 `{ error: string }`。
-
-分层要求：**路由层只做参数校验和状态码，数据访问全在 `store/` 里**。把内存实现换成数据库时，路由文件不应有任何改动。
+分层要求：**路由层只做参数校验和状态码，数据访问全在 store 里**，换存储实现时路由文件不应有任何改动。
 
 ## 4. 验收标准
 
 - [ ] 全新克隆仓库后执行 `pnpm install && pnpm db:push`，`data/app.db` 被自动创建（含父目录）。
 - [ ] 在任意子目录下执行 `pnpm db:push` 与 `pnpm dev`，两者操作的是同一个库文件。
-- [ ] 未登录访问 `/api/notes` 返回 401。
-- [ ] notes 的五个端点全部符合上表的状态码与错误格式，并有对应测试覆盖。
+- [ ] 未登录访问 `/api/projects` 返回 401。
+- [ ] 业务路由的状态码与错误格式符合 §3.9 的约定，并有对应测试覆盖。
 - [ ] 删除 `data/app.db` 后重新 `db:push` 能从零重建全部表结构；紧接着再跑一次输出「无需变更」。
 - [ ] 设 `DATABASE_PROVIDER=postgresql` + PG 的 `DATABASE_URL` 后，`pnpm db:push && pnpm dev` 全流程可用，接口行为与 SQLite 一致。
 - [ ] **同一份 `pnpm build` 产物**，`node server/db-sync.js && node server/index.js` 分别指向 SQLite 和 PostgreSQL 都能起来，`/api/health/ready` 为 200。
@@ -195,7 +185,6 @@ Prisma 时代的 `db:generate`（没有生成物了）和 `db:studio`（MikroORM
 
 ## 5. 本期不做
 
-- 把 notes 从内存迁到数据库（等真正需要持久化的业务出现再做）。
 - ~~软删除~~ —— 做了（`deletedAt` 过滤）。
 - **审计日志 / 操作历史 / 回滚** —— 曾经有（`FlowOperation` 存每次 Yjs 更新的二进制 + 服务端认定的
   `actorId`），**已整体移除**：产品里没有任何回放或恢复入口，而这张表只增不减，是全库唯一随编辑次数
@@ -211,7 +200,6 @@ Prisma 时代的 `db:generate`（没有生成物了）和 `db:studio`（MikroORM
 
 ## 6. 待确认事项
 
-- `notes` 是继续当纯样板，还是作为第一个真实持久化业务落库。
 - SQLite 单写入者模型在协同场景下是否够用。协同**已经在落盘**了（`Flow.ydoc`），
   目前靠 `packages/mod-collab/src/persistence.ts` 里的按房间串行队列避开并发写，单进程下够用；
   多副本就是切 PG 的时候（Yjs 的跨进程问题已经解掉了，见 [REQ-CLUSTER](14-clustering.md)）。

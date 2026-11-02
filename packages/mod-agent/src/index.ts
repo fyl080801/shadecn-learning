@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { agentModelKey, DEFAULT_AGENT_MODEL } from '@shadecn/agent/agents'
-import { AGENT_THINKING_LEVELS, isAgentThinkingLevel, resolveAgentModel, type AgentThinkingLevel } from '@shadecn/agent/model'
+import { resolveProviderModel } from '@shadecn/agent/llm-providers'
+import { AGENT_THINKING_LEVELS, isAgentThinkingLevel, type AgentThinkingLevel } from '@shadecn/agent/model'
 import { AGENT_GATEWAY_PATH } from '@shadecn/agent/protocol'
 import {
   createEngineClient,
@@ -224,7 +225,7 @@ function buildRuntime(): AgentRuntime {
     return createAgentRuntime({ model: null, disabled: reason, models: agentModels, driver: NO_DRIVER, gateway, ...agentHostOptions })
   }
 
-  // 模型表的 default（docs/26 §3.4）：MODULES_AGENT_PROVIDER / MODULES_AGENT_MODEL / …；其余的项在 models.ts（启动时已读、已解析）
+  // 模型表的 default（docs/26 §3.4）：MODULES_AGENT_PROVIDER 引用 llm.providers，和模型表的其余项（models.ts，启动时已读、已解析）同一条路
   // MODULES_AGENT_THINKING 写错了不让 agent 整个关掉（思考是锦上添花）：警告，当没配
   let defaultThinking: AgentThinkingLevel | undefined
   const thinking = config().thinking
@@ -232,16 +233,11 @@ function buildRuntime(): AgentRuntime {
     if (isAgentThinkingLevel(thinking)) defaultThinking = thinking
     else console.warn(`[agent] ${agentEnv('thinking')}=${thinking} 不认识（只认 ${AGENT_THINKING_LEVELS.join(' / ')}），当作没配`)
   }
-  const apiKey = config().apiKey || agentPorts().providerApiKey(config().provider)
-  const defaultModel = resolveAgentModel({
+  const defaultModel = resolveProviderModel({
+    table: agentPorts().llmProviders,
     provider: config().provider,
     model: config().model,
-    baseUrl: config().baseUrl,
-    api: config().api,
-    apiKey,
-    ...(config().imageInput !== undefined ? { imageInput: config().imageInput } : {}),
-    ...(config().contextWindow !== undefined ? { contextWindow: config().contextWindow } : {}),
-    ...(config().maxTokens !== undefined ? { maxTokens: config().maxTokens } : {}),
+    envVar: agentPorts().envVar,
     ...(defaultThinking !== undefined ? { thinking: defaultThinking } : {}),
   })
   // 入口 agent（canvas）的模型不可用 = agent 没开（同以前没配模型）；别的 agent 的不可用到 run_agent 点名它时才报

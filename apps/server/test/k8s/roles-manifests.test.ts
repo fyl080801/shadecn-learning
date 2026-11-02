@@ -44,7 +44,7 @@ describe('k8s/variants/roles：三个 Deployment', () => {
     expect(doc.spec.template.spec.terminationGracePeriodSeconds).toBe(60)
     expect(container(doc).lifecycle.preStop.exec.command).toEqual(['sh', '-c', 'sleep 5'])
     // 模型配置只走带外的 envFrom，env 里写了会静默盖掉管理员配的（.claude/rules/deploy.md）
-    for (const name of ['MODULES_AGENT_PROVIDER', 'MODULES_AGENT_MODEL', 'MODULES_AGENT_BASE_URL', 'MODULES_AGENT_API', 'MODULES_AGENT_API_KEY', 'MODULES_AGENT_TOKEN_SECRET']) {
+    for (const name of ['LLM_PROVIDERS', 'MODULES_AGENT_PROVIDER', 'MODULES_AGENT_MODEL', 'MODULES_AGENT_API_KEY', 'MODULES_AGENT_TOKEN_SECRET']) {
       expect(env.has(name)).toBe(false)
     }
     // 三种角色用同一份 agent / S3 配置（web 按它显示 agent 面板）

@@ -98,7 +98,7 @@ export function useFlowCanvas(
   presence: FlowPresence,
   selection: FlowSelection
 ) {
-  // 生成应用列表（模块级缓存）：连线时按节点选的应用 / 模型收紧参考图条数
+  // 生成应用列表（模块级缓存）：连线时按节点选的应用收紧参考图条数
   const { apps } = useApps()
   const {
     vueFlowRef,
@@ -545,7 +545,7 @@ export function useFlowCanvas(
       typeOf: typeOfNode,
       dataOf: (id) => store.nodeById.get(id)?.data,
       edges: store.edges,
-      // 人连线时按生成节点选的应用 / 模型收紧参考图条数（docs/29 §3.8）；agent 走 flow-ops 的上下文，不受它限
+      // 人连线时按生成节点选的应用收紧参考图条数（docs/29 §3.8）；agent 走 flow-ops 的上下文，不受它限
       inputLimit: (target, port) => {
         const node = store.nodeById.get(target)
         return node?.type ? appInputLimit(apps.value, node.type, node.data, port) : undefined

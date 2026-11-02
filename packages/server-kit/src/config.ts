@@ -20,7 +20,7 @@ import { parse as parseYaml } from 'yaml'
  */
 
 /** 配置项的取值类型。文件里按这个类型校验；环境变量永远是字符串 */
-export type SettingType = 'string' | 'number' | 'boolean' | 'list' | 'map'
+export type SettingType = 'string' | 'number' | 'boolean' | 'list' | 'map' | 'json'
 
 export interface Setting {
   readonly kind: 'setting'
@@ -39,6 +39,8 @@ export interface ConfigSchema {
  *
  * - `list`：文件里写数组（或逗号分隔的字符串），取出来是逗号连接的字符串 —— 和环境变量 `a,b,c` 同形；
  * - `map`：文件里写对象（值是字符串 / 数字 / 布尔），取出来是 `k=v,k2=v2`；
+ * - `json`：文件里写任意对象 / 数组（或一段 JSON 字符串），取出来是 JSON 字符串 —— 环境变量原样就是这段 JSON（`llm.providers` → `LLM_PROVIDERS`）。
+ *   这一层只管「是对象或数组」，里面的形状归读它的人校验（对象逐键合并照旧：分层文件可以各写几项）；
  * - `boolean` 取出来是 `true` / `false`，`number` 是十进制字符串。
  */
 export function setting(type: SettingType, description?: string): Setting {
@@ -300,6 +302,8 @@ function describeType(type: SettingType): string {
       return '字符串数组（或逗号分隔的字符串）'
     case 'map':
       return '键值对象（值是字符串 / 数字 / 布尔）'
+    case 'json':
+      return '对象或数组（或一段 JSON 字符串）'
   }
 }
 
@@ -323,5 +327,8 @@ function toSettingString(node: Setting, value: unknown): string | null {
       return Object.entries(value)
         .map(([key, item]) => `${key}=${String(item)}`)
         .join(',')
+    case 'json':
+      if (typeof value === 'string') return value
+      return isPlainObject(value) || Array.isArray(value) ? JSON.stringify(value) : null
   }
 }

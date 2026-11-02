@@ -1,3 +1,4 @@
+import type { LlmProviderTable } from '@shadecn/server-kit/llm'
 import { buildCatalog, createAppsService } from '../src/catalog.ts'
 import type { AppsService } from '../src/contract.ts'
 import { DRIVERS } from '../src/drivers/index.ts'
@@ -46,11 +47,11 @@ export const json = (value: unknown, status = 200) =>
 
 export function serviceOf(
   data: unknown,
-  options: { env?: Record<string, string>; fetch?: typeof fetch; appRoot?: string; defaultTimeoutMs?: number } = {},
+  options: { env?: Record<string, string>; fetch?: typeof fetch; appRoot?: string; defaultTimeoutMs?: number; llmProviders?: LlmProviderTable } = {},
 ): AppsService {
-  const catalog = buildCatalog(data, '应用表 test', {
+  const catalog = buildCatalog(data, 'modules.apps', {
     drivers: DRIVERS,
-    env: { envVar: (name) => options.env?.[name], appRoot: options.appRoot ?? process.cwd() },
+    env: { envVar: (name) => options.env?.[name], appRoot: options.appRoot ?? process.cwd(), llmProviders: options.llmProviders ?? {} },
     defaultTimeoutMs: options.defaultTimeoutMs ?? 5_000,
   })
   return createAppsService(catalog, options.fetch ? { fetch: options.fetch } : {})

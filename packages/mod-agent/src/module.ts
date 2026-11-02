@@ -5,7 +5,7 @@ import { users } from '@shadecn/server-kit/identity'
 import { defineModule } from '@shadecn/server-kit/kernel'
 import type { PlatformAuth, RuntimeInfo } from '@shadecn/server-kit/platform'
 import { startAgentReconciler } from './authority.ts'
-import { AGENT_MODULE, agentConfig, agentProviderApiKey, type AgentConfig } from './config.ts'
+import { AGENT_MODULE, agentConfig, type AgentConfig } from './config.ts'
 import { agentDefinitions, agentTextSkills } from './definitions.ts'
 import { handleRunDispatch } from './dispatch.ts'
 import { AgentConversation, AgentGrant, AgentGrantScope, AgentRun, AgentToolCall } from './entities.ts'
@@ -40,8 +40,8 @@ export function wireAgent(deps: {
     isDev: runtime.isDev,
     executesRuns: deps.executesRuns,
     paths: config.paths,
-    providerApiKey: (provider, env) =>
-      agentProviderApiKey(provider, env ? (name) => env[name] : (name) => runtime.envVar(name)),
+    llmProviders: runtime.llmProviders,
+    envVar: (name) => runtime.envVar(name),
     storage: { enabled: storage !== undefined, keyPrefix: storage?.keyPrefix ?? '' },
     runner: { isBundle: runtime.isBundle, moduleDir: runtime.moduleDir },
     stores: {

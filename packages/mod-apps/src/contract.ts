@@ -1,7 +1,7 @@
 /**
  * 应用执行模块对外的契约（docs/29）：别的模块（以后的 agent 工具、画布节点的服务端动作）经
  * `ctx.service(APPS_SERVICE)` 拿 {@link AppsService}，调 `executeApp(appId, params)`。
- * 没加载本模块（关掉、没有应用表）时拿到 undefined —— 调用方按「没有可用的应用」退化。
+ * 没加载本模块（关掉、没有配置应用）时拿到 undefined —— 调用方按「没有可用的应用」退化。
  *
  * 这个入口只有类型和常量，不 import 实现；调用方不认识任何驱动（火山方舟 / ComfyUI / ollama…）。
  */
@@ -10,12 +10,10 @@ export const APPS_SERVICE = 'apps'
 // 线上形状（应用列表、参数表）是前后端共用的契约，在 `@shadecn/shared/apps`；这里转出去，服务端照旧从本文件取
 export {
   APP_CATEGORIES,
-  MODEL_PARAM,
   PARAM_TYPES,
   type AppCategory,
   type AppErrorCode,
   type AppInfo,
-  type AppModelInfo,
   type ParamSchema,
   type ParamSpec,
   type ParamType,
@@ -107,7 +105,7 @@ export interface AppsService {
   list(): AppInfo[]
   get(appId: string): AppInfo | undefined
   /**
-   * 只校验不执行：应用在、可用、参数合这个模型（同 `executeApp` 执行前的那一步）。回定下来的模型；不对抛 {@link AppError}。
+   * 只校验不执行：应用在、可用、参数合它的参数表（同 `executeApp` 执行前的那一步）。回这个应用的模型；不对抛 {@link AppError}。
    * 画布入口在建任务之前调，参数错了当场 400，不建任务
    */
   validate(appId: string, params: Record<string, unknown>): { model: string | undefined }

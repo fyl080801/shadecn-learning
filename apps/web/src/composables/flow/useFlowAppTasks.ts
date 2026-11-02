@@ -94,7 +94,7 @@ export function createFlowAppTasks(host: FlowAppTasksHost): FlowAppTasks {
       const { tasks: list } = await appApi.listFlowTasks(flowId.value)
       if (ticket === generation && before === pushes) raw.value = list
     } catch (error) {
-      // 模块没开（没有应用表）= 没有任务
+      // 模块没开（没有配置应用）= 没有任务
       if (error instanceof ApiError && error.status === 404) {
         if (ticket === generation) raw.value = []
         return

@@ -10,7 +10,7 @@ import { buildNodeRecord, nodeFormOf } from "@shadecn/shared/flow-node-types"
 import { formatNodeMention } from "@shadecn/shared/agent"
 import type { FlowDetail } from "@shadecn/shared/canvas"
 
-import { appInputLimit, collectNodeAppInputs, referenceImageLimit, resolveNodeApp } from "@/components/flow/apps/node-app"
+import { appHint, appInputLimit, collectNodeAppInputs, referenceImageLimit, resolveNodeApp } from "@/components/flow/apps/node-app"
 import { runNodeApp } from "@/components/flow/node-kit/features/app-run"
 import type { NodeEventSource } from "@/components/flow/node-kit/protocol"
 import { useFlowNode } from "@/composables/flow/useFlowNode"
@@ -20,7 +20,7 @@ import { ApiError } from "@/lib/api"
 import { useFlowStore } from "@/stores/flow"
 
 /**
- * 生成节点（docs/29 §3.8、§3.10）：节点选的应用 / 模型、节点输入 → 应用参数、运行器提交任务、
+ * 生成节点（docs/29 §3.8、§3.10）：节点选的应用、节点输入 → 应用参数、运行器提交任务、
  * 画布的任务列表（推送替换、重连拉取、和文档对账、取消）。接口打桩（`appApi`），文档是真的 store + Y.Doc。
  */
 
@@ -36,23 +36,25 @@ const toasts = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn(), warning: vi.fn
 vi.mock("vue-sonner", () => ({ toast: toasts }))
 
 const SEEDREAM: AppInfo = {
-  id: "seedream",
-  title: "Seedream",
+  id: "ark:pro",
+  title: "Seedream 5.0",
   category: "image",
   driver: "ark",
+  model: "pro",
   params: {
-    model: { type: "string", enum: ["pro", "v45"], default: "pro" },
     prompt: { type: "string", required: true },
     image: { type: "images", maxLength: 2 }
-  },
-  models: [
-    { id: "pro", title: "5.0", params: { prompt: { type: "string", required: true }, image: { type: "images", maxLength: 2 } } },
-    { id: "v45", title: "4.5", params: { prompt: { type: "string", required: true }, image: { type: "images", maxLength: 14 } } }
-  ],
-  defaultModel: "pro"
+  }
 }
-const BROKEN: AppInfo = { ...SEEDREAM, id: "broken", title: "坏的", unavailable: "ARK_API_KEY 没有设置" }
-const VIDEO: AppInfo = { ...SEEDREAM, id: "seedance", category: "video" }
+const SEEDREAM_45: AppInfo = {
+  ...SEEDREAM,
+  id: "ark:v45",
+  title: "Seedream 4.5",
+  model: "v45",
+  params: { ...SEEDREAM.params, image: { type: "images", maxLength: 14 } }
+}
+const BROKEN: AppInfo = { ...SEEDREAM, id: "ark:broken", title: "坏的", model: "broken", unavailable: "ARK_API_KEY 没有设置" }
+const VIDEO: AppInfo = { ...SEEDREAM, id: "ark:seedance", title: "Seedance", category: "video", model: "seedance" }
 
 function detail(): FlowDetail {
   return {
@@ -112,8 +114,8 @@ function taskView(overrides: Partial<AppTaskView> = {}): AppTaskView {
     id: "task-1",
     flowId: "flow-1",
     nodeId: "gen",
-    appId: "seedream",
-    appTitle: "Seedream",
+    appId: SEEDREAM.id,
+    appTitle: SEEDREAM.title,
     status: "queued",
     owner: { id: "user-1", name: "我", avatarUrl: null },
     createdAt: 1,
@@ -124,7 +126,7 @@ function taskView(overrides: Partial<AppTaskView> = {}): AppTaskView {
 beforeEach(() => {
   setActivePinia(createPinia())
   resetApps()
-  api.list.mockResolvedValue([BROKEN, SEEDREAM, VIDEO])
+  api.list.mockResolvedValue([BROKEN, SEEDREAM, SEEDREAM_45, VIDEO])
   api.submitOnFlow.mockResolvedValue(taskView())
   api.listFlowTasks.mockResolvedValue({ tasks: [], now: 1 })
   api.cancelFlowTask.mockResolvedValue(undefined)
@@ -138,22 +140,45 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe("节点选哪个应用 / 模型", () => {
-  it("没选：这个类别里第一个可用的应用、它的默认模型；选了就用选的；选的模型不在了退回默认", () => {
-    const apps = [BROKEN, SEEDREAM, VIDEO]
-    expect(resolveNodeApp(apps, "image", {})).toMatchObject({ app: { id: "seedream" }, model: "pro" })
-    expect(resolveNodeApp(apps, "image", { appId: "seedream", appModel: "v45" })).toMatchObject({ model: "v45" })
-    expect(resolveNodeApp(apps, "image", { appId: "seedream", appModel: "gone" })).toMatchObject({ model: "pro" })
-    expect(resolveNodeApp(apps, "video", {})).toMatchObject({ app: { id: "seedance" } })
+describe("节点选哪个应用", () => {
+  it("没选：这个类别里第一个可用的应用；选了就用选的（只看 appId）", () => {
+    const apps = [BROKEN, SEEDREAM, SEEDREAM_45, VIDEO]
+    expect(resolveNodeApp(apps, "image", {})).toBe(SEEDREAM)
+    expect(resolveNodeApp(apps, "image", { appId: SEEDREAM_45.id })).toBe(SEEDREAM_45)
+    expect(resolveNodeApp(apps, "image", { appId: BROKEN.id })).toBe(BROKEN)
+    expect(resolveNodeApp(apps, "video", {})).toBe(VIDEO)
     expect(resolveNodeApp(apps, "audio", {})).toBeNull()
   })
 
-  it("参考图上限按所选模型；连线上限只收紧图片端口，没有应用就不收紧", () => {
-    expect(referenceImageLimit({ app: SEEDREAM, model: "pro" })).toBe(2)
-    expect(referenceImageLimit({ app: SEEDREAM, model: "v45" })).toBe(14)
+  it("旧节点：appId 对不上（重构前的 id）走回退，残留的 appModel 被忽略", () => {
+    const apps = [BROKEN, SEEDREAM, SEEDREAM_45]
+    expect(resolveNodeApp(apps, "image", { appId: "seedream", appModel: "v45" })).toBe(SEEDREAM)
+    expect(resolveNodeApp(apps, "image", { appId: SEEDREAM.id, appModel: "v45" })).toBe(SEEDREAM)
+  })
+
+  it("别的类别的应用不算选中：图片节点的 appId 指向视频应用时走回退", () => {
+    expect(resolveNodeApp([SEEDREAM, VIDEO], "image", { appId: VIDEO.id })).toBe(SEEDREAM)
+  })
+
+  it("全都不可用：选第一个，界面上要能看到原因", () => {
+    expect(resolveNodeApp([BROKEN], "image", {})).toBe(BROKEN)
+  })
+
+  it("下拉的提示：不可用看原因，否则是说明和模型", () => {
+    expect(appHint(BROKEN)).toBe("ARK_API_KEY 没有设置")
+    expect(appHint(SEEDREAM)).toBe("pro")
+    expect(appHint({ ...SEEDREAM, description: "文生图" })).toBe("文生图 · pro")
+    expect(appHint({ ...SEEDREAM, model: undefined })).toBeUndefined()
+  })
+
+  it("参考图上限按所选应用；连线上限只收紧图片端口，没有应用就不收紧", () => {
+    expect(referenceImageLimit(SEEDREAM)).toBe(2)
+    expect(referenceImageLimit(SEEDREAM_45)).toBe(14)
+    expect(referenceImageLimit({ ...SEEDREAM, params: { prompt: { type: "string" }, image: { type: "image" } } })).toBe(1)
+    expect(referenceImageLimit({ ...SEEDREAM, params: { prompt: { type: "string" } } })).toBe(0)
     const imagePort = { id: "image", dataType: "image" as const }
-    expect(appInputLimit([SEEDREAM], "image", {}, imagePort)).toEqual({ max: 2, reason: "5.0 最多连 2 张参考图" })
-    expect(appInputLimit([SEEDREAM], "image", { appId: "seedream", appModel: "v45" }, imagePort)?.max).toBe(14)
+    expect(appInputLimit([SEEDREAM], "image", {}, imagePort)).toEqual({ max: 2, reason: "Seedream 5.0 最多连 2 张参考图" })
+    expect(appInputLimit([SEEDREAM, SEEDREAM_45], "image", { appId: SEEDREAM_45.id }, imagePort)?.max).toBe(14)
     expect(appInputLimit([SEEDREAM], "image", {}, { id: "text", dataType: "text" })).toBeUndefined()
     expect(appInputLimit([], "image", {}, imagePort)).toBeUndefined()
   })
@@ -181,14 +206,14 @@ describe("节点的输入 → 应用的输入", () => {
 })
 
 describe("运行器 app-run", () => {
-  it("提交任务：提示词 + 参考图 + 模型 + 节点；节点的 runtime 和 src 都不写（只有执行副本写）", async () => {
+  it("提交任务：提示词 + 参考图 + 节点，模型不是参数；节点的 runtime 和 src 都不写（只有执行副本写）", async () => {
     const store = canvas()
-    store.writeNode("gen", "data", { set: { appId: "seedream", appModel: "v45" } })
+    store.writeNode("gen", "data", { set: { appId: SEEDREAM_45.id } })
     await runNodeApp(eventSource("gen"), "一只猫")
 
-    expect(api.submitOnFlow).toHaveBeenCalledWith("flow-1", "seedream", {
+    expect(api.submitOnFlow).toHaveBeenCalledWith("flow-1", SEEDREAM_45.id, {
       nodeId: "gen",
-      params: { model: "v45", prompt: "电影感，暖色调\n一只猫", image: ["https://s3/a.png", "https://s3/b.png"] }
+      params: { prompt: "电影感，暖色调\n一只猫", image: ["https://s3/a.png", "https://s3/b.png"] }
     })
     const gen = store.nodeById.get("gen")!
     expect(gen.runtime).toEqual({ status: "idle" })
@@ -196,32 +221,62 @@ describe("运行器 app-run", () => {
     expect(nodeFormOf("image", gen.data)).toBe("generate")
   })
 
-  it("节点上设的尺寸（appParam.size）带进请求；不合所选模型的不带", async () => {
-    const sized: AppInfo = {
-      ...SEEDREAM,
-      models: SEEDREAM.models.map((model) => ({
-        ...model,
-        params: { ...model.params, size: { type: "size", tiers: ["1K", "2K"], maxPixels: model.id === "pro" ? 4624220 : 16777216 } }
-      }))
-    }
-    api.list.mockResolvedValue([sized])
+  it("节点上设的尺寸（appParam.size）带进请求；不合所选应用的不带", async () => {
+    const sized = (app: AppInfo, maxPixels: number): AppInfo => ({
+      ...app,
+      params: { ...app.params, size: { type: "size", tiers: ["1K", "2K"], maxPixels } }
+    })
+    const pro = sized(SEEDREAM, 4624220)
+    const v45 = sized(SEEDREAM_45, 16777216)
+    api.list.mockResolvedValue([pro, v45])
     const store = canvas()
-    store.writeNode("gen", "data", { set: { appModel: "v45", appId: "seedream", "appParam.size": "4096x4096" } })
+    store.writeNode("gen", "data", { set: { appId: v45.id, "appParam.size": "4096x4096" } })
     await runNodeApp(eventSource("gen"), "x")
     expect(api.submitOnFlow.mock.calls[0]![2].params.size).toBe("4096x4096")
 
-    store.writeNode("gen", "data", { set: { appModel: "pro" } })
+    store.writeNode("gen", "data", { set: { appId: pro.id } })
     await runNodeApp(eventSource("gen"), "x")
+    expect(api.submitOnFlow.mock.calls[1]![1]).toBe(pro.id)
     expect(api.submitOnFlow.mock.calls[1]![2].params).not.toHaveProperty("size")
   })
 
-  it("超出模型上限的参考图截掉并提示", async () => {
+  it("超出应用上限的参考图截掉并提示", async () => {
     const store = canvas()
     store.addNode(node("ref3", "image", { src: "https://s3/c.png", form: "asset" }))
     store.connect("ref3", "gen")
     await runNodeApp(eventSource("gen"), "x")
     expect(api.submitOnFlow.mock.calls[0]![2].params.image).toEqual(["https://s3/a.png", "https://s3/b.png"])
     expect(toasts.warning).toHaveBeenCalledWith(expect.stringContaining("1 张参考图"))
+  })
+
+  it("文本节点：没有输入端口，提示词就是 data.prompt，用 text 类应用；不带参考图；节点的正文、runtime 都不写", async () => {
+    const WRITER: AppInfo = {
+      id: "llm-selfhost:qwen3",
+      title: "qwen3",
+      category: "text",
+      driver: "llm",
+      model: "qwen3",
+      params: { prompt: { type: "string", required: true } }
+    }
+    api.list.mockResolvedValue([SEEDREAM, WRITER])
+    const store = canvas()
+    store.addNode(node("txt", "text", { prompt: "写一首诗" }))
+    await runNodeApp(eventSource("txt", "text"))
+    expect(api.submitOnFlow).toHaveBeenCalledWith("flow-1", WRITER.id, { nodeId: "txt", params: { prompt: "写一首诗" } })
+    const txt = store.nodeById.get("txt")!
+    expect(txt.runtime).toEqual({ status: "idle" })
+    expect(txt.data.text).toBe("")
+  })
+
+  it("没有应用：提示说该去哪配 —— 文本节点指向 llm.providers，生图节点指向 modules.apps", async () => {
+    api.list.mockResolvedValue([])
+    const store = canvas()
+    store.addNode(node("txt", "text", { prompt: "x" }))
+    await runNodeApp(eventSource("txt", "text"))
+    expect(toasts.error).toHaveBeenLastCalledWith("还没有可用的生成应用", { description: expect.stringContaining("llm.providers") })
+    await runNodeApp(eventSource("gen"), "x")
+    expect(toasts.error).toHaveBeenLastCalledWith("还没有可用的生成应用", { description: expect.stringContaining("modules.apps") })
+    expect(api.submitOnFlow).not.toHaveBeenCalled()
   })
 
   it("提交失败：只提示服务端那句话，节点状态和内容都不动", async () => {
@@ -244,7 +299,7 @@ describe("运行器 app-run", () => {
 
   it("选的应用不可用 / 没有应用：只提示，不发请求、不改状态", async () => {
     const store = canvas()
-    store.writeNode("gen", "data", { set: { appId: "broken" } })
+    store.writeNode("gen", "data", { set: { appId: BROKEN.id } })
     await runNodeApp(eventSource("gen"), "x")
     expect(toasts.error).toHaveBeenCalledWith("「坏的」现在用不了", { description: "ARK_API_KEY 没有设置" })
 

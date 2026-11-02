@@ -2,7 +2,7 @@ import type { Hocuspocus } from '@hocuspocus/server'
 import * as Y from 'yjs'
 import { formatAppTasksMessage, type AppOutputView, type AppTaskProgress } from '@shadecn/shared/apps'
 import { nodesMap } from '@shadecn/shared/flow-doc'
-import { opContext, recordGeneration, writeNodeFields, type FlowOpContext } from '@shadecn/shared/flow-ops'
+import { appendGeneratedText, opContext, recordGeneration, writeNodeFields, type FlowOpContext } from '@shadecn/shared/flow-ops'
 import { collabInstance, quotaLocked, roomOf } from '@shadecn/mod-collab/canvas-host'
 import type { StorageService } from '@shadecn/mod-storage/contract'
 import { bus } from '@shadecn/server-kit/bus'
@@ -42,7 +42,7 @@ import { appTasks, handleOf, paramsOf, taskViews, type AppTaskRow } from './task
  *
  * ## 写回节点的规矩
  *
- * 只经 `@shadecn/shared/flow-ops`（`recordGeneration` → `attachAsset` 守住 generate / asset 形态规则，同人上传），事务 origin 是 {@link appsOrigin} ——
+ * 只经 `@shadecn/shared/flow-ops`（`recordGeneration` → `attachAsset` 守住 generate / asset 形态规则，同人上传；文字产物是 `appendGeneratedText`），事务 origin 是 {@link appsOrigin} ——
  * 不在任何人的 `trackedOrigins` 里，不进撤销栈。写之前判：发起人的执行身份过 `flow:write`、房间没到容量上限、节点还在、
  * 节点的 `runtime.taskId` 还是这个任务（被更新的任务盖掉了就不碰）。写不了只打日志，任务结果照常记在表里。
  */
@@ -210,7 +210,7 @@ export function createTaskRunner(ports: TaskRunnerPorts): TaskRunner {
         throw new AppError('aborted', '执行中断（服务重启），请重新生成')
       } else {
         const app = ports.service.get(row.appId)
-        if (!app) throw new AppError('not_found', `应用 ${row.appId} 已经不在应用表里了`)
+        if (!app) throw new AppError('not_found', `应用 ${row.appId} 已经不在配置里了`)
         await authority.authorize('flow:read')
         const params = await inlineFlowAssets(ports.storage(), row.flowId, app, paramsOf(row), signal)
         result = await ports.service.executeApp(row.appId, params, {
@@ -232,11 +232,15 @@ export function createTaskRunner(ports: TaskRunnerPorts): TaskRunner {
       if (!(await appTasks.finish(row.id, owner, { status: 'succeeded', outputs }))) return
       const category = ports.service.get(row.appId)?.category
       const output = outputs.find((item) => item.kind === category && item.url)
+      // 文字产物：第一段非空的正文（思考在 `meta` 里，只留在任务表，不进节点）
+      const text = category === 'text' ? outputs.find((item) => item.kind === 'text' && item.text?.trim())?.text : undefined
       // 视频节点画的是预览图：产物里有图（尾帧）就当预览图
       const poster = category === 'video' ? outputs.find((item) => item.kind === 'image' && item.url)?.url : undefined
       await writeNode('完成', (ctx, runtime) => {
         if (!ownsNode(runtime)) return
-        if (output?.url) {
+        if (text !== undefined && appendGeneratedText(ctx, row.nodeId, text)) {
+          writeNodeFields(ctx, row.nodeId, 'runtime', { set: { status: 'completed' }, remove: ['error'] })
+        } else if (output?.url) {
           // 挂上结果并留进生成历史（同一个事务；id = 任务 id，被接手后重写也只有一条）
           recordGeneration(ctx, row.nodeId, { id: row.id, src: output.url, ...(poster ? { poster } : {}), createdAt: Date.now() })
           writeNodeFields(ctx, row.nodeId, 'runtime', { set: { status: 'completed' }, remove: ['error'] })

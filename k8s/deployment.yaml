@@ -96,7 +96,7 @@ spec:
             # —— 画布 agent 的沙箱：每一轮在 dev 里建一个 Pod 跑 runner（docs/22 §7.5）——
             # 沙箱 Pod 和 gitea 等别的服务共用 dev：dev 没有 Pod Security，服务端能建什么样的 Pod 由
             # k8s/variants/agent-sandbox-vap.yaml（集群级，人工 apply）限死；它不在时启动自检不通过、agent 不启用。
-            # 模型（MODULES_AGENT_PROVIDER / MODULES_AGENT_MODEL / MODULES_AGENT_BASE_URL / MODULES_AGENT_API / MODULES_AGENT_IMAGE_INPUT / MODULES_AGENT_API_KEY / MODULES_AGENT_TOKEN_SECRET）
+            # 模型（LLM_PROVIDERS / MODULES_AGENT_PROVIDER / MODULES_AGENT_MODEL / MODULES_AGENT_TOKEN_SECRET，以及 LLM_PROVIDERS 里 $ 引用的 key）
             # **不要写在这里**：它们来自下面 envFrom 的 shadecn-learning-agent（ConfigMap + Secret，带外资源，docs/12 §3.3），
             # 而 env 优先于 envFrom —— 在这里写一个就把那边的值盖掉了。没配 / 空值 = agent 未启用。
             - name: MODULES_AGENT_SANDBOX_DRIVER

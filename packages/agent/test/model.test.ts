@@ -4,6 +4,17 @@ import { resolveAgentModel } from '../src/model.ts'
 /** 选模型：参数对象进、模型出 —— 本包不读环境变量 */
 
 describe('resolveAgentModel', () => {
+  it('name 决定 label 和 model.name；reasoning 覆盖注册表的，且都不改注册表本身', () => {
+    const named = resolveAgentModel({ provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'k', name: '主力模型', reasoning: false })
+    expect(named).toMatchObject({ ok: true, value: { label: '主力模型', model: { name: '主力模型', reasoning: false } } })
+    const plain = resolveAgentModel({ provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    expect(plain.ok && plain.value.model.name).not.toBe('主力模型')
+    expect(plain.ok && plain.value.model.reasoning).toBe(true)
+    // thinking 给了仍然标成支持思考（请求思考的前提）
+    const forced = resolveAgentModel({ provider: 'ollama', model: 'qwen3', reasoning: false, thinking: 'low' })
+    expect(forced.ok && forced.value.model.reasoning).toBe(true)
+  })
+
   it('注册表里有的模型直接用', () => {
     const resolved = resolveAgentModel({ provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'k' })
     expect(resolved.ok).toBe(true)

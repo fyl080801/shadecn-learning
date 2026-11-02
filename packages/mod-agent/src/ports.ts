@@ -1,5 +1,6 @@
 import type { AgentRuntimeOptions } from '@shadecn/agent/session'
 import type { AgentConversationStore, AgentRunLog } from '@shadecn/agent/store'
+import type { LlmProviderTable } from '@shadecn/server-kit/llm'
 import type { AgentPaths } from './config.ts'
 
 /**
@@ -18,12 +19,6 @@ export type AgentSandboxDriver = 'process' | 'oci' | 'k8s' | { unknown: string }
 export interface AgentHostConfig {
   readonly provider: string
   readonly model: string
-  readonly baseUrl: string
-  readonly api: string
-  readonly apiKey: string
-  readonly imageInput: boolean | undefined
-  readonly contextWindow: number | undefined
-  readonly maxTokens: number | undefined
   readonly thinking: string | undefined
   readonly sandbox: AgentSandboxDriver
   readonly sandboxExec: boolean
@@ -118,8 +113,10 @@ export interface AgentPorts {
    */
   executesRuns: boolean
   paths: AgentPaths
-  /** 没配 `MODULES_AGENT_API_KEY` 时按提供方退回的 key（`./config.ts` 的 `agentProviderApiKey`）；`env` 给了就从它读（测试） */
-  providerApiKey(provider: string, env?: Readonly<Record<string, string | undefined>>): string
+  /** 语言服务提供方（平台的 `runtime.llmProviders`）：`default` 和模型表的 `provider` 都引用它 */
+  llmProviders: LlmProviderTable
+  /** 读 `$ENV` 引用的、按提供方退回的 key（平台的 `runtime.envVar`：名字由别处约定，不在配置 schema 里） */
+  envVar(name: string): string | undefined
   storage: {
     /** 本进程加载了对象存储模块：只有开了才把看图（`view_node_media`）接给编排层 */
     enabled: boolean

@@ -74,7 +74,7 @@
 |---|---|
 | `GET /api/health` | 健康检查，返回 `{ status, uptime, timestamp }`，公开 |
 | `/api/auth/*` | 见 [REQ-AUTH](02-auth-keycloak.md)，公开 |
-| `/api/notes/*` | 见 [REQ-DATA](05-data-persistence.md) |
+| `/api/projects/*` 等业务路由 | 见 [REQ-DATA](05-data-persistence.md) §3.9 |
 | `GET /api/collab/rooms` | 见 [REQ-COLLAB](04-realtime-collab.md) |
 
 ### 2.8 配置项
@@ -109,7 +109,7 @@
 - [ ] 开发环境改 `apps/server/` 源码触发进程重启（`tsx watch` 带 `--exclude '../web/node_modules/.vite-temp/**'`，否则 Vite 打包配置的临时文件会触发无限重启）。
 - [ ] `pnpm preview`（build + 生产模式启动）后，直接访问 `/3d-viewport` 这类深层路由能正确返回页面而不是 404。
 - [ ] 生产模式下进程内没有加载 Vite（依赖被 prune 掉也能启动）。
-- [ ] `GET /api/health` 免登录可访问；`GET /api/notes` 未登录返回 401。
+- [ ] `GET /api/health` 免登录可访问；`GET /api/projects` 未登录返回 401。
 - [ ] 不存在的 `/api/xxx` 返回 JSON 格式 404，而不是 `index.html`。
 - [ ] `Ctrl-C` 能干净退出，不留孤儿进程。
 
@@ -124,4 +124,3 @@
 ## 5. 待确认事项
 
 - 生产环境是否需要给静态资源加长缓存头 + 文件名哈希（当前依赖 Vite 默认产物命名）。
-- `store/notes.ts` 之外的业务数据是否统一走数据库（MikroORM），还是继续保留内存实现作为演示。

@@ -458,7 +458,7 @@ describe("节点底部输入框发起的会话", () => {
   it("空提示词不打开；别的类型的 composer:submit 不归它管", async () => {
     await mountOverlay()
     runtime.kit.emit("composer:submit", { text: "   " }, sourceOf("dc", "director"))
-    runtime.kit.emit("composer:submit", { text: "画一只猫" }, sourceOf("t1", "text"))
+    runtime.kit.emit("composer:submit", { text: "画一只猫" }, sourceOf("t1", "process"))
     await flushPromises()
     expect(overlay()).toBeNull()
     expect(send).not.toHaveBeenCalled()
