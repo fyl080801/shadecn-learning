@@ -1,11 +1,12 @@
 import './env.ts'
 import { cfg, configSource, dataDir } from './config-source.ts'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import path from 'node:path'
 import { parseRoles, type ServerRole } from '@shadecn/server-kit/kernel'
 import { parseLlmProviders } from '@shadecn/server-kit/llm'
+import { normalizeOrigin, pickOrigin, type OriginHeaders } from '@shadecn/server-kit/oauth'
+import { providerFromUrl, type DbProvider } from '@shadecn/server-kit/orm'
 import { appRoot, isBundle, moduleDir } from './runtime.ts'
 
 /**
@@ -66,9 +67,6 @@ export function isApiPath(pathname: string) {
 
 export { dataDir }
 
-/** 支持的两种库 */
-export type DbProvider = 'sqlite' | 'postgresql'
-
 /**
  * 用哪种库。**这是唯一的一份解析规则**：服务端进程（packages/server-core/src/db/orm.ts）和表结构同步入口
  * （apps/server/db-sync.ts，源码态 `pnpm db:push`、产物态 `node server/db-sync.js`）
@@ -89,20 +87,12 @@ export const dbProvider: DbProvider = resolveProvider()
  *   解析，不按 cwd —— `pnpm db:push` 在 apps/server 下跑，服务端进程的 cwd 可能又是别处，
  *   两边必须看到同一个文件）；
  * - postgresql：必须给 DATABASE_URL。Prisma 时代的 `?schema=xxx` 写法照旧认
- *   （db/orm.ts 把它摘出来交给 MikroORM 的 schema 选项，pg 本身不认这个参数）。
+ *   （`@shadecn/server-kit/orm` 把它摘出来交给 MikroORM 的 schema 选项，pg 本身不认这个参数）。
  */
 export const databaseUrl = resolveDatabaseUrl()
 
 function resolveFromRoot(target: string) {
   return path.isAbsolute(target) ? target : path.join(rootDir, target)
-}
-
-/** 从连接串协议反推 provider；认不出来返回 undefined */
-function providerFromUrl(url: string | undefined): DbProvider | undefined {
-  if (!url) return undefined
-  if (url.startsWith('file:')) return 'sqlite'
-  if (/^postgres(ql)?:\/\//i.test(url)) return 'postgresql'
-  return undefined
 }
 
 function resolveProvider(): DbProvider {
@@ -131,12 +121,6 @@ function resolveDatabaseUrl() {
 
   const url = configured ?? `file:${path.join(dataDir, 'app.db')}`
   return url.startsWith('file:') ? `file:${resolveFromRoot(url.slice('file:'.length))}` : url
-}
-
-/** better-sqlite3 不会自动建目录，打开库之前先把父目录补上（postgres 无事发生） */
-export function ensureDatabaseDir() {
-  if (!databaseUrl.startsWith('file:')) return
-  mkdirSync(path.dirname(databaseUrl.slice('file:'.length)), { recursive: true })
 }
 
 /** 单副本（进程内存）还是多副本（Redis 共享） */
@@ -247,24 +231,8 @@ export const logSlowRequestMs = Number(cfg('log.slowMs') ?? 1000)
 /** 超过这个毫秒数的数据库查询记一条 warn。0 = 不记 */
 export const logSlowQueryMs = Number(cfg('log.slowQueryMs') ?? 200)
 
-/**
- * 把一个 origin 归一化成可比较的形式：`协议://host[:非默认端口]`，全小写、去尾斜杠。
- *
- * 比较必须走这一步而不是字符串相等 —— `https://a.com/`、`https://A.com`、
- * `https://a.com:443` 是同一个源，浏览器发 `Origin` 头时给的又永远是最规范的那种写法。
- * 认不出来的（不是合法 URL、不是 http/https）返回 null，一律当不在名单里。
- */
-export function normalizeOrigin(value: string | null | undefined): string | null {
-  const raw = value?.trim()
-  if (!raw) return null
-  try {
-    const url = new URL(raw)
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-    return url.origin.toLowerCase()
-  } catch {
-    return null
-  }
-}
+// 判定规则在 `@shadecn/server-kit/oauth`，这里只给名单和默认值
+export { normalizeOrigin }
 
 /** 应用对外地址：没配 `SERVER_ORIGIN` 时按监听地址兜底，同时也是白名单的默认成员 */
 export const appOrigin =
@@ -302,36 +270,8 @@ export function isAllowedOrigin(value: string | null | undefined): boolean {
 }
 
 /**
- * 这次请求该用哪个对外地址。
- *
- * 依次看 `X-Forwarded-Proto` + `X-Forwarded-Host`（反代改写过的对外地址）、`Host`、
- * 最后才是 `Origin`（整页导航根本不带这个头，只在 XHR 上有）。取第一个**在白名单里**的；
- * 一个都不在就回落 `SERVER_ORIGIN` —— 行为和加这个特性之前完全一样。
+ * 这次请求该用哪个对外地址：白名单内跟着请求走，一个都不在就回落 `SERVER_ORIGIN` —— 行为和加这个特性之前完全一样。
  */
-export function resolveOrigin(headers: {
-  origin?: string | null
-  forwardedProto?: string | null
-  forwardedHost?: string | null
-  host?: string | null
-  /** 直连（没有反代）时的协议，用来给 Host 头补上 scheme */
-  protocol?: string | null
-}): string {
-  const proto = headers.forwardedProto?.split(',')[0]?.trim() || headers.protocol || 'http'
-  const forwardedHost = headers.forwardedHost?.split(',')[0]?.trim()
-
-  const candidates = [
-    // 反代改写过的对外地址最贴近「用户在浏览器地址栏里看到的那个域名」
-    forwardedHost ? `${proto}://${forwardedHost}` : null,
-    headers.host ? `${proto}://${headers.host}` : null,
-    // 反代终止了 https 却没给 X-Forwarded-Proto 时的补救
-    headers.host ? `https://${headers.host}` : null,
-    // 最后才看 Origin：反代把 Host 改成了内网名字时，只有它还认得对外域名
-    headers.origin,
-  ]
-
-  for (const candidate of candidates) {
-    const origin = normalizeOrigin(candidate)
-    if (origin && appOrigins.includes(origin)) return origin
-  }
-  return appOrigin
+export function resolveOrigin(headers: OriginHeaders): string {
+  return pickOrigin(headers, appOrigins, appOrigin)
 }

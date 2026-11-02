@@ -2,6 +2,11 @@
 # 只写 `node_modules` 只排得掉根目录那一个 —— 漏进来会在 `COPY . .` 时盖掉镜像里装好的依赖
 **/node_modules
 dist
+apps/platform/dist
+packages/config/dist
+packages/web/dist
+packages/data-access/dist
+packages/session/dist
 output
 .git
 .claude
@@ -26,6 +31,7 @@ data
 # 测试相关，不进镜像
 apps/server/test
 apps/agent-sandbox/test
+apps/platform/test
 apps/web/src/test
 packages/*/test
 vitest.config.ts

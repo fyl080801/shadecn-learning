@@ -1,0 +1,43 @@
+{
+  "name": "@learning/data-access",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mikro-orm/core": "7.2.5",
+    "@mikro-orm/postgresql": "7.2.5",
+    "@mikro-orm/sqlite": "7.2.5"
+  },
+  "peerDependencies": {
+    "@learning/config": "workspace:*",
+    "@nestjs/common": "^12.3.2"
+  },
+  "devDependencies": {
+    "@learning/config": "workspace:*",
+    "@nestjs/common": "^12.3.2",
+    "@nestjs/core": "^12.3.2",
+    "@shadecn/mod-agent": "workspace:*",
+    "@shadecn/mod-apps": "workspace:*",
+    "@shadecn/mod-auth": "workspace:*",
+    "@shadecn/mod-canvas": "workspace:*",
+    "@shadecn/mod-storage": "workspace:*",
+    "@shadecn/server-kit": "workspace:*",
+    "@swc/core": "^1.15.18",
+    "@types/node": "^24.10.1",
+    "esbuild": "^0.28.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "typescript": "~6.0.2",
+    "unplugin-swc": "^1.5.9"
+  }
+}

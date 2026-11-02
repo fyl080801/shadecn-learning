@@ -6,6 +6,11 @@ import { defineConfig } from 'vitest/config'
  *   client —— apps/web/vitest.config.ts：jsdom 环境，测前端（apps/web/src/test/**）
  *   shared —— packages/shared/vitest.config.ts：Node 环境，测前后端共用的契约（packages/shared/test/**）
  *   agent  —— packages/agent/vitest.config.ts：Node 环境，测画布 Agent（编排、画布工具、沙箱，packages/agent/test/**）
+ *   platform —— apps/platform/vitest.config.ts：Node 环境，测 NestJS 服务（@learning/platform）
+ *   config —— packages/config/vitest.config.ts：Node 环境，测配置的 Nest 模块（@learning/config）
+ *   learning-web —— packages/web/vitest.config.ts：Node 环境，测托管前端的 Nest 模块（@learning/web）
+ *   data-access —— packages/data-access/vitest.config.ts：Node 环境，测数据访问的 Nest 模块（@learning/data-access）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL
+ *   session —— packages/session/vitest.config.ts：Node 环境，测用户和会话的 Nest 模块（@learning/session）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL
  *   agent-sandbox —— apps/agent-sandbox/vitest.config.ts：Node 环境，测沙箱镜像的构建脚本（runner 的边界判定、共用的打包逻辑）
  *   server-kit —— packages/server-kit/vitest.config.ts：Node 环境，测服务端底座的运行时库（模块内核、共享层契约、总线、权限撤销信号）
  *   server-core —— packages/server-core/vitest.config.ts：Node 环境，测服务端底座不碰数据库的部分（集成测试在 server project）
@@ -28,6 +33,11 @@ export default defineConfig({
       'packages/shared/vitest.config.ts',
       'packages/agent/vitest.config.ts',
       'apps/agent-sandbox/vitest.config.ts',
+      'apps/platform/vitest.config.ts',
+      'packages/config/vitest.config.ts',
+      'packages/web/vitest.config.ts',
+      'packages/data-access/vitest.config.ts',
+      'packages/session/vitest.config.ts',
       'packages/server-kit/vitest.config.ts',
       'packages/server-core/vitest.config.ts',
       'packages/mod-auth/vitest.config.ts',
@@ -45,6 +55,11 @@ export default defineConfig({
       include: [
         'apps/server/**/*.ts',
         'apps/agent-sandbox/scripts/**/*.mjs',
+        'apps/platform/src/**/*.ts',
+        'packages/config/src/**/*.ts',
+        'packages/web/src/**/*.ts',
+        'packages/data-access/src/**/*.ts',
+        'packages/session/src/**/*.ts',
         'scripts/**/*.mjs',
         'apps/web/src/**/*.ts',
         'apps/web/src/**/*.vue',

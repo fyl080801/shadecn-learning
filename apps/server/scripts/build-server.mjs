@@ -19,7 +19,7 @@
  * 这个脚本不读也不删它，`pnpm build` 把两边都跑一遍。服务端镜像里没有那个目录，所以 `process` 驱动的 runner 留在上面这份产物里。
  *
  * **一个产物两种库**：实体定义和库无关，驱动在运行时按 DATABASE_PROVIDER 动态 import
- * （packages/server-core/src/db/orm.ts），所以构建不再按库裁剪 —— `@mikro-orm/sqlite`（连带 better-sqlite3）
+ * （packages/server-kit/src/orm.ts），所以构建不再按库裁剪 —— `@mikro-orm/sqlite`（连带 better-sqlite3）
  * 和 `@mikro-orm/postgresql`（连带 pg）都进运行时依赖，构建时也不用关心 DATABASE_PROVIDER。
  *
  * 打包要点：

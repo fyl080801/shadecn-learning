@@ -15,7 +15,7 @@
 | SQLite（默认） | 单文件、无需额外服务；配合 PVC 就能在 k8s 上跑 |
 | PostgreSQL（可选） | 需要多副本 / 并发写 / 外部托管库时切过去 |
 | MikroORM 7（`@mikro-orm/core` 7.2.5，版本锁死） | 一份实体定义（`defineEntity`），驱动在运行时选；自带按实体比对库结构的 schema 生成器 |
-| `@mikro-orm/sqlite`（连带 better-sqlite3）/ `@mikro-orm/postgresql`（连带 pg） | 两种库的驱动，`packages/server-core/src/db/orm.ts` 按 `DATABASE_PROVIDER` **动态** import；两个都进构建产物 |
+| `@mikro-orm/sqlite`（连带 better-sqlite3）/ `@mikro-orm/postgresql`（连带 pg） | 两种库的驱动，`packages/server-kit/src/orm.ts` 按 `DATABASE_PROVIDER` **动态** import；两个都进构建产物 |
 
 ### 2.1 为什么从 Prisma 换成 MikroORM
 
@@ -53,7 +53,7 @@ MikroORM 的实体定义本来就和库无关，驱动是运行时的一个配�
 3. `DATA_DIR` 默认为仓库根目录下的 `data/`（已 gitignore）；
 4. 两者中的**相对路径都以仓库根目录为基准，不是 cwd**（构建产物里是进程 cwd）；
 5. sqlite 打开前 `mkdir -p` 父目录 —— better-sqlite3 不会自动建目录；PG 无此步（库不存在时同步入口会自动 `create database`）。
-6. PG 连接串里 Prisma 时代的 `?schema=xxx` 写法照旧认：`db/orm.ts` 把它摘出来交给 MikroORM 的 `schema` 选项（pg 本身不认这个参数）。
+6. PG 连接串里 Prisma 时代的 `?schema=xxx` 写法照旧认：`@shadecn/server-kit/orm` 把它摘出来交给 MikroORM 的 `schema` 选项（pg 本身不认这个参数）。
 
 ### 3.3 一份实体定义，两种库
 
@@ -94,7 +94,7 @@ MikroORM 的实体定义本来就和库无关，驱动是运行时的一个配�
 
 **为什么不用迁移文件。** 迁移是按方言生成的纯 DDL（`BLOB`/`BYTEA`、`datetime`/`timestamptz`、内联外键 vs 独立的 `ALTER TABLE ADD CONSTRAINT`），而且 **SQLite 不支持改列** —— 同一次「改一列类型」，PG 是一条 `ALTER TABLE`，SQLite 得整表重建。迁移文件必然两份、条条对应。这套维护成本只有在需要照顾存量数据时才划得来，而这个项目没有。
 
-#### 3.4.1 有损变更守卫（`packages/server-core/src/db/schema-sync.ts`）
+#### 3.4.1 有损变更守卫（`packages/server-kit/src/schema-sync.ts`）
 
 MikroORM 的 `schema.update({ safe: true })` **挡不住有损变更**（实测）：
 
@@ -122,6 +122,15 @@ MikroORM 的 `schema.update({ safe: true })` **挡不住有损变更**（实测�
 - **破坏性变更需要人工确认**。两个 Dockerfile 和产物的 `db:push` 脚本**故意不带** `--force` —— 宁可容器启动失败、让人来看一眼，也不要在生产库上静默丢数据。开发期的出口是 `pnpm db:push:force`：它是**单独一条命令，不挂在 `pnpm dev` 上**，否则每次启动开发服务器都可能悄悄删掉一列，而那正是这道闸要拦的事。生产库上仍然只有手动跑 `node server/db-sync.js --force`（产物里 `npm run db:push:force`）这一条路，跑之前先看一眼它拒绝时打出来的语句；
 - 因此**生产升级前要自己判断这次实体改动是不是破坏性的**。加表加列是安全的，改名 / 改类型 / 删字段不是；在 SQLite 上连「改成可空」都会触发整表重建、需要 `--force`。
 - 多副本同时启动时，各自的同步入口会并发比对、并发执行（Prisma 时代的 `db push` 也是如此）。纯加列 / 加表的变更撞车时，后到的那个会因「已存在」报错退出，k8s 重启它一次即可。
+
+#### 3.4.2 NestJS 服务（`apps/platform`）：启动时同步
+
+`apps/platform` 经 `@learning/data-access` 用同一批实体和同一道守卫，连的是**它自己的库**，和 `@shadecn/server` 互不相干：
+
+- 连接串优先取运行目录 `.env`（或环境变量）的 `PLATFORM_DATABASE_URL`，带密码的放这里；否则是 `config.yaml` 的 `database.url`（文件在 `<数据目录>/config.yaml`，数据目录是 `DATA_DIR`，默认 `<仓库根>/data`，示例见 `apps/platform/config.example.yaml`；PostgreSQL 或 `file:` SQLite，相对路径按仓库根解析），没写时用 `<数据目录>/platform.db`。**不读 `DATABASE_URL`**。
+- 没有单独的同步步骤，**启动时自动同步**：能建的表、能加的列当场执行并打印语句；已经一致就打印「无需变更」；实体之外的表只提醒、不动。
+- **有损变更拒绝启动**，把语句打印出来，一句不执行，进程退出码 1。这条路径没有 `--force`，要手工处理库之后再启动。库连不上同样启动失败。
+- 其他模块经依赖注入拿 `DataAccess`，注入时表已对齐。
 
 ### 3.5 两种库的行为差异
 

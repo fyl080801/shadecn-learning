@@ -9,6 +9,11 @@ paths:
   - "packages/*/src/entities.ts"
   - "packages/server-kit/src/db.ts"
   - "packages/server-kit/src/identity.ts"
+  - "packages/server-kit/src/orm.ts"
+  - "packages/server-kit/src/schema-sync.ts"
+  - "packages/data-access/**"
+  - "apps/platform/src/app.module.ts"
+  - "packages/config/**"
   - "packages/mod-collab/src/flow-writer.ts"
 ---
 
@@ -26,7 +31,7 @@ paths:
 
 ## Two databases, one entity definition, one artifact
 
-- Provider = `DATABASE_PROVIDER` (`sqlite` | `postgresql`), else `DATABASE_URL`'s scheme, else sqlite. Contradictory / unknown / `postgresql` without a URL **throws at startup**. Resolved **once** in `config.ts` (`dbProvider` / `databaseUrl`), read by both server and sync CLI. `db/orm.ts` **dynamically imports** only the chosen driver. A Prisma-style `?schema=public` is stripped and passed as MikroORM's `schema`.
+- Provider = `DATABASE_PROVIDER` (`sqlite` | `postgresql`), else `DATABASE_URL`'s scheme, else sqlite. Contradictory / unknown / `postgresql` without a URL **throws at startup**. Resolved **once** in `config.ts` (`dbProvider` / `databaseUrl`), read by both server and sync CLI. `@shadecn/server-kit/orm`'s `openOrm` **dynamically imports** only the chosen driver and knows no config (`server-core`'s `db/orm.ts` reads config, adds the logger and calls it). A Prisma-style `?schema=public` is stripped and passed as MikroORM's `schema`.
 - **Entity rules** (header of `entities/columns.ts`; each is a measured cross-DB difference):
   - Strings are always `p.text()`, never `p.string()` (`varchar(255)` on PG).
   - Only five types: text / integer / boolean / datetime / blob. No json / enum / array / `columnType`; JSON stays a string.
@@ -41,10 +46,20 @@ paths:
   - Missing rows: `nativeUpdate` / `nativeDelete` return 0 (no P2025). The OAuth one-shot consume means "the request whose `nativeDelete` returned 1".
 - **Case-insensitive search** goes through `@shadecn/server-kit/db`'s `containsIgnoreCase(column, keyword)` (`lower(col) like lower(?) escape '\'` via `raw()`, works in nested relation filters, escapes `%` `_` `\`). Never `$like` / `$ilike` inline (`$ilike` is a syntax error on SQLite). It takes the **column** name, not the property.
 
-## Schema sync — no migration files (`db/schema-sync.ts`)
+## Schema sync — no migration files (`@shadecn/server-kit/schema-sync`)
 
 - `pnpm db:push`, the container's `node server/db-sync.js` and the test global-setup all run the same code: `getUpdateSchemaSQL()` → classify each statement → `schema.execute()` that exact text.
 - **`schema.update({ safe: true })` is not a guard** (SQLite rebuilds via `__temp_alter`; PG lets `alter column … type` through). Our guard refuses drop table / drop column / `alter column … type` / any `__temp_alter` rebuild / renames / truncate-delete, prints each with its category and exits 1 without executing. Create table, add column, index changes, add constraint, PG nullability/default changes pass.
 - `--force` (`pnpm db:push:force`) lets everything through and also drops non-entity tables (normal mode ignores them with a warning, e.g. old Prisma tables).
 - **Costs**: no history, no rollback; both Dockerfiles and the artifact's `db:push` omit `--force` (a failed start beats silent data loss). **Assess whether an entity change is lossy before shipping** — on SQLite even making a column nullable is a rebuild. `db:push:force` stays a separate command so a human sees the refusal.
 - Tests (`apps/server/test/db/schema-sync.test.ts`) cover the matcher against SQL MikroORM 7.2.5 actually emitted on both DBs, and pin that **a freshly synced DB produces an empty diff** (an unstable entity would trip the guard on every start).
+
+## `@learning/data-access` — the same guard, inside Nest's startup
+
+- **`@shadecn/server` syncs in a separate step before the server starts; `apps/platform` has no such step, so the sync runs in the process** (`docs/05` §3.4.2). There is deliberately no `force` option: the start path never lets a lossy change through, and `SchemaDataLossError` means the service doesn't start.
+- **The sync lives in the ORM provider's async factory, not in `onModuleInit`.** Measured on Nest 12.3.2: global modules' hooks run in registration order, so a global business module imported first runs before a hook-based sync; and every provider factory runs before any `onModuleInit`, so a factory that queries meets missing tables. As a dependency of `DataAccess`, the factory holds for every consumer wherever it sits in `imports` (`test/data-access.test.ts` pins this; moving the sync to a hook fails it).
+- **A throwing factory never reaches `main.ts`'s `await`**: it runs inside `NestFactory.create`, where the default `abortOnError` logs and calls `process.exit(1)`. So the factory closes the ORM first and logs for itself.
+- **Unlike `createOrm`, an unreachable database fails the start** (the sync needs a connection).
+- **The ORM closes in `onApplicationShutdown`**, the last phase: `onModuleDestroy` and requests still draining use the database. A *global* module imported before `DataAccessModule` gets its `onApplicationShutdown` after the close (hooks run in reverse order).
+- **`PLATFORM_DATABASE_URL` from the working directory's `.env` (wins, for URLs with a password), else `database.url` in `config.yaml` (`@learning/config`), never `DATABASE_URL`**: the root `.env`'s value is `@shadecn/server`'s database, and this process would sync it. Each service owns its database. The default is `<dataDir>/platform.db`; a relative `file:` resolves against the repo root, not cwd.
+- `PLATFORM_TEST_DATABASE_URL` turns on the PostgreSQL suite. It drops the `public` schema between tests, so the fixture refuses a database whose name doesn't contain both `platform` and `test`.

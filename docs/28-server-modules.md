@@ -116,8 +116,8 @@
 
 | 包 | 内容 | 谁能 import 它 |
 |---|---|---|
-| `@shadecn/server-kit` | 集成协议与内核（`./kernel`：声明、入口与归属表、配置段、选模块与排序、生命周期）、平台契约（`./platform`）、数据库（`./db`）、`User`（`./identity`）、配置层（`./config`）、共享层（`./cluster`）、总线（`./bus`）、撤权信号（`./access`） | 所有服务端包 |
-| `@shadecn/server-core` | 底座：HTTP 管线、配置（`./config`、`./config-source`）、数据库（`./db`、`./db-sync`、`./schema-sync`）、日志、前端托管（`./frontend/static`；`./frontend/dev` 只给开发入口）、平台契约的实现（`./platform`）、装配（`./server`）、路由归属表（`./routes-table`）、启动（`./boot`）。**不 import 任何模块包** | `apps/server` |
+| `@shadecn/server-kit` | 集成协议与内核（`./kernel`：声明、入口与归属表、配置段、选模块与排序、生命周期）、平台契约（`./platform`）、数据库（`./db`、建 ORM 的 `./orm`、结构同步 `./schema-sync`）、登录协议（`./oauth`：OIDC、GitHub、对外域名判定，无配置无全局状态）、`User`（`./identity`）、配置层（`./config`）、共享层（`./cluster`）、总线（`./bus`）、撤权信号（`./access`） | 所有服务端包 |
+| `@shadecn/server-core` | 底座：HTTP 管线、配置（`./config`、`./config-source`）、数据库（`./db`、`./db-sync`）、日志、前端托管（`./frontend/static`；`./frontend/dev` 只给开发入口）、平台契约的实现（`./platform`）、装配（`./server`）、路由归属表（`./routes-table`）、启动（`./boot`）。**不 import 任何模块包** | `apps/server` |
 | `@shadecn/mod-auth` | 登录：Keycloak / GitHub、会话、身份绑定、默认头像、页面守卫与登录页的两条路由、本地开发用户、`modules.auth` 配置段；向平台提供 `auth` | — |
 | `@shadecn/mod-canvas` | 项目 / 成员 / 邀请 / 画布元数据的表、store、REST（`/api/projects`、`/api/invites`、`/api/flows`）、成员判定；`canvas` 服务（`flowGuard`、`locate`、`roleOf`、画布内容的存取 `docs`）；契约 `./contract`（服务接口 + "复制前落库"的总线请求 `flushFlowContent`）、`./entities` | 契约与实体：其它模块包 |
 | `@shadecn/mod-storage` | S3 客户端、对象键、缩略图、上传接口、上传记录表；`storage` 服务（`./contract`） | 契约、`./client`、`./keys`：其它模块包 |

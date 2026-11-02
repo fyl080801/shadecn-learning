@@ -1,8 +1,8 @@
 import type { AnyServerModule } from '@shadecn/server-kit/kernel'
+import { SchemaDataLossError, resetSchema, syncSchema } from '@shadecn/server-kit/schema-sync'
 import { dbProvider } from '../config.ts'
 import { serverEntities } from '../server.ts'
 import { createOrm } from './orm.ts'
-import { SchemaDataLossError, resetSchema, syncSchema } from './schema-sync.ts'
 
 /**
  * 表结构同步的命令行 —— `prisma db push` 的替代品。实体 = 底座的 + 模块清单里每个模块的，所以清单由入口交进来

@@ -13,7 +13,6 @@
     "./logger/*": "./src/logger/*.ts",
     "./db": "./src/db.ts",
     "./db-sync": "./src/db/sync-cli.ts",
-    "./schema-sync": "./src/db/schema-sync.ts",
     "./orm": "./src/db/orm.ts",
     "./app": "./src/app.ts",
     "./platform": "./src/platform.ts",
@@ -30,8 +29,6 @@
   "peerDependencies": {
     "@hono/node-server": "^2.1.1",
     "@mikro-orm/core": "7.2.5",
-    "@mikro-orm/postgresql": "7.2.5",
-    "@mikro-orm/sqlite": "7.2.5",
     "hono": "^4.13.2",
     "vite": "^7.3.1",
     "winston": "^3.19.0"
@@ -44,8 +41,6 @@
   "devDependencies": {
     "@hono/node-server": "^2.1.1",
     "@mikro-orm/core": "7.2.5",
-    "@mikro-orm/postgresql": "7.2.5",
-    "@mikro-orm/sqlite": "7.2.5",
     "@shadecn/server-kit": "workspace:*",
     "@shadecn/shared": "workspace:*",
     "@types/node": "^24.10.1",

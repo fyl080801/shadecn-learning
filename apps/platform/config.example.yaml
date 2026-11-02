@@ -1,0 +1,58 @@
+# apps/platform 的配置。复制到 <仓库根>/data/config.yaml（data/ 不进仓库）；设了 DATA_DIR 就放在 $DATA_DIR/config.yaml。
+# 文件不存在 = 全走默认值。YAML 语法错或顶层不是映射 = 拒绝启动。
+# 相对路径都按仓库根解析（从 cwd 向上找 pnpm-workspace.yaml，找不到就是 cwd）。
+# 敏感值不放这里，放运行目录的 .env（示例见 .env.example）。不读 DATABASE_URL（那是 @shadecn/server 的库）。
+
+server:
+  # 监听端口，默认 3001（3000 是 @shadecn/server 的）
+  port: 3001
+  # 对外域名的白名单：登录回调的域名和 cookie 的 Secure 都按它判定，第一个是默认（请求的域名都不在名单里时用它）。不支持通配符。
+  # 不写时开发环境默认 http://localhost:<port> 和 http://127.0.0.1:<port>；生产环境配了登录方式却不写 = 拒绝启动
+  # origins:
+  #   - https://platform.example.com
+
+database:
+  # file:<路径> 或不带密码的 postgresql://…。不写 = <数据目录>/platform.db（跟着 DATA_DIR 走）
+  # 带密码的连接串放 .env 的 PLATFORM_DATABASE_URL，它优先于这里
+  # 启动时自动把表结构对齐到实体定义，有损变更会拒绝启动 —— 不要指向别的服务在用的库
+  # url: file:data/platform.db
+
+session:
+  # 密钥在 .env 的 PLATFORM_SESSION_SECRET，写在这里会拒绝启动
+  # 会话最长存活时间（秒），默认 7 天
+  # ttlSeconds: 604800
+  # 会话 cookie 名，默认 sid
+  # cookieName: sid
+  # 登出后回到的登录页，默认 /login。改了要和 web.auth.loginPath 保持一致
+  # loginPath: /login
+
+# 登录方式。两个都不配也能启动，但没有人能登录，页面和 /api 全部拦住。配一半 = 拒绝启动，并报缺什么。
+# 每个 origin 下的回调地址 <origin>/api/auth/callback 都要在提供方那边注册（两个提供方是同一个地址）。
+# 密钥只放 .env（见 .env.example），写在这里会拒绝启动。
+# auth:
+#   oidc:
+#     # 必须和发现文档 <issuer>/.well-known/openid-configuration 里的 issuer 逐字符相等（含尾斜杠）
+#     issuer: https://keycloak.example.com/realms/demo
+#     clientId: platform
+#     # 登录按钮上的字，默认「使用 OIDC 登录」
+#     # buttonLabel: 使用公司账号登录
+#     # 默认 openid profile email
+#     # scope: openid profile email
+#   github:
+#     clientId: Iv1.xxxxxxxx
+
+web:
+  # 前端目录。默认生产是 output/public（vite build 的产物），开发是 apps/web（Vite 的 root）
+  # root: output/public
+  # 有独立 HTML 入口的路径 → 入口文件名，默认只有登录页
+  # htmlEntries:
+  #   /login: login.html
+  # 页面闸门默认开启：匿名打开页面跳到登录页。只有写 auth: false 才关，所有页面匿名可访问
+  # auth: false
+  auth:
+    # 登录页路径，必须在 htmlEntries 里有入口，否则拒绝启动
+    loginPath: /login
+    # 匿名可访问的其他路径（精确匹配）
+    publicPaths:
+      - /favicon.ico
+      - /vite.svg

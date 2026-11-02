@@ -1,0 +1,33 @@
+{
+  "name": "@learning/platform",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @learning/config --filter @learning/web --filter @learning/data-access --filter @learning/session build && nest start --watch",
+    "build": "pnpm --filter @learning/config --filter @learning/web --filter @learning/data-access --filter @learning/session build && nest build",
+    "start": "NODE_ENV=production node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@learning/config": "workspace:*",
+    "@learning/data-access": "workspace:*",
+    "@learning/session": "workspace:*",
+    "@learning/web": "workspace:*",
+    "@nestjs/common": "^12.3.2",
+    "@nestjs/core": "^12.3.2",
+    "@nestjs/platform-fastify": "^12.3.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^12.0.11",
+    "@nestjs/schematics": "^12.0.12",
+    "@nestjs/testing": "^12.3.2",
+    "@swc/core": "^1.15.18",
+    "@types/node": "^24.10.1",
+    "typescript": "~6.0.2",
+    "unplugin-swc": "^1.5.9",
+    "vite": "^7.3.1"
+  }
+}

@@ -51,6 +51,11 @@ COPY packages/mod-agent/package.json ./packages/mod-agent/
 COPY packages/mod-apps/package.json ./packages/mod-apps/
 COPY apps/server/package.json ./apps/server/
 COPY apps/agent-sandbox/package.json ./apps/agent-sandbox/
+COPY apps/platform/package.json ./apps/platform/
+COPY packages/config/package.json ./packages/config/
+COPY packages/web/package.json ./packages/web/
+COPY packages/data-access/package.json ./packages/data-access/
+COPY packages/session/package.json ./packages/session/
 RUN pnpm install --frozen-lockfile ${NPM_REGISTRY:+--registry=${NPM_REGISTRY}}
 COPY . .
 # 前端 → output/public，后端 → output/server（index.js + db-sync.js），外加 package.json / Dockerfile：

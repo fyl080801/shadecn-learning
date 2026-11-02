@@ -97,7 +97,10 @@ describe("登录页", () => {
   it("服务端一个登录方式都没配 → 说清楚，而不是给个点了没反应的按钮", async () => {
     const wrapper = await mountPage([], false)
 
-    expect(wrapper.get('[data-testid="login-disabled"]').text()).toContain("没有配置")
+    const notice = wrapper.get('[data-testid="login-disabled"]').text()
+    expect(notice).toContain("没有配置")
+    // 这一页两个服务都在用，配置项的名字各不相同：不点名具体的环境变量
+    expect(notice).not.toMatch(/[A-Z]+_[A-Z_]+/)
     expect(wrapper.find('[data-testid="login-keycloak"]').exists()).toBe(false)
   })
 

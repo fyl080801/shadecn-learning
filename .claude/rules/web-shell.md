@@ -17,6 +17,8 @@ paths:
   - "apps/web/index.html"
   - "apps/web/login.html"
   - "apps/web/components.json"
+  - "packages/web/src/**"
+  - "apps/platform/src/page-auth.module.ts"
 ---
 
 # Frontend shell (`apps/web/src/`)
@@ -33,7 +35,15 @@ paths:
 - `lib/auth.ts`: `useAuth()` (`user` / `roles` / `isAuthenticated` / `authEnabled` / `sessionExpired` / `hasRole`) and `apiFetch()`. No token in the browser; login/logout are full-page navigations to `/api/auth/login` / `/api/auth/logout`.
 - **An expired session is never a silent redirect** (it would destroy unsubmitted input). A 401 only calls `requestReLogin(redirect)` (clears the user, remembers the URL, flips `sessionExpired`); `SessionExpiredDialog.vue` owns every exit (choices: `docs/02` §3.7).
 - **Re-login is a popup, not an iframe** (an iframe needs Keycloak to drop `X-Frame-Options` and loses its SSO cookie to third-party-cookie rules). `window.open()` may return `null` (popup blocker) — handle it without closing the dialog (`docs/02` §3.7).
-- **Success has two legs** (the session cookie is httpOnly): `packages/mod-auth/src/login-done-page.ts` renders `/auth/login-done` (registered *after* `pageGuard`), `postMessage`s a same-origin `app-auth:login-done` to `window.opener` and closes. The dialog accepts it only when `event.origin === location.origin` **and** the marker matches, then `finishReLogin()` → `fetchSession(true)` and closes only if `/api/auth/me` says logged-in. A 3s poll is the second leg, and also notices `loginWindow.closed`. `LOGIN_DONE_PATH` / `LOGIN_DONE_SOURCE` / `LOGIN_DONE_MESSAGE` live in `@shadecn/shared/auth`.
+- **Success has two legs** (the session cookie is httpOnly): `packages/mod-auth/src/login-done-page.ts` renders `/auth/login-done` (registered *after* `pageGuard`), `postMessage`s a same-origin `app-auth:login-done` to `window.opener` and closes. The dialog accepts it only when `event.origin === location.origin` **and** the marker matches, then `finishReLogin()` → `fetchSession(true)` and closes only if `/api/auth/me` says logged-in. A 3s poll is the second leg, and also notices `loginWindow.closed`. `LOGIN_DONE_PATH` / `LOGIN_DONE_SOURCE` / `LOGIN_DONE_MESSAGE` live in `@shadecn/shared/auth`. On `apps/platform` the same page is served at `/api/auth/login-done` (`.claude/rules/auth.md`); the frontend still asks for `LOGIN_DONE_PATH`.
+
+## Page gate in `@learning/web` (`packages/web/src/page-gate.ts`, used by `apps/platform`)
+
+- **The check sits at the point HTML is sent, shared by both modes**, not in a Nest guard (Vite middleware runs before routing) and not keyed on `Accept` / `Sec-Fetch`. Assets stay anonymous because the login page is an entry of the same bundle.
+- **Files can bypass that point, and each mode needs its own fix.** `static`: `@fastify/static` with `wildcard: false` makes a route per file, so `/index.html` skips the fallback controller; with `auth` set, HTML and entries go to `globIgnore`. `dev`: `/@fs/<abs>/index.html`, `/index.html?import&raw`, `/@id/…?import&raw` and, on a case-insensitive disk, `/INDEX.HTML` return the source before Vite falls through; `isHtmlFilePath` sends those straight to the gate. Consequence: with `auth` set, an entry HTML can't use an inline `<script type="module">` in dev (its `?html-proxy` request gets HTML).
+- **Fail closed**: a throwing `isAuthenticated` is a 500, never a pass and never "logged out". A public path with no file and no entry of its own is a 404, not the fallback entry. `loginPath` without an `htmlEntries` entry fails the start (`resolveWebOptions`). Only a literal `web.auth: false` turns the gate off; anything else that isn't a mapping is an error, never a guess.
+- **The gate reaches `WEB_PAGE_AUTH` through `ModuleRef.get(…, { strict: false })` at the top of the host's `onModuleInit` (`PageGate.connect`)**: gate on with nobody providing the token fails the start, and `web.auth: false` needs no provider. Not `@Optional()`: Nest swallows anything thrown while resolving an optional dependency (`injector.js`), so a missing secret or a lossy schema further down that chain would read as "nobody provides it". Not `ModuleRef.get` in a provider factory: the other provider's factory may not have finished. `web` and `session` don't depend on each other; `apps/platform`'s `PageAuthModule` binds `SessionPageAuth` to the token.
+- **A static `@Module` can't pick controllers or providers by config, so `mode` is decided inside.** `HtmlFallbackController` is registered in both modes and the `WEB_HOST` factory news up `StaticHost` or `ViteHost` (lifecycle hooks follow the instance, and Fastify plugins and middleware still register in `onModuleInit`, before `listen`). In `dev` the controller can't take Vite's routes: Vite answers everything outside `apiPrefix` in Fastify's `onRequest`, so only unknown backend paths arrive, and it answers 404 to anything else rather than send a raw source entry. It also means an unknown `/api` path goes through `APP_GUARD` in `dev` too (anonymous 401, same as `static`). `vite-host.ts` may be imported statically because it has only a type import of `vite` plus the dynamic one.
 
 ## UI components (shadcn-vue)
 

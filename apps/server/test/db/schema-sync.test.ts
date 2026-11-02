@@ -13,10 +13,10 @@ import {
   planSchemaSync,
   splitStatements,
   syncSchema,
-} from '@shadecn/server-core/schema-sync'
+} from '@shadecn/server-kit/schema-sync'
 
 /**
- * 表结构同步的有损变更守卫（packages/server-core/src/db/schema-sync.ts）。
+ * 表结构同步的有损变更守卫（packages/server-kit/src/schema-sync.ts）。
  *
  * 前半段是纯函数：下面的 SQL 样本**都是 MikroORM 7.2.5 实际吐出来的**（拿一张探针表在两种库上
  * 分别做加列 / 删列 / 改类型 / 改可空 / 删表，`getUpdateSchemaSQL()` 原样抄下来），

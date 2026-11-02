@@ -15,6 +15,10 @@
     "./llm": "./src/llm.ts",
     "./db": "./src/db.ts",
     "./identity": "./src/identity.ts",
+    "./orm": "./src/orm.ts",
+    "./schema-sync": "./src/schema-sync.ts",
+    "./session": "./src/session.ts",
+    "./oauth": "./src/oauth/index.ts",
     "./platform": "./src/platform.ts"
   },
   "scripts": {
@@ -22,12 +26,24 @@
   },
   "peerDependencies": {
     "@mikro-orm/core": "7.2.5",
+    "@mikro-orm/postgresql": "7.2.5",
+    "@mikro-orm/sqlite": "7.2.5",
     "hono": "^4.13.2",
     "ioredis": "^5.6.1",
     "yaml": "2.8.2"
   },
+  "peerDependenciesMeta": {
+    "@mikro-orm/postgresql": {
+      "optional": true
+    },
+    "@mikro-orm/sqlite": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@mikro-orm/core": "7.2.5",
+    "@mikro-orm/postgresql": "7.2.5",
+    "@mikro-orm/sqlite": "7.2.5",
     "@types/node": "^24.10.1",
     "hono": "^4.13.2",
     "ioredis": "^5.6.1",

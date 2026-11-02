@@ -9,6 +9,7 @@
  * 身份要再调一次 `/user`、OAuth App 的 token 不会过期也没有 refresh_token）。
  */
 
+import type { ProviderProfile, ProviderTokens } from '@shadecn/server-kit/oauth'
 import type { ProviderId } from '@shadecn/shared/auth'
 
 /**
@@ -17,30 +18,8 @@ import type { ProviderId } from '@shadecn/shared/auth'
  */
 export type { ProviderId }
 
-/** 从提供方那边读回来的这个人是谁 */
-export interface ProviderProfile {
-  /** 提供方内部的用户标识：Keycloak 的 `sub`、GitHub 的数字 id */
-  subject: string
-  /** 提供方的 issuer；GitHub 没有这个概念，用固定的 https://github.com */
-  issuer: string
-  username: string | null
-  /** 只是档案字段。**邮箱不参与身份判断**，理由见 `packages/mod-auth/src/identities.ts` */
-  email: string | null
-  name: string | null
-  avatarUrl: string | null
-  /** 角色。只有 Keycloak 给得出来，GitHub 一律空数组 */
-  roles: string[]
-}
-
-/** 落进 Session 行的那几样东西。到期时间已经算成绝对时刻，调用方不用再换算 */
-export interface ProviderTokens {
-  accessToken: string
-  refreshToken: string | null
-  idToken: string | null
-  expiresAt: Date
-  refreshExpiresAt: Date | null
-  sessionState: string | null
-}
+// 形状在 `@shadecn/server-kit/oauth`，@learning/session 也用同一份
+export type { ProviderProfile, ProviderTokens }
 
 export interface AuthorizeInput {
   state: string

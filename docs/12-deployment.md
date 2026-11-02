@@ -73,7 +73,7 @@ better-sqlite3 / pg 不在这份清单里 —— bundle 不直接 import 它们�
 > 产物里锁的是直接依赖的版本，间接依赖没有 lockfile 兜底。
 
 **一个产物两种库**：实体定义和库无关，驱动在**运行时**按 `DATABASE_PROVIDER` / `DATABASE_URL`
-动态 import（`packages/server-core/src/db/orm.ts`）。构建时不用关心连哪种库，同一个 `pnpm build`、同一个镜像，
+动态 import（`packages/server-kit/src/orm.ts`）。构建时不用关心连哪种库，同一个 `pnpm build`、同一个镜像，
 换库只改环境变量（Prisma 时代生成的 client 编译期绑死一种库、要按库分别构建，这一条随换 ORM 取消了，
 见 [REQ-DATA §2.1](05-data-persistence.md)）。代价是 PG 部署的镜像里也带着 better-sqlite3 的二进制，几 MB。
 

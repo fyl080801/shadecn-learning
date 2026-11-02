@@ -31,7 +31,7 @@ The core is the package **`@shadecn/server-core`** and knows no module; `apps/se
   - `GET /api/features` returns the kernel's feature table (which modules are loaded / why not) — behind the login gate; it says what to *show*, never what is allowed.
   - **`/api/agent-gateway/*` (declared `access: 'public'` by mod-agent) is deliberately outside the login gate**: the agent's sandboxed runner has no cookie, only a run token, and the gateway (`@shadecn/agent/gateway`) authenticates every call itself. Never put it behind `requireUser`, and never let it read the session — a browser cookie must buy nothing there (`agent.md`). The mount passes the raw `Request` through; nothing before it may consume the body.
 - `db.ts` — MikroORM singleton, **built by `initDatabase(entities)`** (from `prepare`; `orm()` / `db()` throw before), cached on `globalThis` for `tsx watch` (reused only for the identical entity list), handed to the platform (`configureDatabase`) so modules' `db()` (`@shadecn/server-kit/db`) works; `db()` = `orm().em.fork()`. **Fork once per operation** (or per group sharing a transaction); `allowGlobalContext` is off and there's no RequestContext middleware, so stores work outside requests. `init` connects on first query, so a dead DB doesn't block boot.
-- `db/` — `orm.ts`, `schema-sync.ts`, `sync-cli.ts` (`runSchemaSyncCli(modules)`; see `database.md`).
+- `db/` — `orm.ts` (over `@shadecn/server-kit/orm`), `sync-cli.ts` (`runSchemaSyncCli(modules)`, over `@shadecn/server-kit/schema-sync`; see `database.md`).
 - `logger/`, `frontend/` — below. `tsconfig.json` of each package is a separate TS project (Node types, no DOM); imports use explicit `.ts` extensions.
 
 ## Logging (`logger/`) — keep writing `console.*`

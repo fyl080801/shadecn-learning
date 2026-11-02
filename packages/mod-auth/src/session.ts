@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import { numberCodec, sharedLock, sharedMap } from '@shadecn/server-kit/cluster'
 import { db } from '@shadecn/server-kit/db'
 import { platform } from '@shadecn/server-kit/platform'
+import { newSessionToken, sessionTokenId } from '@shadecn/server-kit/session'
 import { authConfig } from './settings.ts'
 import { AuthRequest, PendingLink, Session, User } from './entities.ts'
 import { OidcError } from './oidc.ts'
@@ -28,38 +29,11 @@ export function sessionSecret(): string {
  * 拖库的人拿不到 token 本身，也就伪造不出 cookie。
  */
 function tokenId(token: string) {
-  return crypto.createHmac('sha256', sessionSecret()).update(token).digest('hex')
+  return sessionTokenId(sessionSecret(), token)
 }
 
-/** 返回给前端的用户信息 —— access_token 一类的东西一律不出服务端 */
-export interface SessionUser {
-  id: string
-  subject: string
-  username: string | null
-  email: string | null
-  name: string | null
-  avatarUrl: string | null
-  roles: string[]
-}
-
-export function toSessionUser(user: User): SessionUser {
-  let roles: string[] = []
-  try {
-    const parsed: unknown = JSON.parse(user.roles)
-    if (Array.isArray(parsed)) roles = parsed.filter((r): r is string => typeof r === 'string')
-  } catch {
-    roles = []
-  }
-  return {
-    id: user.id,
-    subject: user.subject,
-    username: user.username,
-    email: user.email,
-    name: user.name,
-    avatarUrl: user.avatarUrl,
-    roles,
-  }
-}
+// 纯函数的定义在 server-kit，@learning/session 也用同一份；这里接着导出，现有的 importer 不用动
+export { toSessionUser, type SessionUser } from '@shadecn/server-kit/session'
 
 export interface CreateSessionInput {
   user: User
@@ -72,7 +46,7 @@ export interface CreateSessionInput {
 
 /** 建会话，返回要写进 cookie 的原始 token */
 export async function createSession(input: CreateSessionInput): Promise<string> {
-  const token = crypto.randomBytes(32).toString('base64url')
+  const token = newSessionToken()
 
   const em = db()
   em.create(Session, {

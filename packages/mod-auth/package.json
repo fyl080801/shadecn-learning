@@ -12,6 +12,8 @@
     "./middleware": "./src/middleware.ts",
     "./profile": "./src/profile.ts",
     "./identities": "./src/identities.ts",
+    "./login-identity": "./src/login-identity.ts",
+    "./login-done-page": "./src/login-done-page.ts",
     "./current-user": "./src/current-user.ts",
     "./redirect": "./src/redirect.ts",
     "./guard": "./src/guard.ts",

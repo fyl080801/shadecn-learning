@@ -14,6 +14,11 @@ export default defineConfig(
   {
     ignores: [
       "dist",
+      "apps/platform/dist",
+      "packages/config/dist",
+      "packages/web/dist",
+      "packages/data-access/dist",
+      "packages/session/dist",
       // `pnpm build` 的产物
       "output",
       "node_modules",
@@ -62,6 +67,11 @@ export default defineConfig(
       // 构建脚本和随产物发出去的模板，都是 node 环境
       "apps/server/scripts/**/*.{js,mjs}",
       "apps/agent-sandbox/**/*.{ts,mjs}",
+      "apps/platform/**/*.ts",
+      "packages/config/**/*.ts",
+      "packages/web/**/*.ts",
+      "packages/data-access/**/*.{ts,mjs}",
+      "packages/session/**/*.ts",
       "scripts/**/*.mjs",
       // provider / 连接串解析，prisma.config.ts 和构建脚本共用的那份
       "apps/server/prisma/*.mjs",

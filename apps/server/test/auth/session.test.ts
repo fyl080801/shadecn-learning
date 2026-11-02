@@ -73,6 +73,41 @@ describe('toSessionUser()', () => {
   })
 })
 
+describe('会话 token 的 HMAC 算法（库里已有的会话靠它才认得出来）', () => {
+  /**
+   * 摘要不是用被测代码算的：`printf 'fixed-session-token' | openssl dgst -sha256 -hmac 'test-session-secret'`。
+   * 密钥是 vitest 配置里的 MODULES_AUTH_SESSION_SECRET。算法一变，线上每个人都会掉线，所以把结果写死。
+   */
+  const FIXED_TOKEN = 'fixed-session-token'
+  const FIXED_TOKEN_ID = '09ca8a4e7a5093eaa027fbd042d5bfe3e31b70d0e949f546c2ad1603d153b517'
+
+  it('id 为固定摘要的已有行，能用原始 token 读到；deleteSessionByToken 也按它删', async () => {
+    const user = await createUser()
+    const em = db()
+    em.create(Session, {
+      id: FIXED_TOKEN_ID,
+      user: user.id,
+      provider: 'keycloak',
+      ...providerTokens({ expiresIn: 300 }),
+      userAgent: null,
+      ip: null,
+    })
+    await em.flush()
+
+    expect((await loadSession(FIXED_TOKEN))?.id).toBe(FIXED_TOKEN_ID)
+    await deleteSessionByToken(FIXED_TOKEN)
+    expect(await db().findOne(Session, FIXED_TOKEN_ID)).toBeNull()
+  })
+
+  it('createSession 返回 43 字符的 base64url token（32 字节），库里只有它的 HMAC', async () => {
+    const user = await createUser()
+    const token = await createSession({ user, provider: 'keycloak', tokens: providerTokens({ expiresIn: 300 }) })
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(await db().findOne(Session, token)).toBeNull()
+    expect(await loadSession(token)).not.toBeNull()
+  })
+})
+
 describe('createSession() / loadSession()', () => {
   it('cookie 里的 token 不等于库里的主键（库被拖走也伪造不出 cookie）', async () => {
     const user = await createUser()

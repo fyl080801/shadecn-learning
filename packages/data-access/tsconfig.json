@@ -1,0 +1,26 @@
+{
+  /*
+   * 只做类型检查（产物由 esbuild 出，见 scripts/build.mjs）。
+   * customConditions: source —— @learning/config 的类型从源码来，检查本包不用先构建它。
+   * allowImportingTsExtensions：源码跟进 @shadecn/* 时要读它们带 `.ts` 扩展名的相对 import（TS5097）。
+   * emitDecoratorMetadata 只影响测试里 swc 转译的消费者类；包内构造函数参数一律显式 @Inject，因为 esbuild 不输出元数据。
+   */
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "customConditions": ["source"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "target": "ES2023",
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "types": ["node"]
+  },
+  "exclude": ["node_modules", "dist"]
+}
