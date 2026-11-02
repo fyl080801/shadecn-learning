@@ -6,6 +6,7 @@ import { defineConfig } from 'vitest/config'
  *   client —— apps/web/vitest.config.ts：jsdom 环境，测前端（apps/web/src/test/**）
  *   shared —— packages/shared/vitest.config.ts：Node 环境，测前后端共用的契约（packages/shared/test/**）
  *   agent  —— packages/agent/vitest.config.ts：Node 环境，测画布 Agent（编排、画布工具、沙箱，packages/agent/test/**）
+ *   agent-sandbox —— apps/agent-sandbox/vitest.config.ts：Node 环境，测沙箱镜像的构建脚本（runner 的边界判定、共用的打包逻辑）
  *   server-kit —— packages/server-kit/vitest.config.ts：Node 环境，测服务端底座的运行时库（模块内核、共享层契约、总线、权限撤销信号）
  *   server-core —— packages/server-core/vitest.config.ts：Node 环境，测服务端底座不碰数据库的部分（集成测试在 server project）
  *   mod-auth —— 登录模块（同上，只测不碰数据库的部分）
@@ -15,7 +16,7 @@ import { defineConfig } from 'vitest/config'
  *   mod-agent —— packages/mod-agent/vitest.config.ts：Node 环境，测画布 agent 宿主侧能力包（接上数据库 / 协同之后的用例在 server project）
  *   mod-apps —— packages/mod-apps/vitest.config.ts：Node 环境，测应用执行模块（应用表、参数校验、各驱动的上游请求）
  *
- * 单独跑：`pnpm test:server` / `test:client` / `test:shared` / `test:agent` / `test:server-kit` / `test:mod-*`（= vitest --project=xxx）
+ * 单独跑：`pnpm test:server` / `test:client` / `test:shared` / `test:agent` / `test:agent-sandbox` / `test:server-kit` / `test:mod-*`（= vitest --project=xxx）
  *
  * 覆盖率在这里统一配置，汇总到仓库根的 coverage/。
  */
@@ -26,6 +27,7 @@ export default defineConfig({
       'apps/web/vitest.config.ts',
       'packages/shared/vitest.config.ts',
       'packages/agent/vitest.config.ts',
+      'apps/agent-sandbox/vitest.config.ts',
       'packages/server-kit/vitest.config.ts',
       'packages/server-core/vitest.config.ts',
       'packages/mod-auth/vitest.config.ts',
@@ -42,6 +44,8 @@ export default defineConfig({
       reportsDirectory: 'coverage',
       include: [
         'apps/server/**/*.ts',
+        'apps/agent-sandbox/scripts/**/*.mjs',
+        'scripts/**/*.mjs',
         'apps/web/src/**/*.ts',
         'apps/web/src/**/*.vue',
         'packages/shared/src/**/*.ts',

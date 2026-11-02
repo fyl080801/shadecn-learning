@@ -61,6 +61,8 @@ export default defineConfig(
       "apps/server/**/*.ts",
       // 构建脚本和随产物发出去的模板，都是 node 环境
       "apps/server/scripts/**/*.{js,mjs}",
+      "apps/agent-sandbox/**/*.{ts,mjs}",
+      "scripts/**/*.mjs",
       // provider / 连接串解析，prisma.config.ts 和构建脚本共用的那份
       "apps/server/prisma/*.mjs",
       "apps/web/vite.config.ts",

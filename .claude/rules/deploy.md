@@ -3,7 +3,7 @@ paths:
   - "Dockerfile"
   - ".dockerignore"
   - "apps/server/scripts/output-image/**"
-  - "apps/server/scripts/agent-sandbox/**"
+  - "apps/agent-sandbox/**"
   - "k8s/**"
   - "ci/**"
   - ".gitea/**"
@@ -15,13 +15,14 @@ paths:
 
 - Two paths, one image. `pnpm build && docker build ./output` uses the Dockerfile copied into `output/`: deps stage `npm install --omit=dev` (no toolchain — better-sqlite3 13 ships prebuilds incl. `linuxmusl-x64/arm64`, `gypfile: false`); runtime stage `WORKDIR /app`, `CMD sh -c "node server/db-sync.js && exec node server/index.js"` (`exec` makes node PID 1 so SIGTERM reaches the shutdown flush).
 - The repo-root `Dockerfile` is the from-source variant: build stage copies each package's `package.json` (**one `COPY` per workspace package**), `pnpm install --frozen-lockfile`, `COPY . .`, `pnpm build`, then the same deps + runtime stages. **Edit `apps/server/scripts/output-image/Dockerfile`, not `output/`**, and keep the two in sync.
-- **CI ships `output/Dockerfile`, not the root runtime stage** (`ci/workflow-template.yaml`, `docs/12` §4.2): it runs the root Dockerfile's `artifacts` stage once (`--target artifacts --output type=local`), then builds the app from `<out>/output/Dockerfile` and the sandbox from `<out>/agent-sandbox/Dockerfile` — one `pnpm build`, so server and runner share a build id. Hence the build stage **moves** `output/agent-sandbox` to `/app/agent-sandbox` (the runtime stage copies only `output/`); don't turn it back into `rm`, and don't put the sandbox context into `output/` for the root runtime stage to pick up.
+- **CI ships `output/Dockerfile`, not the root runtime stage** (`ci/workflow-template.yaml`, `docs/12` §4.2): it runs the root Dockerfile's `artifacts` stage once (`--target artifacts --output type=local`), then builds the app from `<out>/output/Dockerfile` and the sandbox from `<out>/agent-sandbox/Dockerfile` — one `pnpm build`, so server and runner share a build id (`scripts/build-all.mjs` hands both builds one `AGENT_BUILD_ID`; no build arg needed). Hence the build stage **moves** `output/agent-sandbox` to `/app/agent-sandbox` (the runtime stage copies only `output/`); don't turn it back into `rm`, and don't put the sandbox context into `output/` for the root runtime stage to pick up.
 - Runtime image: `NODE_ENV=production`, `SERVER_HOST=0.0.0.0`, port 3000; no source, pnpm or tsx; Node serves `public/` itself.
 - **pnpm 9 ignores `gypfile: false`** and runs `node-gyp rebuild`, hence the root `pnpm.neverBuiltDependencies: ["better-sqlite3"]`.
 
-## Agent sandbox image (`apps/server/scripts/agent-sandbox/`, `docs/22` §7.2)
+## Agent sandbox image (`apps/agent-sandbox/`, `docs/22` §7.2)
 
-- Built from `output/agent-sandbox/` by `build-image.mjs` (podman first, then docker; extra args go to `build`). **Its base image ARG defaults to the upstream `docker.io/library/node:22-alpine`**, unlike the two app Dockerfiles: a mirror / proxy is passed with `--build-arg NODE_IMAGE=…` at build time and never committed. The same `TARGETARCH` check runs in every stage that uses the base.
+- **`output/` has two owners and neither deletes the other's part**: `build-server.mjs` owns everything but `agent-sandbox/`, which it never reads or removes; `apps/agent-sandbox/scripts/build-sandbox.mjs` owns only `agent-sandbox/` and clears it first, so a failed build leaves no context rather than an old runner. `pnpm build:server` alone therefore leaves an existing context as it was — use `pnpm build:sandbox` / `build:sandbox-image` (which rebuild it) rather than building an `output/agent-sandbox/` you didn't just produce.
+- Built from `output/agent-sandbox/` by `apps/agent-sandbox/scripts/build-image.mjs` (podman first, then docker; extra args go to `build`). **Its base image ARG defaults to the upstream `docker.io/library/node:22-alpine`**, unlike the two app Dockerfiles: a mirror / proxy is passed with `--build-arg NODE_IMAGE=…` at build time and never committed. The same `TARGETARCH` check runs in every stage that uses the base.
 - **The last stage is `FROM scratch` + `COPY --from=rootfs / /`** so the image config holds only `ENV PATH`: the node image's `NODE_VERSION` / `YARN_VERSION` would otherwise show up in every sandbox's environment (acceptance 1 counts env names). Don't turn it back into `FROM ${NODE_IMAGE}`.
 - The self-check expects the runner to exit **2** without env (all imports resolved); 1 means a missing package. npm / yarn / corepack are deleted; deps install with `--ignore-scripts`.
 

@@ -14,16 +14,16 @@
  *                              （config.ts 的 agentTextSkillsDir；源目录不存在就不拷 = 没有文字技能）。只给服务端，不进沙箱镜像
  *   output/Dockerfile          构建上下文就是 output/ 本身
  *   output/.dockerignore、output/README.md
- *   output/agent-sandbox/      `oci` 沙箱镜像的构建上下文（docs/22 §7.2，`pnpm build:sandbox-image`）：
- *                              runner 和它 import 到的 chunk（runner/）、只含 runner 那几个第三方包的 package.json、
- *                              Dockerfile（模板在 scripts/agent-sandbox/）。不进主镜像（output/.dockerignore 排掉）
+ *
+ * `oci` 沙箱镜像的构建上下文 output/agent-sandbox/ 不归这里，归 apps/agent-sandbox（`pnpm build:sandbox`）：
+ * 这个脚本不读也不删它，`pnpm build` 把两边都跑一遍。服务端镜像里没有那个目录，所以 `process` 驱动的 runner 留在上面这份产物里。
  *
  * **一个产物两种库**：实体定义和库无关，驱动在运行时按 DATABASE_PROVIDER 动态 import
  * （packages/server-core/src/db/orm.ts），所以构建不再按库裁剪 —— `@mikro-orm/sqlite`（连带 better-sqlite3）
  * 和 `@mikro-orm/postgresql`（连带 pg）都进运行时依赖，构建时也不用关心 DATABASE_PROVIDER。
  *
  * 打包要点：
- * - 内联仓库里的相对导入和 workspace 包（`@shadecn/*`，见下面的 externalizePackages），
+ * - 内联仓库里的相对导入和 workspace 包（`@shadecn/*`，见 scripts/bundle-common.mjs 的 externalizePackages），
  *   其余 node_modules 里的包全部 external，运行时依赖清单就是从这些 external 反推出来的；
  * - 三个入口共用一次构建：共享的模块（config、实体、ORM 工厂、agent 的工具定义）切成公共 chunk，各入口只是薄薄一层；
  *   runner 只 import packages/agent 里沙箱那一侧的模块，不会把服务端的 config / 数据库拖进它的进程；
@@ -31,19 +31,19 @@
  * - **产物里不能有 Vite**（docs/28 §3.8）：开发用的中间件只在 `apps/server/dev.ts` 入口里，生产入口 `index.ts`
  *   不引用它；下面的 assertNoDevCode 对着 metafile 断言，谁要是把它引回 index.ts 的依赖图，构建直接失败；
  * - define __APP_BUNDLE__ —— packages/server-core/src/runtime.ts 靠它区分「源码运行」和「产物运行」；
- * - define __AGENT_BUILD_ID__ —— 本次构建的 id（packages/agent/src/build-id.ts），服务端和 runner 两个入口拿到的是同一个：
- *   网关据此发现「沙箱镜像和服务端不是同一次构建」（只打 warn；真正拦截不兼容的是协议版本，protocol.ts）。
+ * - define __AGENT_BUILD_ID__ —— 本次构建的 id（packages/agent/src/build-id.ts）：`AGENT_BUILD_ID` 给了就用，`pnpm build` 靠它
+ *   让沙箱构建拿到同一个；网关据此发现「沙箱镜像和服务端不是同一次构建」（只打 warn；真正拦截不兼容的是协议版本，protocol.ts）。
  *
  * 两个基准目录（monorepo 之后分开了）：
  *   serverDir = apps/server  —— 入口、产物模板、依赖清单和已装的包都从这里取；
  *   rootDir   = 仓库根       —— output/ 落在这里，output/package.json 的 name / version 也取根的，
  *                              好让产物和迁移前逐字节一致。
  */
-import { randomBytes } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { build } from 'esbuild'
+import { externalPackagesOf, installedVersion, nodeBundleOptions, packageName, resolveBuildId } from '../../../scripts/bundle-common.mjs'
 
 /** 后端包目录（apps/server）：入口、产物模板、依赖清单和已装的包都在这儿 */
 const serverDir = path.resolve(import.meta.dirname, '..')
@@ -53,50 +53,17 @@ const rootDir = path.resolve(serverDir, '..', '..')
 const outDir = path.join(rootDir, 'output')
 const serverOutDir = path.join(outDir, 'server')
 const templateDir = path.join(serverDir, 'scripts/output-image')
-const sandboxOutDir = path.join(outDir, 'agent-sandbox')
-const sandboxTemplateDir = path.join(serverDir, 'scripts/agent-sandbox')
 /** agent 定义的源目录：原样拷到 output/server/agents/（只拷 *.md） */
 const agentDefinitionsDir = path.join(rootDir, 'packages/agent/agents')
 /** 文字技能的源目录：拷到 output/server/skills/（目录结构不变，只拷 *.md） */
 const agentTextSkillsDir = path.join(rootDir, 'packages/agent/skills')
-/** runner 入口（esbuild 的第三个入口）；沙箱镜像只装它这一支用得到的东西 */
+/** runner 入口（esbuild 的第三个入口） */
 const RUNNER_ENTRY = 'packages/agent/src/runner/main.ts'
 
-/**
- * workspace 里的包（packages/*）。它们是 **source-only 的 TS**：没有构建产物、不发 npm，
- * 产物目录里也装不上 —— 所以必须内联进 bundle，不能 external。
- */
-const WORKSPACE_SCOPE = '@shadecn/'
-
-/**
- * 「包路径一律 external」，workspace 包除外。
- *
- * 等价于 esbuild 的 `packages: 'external'`（判据一样：不以 `.` / `/` 开头的导入路径），
- * 只是给 `@shadecn/*` 开了个口子 —— `packages: 'external'` 本身没有例外可配，
- * 用它的话 `@shadecn/shared` 会被留成一句运行时 import，产物一启动就找不到模块。
- *
- * workspace 包里再 import 的第三方包（比如 shared 里的 yjs）走回这条规则，照样 external，
- * 也就照样进下面那份运行时依赖清单。
- */
-const externalizePackages = {
-  name: 'externalize-packages',
-  setup(pluginBuild) {
-    pluginBuild.onResolve({ filter: /^[^./]/ }, (args) => {
-      if (args.path.startsWith(WORKSPACE_SCOPE)) return undefined
-      return { path: args.path, external: true }
-    })
-  },
-}
-
-/**
- * 本次构建的 id：时间戳（base36）+ 随机数。不用输出内容的哈希：id 本身要写进产物（define），
- * 内容哈希在打包之前算不出来，而且 runner 与服务端必须拿到同一个值。同一次 `build:server` 里它是常量，
- * 不同次构建（哪怕源码没变）一定不同 —— 正是「镜像是不是跟着这次产物重建的」要的粒度。
- */
-const buildId = `${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
+/** 本次构建的 id（见文件头）；同一次 `build:server` 里是常量 */
+const buildId = resolveBuildId()
 
 await rm(serverOutDir, { recursive: true, force: true })
-await rm(sandboxOutDir, { recursive: true, force: true })
 await mkdir(serverOutDir, { recursive: true })
 
 const result = await build({
@@ -107,23 +74,16 @@ const result = await build({
     'db-sync': path.join(serverDir, 'db-sync.ts'),
     'agent-runner': path.join(rootDir, RUNNER_ENTRY),
   },
+  ...nodeBundleOptions,
   outdir: serverOutDir,
-  bundle: true,
   splitting: true,
-  format: 'esm',
-  platform: 'node',
-  target: 'node22',
-  plugins: [externalizePackages],
   sourcemap: true,
-  minify: false,
   logLevel: 'info',
   define: { __APP_BUNDLE__: 'true', __AGENT_BUILD_ID__: JSON.stringify(buildId) },
-  metafile: true,
 })
 
 assertNoDevCode(result.metafile)
-await writeOutputPackageJson(collectRuntimeDeps(result.metafile))
-await writeSandboxContext(result.metafile)
+await writeOutputPackageJson(externalPackagesOf(result.metafile.outputs))
 // agent 定义随产物发布：服务端从 index.js 旁边的 agents/ 读（源码运行时读 packages/agent/agents/）
 await cp(agentDefinitionsDir, path.join(serverOutDir, 'agents'), {
   recursive: true,
@@ -170,79 +130,6 @@ function assertNoDevCode(metafile) {
   }
 }
 
-/** 从 esbuild 的 external import 反推运行时依赖：'y-protocols/sync' → 'y-protocols' */
-function collectRuntimeDeps(metafile) {
-  const names = new Set()
-
-  for (const output of Object.values(metafile.outputs)) {
-    for (const imported of output.imports) {
-      if (!imported.external) continue
-      const name = packageName(imported.path)
-      if (!name) continue
-      names.add(name)
-    }
-  }
-
-  return [...names].sort()
-}
-
-/**
- * `oci` 沙箱镜像的构建上下文（output/agent-sandbox/）：从 runner 那个输出文件出发，沿着非 external 的 import
- * 收齐它用到的 chunk；这些文件的 external import 就是镜像要装的第三方包（pi 的两个包、yjs、dagre ——
- * 不含服务端的 hono / MikroORM / 数据库驱动）。版本和服务端产物一样锁到本次构建装的那一个。
- */
-async function writeSandboxContext(metafile) {
-  const cwd = process.cwd()
-  const outputs = metafile.outputs
-  const entry = Object.keys(outputs).find((key) => outputs[key].entryPoint?.replaceAll('\\', '/').endsWith(RUNNER_ENTRY))
-  if (!entry) throw new Error(`esbuild 的产物里找不到 runner（${RUNNER_ENTRY}）`)
-
-  const files = new Set()
-  const deps = new Set()
-  const queue = [entry]
-  while (queue.length > 0) {
-    const key = queue.pop()
-    if (files.has(key)) continue
-    files.add(key)
-    for (const imported of outputs[key].imports) {
-      if (imported.external) {
-        const name = packageName(imported.path)
-        if (name) deps.add(name)
-      } else if (outputs[imported.path]) {
-        queue.push(imported.path)
-      }
-    }
-  }
-
-  const runnerDir = path.join(sandboxOutDir, 'runner')
-  await mkdir(runnerDir, { recursive: true })
-  for (const key of files) {
-    await cp(path.resolve(cwd, key), path.join(runnerDir, path.basename(key)))
-  }
-  const identity = JSON.parse(await readFile(path.join(rootDir, 'package.json'), 'utf8'))
-  const dependencies = {}
-  for (const name of [...deps].sort()) dependencies[name] = await installedVersion(name)
-  const pkg = {
-    name: 'shadecn-agent-sandbox',
-    version: identity.version,
-    private: true,
-    type: 'module',
-    engines: { node: '>=22.19' },
-    dependencies,
-  }
-  await writeFile(path.join(sandboxOutDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`)
-  await cp(path.join(sandboxTemplateDir, 'Dockerfile'), path.join(sandboxOutDir, 'Dockerfile'))
-  console.log(
-    `[build:server] output/agent-sandbox → runner ${files.size} 个文件，依赖 ${Object.keys(dependencies).join(', ')}`,
-  )
-}
-
-function packageName(specifier) {
-  if (specifier.startsWith('node:') || specifier.startsWith('.')) return undefined
-  const parts = specifier.split('/')
-  return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
-}
-
 async function writeOutputPackageJson(deps) {
   const source = JSON.parse(await readFile(path.join(serverDir, 'package.json'), 'utf8'))
   // 产物的 name / version 沿用仓库根的 —— 产物身份不随 monorepo 改造变化
@@ -264,7 +151,7 @@ async function writeOutputPackageJson(deps) {
   // 版本锁到本次构建实际装的那一个：产物是构建结果，不该在部署时再漂
   const dependencies = {}
   for (const name of deps) {
-    dependencies[name] = await installedVersion(name)
+    dependencies[name] = await installedVersion(serverDir, name)
   }
 
   const pkg = {
@@ -289,11 +176,4 @@ async function writeOutputPackageJson(deps) {
   }
 
   await writeFile(path.join(outDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`)
-}
-
-async function installedVersion(name) {
-  // pnpm workspace 下包装在声明它的那个包的 node_modules 里（符号链接进 .pnpm），不是仓库根
-  const manifest = path.join(serverDir, 'node_modules', name, 'package.json')
-  const { version } = JSON.parse(await readFile(manifest, 'utf8'))
-  return version
 }

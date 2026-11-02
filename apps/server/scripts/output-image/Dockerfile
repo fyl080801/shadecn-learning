@@ -38,7 +38,9 @@ RUN set -e; \
 # 直接打在包里（含 linuxmusl-x64 / linuxmusl-arm64），并声明了 gypfile: false，npm 不会现场编译
 WORKDIR /app
 COPY package.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+# npm 依赖的下载地址，可选：不传就是官方源（和仓库根 Dockerfile 同一个参数）
+ARG NPM_REGISTRY=
+RUN npm install --omit=dev --no-audit --no-fund ${NPM_REGISTRY:+--registry=${NPM_REGISTRY}}
 
 ARG NODE_IMAGE
 FROM ${NODE_IMAGE}

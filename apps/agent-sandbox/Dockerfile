@@ -1,8 +1,8 @@
 # 画布 agent 的 oci 沙箱镜像（docs/22 §7.2）：每一轮一个容器，里面只跑 runner（pi 推理循环），经网关和服务端说话。
-# 由 `pnpm build` 拷进 output/agent-sandbox/，构建上下文就是那个目录（runner/ + 只含 runner 依赖的 package.json）：
+# 由 `pnpm build:sandbox`（`pnpm build` 也会跑它）拷进 output/agent-sandbox/，构建上下文就是那个目录（runner/ + 只含 runner 依赖的 package.json）：
 #
-#   pnpm build:sandbox-image                       # = pnpm build:server + 用 podman / docker 构建本目录
-#   podman build -t shadecn-agent-sandbox:latest output/agent-sandbox
+#   pnpm build:sandbox-image                       # = pnpm build:sandbox + 用 podman / docker 构建那个目录
+#   pnpm build:sandbox && podman build -t shadecn-agent-sandbox:latest output/agent-sandbox
 #
 # 镜像里有什么：node 22（≥ 22.19，pi 1.x 的 engines；只有 node 本体，npm / yarn / corepack 都删了）、ffmpeg / ffprobe、runner 和它的 4 个第三方包
 # （@earendil-works/pi-agent-core、@earendil-works/pi-ai、yjs、@dagrejs/dagre），一个非 root 用户 sandbox（10001）。
@@ -29,7 +29,9 @@ RUN set -e; \
 WORKDIR /sandbox
 COPY package.json ./
 # 全是纯 JS 包，不需要编译；--ignore-scripts：依赖的安装脚本一个都不跑
-RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund && rm -rf /root/.npm
+# npm 依赖的下载地址，可选（docs/22 §7.3）：不传就是官方源
+ARG NPM_REGISTRY=
+RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund ${NPM_REGISTRY:+--registry=${NPM_REGISTRY}} && rm -rf /root/.npm
 
 # —— 2. 拼好沙箱的文件系统 ——
 ARG NODE_IMAGE

@@ -520,11 +520,12 @@ Docker 与 Podman 的 compat API 都按各自的当前版本处理）。runner�
 | `MODULES_AGENT_SANDBOX_CPUS` / `MODULES_AGENT_SANDBOX_MEMORY_MIB` / `MODULES_AGENT_SANDBOX_PIDS` / `MODULES_AGENT_SANDBOX_DISK_MIB` | 1 / 512 / 128 / 512 | 每个沙箱的上限（`process` 驱动不执行）。PIDs 含线程：runner 约 13 个，ffmpeg（x264）按 CPU 核数开线程（7 核实测峰值约 40）；内存峰值含页缓存，720p 编码实测接近 500 MiB，重的媒体任务要调大 |
 | `MODULES_AGENT_GATEWAY_URL` | `http://host.docker.internal:<SERVER_PORT>` | 容器里看到的这个实例。Podman 5 与 Docker Desktop 都给容器加了这个名字（Podman 另有 `host.containers.internal`）；Linux 上的 Docker 没有，要显式配（如 `docker0` 的地址，服务端监听在上面） |
 
-**沙箱镜像**（`apps/server/scripts/agent-sandbox/Dockerfile`，`pnpm build` 把它和 runner 一起放进 `output/agent-sandbox/`）：
-node 22 alpine（≥ 22.19，pi 1.x 的要求）的 node 本体（npm / yarn / corepack 删掉）+ ffmpeg / ffprobe + runner 和它 import 到的 chunk +
+**沙箱镜像**（`apps/agent-sandbox`，`pnpm build:sandbox` 把它的 `Dockerfile` 和打包好的 runner 一起放进 `output/agent-sandbox/`，`pnpm build` 也会跑这一步）：
+node 22 alpine（≥ 22.19，pi 1.x 的要求）的 node 本体（npm / yarn / corepack 删掉）+ ffmpeg / ffprobe + 打成一个文件的 runner +
 runner 的 4 个第三方包（`@earendil-works/pi-agent-core`、`@earendil-works/pi-ai`、`yjs`、`@dagrejs/dagre`，版本锁到构建时装的那一个；
 不含服务端的 hono / MikroORM / 数据库驱动）+ 非 root 用户 `sandbox`。构建期自检：架构与目标一致、runner 的 import 全部解析得到。
-镜像里没有 `.env`、没有任何密钥（构建上下文里本来就没有）。**改了 `packages/agent` 的 runner 侧或协议就要重建镜像**：
+镜像里没有 `.env`、没有任何密钥（构建上下文里本来就没有）。runner 的闭包里出现服务端的模块或第三方包（数据库驱动、hono 等），`pnpm build:sandbox` 直接失败，不生成上下文。
+**改了 `packages/agent` 的 runner 侧或协议就要重建镜像**：
 镜像里的 runner 和服务端协议对不上时，网关会拒绝这一轮（见下面「版本一致性检查」）。
 
 **版本一致性检查**（`oci` 的镜像是预先构建的，没重建就会和服务端错位；`process` 驱动直接跑源码，永远一致）两层：
@@ -535,7 +536,8 @@ runner 的 4 个第三方包（`@earendil-works/pi-agent-core`、`@earendil-work
   消息「沙箱 runner 的协议版本 X 和服务端的 Y 不一致，请重建沙箱镜像（pnpm build:sandbox-image）」，服务端另打一条 warn。
   改了 runner ↔ 网关的协议就把版本号加一；`packages/agent/test/protocol-version.test.ts` 对 `protocol.ts`（去掉注释和空白）算哈希，
   版本号没跟着变就失败。
-- **构建标识，软提示**：`pnpm build` 往服务端和 runner 两个入口注入同一个构建 id（`__AGENT_BUILD_ID__`，时间戳 + 随机数；源码运行是 `source`）。
+- **构建标识，软提示**：`pnpm build` 往服务端和沙箱 runner 两个构建注入同一个构建 id（`__AGENT_BUILD_ID__`，时间戳 + 随机数；源码运行是 `source`；要指定就设构建时的环境变量 `AGENT_BUILD_ID`）。
+  单独跑 `pnpm build:sandbox` / `pnpm build:sandbox-image` 只重建沙箱、用自己的 id，和已有的服务端产物不同，会触发下面这条 warn。
   runner 在兑换请求里一并报上；双方都不是 `source` 且不相同时，服务端只打一条 warn「沙箱镜像和服务端不是同一次构建」，**不拒绝**
   （协议兼容就放行：镜像比服务端旧一个无关紧要的版本是常态）。
 
@@ -548,6 +550,8 @@ pnpm build:sandbox-image
 #    构建容器要经代理出网时同理（podman machine 里 host.containers.internal 指向宿主）：
 pnpm build:sandbox-image --build-arg NODE_IMAGE=<镜像代理>/docker.io/library/node:22-alpine
 pnpm build:sandbox-image --build-arg HTTPS_PROXY=http://host.containers.internal:<端口>
+#    npm 依赖的下载地址也可以换（不传就是官方源，不进 lockfile 和任何配置文件）：
+pnpm build:sandbox-image --build-arg NPM_REGISTRY=<npm 镜像地址>
 
 # 2. 服务端（.env 或命令行）
 MODULES_AGENT_SANDBOX_DRIVER=oci pnpm dev

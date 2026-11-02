@@ -158,7 +158,7 @@ describe('仓库里提到的配置变量都对得上 schema（写错了不报错
       'apps/server/scripts/output-image/Dockerfile',
       'apps/server/scripts/output-image/README.md',
       'apps/server/scripts/dev-cluster.mjs',
-      'apps/server/scripts/agent-sandbox/build-image.mjs',
+      'apps/agent-sandbox/scripts/build-image.mjs',
       'apps/server/vitest.config.ts',
       'apps/server/test/global-setup.ts',
       'sample/server.config.example.yaml',

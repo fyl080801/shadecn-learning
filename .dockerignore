@@ -25,6 +25,7 @@ data
 
 # 测试相关，不进镜像
 apps/server/test
+apps/agent-sandbox/test
 apps/web/src/test
 packages/*/test
 vitest.config.ts

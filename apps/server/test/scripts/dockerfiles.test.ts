@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -27,7 +27,7 @@ const ARCH_CHECK = /ARG TARGETARCH\nRUN set -e; \\\n\s+have=\$\(node -p "process
 
 describe('Dockerfile 的架构护栏', () => {
   it('每个 FROM 都用同一个 ${NODE_IMAGE}（多架构引用走构建参数）；用到 node 的阶段除了只跑在构建机上的 build，都比对 TARGETARCH', () => {
-    for (const file of ['Dockerfile', 'apps/server/scripts/output-image/Dockerfile', 'apps/server/scripts/agent-sandbox/Dockerfile']) {
+    for (const file of ['Dockerfile', 'apps/server/scripts/output-image/Dockerfile', 'apps/agent-sandbox/Dockerfile']) {
       const all = stages(read(file))
       const nodeStages = all.filter((stage) => !/^FROM scratch/.test(stage.from))
       expect(nodeStages.length, file).toBeGreaterThan(0)
@@ -64,5 +64,39 @@ describe('Dockerfile 的架构护栏', () => {
     expect(template).toContain('build_image ${PLATFORM} ${SANDBOX_INTERNAL} ${ARTIFACTS}/agent-sandbox')
     // 每个构建都传同一个基础镜像参数
     expect(template.match(/--build-arg NODE_IMAGE=\$\{BASE_IMAGE\}/g)).toHaveLength(2)
+  })
+
+  it('npm 依赖的下载地址：每条安装命令都认可选的 NPM_REGISTRY，默认空（= 官方源），地址不写死；CI 不传', () => {
+    const FLAG = '${NPM_REGISTRY:+--registry=${NPM_REGISTRY}}'
+    for (const file of ['Dockerfile', 'apps/server/scripts/output-image/Dockerfile', 'apps/agent-sandbox/Dockerfile']) {
+      // 防空转：安装命令的写法变了、下面一条也没匹配上的话，这个用例不能算过
+      expect(read(file), file).toMatch(/^RUN .*\b(npm|pnpm) install\b/m)
+      for (const stage of stages(read(file))) {
+        const installs = stage.body.split('\n').filter((line) => /^RUN .*\b(npm|pnpm) install\b/.test(line))
+        for (const install of installs) {
+          expect(install, `${file}: ${stage.from}`).toContain(FLAG)
+          // ARG 只在声明它的阶段里可见：没声明的话这个参数永远是空的，传了也悄悄走官方源
+          expect(stage.body.indexOf('ARG NPM_REGISTRY=\n'), `${file}: ${stage.from}`).toBeGreaterThan(-1)
+          expect(stage.body.indexOf('ARG NPM_REGISTRY=\n'), `${file}: ${stage.from}`).toBeLessThan(stage.body.indexOf(install))
+        }
+      }
+    }
+    expect(read('ci/workflow-template.yaml')).not.toContain('NPM_REGISTRY')
+  })
+
+  it('根 Dockerfile：每个 workspace 包的 package.json 都在 install 之前 COPY 进来（漏一个 --frozen-lockfile 就过不了）', () => {
+    const root = read('Dockerfile')
+    const install = root.indexOf('RUN pnpm install --frozen-lockfile')
+    const packages = ['apps', 'packages'].flatMap((group) =>
+      readdirSync(path.join(repoRoot, group))
+        .map((name) => `${group}/${name}`)
+        .filter((dir) => existsSync(path.join(repoRoot, dir, 'package.json'))),
+    )
+    expect(packages).toContain('apps/agent-sandbox')
+    for (const dir of packages) {
+      const line = root.indexOf(`COPY ${dir}/package.json ./${dir}/\n`)
+      expect(line, dir).toBeGreaterThan(-1)
+      expect(line, dir).toBeLessThan(install)
+    }
   })
 })

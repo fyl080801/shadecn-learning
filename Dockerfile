@@ -28,11 +28,14 @@ ARG NODE_IMAGE=192.168.68.95:31443/docker.io/library/node:22-alpine
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
 # 不需要编译工具链：这一阶段只构建，不加载 better-sqlite3（根 package.json 的
 # pnpm.neverBuiltDependencies 也让 pnpm 不去跑它的 node-gyp）
-RUN npm install -g pnpm@9.15.9
+# npm 依赖的下载地址，可选（Harbor 只代理容器镜像，管不到这个）：不传就是官方源，和没有这个参数时完全一样；
+# 传了只影响这几条安装命令，不写进任何配置文件、不进 lockfile。用法见 docs/12 §2.5。
+ARG NPM_REGISTRY=
+RUN npm install -g pnpm@9.15.9 ${NPM_REGISTRY:+--registry=${NPM_REGISTRY}}
 WORKDIR /app
 # pnpm workspace：先只拷安装要用的清单（锁文件、workspace 声明、每个包的 package.json），
 # install 这一层就只在依赖变了时才失效，改源码不会重装一遍。
-# 以后新增 packages/<name> 的话，它的 package.json 也要在这里补一行 COPY。
+# 以后新增 apps/<name> / packages/<name> 的话，它的 package.json 也要在这里补一行 COPY（apps/server/test/scripts/dockerfiles.test.ts 钉着）。
 # （根 package.json 里有 pnpm.neverBuiltDependencies，所以它必须在 install 之前就拷进来 —— 它本来就是。）
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json ./apps/web/
@@ -47,11 +50,12 @@ COPY packages/mod-storage/package.json ./packages/mod-storage/
 COPY packages/mod-agent/package.json ./packages/mod-agent/
 COPY packages/mod-apps/package.json ./packages/mod-apps/
 COPY apps/server/package.json ./apps/server/
-RUN pnpm install --frozen-lockfile
+COPY apps/agent-sandbox/package.json ./apps/agent-sandbox/
+RUN pnpm install --frozen-lockfile ${NPM_REGISTRY:+--registry=${NPM_REGISTRY}}
 COPY . .
 # 前端 → output/public，后端 → output/server（index.js + db-sync.js），外加 package.json / Dockerfile：
 # output/ 本身就是一个完整可运行的 app 目录，SQLite / PostgreSQL 通用。
-# output/agent-sandbox/ 是 agent 沙箱镜像的构建上下文（docs/22 §7.2），不进这个镜像（和 output/.dockerignore 一致）：
+# output/agent-sandbox/ 是 agent 沙箱镜像的构建上下文（apps/agent-sandbox，docs/22 §7.2），不进这个镜像（和 output/.dockerignore 一致）：
 # 挪到 output/ 外面，下面的运行时阶段只拷 output/；CI 经 artifacts 阶段把它取出来单独构建沙箱镜像
 RUN pnpm build && mv output/agent-sandbox /app/agent-sandbox
 
@@ -59,7 +63,7 @@ RUN pnpm build && mv output/agent-sandbox /app/agent-sandbox
 #   buildah bud --target artifacts --output type=local,dest=<目录> .
 # <目录>/output 是 output/（带着它自己的 Dockerfile = apps/server/scripts/output-image/Dockerfile），
 # <目录>/agent-sandbox 是沙箱镜像的构建上下文。最重的 pnpm install + pnpm build 只跑一次，服务端和沙箱里的
-# runner 出自同一次构建（同一个构建 id）。默认的 `docker build .` 用不到这个阶段。
+# runner 出自同一次构建（pnpm build 经 AGENT_BUILD_ID 传给两边的同一个构建 id）。默认的 `docker build .` 用不到这个阶段。
 FROM scratch AS artifacts
 COPY --from=build /app/output /output
 COPY --from=build /app/agent-sandbox /agent-sandbox
@@ -82,7 +86,8 @@ RUN set -e; \
     echo "base image arch ok: $have ($(uname -m))"
 WORKDIR /app
 COPY --from=build /app/output/package.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+ARG NPM_REGISTRY=
+RUN npm install --omit=dev --no-audit --no-fund ${NPM_REGISTRY:+--registry=${NPM_REGISTRY}}
 
 # 运行时由 Node 统一承载：既提供 /api、/ws，也吐 public/ 静态资源
 ARG NODE_IMAGE

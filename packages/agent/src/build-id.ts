@@ -1,9 +1,10 @@
 /**
- * 构建标识：`apps/server/scripts/build-server.mjs` 用 esbuild 的 `define` 把**同一个** id 注入服务端和 runner 两个入口
- * （一次构建 = 一个 id）。源码运行（`pnpm dev` / 测试 / `tsx`）没有注入，就是 {@link SOURCE_BUILD_ID}。
+ * 构建标识：服务端（`apps/server/scripts/build-server.mjs`）和沙箱镜像里的 runner（`apps/agent-sandbox/scripts/bundle-runner.mjs`）
+ * 各自用 esbuild 的 `define` 注入。`pnpm build` 经 `AGENT_BUILD_ID` 给两边同一个 id（一次构建 = 一个 id）；单独重建镜像就是另一个 id。
+ * 源码运行（`pnpm dev` / 测试 / `tsx`）没有注入，就是 {@link SOURCE_BUILD_ID}。
  *
  * 它只用来**软提示**「沙箱镜像和服务端不是同一次构建」（网关打一条 warn，不拒绝）；真正拦截不兼容的是
- * `protocol.ts` 的 `RUNNER_PROTOCOL_VERSION`。本包不读 `process.env`，所以走编译期注入而不是环境变量。
+ * `protocol.ts` 的 `RUNNER_PROTOCOL_VERSION`。本包不读 `process.env`，所以运行时走编译期注入（`AGENT_BUILD_ID` 只有构建脚本读）。
  */
 
 /** esbuild `define` 注入的字符串字面量；没注入时这个标识符不存在（所以只能用 typeof 探测） */

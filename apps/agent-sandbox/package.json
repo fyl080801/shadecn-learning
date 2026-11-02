@@ -1,0 +1,24 @@
+{
+  "name": "@shadecn/agent-sandbox",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm typecheck && pnpm --filter @shadecn/agent typecheck && node scripts/build-sandbox.mjs",
+    "build:image": "pnpm build && node scripts/build-image.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "^3.1.3",
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "yjs": "^13.6.32"
+  },
+  "devDependencies": {
+    "@shadecn/agent": "workspace:*",
+    "@shadecn/shared": "workspace:*",
+    "@types/node": "^24.10.1",
+    "esbuild": "^0.28.2",
+    "typescript": "~5.9.3"
+  }
+}

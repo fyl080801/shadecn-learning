@@ -11,9 +11,10 @@
 | 命令 | 作用 |
 |---|---|
 | `pnpm dev` | 开发（Node/Hono + Vite 中间件，watch 模式），http://127.0.0.1:3000 |
-| `pnpm build` | `build:client` + `build:server`，产物全部落在 `output/` |
+| `pnpm build` | `build:client` + `build:server` + `build:sandbox`，产物全部落在 `output/`；服务端和沙箱是同一个构建 id（[REQ-AGENT-SANDBOX §7.2](22-agent-sandbox.md#72-oci-驱动三期)） |
 | `pnpm build:client` | `vue-tsc -b` 类型检查 → `vite build` 输出 `output/public`（`apps/web`；不再顺带检查后端） |
 | `pnpm build:server` | `tsc --noEmit` 类型检查 → esbuild 打包出 `output/server/index.js`（`apps/server`） |
+| `pnpm build:sandbox` | `@shadecn/agent` 的类型检查 → esbuild 打包 runner，生成 agent 沙箱镜像的构建上下文 `output/agent-sandbox/`（`apps/agent-sandbox`）；不碰 `output/` 里别的东西 |
 | `pnpm start` | 本地生产模式启动（`NODE_ENV=production node --import ./apps/server/scripts/local-start.mjs output/server/index.js`）。`--import` 是兜底：产物从自己所在位置往上找 `node_modules`，而运行时依赖只声明在 `apps/server`，仓库根没有；钩子只对「找不到的裸包名」以 `apps/server/package.json` 为起点再解析一次。容器里产物旁有自己的 `node_modules`，用不到它 |
 | `pnpm test:shared` / `pnpm typecheck:shared` | 共享包 `packages/shared` 的测试 / 类型检查 |
 
@@ -50,7 +51,7 @@ output/
   server/
     index.js          # 打包后的后端入口（ESM，node 22），带 .map
     db-sync.js        # 表结构同步入口（apps/server/db-sync.ts），容器启动先跑它
-    chunk-*.js        # 两个入口共用的模块（config、实体、ORM 工厂…）
+    chunk-*.js        # 三个入口共用的模块（config、实体、ORM 工厂…）
     dev-*.js          # 动态 import 切出来的开发分支 chunk，生产不会加载
   public/             # 前端静态资源 = 后端的静态资源目录
     index.html
@@ -77,7 +78,7 @@ better-sqlite3 / pg 不在这份清单里 —— bundle 不直接 import 它们�
 见 [REQ-DATA §2.1](05-data-persistence.md)）。代价是 PG 部署的镜像里也带着 better-sqlite3 的二进制，几 MB。
 
 - **前端静态资源直接构建进后端的静态资源目录**：`apps/web/vite.config.ts` 里 `build.outDir = output/public`，后端生产模式就吐这个目录（可用 `SERVER_STATIC_DIR` 覆盖）。
-- 后端由 `apps/server/scripts/build-server.mjs`（esbuild）打包，两个入口（`index.ts` → `server/index.js`、`apps/server/db-sync.ts` → `server/db-sync.js`）一次构建：仓库内的相对导入全部内联（实体定义、ORM 配置都在其中），`node_modules` 里的第三方包保持 external（运行时从产物旁的 `node_modules` 解析）。**workspace 包 `@shadecn/*` 例外，一律内联**：`apps/server/scripts/build-server.mjs` 里用 `externalizePackages` 插件代替了 `packages: 'external'` —— 判据相同（不以 `.` / `/` 开头的导入路径视为 external），只是放过 `@shadecn/`，否则 `@shadecn/shared` 会留成一句运行时 import，而产物里根本没装这个包。
+- 后端由 `apps/server/scripts/build-server.mjs`（esbuild）打包，三个入口（`index.ts` → `server/index.js`、`apps/server/db-sync.ts` → `server/db-sync.js`、`packages/agent/src/runner/main.ts` → `server/agent-runner.js`）一次构建：仓库内的相对导入全部内联（实体定义、ORM 配置都在其中），`node_modules` 里的第三方包保持 external（运行时从产物旁的 `node_modules` 解析）。**workspace 包 `@shadecn/*` 例外，一律内联**：`scripts/bundle-common.mjs` 里用 `externalizePackages` 插件（服务端和沙箱两个构建共用）代替了 `packages: 'external'` —— 判据相同（不以 `.` / `/` 开头的导入路径视为 external），只是放过 `@shadecn/`，否则 `@shadecn/shared` 会留成一句运行时 import，而产物里根本没装这个包。
 - `splitting: true` 是硬要求：`frontend/index.ts` 里的 `await import('./dev.ts')` 必须留成真正的动态 import，否则 `vite` 会被提升成顶层静态依赖 —— 而 `vite` 是 devDependency，生产环境根本不会装，一启动就崩。
 - 打包时 define 了 `__APP_BUNDLE__`，`packages/server-core/src/runtime.ts` 靠它区分「源码运行」和「产物运行」：产物运行时应用根目录取进程 cwd（容器里就是 `/app`），静态资源取产物自己旁边的 `public/`。
 - 运行产物**不再需要 `tsx`**；表结构同步也是打包好的 `server/db-sync.js`，不需要任何 CLI 工具。
@@ -117,13 +118,15 @@ docker build -t shadecn-learning ./output
    **为什么要 `neverBuiltDependencies`**：pnpm 9 看到包根目录有 `binding.gyp`、又没有 install 脚本时，会**无视
    `gypfile: false`** 自作主张跑 `node-gyp rebuild`（npm 会尊重这个声明），没有 node-gyp 的机器上 install 直接失败。
    better-sqlite3 13 的二进制是预编译好打在包里的，根本不需要这一步；
-   `output/agent-sandbox/`（agent 沙箱镜像的构建上下文）在这一阶段末尾挪到 `/app/agent-sandbox`，不进应用镜像；
+   `output/agent-sandbox/`（agent 沙箱镜像的构建上下文，`apps/agent-sandbox` 生成）在这一阶段末尾挪到 `/app/agent-sandbox`，不进应用镜像；
 2. **deps** —— 和 `output/Dockerfile` 的 deps 阶段一样，只从 `/app/output/package.json` 装生产依赖；
 3. **运行时** —— `COPY --from=build /app/output ./`，其余同上。
 
 **`artifacts`**（`FROM scratch`，只有 `/output` 和 `/agent-sandbox`）：CI 用 `buildah bud --target artifacts --output type=local,dest=<目录>`
 把 build 阶段的产物原样导出，再分别用 `<目录>/output/Dockerfile` 打服务端镜像、`<目录>/agent-sandbox/Dockerfile` 打沙箱镜像（§4.2）——
 最重的 `pnpm install` + `pnpm build` 只跑一次，两个镜像出自同一次构建。`docker build .` 默认构建最后一个阶段，用不到它。
+
+npm 依赖默认从官方源下载，慢的话构建时传 `--build-arg NPM_REGISTRY=<npm 镜像地址>`（根 `Dockerfile`、`output/Dockerfile`、沙箱镜像的 Dockerfile 都认；不进 lockfile 和任何配置文件，CI 不传）。
 
 > ⚠️ 跨架构构建：build 阶段带了 `--platform=$BUILDPLATFORM`（构建产物与架构无关，随构建机跑最快）；
 > deps 阶段**故意不带**，跑在目标平台上 —— better-sqlite3 按运行时的平台 + 架构挑预编译二进制，基础镜像架构对了，加载的就是对的那一个。

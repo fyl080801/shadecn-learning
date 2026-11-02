@@ -4,7 +4,7 @@
 
 **Always reply in Chinese (中文).** All user-facing output — answers, explanations, plans, summaries, questions — is written in Chinese. Keep technical terms in their original English form (Vite, MikroORM, OIDC, Hono, …).
 
-Code identifiers, types and commit messages stay English. **Source comments in `apps/server/`, `apps/web/src/` and `packages/`, log/error messages shown to a developer or user, and test names are written in Chinese**, matching every existing file. `docs/` is Chinese too.
+Code identifiers, types and commit messages stay English. **Source comments in `apps/server/`, `apps/agent-sandbox/`, `apps/web/src/`, `packages/` and `scripts/`, log/error messages shown to a developer or user, and test names are written in Chinese**, matching every existing file. `docs/` is Chinese too.
 
 ## Project
 
@@ -22,10 +22,11 @@ pnpm workspace. Every root command is a `pnpm --filter <pkg>` delegation.
 
 - **`apps/web` (`@shadecn/web`)** — frontend (`src/` = `@/`, `vite.config.ts`, `index.html`, `login.html`, `components.json`). `devDependencies` only: it is bundled into `output/public`.
 - **`apps/server` (`@shadecn/server`)** — assembles the backend product: entries `index.ts` / `dev.ts`, the module list `modules.ts`, the `db:push` entry `db-sync.ts`, `scripts/`, and the integration tests. Its `dependencies` is the production runtime set.
+- **`apps/agent-sandbox` (`@shadecn/agent-sandbox`)** — the agent's `oci` sandbox image: its own esbuild of the runner (which it checks against the runner boundary), the image's `Dockerfile` and `build-image.mjs`. Its `dependencies` is the runner's runtime set. The runner's source stays in `packages/agent` (`.claude/rules/agent.md`).
 - **`packages/shared` (`@shadecn/shared`)** — source-only TS both sides import: `flow-graph`, `flow-node-types`, `flow-doc`, `flow-ops`, `canvas`, `auth`, `collab`, `agent`, `id`, `apps`. Change a contract here, once.
-- **`packages/agent` (`@shadecn/agent`)** — the canvas agent, source-only, never in the browser: server-side orchestration + gateway, and the sandboxed runner each run spawns (bundled as `output/server/agent-runner.js`; `.claude/rules/agent.md`).
+- **`packages/agent` (`@shadecn/agent`)** — the canvas agent, source-only, never in the browser: server-side orchestration + gateway, and the sandboxed runner each run spawns (bundled twice: `output/server/agent-runner.js` for the `process` driver, `output/agent-sandbox/` for the image; `.claude/rules/agent.md`).
 - **`packages/server-kit` (`@shadecn/server-kit`)** — the server's runtime library, source-only: the module integration protocol + kernel, the platform contract (`platform`, `db`, `identity`), config layer, shared layer (`cluster`), bus, access-revocation signal. **`packages/server-core` (`@shadecn/server-core`)** — the core (HTTP pipeline, config, DB, logging, frontend hosting, platform implementation, `prepare` / `assemble` / `boot`); it knows no module. **`packages/mod-*`** — one package per capability (`mod-auth` — login, provides the platform's `auth` —, `mod-canvas`, `mod-storage`, `mod-collab`, `mod-agent`, `mod-apps` — `executeApp` over pluggable drivers, `docs/29` —), each default-exporting a module declaration (config section, tables, routes, `setup`). Core and modules never import each other; they meet only in `apps/server`'s entries (`.claude/rules/server-modules.md`, `docs/28` §3.1).
-- **Root**: `docs/`, `k8s/`, `ci/`, `.gitea/`, `Dockerfile`, `.env`, `data/`, `output/`, `eslint.config.ts`, a `vitest.config.ts` that only aggregates `projects`, and repo-wide tooling devDependencies.
+- **Root**: `docs/`, `k8s/`, `ci/`, `.gitea/`, `scripts/` (`build-all.mjs` behind `pnpm build`, `bundle-common.mjs` shared by the two esbuild builds), `Dockerfile`, `.env`, `data/`, `output/`, `eslint.config.ts`, a `vitest.config.ts` that only aggregates `projects`, and repo-wide tooling devDependencies.
 - **Two base directories.** `rootDir` / `appRoot` (`@shadecn/server-core`'s `config.ts`, `runtime.ts`) is the **repo root** — home of `.env`, `data/`, `output/`. `webRoot` and `serverDir` are each package's own dir. From source, `runtime.ts` derives the app root as **three levels above `packages/server-core/src/`**; in the bundle it is `process.cwd()`. Mixing them reads the wrong `.env` or puts the DB in the wrong `data/`.
 
 ### Invariants — each is a bug if undone
@@ -43,11 +44,12 @@ pnpm workspace. Every root command is a `pnpm --filter <pkg>` delegation.
 ## Commands
 
 - `pnpm dev` — whole app (Hono + Vite middleware, watch) on http://127.0.0.1:3000. One process, one port, no proxy, in dev and prod.
-- `pnpm build` — `build:client` (`vue-tsc -b` + `vite build` → `output/public`) then `build:server` (`typecheck` + esbuild → `output/server`, plus the agent sandbox image context `output/agent-sandbox/`).
-- `pnpm build:sandbox-image` — `build:server`, then build the agent's oci sandbox image with podman / docker; extra args go to the build (`--build-arg NODE_IMAGE=…`). Rebuild it whenever the runner or the gateway protocol changes.
+- `pnpm build` — `build:client` (`vue-tsc -b` + `vite build` → `output/public`), `build:server` (`typecheck` + esbuild → `output/server`), `build:sandbox`, all with one `AGENT_BUILD_ID`.
+- `pnpm build:sandbox` — `typecheck:agent` + typecheck + esbuild of the runner → the agent sandbox image context `output/agent-sandbox/`; fails if the runner's closure crosses the boundary. Touches nothing else in `output/`.
+- `pnpm build:sandbox-image` — `build:sandbox`, then build the agent's oci sandbox image with podman / docker; extra args go to the build (`--build-arg NODE_IMAGE=…`). Rebuild it whenever the runner or the gateway protocol changes.
 - `pnpm start` — run `output/` locally; `pnpm preview` = build + start.
-- `pnpm typecheck:server` / `typecheck:shared` / `typecheck:agent` (frontend is checked by `vue-tsc -b` in `build:client`).
-- `pnpm test` (`test:watch`, `test:coverage`) and `pnpm test:server` / `test:client` / `test:shared` / `test:agent`.
+- `pnpm typecheck:server` / `typecheck:shared` / `typecheck:agent` / `typecheck:agent-sandbox` (frontend is checked by `vue-tsc -b` in `build:client`).
+- `pnpm test` (`test:watch`, `test:coverage`) and `pnpm test:server` / `test:client` / `test:shared` / `test:agent` / `test:agent-sandbox`.
 - `pnpm lint` / `pnpm lint:fix`.
 - `pnpm db:push` — sync tables to entities; additive only, lossy changes are refused with the statements printed. `pnpm dev` runs it first. **No migration files.** No `db:studio` — use `sqlite3` / `psql`.
 - `pnpm db:push:force` — same with `--force`; **dev only, deliberately separate** (`dev`, `dev:cluster` and both Dockerfiles keep the bare sync).
@@ -72,7 +74,7 @@ When a fact goes stale, fix it where it lives — each fact has one home. If a s
 
 ## Dependencies
 
-Each package declares only what it needs; **the runtime set is `apps/server/package.json`'s `dependencies`**, everything else is `devDependencies`.
+Each package declares only what it needs; **the runtime set is `apps/server/package.json`'s `dependencies`** (and `apps/agent-sandbox/package.json`'s for the sandbox image), everything else is `devDependencies`.
 
 - A package the **server** imports → `apps/server` `dependencies` (`pnpm --filter @shadecn/server add -P`). `build-server.mjs` fails the build if the bundle imports something only in `devDependencies` or missing.
 - A **frontend** package → `apps/web` `devDependencies` (`pnpm --filter @shadecn/web add -D`; the shadcn-vue CLI, run from `apps/web`, writes there).
@@ -82,7 +84,7 @@ Each package declares only what it needs; **the runtime set is `apps/server/pack
 ## Conventions
 
 - TypeScript strict with `noUnusedLocals`, `noUnusedParameters`, `erasableSyntaxOnly`. All Vue components use `<script setup lang="ts">`.
-- Tests live in `apps/server/test/`, `apps/web/src/test/`, `packages/*/test/`, mirroring what they cover. Imports in `apps/server/` (tests included) keep explicit `.ts` extensions. Import `describe` / `it` / `expect` / `vi` from `vitest` (no globals). Name tests by the behaviour constrained ("未登录 → 401").
+- Tests live in `apps/server/test/`, `apps/agent-sandbox/test/`, `apps/web/src/test/`, `packages/*/test/`, mirroring what they cover. Imports in `apps/server/` (tests included) keep explicit `.ts` extensions. Import `describe` / `it` / `expect` / `vi` from `vitest` (no globals). Name tests by the behaviour constrained ("未登录 → 401").
 - **Time is UTC everywhere except on screen.** The DB stores absolute instants; stores map rows out with `toISOString()`, so the wire format is always ISO with `Z`. **The frontend never formats a date inline** — use `apps/web/src/lib/format.ts` (`formatDateTime` / `formatDate` / `formatTime` / `formatWith(value, options)`; all render `-` for unparseable input).
   - The defaults come from `apps/web/src/lib/preferences.ts` (browser-local `app:display-preferences`; each field defaults to `AUTO` = follow the browser). `format.ts` reads the reactive `resolvedDisplayPreferences`, so changes re-render live. A **caller-supplied option always wins**, and stored values are **validated on read** (a bad `dateStyle` makes `Intl` throw).
 - **On the canvas path, time is a number** — UTC epoch ms (`FlowNodeData.createdAt`, `FlowEdgeData.createdAt`). Stamped by each browser's own clock, so never order across clients by it.

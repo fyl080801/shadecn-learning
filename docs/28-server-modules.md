@@ -42,7 +42,7 @@
 
 - 要跨服务同步的是 Yjs 文档和共享状态，Hocuspocus + Redis 共享层已经覆盖；再引入一套 broker / RPC 就是两套总线并存。
 - Egg / Midway / Nest 的构造器注入依赖 `emitDecoratorMetadata`，`tsx` 和 esbuild 都不支持；本项目开着 `erasableSyntaxOnly`，
-  参数属性写法也被禁止。要用它们就得把 dev 和 build 都换掉，顺带重写 `build-server.mjs` 的产物分析和沙箱镜像上下文。
+  参数属性写法也被禁止。要用它们就得把 dev 和 build 都换掉，顺带重写 `build-server.mjs` 的产物分析和沙箱镜像的打包。
 - Egg / Midway / Fastify 都意味着重写全部路由；Nitro v3 还在 beta 且自带构建；Watt 是"合进一个进程多线程"，和独立扩容的目标相反。
 - 真正的工作量在拆耦合（§2.2），不在框架。
 
