@@ -1,6 +1,6 @@
 # REQ-NEST NestJS 版服务
 
-> 状态：**实施中** —— 已完成第 1～6 步和里程碑 A、B（§6）：登录、账号关联、默认头像、项目、画布、协同、节点上传图片和缩略图单进程跑通，平台 + 两个协同副本也跑通。
+> 状态：**实施中** —— 已完成第 1～7 步和里程碑 A、B（§6）：登录、账号关联、默认头像、项目、画布、协同、节点上传图片和缩略图、应用列表和节点生成单进程跑通，平台 + 两个协同副本也跑通。
 
 ## 1. 目标与边界
 
@@ -19,12 +19,12 @@
 | 模块（包） | 对应 | 职责 | imports | exports | Controller | 实体 |
 |---|---|---|---|---|---|---|
 | `SessionModule`（`@learning/session`，已有） | `mod-auth` | 登录、会话、账号关联、默认头像 | — | `SessionService`、`UserService`、`RequestOrigins`、守卫 | `AuthController`、`IdentitiesController`、`AvatarsController` | `Session`、`UserIdentity`、`PendingLink`、`AuthRequest` |
-| `CanvasModule`（`@learning/canvas`） | `mod-canvas` 服务层 | 项目、成员、邀请、画布的读写，判权，`FlowDocStore`，撤权信号，落库请求令牌 | — | `ProjectsService`、`FlowsService`、`FlowDocStore`、`AccessRevocation`、`FlowMemberGuard` | — | `Project`、`ProjectMember`、`ProjectInvite`、`Flow`、`FlowUserState` |
+| `CanvasModule`（`@learning/canvas`） | `mod-canvas` 服务层 | 项目、成员、邀请、画布的读写，判权，`FlowDocStore`，撤权信号，落库请求令牌 | — | `ProjectsService`、`FlowsService`、`FlowDocStore`、`AccessRevocation`、`FlowMemberGuard`、`FlowBodyParsers` | — | `Project`、`ProjectMember`、`ProjectInvite`、`Flow`、`FlowUserState` |
 | `CanvasApiModule`（同上） | `mod-canvas/routes` | 画布 REST | `CanvasModule` | — | `ProjectsController`、`InvitesController`、`FlowsController` | — |
 | `CollabModule`（`@learning/collab`） | `mod-collab` | Hocuspocus 实例、持久化、配额、awareness、单连接互斥、写闸门、复验、退出 | `CanvasModule` | `CollabServer`、`FlowPersistence` | — | — |
 | `CollabGatewayModule`（同上） | `mod-collab` 入口 | WebSocket upgrade，监控和 `/doc` 接口 | `CollabModule`、`CanvasModule`（`FlowMemberGuard` 在控制器所在模块实例化） | — | `CollabMonitorController`、`FlowDocController` | — |
 | `StorageModule`（`@learning/storage`） | `mod-storage` | S3、上传、缩略图 | `CanvasModule` | `AssetStorage` | `AssetsController` | `FlowAsset` |
-| `AppsModule`（`@learning/apps`） | `mod-apps` | `executeApp`、生成任务 | `CanvasModule`、`CollabModule`、`StorageModule` | `AppsService` | `AppsController`、`FlowAppsController` | `AppTask` |
+| `AppsModule`（`@learning/apps`，目录 `packages/apps`） | `mod-apps` | `executeApp`、生成任务 | `CanvasModule`、`CollabModule`、`StorageModule` | `AppsService` | `AppsController`、`FlowAppsController` | `AppTask` |
 | `AgentModule`（`@learning/agent`，目录 `packages/agent-service`） | `mod-agent` | agent 编排、网关 | `CanvasModule`、`CollabModule`、`StorageModule` | — | 面板、网关 | `AgentConversation`、`AgentRun`、`AgentToolCall`、`AgentGrant`、`AgentGrantScope` |
 
 ```
@@ -49,7 +49,7 @@ contracts                                    只依赖 yjs，任何模块都可�
 **`apps/platform`**：两个根模块、两个入口，都是静态模块列表，差别只在有没有协同入口，不靠配置开关。
 
 - `AppModule`（`main.ts`）= `PlatformBaseModule` + `CollabGatewayModule`。默认 `cluster: single`、`schemaSync: apply`，`pnpm dev:platform` 一个进程一个端口就能用全部功能。
-- `PlatformBaseModule`（`main-without-collab.ts`）：页面、登录、`CanvasApiModule`、`StorageModule`，功能到了再加 `AppsModule`、`AgentModule`。协同由副本提供时跑这个入口。
+- `PlatformBaseModule`：页面、登录、`CanvasApiModule`、`StorageModule`、`AppsModule`，功能到了再加 `AgentModule`。协同由副本提供时，入口 `main-without-collab.ts` 的根模块是 `PlatformSplitModule`（`PlatformBaseModule` 加一道检查，不是 `cluster: redis` 就拒绝启动）。这个入口没有协同入口，但有房间（§8）。
 
 **`apps/collab`**（`@learning/collab-service`）：只有 `main.ts` + `AppModule`，用于协同独立扩缩。
 
@@ -88,7 +88,7 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 
 ## 4. `@shadecn/shared` 契约
 
-新建 `@learning/contracts`（tsc 产物，`yjs` 是 peer），**把后端要用的文件原样复制进去**，先是 `collab`、`flow-graph`、`flow-doc`、`canvas`、`auth`，做到 agent、apps 时再加。前端继续用 `@shadecn/shared`。
+新建 `@learning/contracts`（tsc 产物，`yjs` 是 peer），**把后端要用的文件原样复制进去**：`collab`、`flow-graph`、`flow-doc`、`canvas`、`auth`，第 7 步加了 `apps`、`flow-collection`、`flow-node-types`、`flow-ops-core`，做到 agent 时再加。前端继续用 `@shadecn/shared`。
 
 一个测试防漂移：读 `packages/shared/src/` 的同名文件，只归一化相对 import 的扩展名后逐字比较。文件形状对不上时画布会静默变空，所以这个测试不放宽。
 
@@ -124,10 +124,7 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 | 7 | `AppsModule` | 移植 `flow-apps` 用例；节点生成可用 |
 | 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，到这一步先单独出一份方案 |
 
-**第 6 步之后前端的状况**：登录、设置页「登录方式」、默认头像、项目、成员、邀请、画布、协同、节点上传图片和缩略图可用（浏览器走过）。没配对象存储时上传回 503 并弹提示，别的功能照常。其余功能报错或显示为空，都不白屏、不无限重试（读代码确认）：
-
-- 应用列表和生成任务按空处理（`api.ts` 的 `appApi.list`、`useFlowAppTasks.ts:97`）。
-- agent 面板显示加载失败（`useFlowAgent.ts:310-316`）。
+**第 7 步之后前端的状况**：登录、设置页「登录方式」、默认头像、项目、成员、邀请、画布、协同、节点上传图片和缩略图、应用列表、节点生成可用（浏览器走过）。没配对象存储时上传回 503 并弹提示，生成结果挂上游地址；没配应用时列表是空的。别的功能照常。agent 面板显示加载失败（`useFlowAgent.ts:310-316`），不白屏、不无限重试（读代码确认）。
 
 头像为空（这个功能上线前登录、会话还活着）时走 `v-if` 的回退显示，下次登录补上。
 
@@ -145,6 +142,20 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 - **请求的 `content-type`**：上传和分片路由只特别收 `multipart/form-data`、`application/octet-stream`。写成 Fastify 不认识的类型是 415（旧服务是 400 或照收），前端不会这样发。
 - **sharp 用到才加载**：装不上只是没有缩略图，服务照常启动。
 
-## 8. 需要用户决定的事项
+## 8. 应用和生成任务（第 7 步）
+
+行为同 `docs/29`，配置和与 `mod-apps` 不同的地方如下。
+
+配置在 `config.yaml` 的 `apps` 段（`timeoutMs`、`providers`、`apps`，形状同 `docs/29` §3.3 的 `modules.apps`，每个模型的收窄照抄 `sample/server.config.example.yaml`）和 `llm.providers`。没有 `MODULES_APPS_*` 这些 JSON 环境变量。密钥只写 `"$环境变量名"`，值放运行目录的 `.env`，写明文拒绝启动。协同副本不 import 这个模块，也不用配：`app_task` 由平台建，这些路径前置代理都分给平台。
+
+- **一个应用都没配也照样加载**：`GET /api/apps` 回 `[]`（旧服务是模块不加载，404，前端两种都当空）。
+- **平台进程有房间，没有 WebSocket 入口**：结果要写进 Y.Doc，所以 `AppsModule` import `CollabModule`，`PlatformBaseModule` 里因此有一个 Hocuspocus。它没有 upgrade 监听（入口只在 `CollabGatewayModule`）；拆开部署时任务开一条 direct connection，靠 Redis 扩展和副本同步：开房间时等别的副本把内存里的状态推过来，写回和 `apps:tasks` 都转发给持有房间的副本。任务结束断开即落库、卸载。平时没有房间，它的代价只是定时器和每 3 秒读一次撤权世代号；它也回 `CANVAS_FLUSH_CONTENT`，房间在平台上时复制画布才拿得到还没落库的写回。**平台在拆开形态必须 `cluster: redis`**（§3，配错拒绝启动）：`single` 下平台的房间是孤岛，写回到不了用户，只会经落库合并。
+- **受理和执行在同一个进程，没有派发**：旧服务分 web / agent 角色，要经总线派给 agent 副本；这里只有平台有这个模块，路由建好任务行就调 `TaskRunner`，所以 `Bus.dispatch` 和 503「没有 agent 实例」都没有了。还留着的是取消通知（`Bus.request`）：将来平台多副本时，任务可能跑在别的平台进程上。排队中的任务被取消时本进程补推列表。
+- **同一节点一个任务靠唯一约束**：`app_task.active_key`，进行中是 `<flowId>/<nodeId>`，结束清成 null。旧服务是先查后插，并发提交能插出两个。
+- **请求体上限同别的路由是 1MB**（旧服务 `docs/29` §3.6 是 32MB）：Fastify 在路由之前解析 JSON，放宽的话匿名和非成员也能让服务端先读满上限，再收 401 / 404。前端只发提示词和参考图地址，用不到更大的。要放开得先解决这一点。坏 JSON 同 canvas，先于守卫回 400：`/api/flows/...` 是 `{ error }`，`/api/apps/...` 是 Nest 默认形状（前端不调这个入口）。
+- **写回节点的操作只摘了要用的**：`recordGeneration`、`attachAsset`、`appendGeneratedText` 从 `flow-ops.ts` 逐字摘进 `packages/apps/src/generation-ops.ts`，测试逐函数比对。整份 `flow-ops` 的闭包还有 `agent.ts`、`director-*.ts`、`flow-layout.ts`（带 dagre），约 6000 行。第 8 步要整份时删掉这个文件，按 §4 整文件复制。
+- **LLM 通路的最小闭包在 `packages/apps/src/llm/`**：`llm-providers`、`model` 两个文件和 `model-stream` 里 `streamUpstream` 那一段（约 400 行，加 `llm.providers` 的解析），依赖 `@earendil-works/pi-ai`，版本同 `mod-apps`。agent 编排没搬。第 8 步也要模型通路时再决定抽不抽成小包。
+
+## 9. 需要用户决定的事项
 
 无。

@@ -15,7 +15,7 @@ import { flowIdOf, FlowPersistence, roomOf } from './flow-persistence.js'
 import { COLLAB_LIMITS, CollabQuota } from './quota.js'
 import { createWriteGate, isWriteSync, type WriteGate } from './write-gate.js'
 
-/** 连接上下文：`onConnect` 认定的身份。direct connection（将来的 agent）没有它 */
+/** 连接上下文：`onConnect` 认定的身份。direct connection（生成任务、将来的 agent）没有它 */
 export interface CollabContext {
   identity?: CollabIdentity | null
   /** 个人画布的房间：awareness 整帧丢弃 */
@@ -64,7 +64,7 @@ export type SocketCloser = (force: boolean) => void
 
 /**
  * 进程里的 Hocuspocus 实例，以及围绕它的业务钩子：鉴权、落库、配额、awareness、单连接互斥、写闸门、复验、退出。
- * **不接 WebSocket**：那是 `CollabGateway` 的事。将来 agent 进程只 import `CollabModule`，房间经 direct connection 打开，落库和复验照常。
+ * **不接 WebSocket**：那是 `CollabGateway` 的事。只 import `CollabModule` 的进程（平台上的生成任务、将来的 agent 进程）经 direct connection 开房间，落库和复验照常。
  *
  * 关闭顺序（docs/30 §5），每一步都是因为下一步要依赖它：
  * - `onModuleDestroy`：停定时器和撤权订阅，撤掉总线上的落库登记（入口由 `CollabGateway` 在同一阶段停）；
@@ -407,6 +407,11 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
       const document = this.hocuspocus.documents.get(documentName)
       if (document) await this.hocuspocus.unloadDocument(document)
     }
+  }
+
+  /** 房间到了容量上限的原因；没到是 null。经 direct connection 往房间写的模块（生成任务）写之前判，它们不过写闸门和 `beforeHandleMessage` */
+  quotaLocked(documentName: string): string | null {
+    return this.quota.locked(documentName)
   }
 
   /** 接 WebSocket 的那一层登记怎么关 socket。关连接和落库的顺序只写在这里 */

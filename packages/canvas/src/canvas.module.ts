@@ -2,6 +2,7 @@ import { DATA_ACCESS_ENTITIES } from '@learning/data-access'
 import { Module } from '@nestjs/common'
 import { AccessRevocation } from './access-revocation.js'
 import { Flow, FlowUserState, Project, ProjectInvite, ProjectMember } from './entities.js'
+import { FlowBodyParsers } from './flow-body-parsers.js'
 import { FlowDocStore } from './flow-doc.store.js'
 import { FlowsService } from './flows.service.js'
 import { FlowMemberGuard } from './guards.js'
@@ -20,7 +21,8 @@ import { ProjectsService } from './projects.service.js'
     FlowDocStore,
     AccessRevocation,
     FlowMemberGuard,
+    FlowBodyParsers,
   ],
-  exports: [ProjectsService, FlowsService, FlowDocStore, AccessRevocation, FlowMemberGuard],
+  exports: [ProjectsService, FlowsService, FlowDocStore, AccessRevocation, FlowMemberGuard, FlowBodyParsers],
 })
 export class CanvasModule {}

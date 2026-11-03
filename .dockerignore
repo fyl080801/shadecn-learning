@@ -11,6 +11,7 @@ packages/session/dist
 packages/canvas/dist
 packages/collab/dist
 packages/storage/dist
+packages/apps/dist
 output
 .git
 .claude

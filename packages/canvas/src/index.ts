@@ -10,6 +10,7 @@ export { AccessRevocation, REVOCATION_POLL_INTERVAL_MS, type RevocationWatcher }
 export { CanvasApiModule } from './canvas-api.module.js'
 export { CanvasModule } from './canvas.module.js'
 export { Flow, FlowUserState, Project, ProjectInvite, ProjectMember } from './entities.js'
+export { FlowBodyParsers } from './flow-body-parsers.js'
 export {
   CANVAS_FLUSH_CONTENT,
   type FlowDocReadOptions,

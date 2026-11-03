@@ -50,7 +50,7 @@ describe('根模块', () => {
   })
 
   it('画布 REST、登录、页面、Vite 的 WebSocket 都不分给副本', () => {
-    for (const pathname of ['/', '/login', '/api/flows/f1', '/api/flows/f1/duplicate', '/api/flows/f1/document', '/api/flows/f1/assets', '/api/flows/f1/assets/multipart', '/api/flows/f1/assets/multipart/u1/parts/1', '/api/flows/f1/assets/variants', '/api/projects', '/api/auth/me', '/api/auth/identities', '/api/auth/link/github', '/api/avatars/0f4c717d8a4e2a3e.svg', '/api/health/ready', '/assets/a.js', '/@vite/client', '/api/collaboration']) {
+    for (const pathname of ['/', '/login', '/api/flows/f1', '/api/flows/f1/duplicate', '/api/flows/f1/document', '/api/flows/f1/assets', '/api/flows/f1/assets/multipart', '/api/flows/f1/assets/multipart/u1/parts/1', '/api/flows/f1/assets/variants', '/api/apps', '/api/apps/a%3Ab', '/api/apps/a%3Ab/execute', '/api/flows/f1/apps/tasks', '/api/flows/f1/apps/tasks/t1/cancel', '/api/flows/f1/apps/a%3Ab/execute', '/api/projects', '/api/auth/me', '/api/auth/identities', '/api/auth/link/github', '/api/avatars/0f4c717d8a4e2a3e.svg', '/api/health/ready', '/assets/a.js', '/@vite/client', '/api/collaboration']) {
       expect(isCollabPath(pathname), pathname).toBe(false)
     }
   })
@@ -103,6 +103,9 @@ describe('启动', () => {
     // 上传归平台（StorageModule），副本上没有这张表也没有这些路由
     expect((await app.inject({ method: 'POST', url: '/api/flows/f1/assets' })).statusCode).toBe(404)
     expect((await app.inject({ method: 'POST', url: '/api/flows/f1/assets/variants' })).statusCode).toBe(404)
+    // 应用和生成任务归平台（AppsModule），副本上没有这张表也没有这些路由
+    expect(await status('/api/apps')).toBe(404)
+    expect(await status('/api/flows/f1/apps/tasks')).toBe(404)
     expect(app.get(Cluster).mode).toBe('redis')
     const tables = await app.get(DataAccess).em().getConnection().execute<{ name: string }[]>(`select name from sqlite_master where type = 'table'`)
     expect(tables).toEqual([])

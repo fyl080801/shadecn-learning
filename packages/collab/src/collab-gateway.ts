@@ -1,5 +1,6 @@
 import type { IncomingMessage, Server } from 'node:http'
 import type { Duplex } from 'node:stream'
+import { FlowBodyParsers } from '@learning/canvas'
 import { COLLAB_PATH } from '@learning/contracts/collab'
 import { RequestOrigins } from '@learning/session'
 import { type BeforeApplicationShutdown, Inject, Injectable, type OnApplicationBootstrap, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
@@ -12,15 +13,12 @@ import { COLLAB_LIMITS } from './quota.js'
 /** 退出时的关闭帧：1012 Service Restart。前端 `classifyClose` 认不出它，走普通重连，正好接到别的副本或重启后的自己 */
 const CLOSE_RESTARTING = { code: 1012, reason: 'server-restarting' }
 
+const FLOW_DOC_PATH = /^\/api\/flows\/[^/]+\/doc(\/|\?|$)/
+
 /** Hocuspocus 连接里 crossws 要转发的那几下，收窄后不用 cast 到底 */
 interface ClientLink {
   handleMessage(data: Uint8Array): void
   handleClose(event: { code: number; reason: string }): void
-}
-
-interface FastifyContentTypes {
-  hasContentTypeParser(type: string): boolean
-  addContentTypeParser(type: string, options: { parseAs: 'buffer'; bodyLimit: number }, parser: (request: unknown, body: Buffer, done: (err: null, body: Buffer) => void) => void): void
 }
 
 /**
@@ -42,6 +40,7 @@ export class CollabGateway implements OnModuleInit, OnApplicationBootstrap, OnMo
     @Inject(HttpAdapterHost) private readonly adapterHost: HttpAdapterHost,
     @Inject(CollabServer) private readonly collab: CollabServer,
     @Inject(RequestOrigins) private readonly origins: RequestOrigins,
+    @Inject(FlowBodyParsers) private readonly bodies: FlowBodyParsers,
   ) {
     this.adapter = crossws({
       hooks: {
@@ -60,13 +59,11 @@ export class CollabGateway implements OnModuleInit, OnApplicationBootstrap, OnMo
   }
 
   /**
-   * 个人画布的 `POST /doc` 是二进制。Fastify 不认识的 content-type 回 415，所以要登记解析器，在路由注册之前。
+   * 个人画布的 `POST /doc` 是二进制。Fastify 不认识的 content-type 回 415，所以要登记解析器，在路由注册之前。解析器和上传共用一个（`FlowBodyParsers`）。
    * 解析在路由之前跑：超过上限的请求体在这里就是 413，轮不到守卫（和 canvas 的坏 JSON 一样）。
    */
   onModuleInit(): void {
-    const fastify = this.adapterHost.httpAdapter.getInstance<FastifyContentTypes>()
-    if (fastify.hasContentTypeParser('application/octet-stream')) return
-    fastify.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: COLLAB_LIMITS.message }, (_request, body, done) => done(null, body))
+    this.bodies.buffered('application/octet-stream', FLOW_DOC_PATH, COLLAB_LIMITS.message)
   }
 
   /** 这个阶段 server 还没 `listen`（实测），不会漏掉第一条连接 */

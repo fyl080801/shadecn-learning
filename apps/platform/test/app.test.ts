@@ -4,7 +4,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { Cluster } from '@learning/cluster'
-import { CollabGatewayModule } from '@learning/collab'
+import { CollabGatewayModule, CollabServer } from '@learning/collab'
 import { DataAccess } from '@learning/data-access'
 import { bootstrapService } from '@learning/foundation'
 import { SessionService, UserService } from '@learning/session'
@@ -12,8 +12,10 @@ import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fa
 import { NestFactory } from '@nestjs/core'
 import { Module } from '@nestjs/common'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as Y from 'yjs'
 import { AppModule } from '../src/app.module.js'
 import { PlatformBaseModule } from '../src/platform-base.module.js'
+import { PlatformSplitModule } from '../src/platform-split.module.js'
 
 const SECRET_PAGE = 'PROTECTED-INDEX'
 const LOGIN_PAGE = 'LOGIN-ENTRY'
@@ -183,6 +185,31 @@ function behaviours(createUrl: (dir: string) => string, cleanup?: (app: NestFast
     expect((await send(`/api/flows/${flowId}/assets/variants`, { src: 'x' })).statusCode).toBe(503)
   })
 
+  it('个人画布的二进制保存接进来了：和上传共用 octet-stream 的解析器，两边都收得到字节，别的路径 415', async () => {
+    const personal = JSON.parse((await get('/api/projects/personal', cookie)).body) as { id: string }
+    const send = (target: string, body: unknown) => app.inject({ method: 'POST', url: target, headers: { cookie, 'content-type': 'application/json' }, payload: JSON.stringify(body) })
+    const { id: flowId } = (await send(`/api/projects/${personal.id}/flows`, { name: '个人画布' })).json<{ id: string }>()
+    const doc = new Y.Doc()
+    doc.getMap('nodes').set('n1', new Y.Map())
+    const binary = (target: string, payload: Buffer) => app.inject({ method: 'POST', url: target, headers: { cookie, 'content-type': 'application/octet-stream' }, payload })
+    const saved = await binary(`/api/flows/${flowId}/doc`, Buffer.from(Y.encodeStateAsUpdate(doc)))
+    expect(saved.statusCode, saved.body).toBe(200)
+    // 分片上传经 octet-stream 走到控制器（没配对象存储 503），不是解析器的 415
+    expect((await binary(`/api/flows/${flowId}/assets/multipart/u1/parts/1?key=x`, Buffer.from('x'))).statusCode).not.toBe(415)
+    expect((await binary('/api/projects', Buffer.from('x'))).statusCode).toBe(415)
+  })
+
+  it('应用接进来了：匿名 401；没配应用时服务照常跑，列表和任务都是空的，提交 404', async () => {
+    expect((await get('/api/apps')).status).toBe(401)
+    expect(JSON.parse((await get('/api/apps', cookie)).body)).toEqual([])
+    const send = (target: string, body: unknown) => app.inject({ method: 'POST', url: target, headers: { cookie, 'content-type': 'application/json' }, payload: JSON.stringify(body) })
+    const { id: projectId } = (await send('/api/projects', { name: '应用项目' })).json<{ id: string }>()
+    const { id: flowId } = (await send(`/api/projects/${projectId}/flows`, { name: '应用画布' })).json<{ id: string }>()
+    expect(JSON.parse((await get(`/api/flows/${flowId}/apps/tasks`, cookie)).body)).toMatchObject({ tasks: [] })
+    expect((await get('/api/flows/nope/apps/tasks', cookie)).status).toBe(404)
+    expect((await send(`/api/flows/${flowId}/apps/${encodeURIComponent('a:b')}/execute`, { params: {}, nodeId: 'n' })).statusCode).toBe(404)
+  })
+
   it('协同接进来了：监控接口要登录，/ws/collaboration 真的走 upgrade，跨站握手 403', async () => {
     expect((await get('/api/collab/rooms')).status).toBe(401)
     expect(JSON.parse((await get('/api/collab/rooms', cookie)).body)).toMatchObject({ totalRooms: 0 })
@@ -283,14 +310,14 @@ describe('模块依赖和 imports 顺序无关', () => {
     writeConfig(dir, productionConfig({ url: `file:${path.join(dir, 'order.db')}`, dir }))
     const imports = [...(Reflect.getMetadata('imports', PlatformBaseModule) as unknown[]), CollabGatewayModule]
     const providers = Reflect.getMetadata('providers', PlatformBaseModule) as unknown[]
-    expect(imports).toHaveLength(10)
+    expect(imports).toHaveLength(11)
 
     @Module({})
     class ReorderedRoot {}
     const { app, baseUrl } = await listen({
       module: ReorderedRoot,
-      // 排列之外的五个（cluster、它的检查、画布 REST、存储、协同）放在最前面，也是一种「先后无关」
-      imports: [imports[5], imports[6], imports[7], imports[8], imports[9], ...order.map((index) => imports[index])],
+      // 排列之外的六个（cluster、它的检查、画布 REST、存储、应用、协同）放在最前面，也是一种「先后无关」
+      imports: [imports[5], imports[6], imports[7], imports[8], imports[9], imports[10], ...order.map((index) => imports[index])],
       providers,
     } as never)
 
@@ -492,6 +519,19 @@ describe('协同由副本提供时的根模块', () => {
     expect(Reflect.getMetadata('imports', PlatformBaseModule)).not.toContain(CollabGatewayModule)
   })
 
+  it('拆分入口是 single → 拒绝启动：不然房间和副本不通，生成结果到不了用户，也不报错', async () => {
+    writeConfig(dir, productionConfig({ url: `file:${path.join(dir, 'split.db')}`, dir }))
+    await expect(listen(PlatformSplitModule)).rejects.toThrow('cluster.mode 必须是 redis')
+  })
+
+  it.skipIf(!process.env.PLATFORM_TEST_REDIS_URL || !process.env.PLATFORM_TEST_DATABASE_URL)('拆分入口是 redis → 正常启动，就是 PlatformBaseModule 的内容', async () => {
+    writeConfig(dir, { ...productionConfig({ url: process.env.PLATFORM_TEST_DATABASE_URL as string, dir }), cluster: { mode: 'redis', url: process.env.PLATFORM_TEST_REDIS_URL } })
+    const { app, baseUrl } = await listen(PlatformSplitModule)
+    expect((await rawRequest(baseUrl, '/api/none')).status).toBe(401)
+    expect((http.Server.prototype.listenerCount.call(app.getHttpServer(), 'upgrade'))).toBe(0)
+    await app.close()
+  })
+
   it('PlatformBaseModule 能单独启动：页面和画布 REST 都在，协同的接口不存在', async () => {
     writeConfig(dir, productionConfig({ url: `file:${path.join(dir, 'base.db')}`, dir }))
     const { app, baseUrl } = await listen(PlatformBaseModule)
@@ -506,6 +546,10 @@ describe('协同由副本提供时的根模块', () => {
     expect(JSON.parse((await rawRequest(baseUrl, '/api/projects/personal', cookie)).body).kind).toBe('personal')
     expect((await rawRequest(baseUrl, '/api/collab/rooms', cookie)).status).toBe(404)
     expect((await rawRequest(baseUrl, '/api/collab/health', cookie)).status).toBe(404)
+    // 生成任务归平台：这个根模块里有 Hocuspocus（结果要写进房间），但没有 WebSocket 入口
+    expect((http.Server.prototype.listenerCount.call(app.getHttpServer(), 'upgrade'))).toBe(0)
+    expect(JSON.parse((await rawRequest(baseUrl, '/api/apps', cookie)).body)).toEqual([])
+    expect(app.get(CollabServer, { strict: false }).hocuspocus.documents.size).toBe(0)
     // 上传归平台，不归协同副本：这个根模块里就有
     expect((await app.inject({ method: 'POST', url: '/api/flows/nope/assets/variants', headers: { cookie, 'content-type': 'application/json' }, payload: '{}' })).statusCode).toBe(404)
     await app.close()

@@ -26,6 +26,7 @@ export default defineConfig(
       "packages/canvas/dist",
       "packages/collab/dist",
       "packages/storage/dist",
+      "packages/apps/dist",
       // `pnpm build` 的产物
       "output",
       "node_modules",
@@ -86,6 +87,7 @@ export default defineConfig(
       "packages/canvas/**/*.ts",
       "packages/collab/**/*.ts",
       "packages/storage/**/*.ts",
+      "packages/apps/**/*.ts",
       "scripts/**/*.mjs",
       // provider / 连接串解析，prisma.config.ts 和构建脚本共用的那份
       "apps/server/prisma/*.mjs",

@@ -8,7 +8,11 @@
     "./flow-graph": { "source": "./src/flow-graph.ts", "types": "./dist/flow-graph.d.ts", "default": "./dist/flow-graph.js" },
     "./flow-doc": { "source": "./src/flow-doc.ts", "types": "./dist/flow-doc.d.ts", "default": "./dist/flow-doc.js" },
     "./canvas": { "source": "./src/canvas.ts", "types": "./dist/canvas.d.ts", "default": "./dist/canvas.js" },
-    "./auth": { "source": "./src/auth.ts", "types": "./dist/auth.d.ts", "default": "./dist/auth.js" }
+    "./auth": { "source": "./src/auth.ts", "types": "./dist/auth.d.ts", "default": "./dist/auth.js" },
+    "./apps": { "source": "./src/apps.ts", "types": "./dist/apps.d.ts", "default": "./dist/apps.js" },
+    "./flow-collection": { "source": "./src/flow-collection.ts", "types": "./dist/flow-collection.d.ts", "default": "./dist/flow-collection.js" },
+    "./flow-node-types": { "source": "./src/flow-node-types.ts", "types": "./dist/flow-node-types.d.ts", "default": "./dist/flow-node-types.js" },
+    "./flow-ops-core": { "source": "./src/flow-ops-core.ts", "types": "./dist/flow-ops-core.d.ts", "default": "./dist/flow-ops-core.js" }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

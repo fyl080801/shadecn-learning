@@ -253,16 +253,16 @@ describeOnBothDatabases('真 provider', (ctx) => {
     })
 
     it('复验进行中再来多少次，都只补一轮：不叠着跑', async () => {
-      const auth = ctx.app.get(CollabAuth, { strict: false })
       const { alice, name } = await room()
       const a = open(name, alice.cookie)
       await synced(a)
-      const rounds = vi.spyOn(auth, 'authorize')
+      // 不数 `authorize`：复验会清写闸门的缓存，客户端这时到的同步帧也要查一次，负载高时偶尔落在窗口里。也只数这个房间：上一个用例的房间可能还没卸载
+      const rounds = vi.spyOn(ctx.server as unknown as { revalidateDocument(document: { name: string }): Promise<void> }, 'revalidateDocument')
 
       const calls = [ctx.server.revalidateConnections(), ctx.server.revalidateConnections(), ctx.server.revalidateConnections(), ctx.server.revalidateConnections()]
       await Promise.all(calls)
 
-      expect(rounds).toHaveBeenCalledTimes(2)
+      expect(rounds.mock.calls.filter(([document]) => document.name === name)).toHaveLength(2)
     })
 
     it('会话没了：复验关的是 4401，不是 4403 —— 一个空闲超时的人不该被告知「你已不是成员」', async () => {

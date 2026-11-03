@@ -78,3 +78,7 @@ paths:
 ## `@learning/storage` — `FlowAsset`
 
 - Same two-definitions rule as canvas against `mod-storage`. **`FlowAssets.record` decides on the `key` unique constraint, never read-then-write**: `complete` can replay, and the loser re-reads (same flow = done, another flow = the error stands, ownership never moves). Don't turn it into an upsert: that would let a member reassign a key to another canvas.
+
+## `@learning/apps` — `AppTask`
+
+- Same two-definitions rule against `mod-apps`. It has one column `mod-apps` doesn't: `active_key`, unique and nullable, set while a task is active (`docs/30` §8). Both databases allow any number of NULLs under a unique constraint, which is what makes it work without a partial index.

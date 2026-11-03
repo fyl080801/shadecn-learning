@@ -69,6 +69,28 @@ session:
 #   # 对象键的根目录，默认 canvas；几个环境共用一个桶时用它隔开。写空串 = 桶根
 #   # keyPrefix: canvas
 
+# 生成应用（图片 / 视频 / 文本节点用它们生成，docs/29 §3.3、docs/30 §8）。不写 = 应用列表是空的，别的功能照常。
+# 密钥只写 "$环境变量名"，值放 .env；写明文拒绝启动。变量没设只标这个应用不可用。各模型的 params 收窄照抄 sample/server.config.example.yaml 的 modules.apps。
+# apps:
+#   # 条目没写 timeoutMs 时一次执行的时限（毫秒），默认 600000
+#   # timeoutMs: 600000
+#   providers:
+#     ark: { type: ark, apiKey: $ARK_API_KEY }
+#     comfy: { type: comfyui, baseUrl: http://127.0.0.1:8188 }
+#   apps:
+#     - { provider: ark, type: image, model: doubao-seedream-5-0-pro-260628, title: Seedream 5.0 pro }
+#     - { provider: comfy, type: image, id: sdxl, options: { workflow: data/comfy/sdxl.json, inputs: { prompt: { node: "6", field: text, type: string, required: true } } } }
+
+# 语言服务。带模型的提供方，每个模型自动成为一个文本应用（docs/29 §3.3）。
+# llm:
+#   providers:
+#     selfhost:
+#       baseUrl: http://127.0.0.1:11434/v1
+#       api: openai-completions
+#       apiKey: $LLM_API_KEY
+#       models:
+#         - { id: qwen3, name: 千问 3 }
+
 web:
   # 前端目录。默认生产是 output/public（vite build 的产物），开发是 apps/web（Vite 的 root）
   # root: output/public

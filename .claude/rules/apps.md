@@ -1,6 +1,7 @@
 ---
 paths:
   - "packages/mod-apps/**"
+  - "packages/apps/**"
   - "apps/web/src/composables/flow/useFlowAppTasks.ts"
   - "apps/server/test/routes/flow-apps.test.ts"
   - "packages/shared/src/apps.ts"
@@ -28,3 +29,16 @@ paths:
 - **`app_task` is the lifecycle's source of truth; every transition is a conditional `nativeUpdate`** (`tasks.ts`): claim = active ∧ (no lease ∨ lease expired); every executor write = `leaseOwner = me` ∧ active (so a cancel or a takeover makes the old holder's writes no-ops — check the returned count before writing the node); cancel = active → `canceled`, regardless of lease. Never read-then-write a status. The executor renews every lease/3 and aborts on a failed renewal (`canceled` → cancel upstream + node `idle`; otherwise `lost` → write nothing). Shutdown releases the lease (`shutdown` reason) instead of failing the task. The sweeper (every agent replica) takes over expired-lease tasks: with a handle → `resumeApp` (never resubmit — double billing); `running` without a handle → failed "执行中断". Progress goes to the row + the push, **never into the Y.Doc** (high-frequency; the doc only gets state transitions).
 - **Frontend task state has one home: `composables/flow/useFlowAppTasks.ts`** (provided in `FlowEditor.vue`; `flowAppTasksFor(flowId)` for the node runner, which has no inject). One `GET` on open + per reconnect, then only `apps:tasks` pushes (full list, replace; an in-flight `GET` never overwrites a newer push) — no polling. A task whose node `runtime.taskId` points at it but isn't `processing` is hidden (the executor writes the node before it pushes). The node's processing overlay (`StatusProcessing.vue`) and the top-right **generation tasks button** (`components/flow/apps/FlowAppTasksButton.vue`, its own Popover — never merged back into the agent chat button, whose count is agent runs only) read it; "is this node generating" = `runtime.status === 'processing'` **or** a queued task in this list (`taskOn`).
 - **`size` validation is shared** (`@shadecn/shared/apps` `checkParamValue`, re-used as `params.ts`'s `checkOne`): the popover (`SizePicker.vue`) and the server must reject the same values — never add a size rule in only one of them. Tiers / presets / pixel ranges are per-model config (the item's `params`), never in the driver or the component. Node overrides live as `data["appParam.<name>"]`, one key per param, and are filtered by the chosen app's schema at run time (`nodeAppParams`) rather than cleared when the app changes.
+
+## `@learning/apps` (`packages/apps`, the Nest service, `docs/30` §8)
+
+The invariants above hold, with `modules.apps` read as config.yaml's `apps` section. What differs, and what the obvious change gets wrong:
+
+- **A separate implementation, nothing shared with `mod-apps`.** A driver fix goes into both.
+- **There are no roles and no dispatch: the route calls `TaskRunner.runTask` directly.** `AppsModule` is only in the platform, which both accepts and executes. Don't add `Bus.dispatch` for this. `APPS_CANCEL_TASK` stays on the bus: a task may be running on another platform process. Anything that must reach those processes goes through the bus or the row; the sweeper is what catches a task nobody claimed.
+- **Results go into the room, never straight into the database**, through a direct connection held for the whole task. The platform's `CollabModule` has no upgrade listener; in the split shape the Redis extension relays writes and `broadcastStateless` to the replicas holding the room, and `afterLoadDocument` waits for a peer's unsaved state. That is why the platform must run `cluster: redis` there: with `single` the room is an island and users see the result only after a reload.
+- **`TaskRunner` stops in `onModuleDestroy`, not `beforeApplicationShutdown`**: `CollabServer` closes rooms and the Redis extension in the latter, and disconnecting a task's direct connection (store, unload) needs them open. Nest finishes every module's `onModuleDestroy` before the next phase, whatever the module order.
+- **`active_key` decides "one task per node", by its unique constraint.** Never check first and insert after: two requests both see none and both insert. Every path to a terminal state (`finish`, `cancel`) must clear it, or the node can never submit again.
+- **`generation-ops.ts` is a verbatim slice of `packages/shared/src/flow-ops.ts`, compared function by function** (`test/generation-ops.test.ts`). Change shared first and re-slice; never fix it here. A wrong shape writes nodes that render blank without any error.
+- **`src/llm/` is a copy of the agent's model path, not a new client.** The rule above against writing another OpenAI-compatible client stands.
+- **`CollabServer.quotaLocked` is the only quota check a direct connection gets**: it bypasses the write gate and `beforeHandleMessage`, so a writer that skips it can push a locked room further over.

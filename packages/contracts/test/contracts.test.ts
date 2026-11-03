@@ -14,8 +14,8 @@ const copies = fs.readdirSync(path.join(packageDir, 'src')).filter((file) => fil
 const normalize = (code: string) => code.replace(/from '(\.\/[^']+)\.(?:ts|js)'/g, "from '$1'")
 
 describe('防漂移', () => {
-  it('复制的是约定的五个文件，一个不多一个不少，和 exports 对得上', () => {
-    expect([...copies].sort()).toEqual(['auth.ts', 'canvas.ts', 'collab.ts', 'flow-doc.ts', 'flow-graph.ts'])
+  it('复制的是约定的那些文件，一个不多一个不少，和 exports 对得上', () => {
+    expect([...copies].sort()).toEqual(['apps.ts', 'auth.ts', 'canvas.ts', 'collab.ts', 'flow-collection.ts', 'flow-doc.ts', 'flow-graph.ts', 'flow-node-types.ts', 'flow-ops-core.ts'])
     expect(Object.keys(manifest.exports).map((entry) => `${entry.slice(2)}.ts`).sort()).toEqual([...copies].sort())
   })
 

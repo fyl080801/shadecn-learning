@@ -33,8 +33,8 @@ describe('包的依赖边界', () => {
     }
   })
 
-  it('canvas 不认识协同和存储：src 里没有 @learning/collab、@learning/storage', () => {
-    for (const { file, code } of sources('src')) expect(code, file).not.toMatch(/@learning\/(collab|storage)/)
+  it('canvas 不认识协同、存储和应用：src 里没有 @learning/collab、@learning/storage、@learning/apps', () => {
+    for (const { file, code } of sources('src')) expect(code, file).not.toMatch(/@learning\/(collab|storage|apps)/)
   })
 
   it('src 里 import 的每个包都声明了：tsc 不查这个，缺了到产物运行时才炸', () => {
