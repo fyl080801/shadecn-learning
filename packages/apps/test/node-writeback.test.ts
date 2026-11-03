@@ -1,31 +1,9 @@
-import fs from 'node:fs'
-import path from 'node:path'
 import { nodesMap, toYEdge, toYNode } from '@learning/contracts/flow-doc'
+import { appendGeneratedText, attachAsset, hasIncomingEdges, readNodeRecord, recordGeneration } from '@learning/contracts/flow-ops'
 import { FlowOpError, opContext } from '@learning/contracts/flow-ops-core'
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import { appendGeneratedText, attachAsset, hasIncomingEdges, readNodeRecord, recordGeneration } from '../src/generation-ops.js'
 import { nodeRecord } from './helpers.js'
-
-const FUNCTIONS = ['readNodeRecord', 'requireNodeRecord', 'hasIncomingEdges', 'attachAsset', 'recordGeneration', 'appendGeneratedText']
-const here = (file: string) => fs.readFileSync(path.resolve(import.meta.dirname, file), 'utf8')
-
-function sourceOf(code: string, name: string): string {
-  const start = code.indexOf(`function ${name}(`)
-  if (start < 0) throw new Error(`[test] 找不到函数 ${name}`)
-  return code.slice(start, code.indexOf('\n}\n', start) + 3)
-}
-
-describe('防漂移', () => {
-  // 文档形状对不上时节点会静默写坏，所以这里逐字比较，不放宽
-  it.each(FUNCTIONS)('%s 和 packages/shared/src/flow-ops.ts 里的逐字相同', (name) => {
-    expect(sourceOf(here('../src/generation-ops.ts'), name)).toBe(sourceOf(here('../../shared/src/flow-ops.ts'), name))
-  })
-
-  it('摘录没有多出别的函数', () => {
-    expect([...here('../src/generation-ops.ts').matchAll(/^(?:export )?function (\w+)\(/gm)].map((match) => match[1])).toEqual(FUNCTIONS)
-  })
-})
 
 describe('写回节点的原子操作', () => {
   function docWith(...nodes: ReturnType<typeof nodeRecord>[]) {

@@ -15,7 +15,24 @@ const normalize = (code: string) => code.replace(/from '(\.\/[^']+)\.(?:ts|js)'/
 
 describe('防漂移', () => {
   it('复制的是约定的那些文件，一个不多一个不少，和 exports 对得上', () => {
-    expect([...copies].sort()).toEqual(['apps.ts', 'auth.ts', 'canvas.ts', 'collab.ts', 'flow-collection.ts', 'flow-doc.ts', 'flow-graph.ts', 'flow-node-types.ts', 'flow-ops-core.ts'])
+    expect([...copies].sort()).toEqual([
+      'agent.ts',
+      'apps.ts',
+      'auth.ts',
+      'canvas.ts',
+      'collab.ts',
+      'director-doc.ts',
+      'director-eval.ts',
+      'director-ops.ts',
+      'flow-collection.ts',
+      'flow-doc.ts',
+      'flow-graph.ts',
+      'flow-layout.ts',
+      'flow-node-types.ts',
+      'flow-ops-core.ts',
+      'flow-ops.ts',
+      'id.ts',
+    ])
     expect(Object.keys(manifest.exports).map((entry) => `${entry.slice(2)}.ts`).sort()).toEqual([...copies].sort())
   })
 
@@ -49,15 +66,31 @@ describe('yjs 单份', () => {
     expect(nodesMap(doc).get('n1')).toBeInstanceOf(Y.Map)
   })
 
-  it('yjs 是 peer，不是 dependency；第三方依赖只有它', () => {
-    expect(manifest.peerDependencies).toEqual({ yjs: '^13.6.32' })
+  it('yjs 和 dagre 是 peer，不是 dependency；第三方依赖只有这两个，dagre 可选且和 packages/shared 同版本', () => {
+    const shared = JSON.parse(fs.readFileSync(path.join(sharedDir, '../package.json'), 'utf8'))
+    expect(manifest.peerDependencies).toEqual({ '@dagrejs/dagre': shared.peerDependencies['@dagrejs/dagre'], yjs: '^13.6.32' })
+    expect(manifest.peerDependenciesMeta).toEqual({ '@dagrejs/dagre': { optional: true } })
     expect(manifest.dependencies).toBeUndefined()
     const bare = new Set<string>()
     for (const file of copies) {
       const code = fs.readFileSync(path.join(packageDir, 'src', file), 'utf8')
       for (const [, name] of code.matchAll(/from '([^'.][^']*)'/g)) bare.add(name)
     }
-    expect([...bare]).toEqual(['yjs'])
+    expect([...bare].sort()).toEqual(['@dagrejs/dagre', 'yjs'])
+  })
+
+  it('只有 flow-ops 和 flow-layout 会加载 dagre：其余文件（协同副本用到的）的相对闭包里没有它', () => {
+    const importers = copies.filter((file) => /from '@dagrejs\/dagre'/.test(fs.readFileSync(path.join(packageDir, 'src', file), 'utf8')))
+    expect(importers).toEqual(['flow-layout.ts'])
+    const closure = (file: string, seen = new Set<string>()): Set<string> => {
+      if (seen.has(file)) return seen
+      seen.add(file)
+      const code = fs.readFileSync(path.join(packageDir, 'src', file), 'utf8')
+      for (const [, target] of code.matchAll(/from '\.\/([^']+)\.js'/g)) closure(`${target}.ts`, seen)
+      return seen
+    }
+    const reachesDagre = copies.filter((file) => closure(file).has('flow-layout.ts')).sort()
+    expect(reachesDagre).toEqual(['flow-layout.ts', 'flow-ops.ts'])
   })
 
   it('本包解析到的 yjs 和 packages/shared 的是同一个版本目录', () => {

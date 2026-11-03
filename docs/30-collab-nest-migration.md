@@ -88,7 +88,7 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 
 ## 4. `@shadecn/shared` 契约
 
-新建 `@learning/contracts`（tsc 产物，`yjs` 是 peer），**把后端要用的文件原样复制进去**：`collab`、`flow-graph`、`flow-doc`、`canvas`、`auth`，第 7 步加了 `apps`、`flow-collection`、`flow-node-types`、`flow-ops-core`，做到 agent 时再加。前端继续用 `@shadecn/shared`。
+新建 `@learning/contracts`（tsc 产物，`yjs` 是 peer），**把后端要用的文件原样复制进去**：`collab`、`flow-graph`、`flow-doc`、`canvas`、`auth`，第 7 步加了 `apps`、`flow-collection`、`flow-node-types`、`flow-ops-core`，`docs/31` 的第 1 步又加了 `agent`、`director-*`、`flow-layout`、`flow-ops`、`id`（`@dagrejs/dagre` 是可选 peer，只有 import `flow-ops` 或 `flow-layout` 的进程才加载，协同副本不 import）。前端继续用 `@shadecn/shared`。
 
 一个测试防漂移：读 `packages/shared/src/` 的同名文件，只归一化相对 import 的扩展名后逐字比较。文件形状对不上时画布会静默变空，所以这个测试不放宽。
 
@@ -153,7 +153,7 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 - **受理和执行在同一个进程，没有派发**：旧服务分 web / agent 角色，要经总线派给 agent 副本；这里只有平台有这个模块，路由建好任务行就调 `TaskRunner`，所以 `Bus.dispatch` 和 503「没有 agent 实例」都没有了。还留着的是取消通知（`Bus.request`）：将来平台多副本时，任务可能跑在别的平台进程上。排队中的任务被取消时本进程补推列表。
 - **同一节点一个任务靠唯一约束**：`app_task.active_key`，进行中是 `<flowId>/<nodeId>`，结束清成 null。旧服务是先查后插，并发提交能插出两个。
 - **请求体上限同别的路由是 1MB**（旧服务 `docs/29` §3.6 是 32MB）：Fastify 在路由之前解析 JSON，放宽的话匿名和非成员也能让服务端先读满上限，再收 401 / 404。前端只发提示词和参考图地址，用不到更大的。要放开得先解决这一点。坏 JSON 同 canvas，先于守卫回 400：`/api/flows/...` 是 `{ error }`，`/api/apps/...` 是 Nest 默认形状（前端不调这个入口）。
-- **写回节点的操作只摘了要用的**：`recordGeneration`、`attachAsset`、`appendGeneratedText` 从 `flow-ops.ts` 逐字摘进 `packages/apps/src/generation-ops.ts`，测试逐函数比对。整份 `flow-ops` 的闭包还有 `agent.ts`、`director-*.ts`、`flow-layout.ts`（带 dagre），约 6000 行。第 8 步要整份时删掉这个文件，按 §4 整文件复制。
+- **写回节点的操作用 `@learning/contracts/flow-ops`**：`recordGeneration`、`attachAsset`、`appendGeneratedText` 直接 import 整份 `flow-ops`，和 `packages/shared` 的逐字相同由 `packages/contracts/test/contracts.test.ts` 保证；它的闭包带 `@dagrejs/dagre`，所以 `@learning/apps` 和 `apps/platform` 声明这个可选 peer。
 - **LLM 通路的最小闭包在 `packages/apps/src/llm/`**：`llm-providers`、`model` 两个文件和 `model-stream` 里 `streamUpstream` 那一段（约 400 行，加 `llm.providers` 的解析），依赖 `@earendil-works/pi-ai`，版本同 `mod-apps`。agent 编排没搬。第 8 步也要模型通路时再决定抽不抽成小包。
 
 ## 9. 需要用户决定的事项

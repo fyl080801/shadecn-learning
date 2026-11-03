@@ -11,7 +11,7 @@ import * as Y from 'yjs'
 import { AppsService } from './apps.service.js'
 import { AppError, type AppOutput, type AppResult } from './contract.js'
 import { inlineFlowAssets, persistFlowOutputs } from './flow-assets.js'
-import { appendGeneratedText, recordGeneration } from './generation-ops.js'
+import { appendGeneratedText, recordGeneration } from '@learning/contracts/flow-ops'
 import { isTaskRevoked, TaskAuthorities, type TaskAuthority } from './task-authority.js'
 import { APPS_CANCEL_TASK } from './task-bus.js'
 import { type AppTaskRow, AppTasks, handleOf, paramsOf } from './tasks.js'
@@ -81,7 +81,7 @@ interface Running {
  *
  * ## 写回节点的规矩
  *
- * 只经 `generation-ops.ts`（`recordGeneration` → `attachAsset` 守住 generate / asset 形态规则，同人上传；文字产物是 `appendGeneratedText`）和 `writeNodeFields`，事务 origin 是 {@link appsOrigin}。
+ * 只经 `@learning/contracts/flow-ops`（`recordGeneration` → `attachAsset` 守住 generate / asset 形态规则，同人上传；文字产物是 `appendGeneratedText`）和 `writeNodeFields`，事务 origin 是 {@link appsOrigin}。
  * 写之前判：发起人的执行身份过 `flow:write`、房间没到容量上限、节点还在、节点的 `runtime.taskId` 还是这个任务（被更新的任务盖掉了就不碰）。写不了只打日志，任务结果照常记在表里。
  */
 @Injectable()
