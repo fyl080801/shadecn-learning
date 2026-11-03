@@ -122,7 +122,7 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 | 5 | 账号关联、identicon 头像（`session`） | 移植 `apps/server/test/auth/*` 相关用例；设置页可用 |
 | 6 | `StorageModule` | 移植 storage 用例；节点上传图片可用 |
 | 7 | `AppsModule` | 移植 `flow-apps` 用例；节点生成可用 |
-| 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，到这一步先单独出一份方案 |
+| 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，方案和分步见 [docs/31](31-agent-nest-migration.md) |
 
 **第 7 步之后前端的状况**：登录、设置页「登录方式」、默认头像、项目、成员、邀请、画布、协同、节点上传图片和缩略图、应用列表、节点生成可用（浏览器走过）。没配对象存储时上传回 503 并弹提示，生成结果挂上游地址；没配应用时列表是空的。别的功能照常。agent 面板显示加载失败（`useFlowAgent.ts:310-316`），不白屏、不无限重试（读代码确认）。
 
