@@ -91,7 +91,7 @@ describe('网关的挂载', () => {
 
 describe('runner 协议版本不一致（镜像没重建）', () => {
   const MISMATCH_TEXT = (runner: string) =>
-    `沙箱 runner 的协议版本 ${runner} 和服务端的 ${RUNNER_PROTOCOL_VERSION} 不一致，请重建沙箱镜像（pnpm build:sandbox-image）`
+    `沙箱 runner 的协议版本 ${runner} 和服务端的 ${RUNNER_PROTOCOL_VERSION} 不一致，请重建沙箱镜像（pnpm build:agent-runner-image）`
 
   /** 用一个报告指定版本的 runner 跑一轮；返回这一轮的 SSE 帧和服务端的 warn 日志 */
   async function runWith(driverOptions: { protocolVersion: number | null }) {
@@ -112,7 +112,7 @@ describe('runner 协议版本不一致（镜像没重建）', () => {
       code: 'runner_protocol_mismatch',
       message: MISMATCH_TEXT(String(RUNNER_PROTOCOL_VERSION + 1)),
     })
-    expect(warnings.some((line) => line.includes('[agent]') && line.includes('不一致') && line.includes('pnpm build:sandbox-image'))).toBe(true)
+    expect(warnings.some((line) => line.includes('[agent]') && line.includes('不一致') && line.includes('pnpm build:agent-runner-image'))).toBe(true)
   })
 
   it('老镜像（请求里没有版本字段）同样拒绝，消息里写「未声明」', async () => {

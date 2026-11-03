@@ -110,14 +110,18 @@ session:
 #   # runner 连回网关的地址（不含 /api/agent-gateway）。不写时按驱动和 server.port、server.host 推出；server.port 是 0 时必须写，否则 agent 未启用
 #   # 拆开形态（前面有前置代理）也是平台自己的端口：网关不经代理，runner 直连。server.host 要让 runner 够得着这个地址，`pnpm dev:front` 启动时会查
 #   # gatewayUrl: http://127.0.0.1:3001
+#   # （oci 不能写回环：容器里的回环是容器自己，见下面 sandbox 段）
 #   sandbox:
-#     # process（默认）：runner 是本机子进程，和服务端同用户、同文件系统、可以出网，不是强隔离，生产拒绝，除非 allowProcess。oci：容器
+#     # process（默认）：runner 是本机子进程，和服务端同用户、同文件系统、可以出网，不是强隔离，生产拒绝，除非 allowProcess。oci：每轮一个容器，镜像由 `pnpm build:agent-runner-image` 构建（代理地址走 --build-arg NODE_IMAGE=…）
 #     driver: process
 #     # allowProcess: true
 #     # 给模型 run_media_command（ffmpeg / ffprobe）
 #     # exec: false
 #     # oci 才用：image、runtime、cpus、memoryMib、pids、diskMib、oci.socket、oci.network
 #     # image: learning-agent-runner:latest
+#     # oci 的 gatewayUrl 默认是 http://host.docker.internal:<server.port>（docs/31 §6.4）：
+#     #   macOS 上的 podman machine（实测 Podman 5.8）：引擎经 gvproxy 转回 Mac 的回环，平台只听 127.0.0.1 也连得上，不用配。代价是容器也够得着 Mac 回环上的其它端口
+#     #   Linux：没有这一层转发。Docker 不认这个主机名（驱动不加 --add-host），Podman 指向宿主的网卡地址。server.host 写网卡地址或 0.0.0.0，再写 gatewayUrl: http://<网卡地址>:<端口>；启动日志会告警（这一条没有在 Linux 上实测）
 
 web:
   # 前端目录。默认生产是 output/public（vite build 的产物），开发是 apps/web（Vite 的 root）

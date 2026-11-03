@@ -3,6 +3,8 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { createEngineClient, findEngineSocket, type EngineClient } from '@learning/agent-core/sandbox/drivers/engine'
+import { OCI_LABELS } from '@learning/agent-core/sandbox/drivers/oci'
 import { fauxAssistantMessage, fauxToolCall, type ScriptedStep, startScriptedUpstream, type ScriptedUpstream } from '@learning/agent-core/testing'
 import { agentApiPath, agentConversationPath, AgentEventType, agentRunEventsPath, type AgentConversationView, type AgentStreamEvent } from '@learning/contracts/agent'
 import { HTTP_CLOSE_GRACE_MS } from '@learning/foundation'
@@ -254,6 +256,84 @@ describe('真 SIGTERM（dist/main.js，SQLite，process 驱动）', () => {
     expect(Date.now() - at).toBeLessThan(HTTP_CLOSE_GRACE_MS + 3_000)
     silent.destroy()
   }, 60_000)
+})
+
+/** 生产接线的 `oci` 驱动：`pnpm build:agent-runner-image` 之后 `AGENT_SANDBOX_OCI_IT=1` 才跑，同 `packages/agent-service/test/sandbox-oci.test.ts` */
+const ociEnabled = process.env.AGENT_SANDBOX_OCI_IT === '1'
+
+describe.skipIf(!ociEnabled)('真 SIGTERM（dist/main.js，SQLite，oci 驱动，AGENT_SANDBOX_OCI_IT=1）', () => {
+  let root: string
+  let idp: FakeIdp
+  let upstream: ScriptedUpstream
+  let engine: EngineClient
+  let socket = ''
+
+  const values = (dir: string) => ({
+    database: { url: `file:${path.join(dir, 'platform.db')}` },
+    web: { root: path.join(root, 'public') },
+    auth: { oidc: { issuer: idp.issuer, clientId: idp.clientId } },
+    llm: { providers: { scripted: { baseUrl: upstream.url, api: 'openai-completions', apiKey: `$${UPSTREAM_KEY_ENV}`, models: [{ id: upstream.modelId, name: '脚本模型' }] } } },
+    // 不写 gatewayUrl：默认地址就是要验的（平台只听回环，容器走引擎给的宿主名）。socket 要写：平台的环境是列出来的，按 $HOME / $TMPDIR 找不到
+    agent: { provider: 'scripted', model: upstream.modelId, titleModel: 'off', sandbox: { driver: 'oci', oci: { socket } } },
+  })
+  const env = () => ({ [UPSTREAM_KEY_ENV]: upstream.apiKey })
+
+  beforeAll(async () => {
+    const found = findEngineSocket(process.env.AGENT_SANDBOX_OCI_IT_SOCKET?.trim() ?? '', process.env)
+    if (!found.ok) throw new Error(found.reason)
+    socket = found.path
+    engine = createEngineClient(socket)
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'platform-sigterm-oci-'))
+    fs.mkdirSync(path.join(root, 'public'))
+    fs.writeFileSync(path.join(root, 'public/index.html'), 'INDEX')
+    fs.writeFileSync(path.join(root, 'public/login.html'), 'LOGIN')
+    idp = await startFakeIdp()
+    upstream = await startScriptedUpstream()
+  })
+
+  afterAll(async () => {
+    await upstream.close()
+    await idp.stop()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('运行中收到信号：容器当场被杀并删除，5 秒内退出、退出码 0，流以收尾帧结束；重启后对话和节点都在', async () => {
+    const dir = path.join(root, 'run')
+    const port = await freePort()
+    const first = await startPlatform(dir, port, values(dir), env())
+    const api = client(first.baseUrl, await login(first.baseUrl))
+    const { id: projectId } = (await (await api.json('/api/projects', 'POST', { name: '项目' })).json()) as { id: string }
+    const { id: flowId } = (await (await api.json(`/api/projects/${projectId}/flows`, 'POST', { name: '画布' })).json()) as { id: string }
+
+    const script = addNodeThenHold()
+    upstream.scripted.setResponses(script.steps)
+    const res = await api.json(`${agentApiPath(flowId)}/messages`, 'POST', { text: '加一个节点' })
+    expect(res.status, first.logs.join('')).toBe(200)
+    const origin = follow(res)
+    await script.reached
+    const { runId, threadId } = origin.events()[0] as Extract<AgentStreamEvent, { type: typeof AgentEventType.RUN_STARTED }>
+    const running = await engine.listContainers([`${OCI_LABELS.run}=${runId}`])
+    expect(running.map((container) => container.State), first.logs.join('')).toEqual(['running'])
+
+    const at = Date.now()
+    first.child.kill('SIGTERM')
+    const exit = await first.exited
+    const elapsed = Date.now() - at
+    expect(exit, first.logs.join('')).toEqual({ code: 0, signal: null })
+    expect(elapsed, first.logs.join('')).toBeLessThan(5_000)
+    expect(await engine.listContainers([`${OCI_LABELS.run}=${runId}`])).toEqual([])
+
+    await origin.ended
+    expect(origin.events().at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'cancelled' }, result: { error: '服务正在重启' } })
+
+    const second = await startPlatform(dir, port, values(dir), env())
+    const reopened = client(second.baseUrl, await login(second.baseUrl))
+    const conversation = (await (await reopened.request(agentConversationPath(flowId, threadId))).json()) as AgentConversationView
+    expect(conversation.messages.map((message) => message.role)).toEqual(['user', 'assistant'])
+    expect(await (await reopened.request(`/api/flows/${flowId}`)).json()).toMatchObject({ nodeCount: 1 })
+    second.child.kill('SIGTERM')
+    expect(await second.exited).toEqual({ code: 0, signal: null })
+  }, 120_000)
 })
 
 const postgresUrl = process.env.PLATFORM_TEST_DATABASE_URL

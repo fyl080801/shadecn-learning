@@ -23,6 +23,7 @@ import { defineConfig } from 'vitest/config'
  *   agent-core —— packages/agent-core/vitest.config.ts：Node 环境，测 Nest 服务用的画布 Agent 核心（@learning/agent-core：编排、画布工具、网关、沙箱驱动；runner 的 tsc 产物起真子进程）
  *   agent-service —— packages/agent-service/vitest.config.ts：Node 环境，测画布 agent 的 Nest 模块（@learning/agent）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL，设了 PLATFORM_TEST_REDIS_URL 共享层才走 Redis，设了 PLATFORM_TEST_S3_URL 才连真的对象存储
  *   agent-sandbox —— apps/agent-sandbox/vitest.config.ts：Node 环境，测沙箱镜像的构建脚本（runner 的边界判定、共用的打包逻辑）
+ *   agent-runner —— apps/agent-runner/vitest.config.ts：Node 环境，测 Nest 服务那份 runner 镜像的构建脚本（边界判定、打包配置、Dockerfile，外加一次真实打包）
  *   server-kit —— packages/server-kit/vitest.config.ts：Node 环境，测服务端底座的运行时库（模块内核、共享层契约、总线、权限撤销信号）
  *   server-core —— packages/server-core/vitest.config.ts：Node 环境，测服务端底座不碰数据库的部分（集成测试在 server project）
  *   mod-auth —— 登录模块（同上，只测不碰数据库的部分）
@@ -44,6 +45,7 @@ export default defineConfig({
       'packages/shared/vitest.config.ts',
       'packages/agent/vitest.config.ts',
       'apps/agent-sandbox/vitest.config.ts',
+      'apps/agent-runner/vitest.config.ts',
       'apps/platform/vitest.config.ts',
       'apps/collab/vitest.config.ts',
       'packages/config/vitest.config.ts',
@@ -77,6 +79,7 @@ export default defineConfig({
       include: [
         'apps/server/**/*.ts',
         'apps/agent-sandbox/scripts/**/*.mjs',
+        'apps/agent-runner/scripts/**/*.mjs',
         'apps/platform/src/**/*.ts',
         'apps/collab/src/**/*.ts',
         'packages/config/src/**/*.ts',

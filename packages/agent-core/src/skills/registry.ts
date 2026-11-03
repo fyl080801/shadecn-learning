@@ -32,7 +32,7 @@ export interface SkillDeployment {
   imageInput: boolean
   /** 宿主接了素材读取（配了对象存储，`MediaReader`） */
   mediaReader: boolean
-  /** 宿主开了沙箱里的命令执行（apps/server：`MODULES_AGENT_SANDBOX_EXEC=1`） */
+  /** 宿主开了沙箱里的命令执行（`agent.sandbox.exec`） */
   sandboxExec: boolean
 }
 

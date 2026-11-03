@@ -30,6 +30,24 @@ export function agentSandboxInstance(options: Pick<AgentOptions, 'gatewayUrl'>):
   return createHash('sha256').update(agentGatewayUrl(options)).digest('hex').slice(0, 16)
 }
 
+const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '[::1]']
+
+/**
+ * `oci` 的网关地址在这台机器上连不回来的情况（`docs/31` §6.4）。不拒绝启动：地址对不对只有引擎知道，要到第一轮 runner 连不上才报，所以启动时先说。
+ * podman machine 实测 `host.docker.internal` 经 gvproxy 转回 Mac 的回环；Linux 上没有这一层。
+ */
+export function ociGatewayProblem(gatewayUrl: string, platform: NodeJS.Platform = process.platform): string | null {
+  // `shadecn:3100` 也解析得过（协议是 shadecn:），所以看协议，不只看抛不抛
+  const url = URL.canParse(gatewayUrl) ? new URL(gatewayUrl) : null
+  if (!url || !/^https?:$/.test(url.protocol)) return `网关地址 ${gatewayUrl} 不是一个完整的地址（要带 http://；agent.gatewayUrl）`
+  const { hostname } = url
+  if (LOOPBACK_HOSTS.includes(hostname)) return `网关地址 ${gatewayUrl} 指向回环，容器里的回环是容器自己，runner 连不回来（agent.gatewayUrl）`
+  if (hostname === 'host.docker.internal' && platform === 'linux') {
+    return `网关地址 ${gatewayUrl} 在 Linux 上多半连不回来：Docker 要显式配这个主机名，Podman 指向宿主的网卡地址、只听回环的平台收不到（agent.gatewayUrl、server.host）`
+  }
+  return null
+}
+
 const logRunnerOutput = (runId: string, stream: 'stdout' | 'stderr', line: string) => {
   if (stream === 'stderr') console.warn(`[agent-runner] run=${runId} ${line}`)
   else console.info(`[agent-runner] run=${runId} ${line}`)
@@ -122,7 +140,9 @@ export class AgentSandboxReaper implements OnModuleInit, OnModuleDestroy {
     try {
       const check = await driver.check()
       console.info(`[agent] oci 沙箱：${check.engine.name} ${check.engine.version}（API ${check.engine.apiVersion}，${check.socketPath}），镜像 ${check.image.name}，网络 ${check.network.name}，网关 ${gateway}`)
-      if (!check.image.present) console.warn(`[agent] oci 沙箱镜像 ${check.image.name} 不存在（agent.sandbox.image），否则每一轮都会起不来`)
+      const gatewayProblem = ociGatewayProblem(gateway)
+      if (gatewayProblem) console.warn(`[agent] oci 沙箱：${gatewayProblem}`)
+      if (!check.image.present) console.warn(`[agent] oci 沙箱镜像 ${check.image.name} 不存在（agent.sandbox.image；pnpm build:agent-runner-image），否则每一轮都会起不来`)
       if (!check.network.exists) {
         console.warn(`[agent] oci 沙箱网络 ${check.network.name} 不存在（agent.sandbox.oci.network），每一轮都会起不来`)
       } else if (!check.network.internal) {

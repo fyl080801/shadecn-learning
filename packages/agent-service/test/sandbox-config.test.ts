@@ -13,7 +13,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AGENT_TOKEN_SECRET_ENV, AGENT_OPTIONS, AGENT_TOKEN_SECRET_PURPOSE, type AgentOptions, resolveAgentOptions } from '../src/options.js'
 import { runnerCommand } from '../src/runner-command.js'
-import { AGENT_RUNTIME, agentGatewayUrl, agentSandboxInstance, buildSandboxDriver } from '../src/sandbox.js'
+import { AGENT_RUNTIME, agentGatewayUrl, agentSandboxInstance, buildSandboxDriver, ociGatewayProblem } from '../src/sandbox.js'
 import { deriveSecretFrom } from '../../session/src/session-token.js'
 import { bootAgentApp, ensureRunnerBuilt, memoryS3, SECRET, silenceConsole, until } from './helpers.js'
 
@@ -248,6 +248,16 @@ describe('装配', () => {
     const list = engine.requests.find((request) => request.path.startsWith('/containers/json'))!
     expect(list.path).toContain(`"${OCI_LABELS.managed}=true","${OCI_LABELS.instance}=${instance}"`)
     expect(engine.requests.find((request) => request.method === 'DELETE')!.path).toMatch(/^\/containers\/orphan\?force=true/)
+  })
+
+  it('oci 的网关地址连不回来时启动就告警：回环是容器自己；Linux 上 host.docker.internal 不转回回环；macOS 上放行', () => {
+    expect(ociGatewayProblem('http://host.docker.internal:3100/api/agent-gateway', 'darwin')).toBeNull()
+    expect(ociGatewayProblem('http://host.docker.internal:3100/api/agent-gateway', 'linux')).toContain('agent.gatewayUrl')
+    expect(ociGatewayProblem('http://10.0.0.5:3100/api/agent-gateway', 'linux')).toBeNull()
+    for (const host of ['127.0.0.1', 'localhost', '[::1]']) {
+      expect(ociGatewayProblem(`http://${host}:3100/api/agent-gateway`, 'darwin')).toContain('容器里的回环')
+    }
+    expect(ociGatewayProblem('shadecn:3100', 'darwin')).toContain('完整的地址')
   })
 
   it('process 驱动：启动时不碰任何容器引擎（reap 是空操作）', async () => {

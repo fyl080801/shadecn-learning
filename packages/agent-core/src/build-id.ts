@@ -1,5 +1,5 @@
 /**
- * 构建标识：服务端（`apps/server/scripts/build-server.mjs`）和沙箱镜像里的 runner（`apps/agent-sandbox/scripts/bundle-runner.mjs`）
+ * 构建标识：服务端（`apps/server/scripts/build-server.mjs`）和沙箱镜像里的 runner（`apps/agent-runner/scripts/bundle-runner.mjs`）
  * 各自用 esbuild 的 `define` 注入。`pnpm build` 经 `AGENT_BUILD_ID` 给两边同一个 id（一次构建 = 一个 id）；单独重建镜像就是另一个 id。
  * 源码运行（`pnpm dev` / 测试 / `tsx`）没有注入，就是 {@link SOURCE_BUILD_ID}。
  *

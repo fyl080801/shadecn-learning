@@ -1,6 +1,6 @@
 # REQ-NEST NestJS 版服务
 
-> 状态：**实施中** —— 已完成第 1～7 步和里程碑 A、B（§6）：登录、账号关联、默认头像、项目、画布、协同、节点上传图片和缩略图、应用列表和节点生成单进程跑通，平台 + 两个协同副本也跑通。画布 agent 单进程和拆开形态都跑通（`docs/31` 的里程碑 C、D）；`oci` 镜像还没做（`docs/31` §7 第 8 步）。
+> 状态：**实施中** —— 已完成第 1～7 步和里程碑 A、B（§6）：登录、账号关联、默认头像、项目、画布、协同、节点上传图片和缩略图、应用列表和节点生成单进程跑通，平台 + 两个协同副本也跑通。画布 agent 单进程和拆开形态都跑通（`docs/31` 的里程碑 C、D），`oci` 驱动 + `apps/agent-runner` 镜像也在本机 podman 上跑通（`docs/31` §7 第 8 步）。第 8 步已完成；k8s 和单独的 `apps/agent` 留待之后再定。
 
 ## 1. 目标与边界
 
@@ -129,13 +129,15 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 | 5 | 账号关联、identicon 头像（`session`） | 移植 `apps/server/test/auth/*` 相关用例；设置页可用 |
 | 6 | `StorageModule` | 移植 storage 用例；节点上传图片可用 |
 | 7 | `AppsModule` | 移植 `flow-apps` 用例；节点生成可用 |
-| 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，方案和分步见 [docs/31](31-agent-nest-migration.md)。第 7 小步和里程碑 D 已完成：`@learning/agent` 接在 `PlatformBaseModule`，`process` 驱动单进程和「平台 + 两个副本」都跑通 |
+| 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，方案和分步见 [docs/31](31-agent-nest-migration.md)。全部 8 小步和里程碑 C、D 已完成：`@learning/agent` 接在 `PlatformBaseModule`，`process` 驱动单进程和「平台 + 两个副本」都跑通；`oci` 驱动 + `apps/agent-runner` 镜像在本机 podman 上单进程跑通 |
 
 **第 7 步之后前端的状况**：登录、设置页「登录方式」、默认头像、项目、成员、邀请、画布、协同、节点上传图片和缩略图、应用列表、节点生成可用（浏览器走过）。没配对象存储时上传回 503 并弹提示，生成结果挂上游地址；没配应用时列表是空的。别的功能照常。
 
 **`docs/31` 第 6 小步之后**：agent 面板可用（浏览器走过）：发消息看到流式文字、节点出现、别的成员同画布可见；运行中刷新接回；中止；移除发起人后这一轮被叫停；重启后内容和会话都在。没配模型时面板显示未启用，发消息 503。前端一行没改。
 
 **`docs/31` 第 7 小步之后**：经前置代理的「平台 + 两个副本」上，上面这些都走过一遍，另外走过：别的副本上的人看到任务列表和结束；副本上的人改节点，模型下一步收到改动通知，被改的节点写入被拒绝；`kill -TERM` 一个副本，这一轮继续，页面切到另一个副本。前端一行没改。
+
+**`docs/31` 第 8 小步之后**：`agent.sandbox.driver: oci` 时每一轮一个容器（镜像由 `pnpm build:agent-runner-image` 构建，不在 `pnpm build:platform` 里）。单进程平台上浏览器走过：发消息、节点出现、结束后容器删除、中止。`oci` 和「平台 + 两个副本」的组合没有走过。前端一行没改。
 
 头像为空（这个功能上线前登录、会话还活着）时走 `v-if` 的回退显示，下次登录补上。
 
@@ -173,7 +175,7 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
   - `server.port: 0` 又没配 `agent.gatewayUrl` 时 agent 不启用并写明原因：端口要到监听时才知道，而网关地址在建 provider 时就定了。
   - **任务列表跨进程**：房间在本进程就走 `document.broadcastStateless`，不在就经 `CollabServer.publishStateless` 发给副本。一轮收尾时平台的房间已经卸载，而结束那份空列表在这之后才发，不这样的话副本上的人要等 `expiresAt` 过了（30 秒）才看到它结束。
   - 一个都不配也照样加载，`enabled: false`；模型表、agent 定义、文字技能坏了拒绝启动，启用与否都一样；写 `driver: k8s` 不启用并写明原因。
-  - `oci` 的宿主接线提前到这一步（`docs/31` §7 原本排在第 8 小步）：§4.5 的配置已经写了它，`AgentSandboxReaper` 也只为它存在。镜像 `apps/agent-runner` 还没有，默认镜像名 `learning-agent-runner:latest` 拉不到，真容器没跑过（第 8 小步）。
+  - `oci` 的宿主接线提前到这一步（`docs/31` §7 原本排在第 8 小步）：§4.5 的配置已经写了它，`AgentSandboxReaper` 也只为它存在。镜像 `apps/agent-runner` 和真容器在第 8 小步补上（`docs/31` §7）。
   - 和旧服务不同：`agent` 段里不认识的字段拒绝启动；不支持一期的 `driver: local`（没有旧配置）；模型表路径不可配，固定 `<dataDir>/agent-models.json`；账号级撤销不搬（`docs/31` §4.4）。
 
 ## 9. 需要用户决定的事项

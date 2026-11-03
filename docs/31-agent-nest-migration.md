@@ -1,6 +1,6 @@
 # REQ-NEST-AGENT Agent 搬到 Nest 的方案
 
-> 状态：**实施中** —— 这是 [REQ-NEST](30-collab-nest-migration.md) §6 第 8 步的方案，§8.1 的事项都已定，按推荐执行。第 1～7 小步和里程碑 C、D 已完成，还差第 8 小步（`oci` 镜像）。
+> 状态：**已完成** —— 这是 [REQ-NEST](30-collab-nest-migration.md) §6 第 8 步的方案，§8.1 的事项都已定，按推荐执行。第 1～8 小步和里程碑 C、D 都已完成。留待之后再定的：k8s 驱动（§8.1 第 6 项）、单独的 `apps/agent`（§6.3）。没有核实的部分见 §9。
 
 ## 1. 结论
 
@@ -72,6 +72,8 @@ runner 和 Nest 无关，能复用代码，问题是复用哪一份。
 
 - `apps/agent-sandbox` 原样不动，继续给旧服务用。
 - `apps/agent-runner` 的 `Dockerfile` 和构建脚本照抄，打包配置自带一份（`bundle-common.mjs` 的公共选项里只内联 `@shadecn/`，不去改它），边界判定的路径换成 `packages/agent-core`，依赖范围同样是 4 个包。基础镜像继续走 `NODE_IMAGE` 构建参数。
+- 和照抄不同的一处：**构建上下文放 `apps/agent-runner/dist/`，不放 `output/`**。`pnpm build` 之后的 `docker build ./output` 是旧服务的镜像路径，它的 `.dockerignore` 只排除 `agent-sandbox`，放进去就混进旧服务的应用镜像，而那份文件在 `apps/server` 里，不动。
+- 镜像实测 346 MB（Podman 5.8.2，arm64），runner 一个文件 308 KB，和旧镜像同样大小。
 - gateway 协议不改，还是第 9 版。协议的两端都在 `agent-core` 里，`RUNNER_PROTOCOL_VERSION` 和 409 `protocol_mismatch` 的规则照旧。
 
 ## 4. Nest 模块
@@ -218,7 +220,18 @@ agent:                    # 一个都不配也照样加载：view 回 enabled: f
 ### 6.4 沙箱和驱动
 
 - 本地默认 `process`，它**不是强隔离**：runner 和服务端同用户、同文件系统、可出网。这和旧服务一样，生产默认拒绝。
-- `oci` 给「想要真隔离」或拆进容器的时候用。网关地址默认 `http://host.docker.internal:<port>`（`mod-agent/src/config.ts:250`），podman machine 上平台只听回环也能连。
+- `oci` 给「想要真隔离」或拆进容器的时候用。网关地址默认 `http://host.docker.internal:<port>`（`mod-agent/src/config.ts:250`）。这个地址连不连得回来取决于引擎：
+
+| 引擎 | 平台只听 `127.0.0.1` | 依据 |
+|---|---|---|
+| macOS 上的 podman machine（Podman 5.8.2，applehv） | **连得上**，不用配。容器的 `/etc/hosts` 把这个名字指到 `192.168.127.254`，gvproxy 转回 Mac，平台看到的来源是 `127.0.0.1` | 实测：探针容器连回环和 `0.0.0.0` 上的服务都通；`sandbox-oci`、真 SIGTERM 用例和浏览器都走这个默认地址 |
+| Linux 上的 Docker | 连不上：驱动不加 `--add-host`，这个名字解析不了（`docs/22` §7.2 也这么写） | **没有实测**，按 Docker 的已知行为推断 |
+| Linux 上的 Podman | 连不上：名字指向宿主的网卡地址，回环收不到 | **没有实测**，按 Podman 的已知行为推断 |
+| Docker Desktop | 应该转回本机 | **没有实测**，按 Docker Desktop 的已知行为推断 |
+
+- Linux 上要写 `server.host`（网卡地址或 `0.0.0.0`）和 `agent.gatewayUrl: http://<网卡地址>:<端口>`。`ociGatewayProblem` 启动时告警，`check-platform-config.mjs` 在 `pnpm dev:front` 启动时拒绝。
+- `oci` 的 `gatewayUrl` 不能写回环：探针容器连 `127.0.0.1` 是 `ECONNREFUSED`，容器里的回环是容器自己。上面两处同样会报。
+- **podman machine 上默认的 `bridge` 不隔离宿主回环**：同样的转发也能到 Mac 回环上别的端口（本机的 PostgreSQL、Redis 代理都听在那里）。启动时那条「可以出网」告警就是这个意思。要真隔离按 `sandbox-oci` 的 internal 网络用例配，平台也要接进那个网络。
 
 ## 7. 实现顺序
 
@@ -235,11 +248,13 @@ agent:                    # 一个都不配也照样加载：view 回 enabled: f
 | **里程碑 C** | 单进程跑通 | — | 真实浏览器 + 假 IdP + 脚本化上游：发消息看到流式文字，节点出现，另一账号同画布可见；运行中刷新接回；中止；移除发起人后这一轮被叫停；重启后内容和会话都在 |
 | 7 | 拆开形态 | 配置和脚本，代码改动很少 | 移植 `multi-replica`（480 行）；`agent:runs` 跨副本到达 |
 | **里程碑 D** | 平台 + 两个副本跑通 | — | 经 `pnpm dev:front` 重走里程碑 C；副本上的人改节点，模型下一步收到改动通知，被改的节点写入被拒绝；`kill -TERM` 一个副本，这一轮继续 |
-| 8 | `oci` 驱动接线 + `apps/agent-runner` 镜像 | 约 430 行（照抄）+ 宿主约 60 行 | 移植边界测试；`oci-driver` 已在第 3 步覆盖；`sandbox-oci`（`AGENT_SANDBOX_OCI_IT=1`）在本地引擎上跑 |
+| 8 | `oci` 驱动接线 + `apps/agent-runner` 镜像 **（已完成）** | 约 430 行（照抄）+ 宿主约 60 行 | 移植边界测试；`oci-driver` 已在第 3 步覆盖；`sandbox-oci`（`AGENT_SANDBOX_OCI_IT=1`）在本地引擎上跑 |
 
 **不搬的旧测试**：`dispatch`、`k8s-manifests`、`sandbox-k8s`、`k8s-driver`。
 
 **第 7 小步的测试**：`packages/agent-service/test/multi-replica.test.ts`（移植，用生产的 `AgentRuns`、`AgentLeases`，内存和 Redis 各跑一遍，新增节点占用跨副本）；`test/split-rooms.test.ts`（新增，真 Redis + 真 provider：`agent:runs` 到副本、副本上的改动通知模型、副本退出这一轮继续）；`apps/collab/test/front-proxy.test.ts`（真代理 + 真上游）；`apps/platform/test/agent-sigterm.test.ts` 的两进程用例改用 `dist/main-without-collab.js`。
+
+**第 8 小步的测试**：`apps/agent-runner/test/`（边界判定和真实打包、打包配置、Dockerfile 护栏、依赖边界）；`packages/agent-service/test/sandbox-oci.test.ts`（移植，真引擎 + 真镜像，`AGENT_SANDBOX_OCI_IT=1`；新增真引擎上镜像和网络不存在的报错，由此查出 Podman 5.8 对不存在的网络回 500 而不是 404，`oci.ts` 原来认不出来；旧服务那份同样的判断没有动）；`apps/platform/test/agent-sigterm.test.ts` 新增 `oci` 用例（产物 + 生产接线 + 默认网关地址）。实际走过的端到端：浏览器 + 假 IdP + 脚本化上游，平台只听回环：发消息、runner 连回网关、节点进画布、容器结束后删除；运行中 `podman inspect`（只读根文件系统、用户 10001、能力全丢、`no-new-privileges`、无挂载，容器内 `CapEff` 为 0）；中止时容器被杀；运行中 SIGTERM 约 0.5 秒退出、退出码 0、容器删除、这一轮以「服务正在重启」收尾；版本 8 的镜像以 `runner_protocol_mismatch` 收尾，上游一次都没被调；`kill -9` 平台后容器留着，重启时被 `reap` 清掉。
 
 **不调付费模型**：单元和路由测试用 `registerScriptedModel`。浏览器要真 HTTP，`@learning/agent-core/testing` 加一个 `startScriptedUpstream()`（约 40 行，思路同 `@learning/session/testing` 的假 IdP），`llm.providers` 指向它。
 
@@ -268,7 +283,10 @@ agent:                    # 一个都不配也照样加载：view 回 enabled: f
 
 ## 9. 没有核实的部分
 
-- **没有构建和运行过 OCI 镜像**：只验证了从副本打 bundle，这次没有启动容器。
+- **`oci` 只在 macOS 上的 podman machine 跑过**。Linux 上的 Docker 和 Podman、Docker Desktop 都没有跑过（§6.4 的表）；`runtime: runsc` 没有试过。
+- **`oci` 和「平台 + 两个副本」的组合没有走过**（第 8 小步是单进程），`pnpm dev:front` 下只跑过 `process`。
+- **镜像的发布路径不存在**：CI 模板和 `k8s/` 只认旧服务的 `shadecn-agent-sandbox`，这个镜像只能本地构建。
+- 平台被 `kill -9` 后，`agent_run` 那一行一直是 `running`，容器由下次启动的 `reap` 清掉。同旧服务的做法，读代码没有看到收尾这一行的地方，这一步没有改。
 - `@learning/llm` 的移动没有试过。§5.3 的依据是 diff 和 import 关系。
 - 里程碑 D 只走了 `process` 驱动 + 假 IdP + 脚本化上游，没有配对象存储，没有调真实模型。经代理的上传和 `view_node_media` 没有在这个形态下走过。
 - 只有一个平台进程。平台多副本时 runner 要连回发起它的那个进程，地址怎么配没有试过；`agent-sigterm` 的两进程用例只验证了共享登记和退出。

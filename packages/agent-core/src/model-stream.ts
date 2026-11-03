@@ -17,7 +17,7 @@ export function isServedModelApi(api: string): boolean {
   return (SERVED_MODEL_APIS as readonly string[]).includes(api)
 }
 
-/** 输出 token 上限的默认值（`MODULES_AGENT_MAX_OUTPUT_TOKENS` 没配时）：再和模型自己的 `maxTokens` 取小 */
+/** 输出 token 上限的默认值（`agent.maxOutputTokens` 没配时）：再和模型自己的 `maxTokens` 取小 */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384
 
 /** 这次请求的 `maxTokens`：min(模型的 maxTokens, 配置的上限)；输出 token 决定了工具参数最长能有多长（#9265 的第一道缓解） */

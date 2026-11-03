@@ -134,7 +134,7 @@ export function resolveAgentOptions(config: ConfigService, session: Pick<Session
 
   const port = serverPort(config)
   const gatewayUrl = text(`${SECTION}.gatewayUrl`, section.gatewayUrl)
-  // `oci` 的容器里回环是容器自己，走引擎给的宿主名（Podman 5、Docker Desktop 都有；Linux 上的 Docker 要显式配）
+  // `oci` 的容器里回环是容器自己，走引擎给的宿主名。podman machine 实测转回 Mac 的回环，平台只听本机也够得着；Linux 上要显式配（`docs/31` §6.4，`ociGatewayProblem` 启动时告警）
   const defaultGateway = driver === 'oci' ? `http://host.docker.internal:${port}` : `http://${loopbackOf(serverHost(config))}:${port}`
 
   const maxOutputTokens = section.maxOutputTokens === undefined || section.maxOutputTokens === null ? undefined : positiveInt(`${SECTION}.maxOutputTokens`, section.maxOutputTokens, 0)

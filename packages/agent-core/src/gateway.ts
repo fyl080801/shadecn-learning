@@ -188,7 +188,7 @@ export interface AgentGatewayOptions {
   secret: string | Uint8Array
   /** 打上游用的 fetch（pi-ai 的 `ProviderRequestOptions.fetch`）；不给用 SDK 默认的全局 fetch（测试注入脚本化的上游） */
   fetch?: typeof fetch
-  /** 输出 token 的上限（`MODULES_AGENT_MAX_OUTPUT_TOKENS`）；实际取 min(模型的 maxTokens, 它)，不给按 16384 */
+  /** 输出 token 的上限（`agent.maxOutputTokens`）；实际取 min(模型的 maxTokens, 它)，不给按 16384 */
   maxOutputTokens?: number
   /** 上游请求的重试次数 / 服务端要求的最长等待；不给 2 次 / 60 秒（同 SDK） */
   maxRetries?: number

@@ -2,6 +2,7 @@
 paths:
   - "apps/server/test/**"
   - "apps/agent-sandbox/test/**"
+  - "apps/agent-runner/test/**"
   - "apps/web/src/test/**"
   - "packages/*/test/**"
   - "**/vitest.config.ts"
@@ -11,7 +12,7 @@ paths:
 
 ## Projects
 
-- One config per package plus a root aggregator: `apps/server/vitest.config.ts` (`server`, node, `apps/server/test/**/*.test.ts`), `apps/web/vitest.config.ts` (`client`, jsdom + `vue` plugin + `@/`, `apps/web/src/test/**/*.test.ts`), `packages/shared/vitest.config.ts` (`shared`, node, the pure contract), plus `agent`, `agent-sandbox` (`apps/agent-sandbox`, the build scripts + a real in-memory esbuild of the runner), `server-kit` and one per `packages/mod-*` (node, no DB). The root `vitest.config.ts` only lists `projects` and holds coverage; a new package needs an entry there.
+- One config per package plus a root aggregator: `apps/server/vitest.config.ts` (`server`, node, `apps/server/test/**/*.test.ts`), `apps/web/vitest.config.ts` (`client`, jsdom + `vue` plugin + `@/`, `apps/web/src/test/**/*.test.ts`), `packages/shared/vitest.config.ts` (`shared`, node, the pure contract), plus `agent`, `agent-sandbox` (`apps/agent-sandbox`, the build scripts + a real in-memory esbuild of the runner), `agent-runner` (the same for `apps/agent-runner`), `server-kit` and one per `packages/mod-*` (node, no DB). The root `vitest.config.ts` only lists `projects` and holds coverage; a new package needs an entry there.
 - **Hermetic**: server and client setup files replace `globalThis.fetch` with a stub that *rejects* — a test needing the network must `vi.stubGlobal('fetch', …)`.
 
 ## Backend

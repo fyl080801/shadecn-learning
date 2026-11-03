@@ -14,6 +14,7 @@ export default defineConfig(
   {
     ignores: [
       "dist",
+      "apps/agent-runner/dist",
       "apps/platform/dist",
       "apps/collab/dist",
       "packages/config/dist",
@@ -78,6 +79,7 @@ export default defineConfig(
       // 构建脚本和随产物发出去的模板，都是 node 环境
       "apps/server/scripts/**/*.{js,mjs}",
       "apps/agent-sandbox/**/*.{ts,mjs}",
+      "apps/agent-runner/**/*.{ts,mjs}",
       "apps/platform/**/*.ts",
       "apps/collab/**/*.{ts,mjs}",
       "packages/config/**/*.ts",

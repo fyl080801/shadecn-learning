@@ -335,7 +335,25 @@ describe('dev-front 的配对检查：agent.gatewayUrl 和平台的 server', () 
     expect(platformGatewayProblem({ server: { port: 3001, host: '127.0.0.1' }, agent: { gatewayUrl: 'http://127.0.0.1:3001' } }, FRONT)).toBeNull()
     expect(platformGatewayProblem({ server: { port: 3001 }, agent: { gatewayUrl: 'http://localhost:3001/' } }, FRONT)).toBeNull()
     expect(platformGatewayProblem({ server: { port: 3001, host: '0.0.0.0' }, agent: { gatewayUrl: 'http://10.0.0.5:3001' } }, FRONT)).toBeNull()
-    expect(platformGatewayProblem({ server: { port: 3001 }, agent: { gatewayUrl: 'http://host.docker.internal:3001' } }, FRONT)).toBeNull()
+    expect(platformGatewayProblem({ server: { port: 3001 }, agent: { gatewayUrl: 'http://host.docker.internal:3001' } }, FRONT, 'darwin')).toBeNull()
+  })
+
+  it('host.docker.internal：macOS 的引擎转回回环，只听本机也放行；Linux 上只听本机连不上，写不写 gatewayUrl 都报', () => {
+    const written = { server: { port: 3001 }, agent: { gatewayUrl: 'http://host.docker.internal:3001' } }
+    expect(platformGatewayProblem(written, FRONT, 'darwin')).toBeNull()
+    expect(platformGatewayProblem(written, FRONT, 'linux')).toContain('docs/31 §6.4')
+    const inferred = { server: { port: 3001, host: '127.0.0.1' }, agent: { sandbox: { driver: 'oci' } } }
+    expect(platformGatewayProblem(inferred, FRONT, 'darwin')).toBeNull()
+    expect(platformGatewayProblem(inferred, FRONT, 'linux')).toContain('docs/31 §6.4')
+    // 听全部地址时 Linux 上也够得着；process 驱动不走这个主机名
+    expect(platformGatewayProblem({ server: { port: 3001, host: '0.0.0.0' }, agent: { sandbox: { driver: 'oci' } } }, FRONT, 'linux')).toBeNull()
+    expect(platformGatewayProblem({ server: { port: 3001, host: '0.0.0.0' }, agent: { gatewayUrl: 'http://host.docker.internal:3001' } }, FRONT, 'linux')).toBeNull()
+    expect(platformGatewayProblem({ server: { port: 3001 }, agent: { sandbox: { driver: 'process' } } }, FRONT, 'linux')).toBeNull()
+  })
+
+  it('oci 的 gatewayUrl 写回环：容器里的回环是容器自己；process 驱动写回环是对的', () => {
+    expect(platformGatewayProblem({ server: { port: 3001 }, agent: { gatewayUrl: 'http://127.0.0.1:3001', sandbox: { driver: 'oci' } } }, FRONT, 'darwin')).toContain('容器里的回环')
+    expect(platformGatewayProblem({ server: { port: 3001 }, agent: { gatewayUrl: 'http://127.0.0.1:3001', sandbox: { driver: 'process' } } }, FRONT, 'darwin')).toBeNull()
   })
 
   it('指向前置代理、端口对不上、平台听不到那个地址：都报出来', () => {

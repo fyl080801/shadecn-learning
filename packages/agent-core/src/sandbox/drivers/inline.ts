@@ -11,7 +11,7 @@ import type { SandboxDriver, SandboxExit, SandboxHandle } from '../driver.js'
  * 不开端口），所以编排层看到的和 `process` 驱动逐帧相同，只是快得多。
  *
  * 它**不隔离任何东西**（同一个进程、同一份环境），所以只从 `@shadecn/agent/testing` 导出，
- * 宿主的配置（`MODULES_AGENT_SANDBOX_DRIVER`）没有任何取值能选到它。「杀」= 掐掉 runner 的 AbortSignal（pi 中止、在途请求中断、
+ * 宿主的配置（`agent.sandbox.driver`）没有任何取值能选到它。「杀」= 掐掉 runner 的 AbortSignal（pi 中止、在途请求中断、
  * ffmpeg 随 pi 的 signal 被 SIGKILL），之后删工作目录。
  */
 

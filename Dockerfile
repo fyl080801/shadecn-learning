@@ -51,6 +51,7 @@ COPY packages/mod-agent/package.json ./packages/mod-agent/
 COPY packages/mod-apps/package.json ./packages/mod-apps/
 COPY apps/server/package.json ./apps/server/
 COPY apps/agent-sandbox/package.json ./apps/agent-sandbox/
+COPY apps/agent-runner/package.json ./apps/agent-runner/
 COPY apps/platform/package.json ./apps/platform/
 COPY apps/collab/package.json ./apps/collab/
 COPY packages/config/package.json ./packages/config/

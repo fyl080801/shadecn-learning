@@ -4,6 +4,7 @@ paths:
   - ".dockerignore"
   - "apps/server/scripts/output-image/**"
   - "apps/agent-sandbox/**"
+  - "apps/agent-runner/**"
   - "k8s/**"
   - "ci/**"
   - ".gitea/**"
@@ -25,6 +26,11 @@ paths:
 - Built from `output/agent-sandbox/` by `apps/agent-sandbox/scripts/build-image.mjs` (podman first, then docker; extra args go to `build`). **Its base image ARG defaults to the upstream `docker.io/library/node:22-alpine`**, unlike the two app Dockerfiles: a mirror / proxy is passed with `--build-arg NODE_IMAGE=…` at build time and never committed. The same `TARGETARCH` check runs in every stage that uses the base.
 - **The last stage is `FROM scratch` + `COPY --from=rootfs / /`** so the image config holds only `ENV PATH`: the node image's `NODE_VERSION` / `YARN_VERSION` would otherwise show up in every sandbox's environment (acceptance 1 counts env names). Don't turn it back into `FROM ${NODE_IMAGE}`.
 - The self-check expects the runner to exit **2** without env (all imports resolved); 1 means a missing package. npm / yarn / corepack are deleted; deps install with `--ignore-scripts`.
+
+## Nest runner image (`apps/agent-runner/`, `docs/31` §3.3)
+
+- A copy of the sandbox image above, for the Nest service only; every rule of that section holds (`NODE_IMAGE` build arg defaulting upstream, `FROM scratch`, the self-check's exit code 2, no `ENV` beyond `PATH`). `apps/server/test/scripts/dockerfiles.test.ts` doesn't read this Dockerfile, so `apps/agent-runner/test/dockerfile.test.ts` pins the same guards.
+- **Its context is `apps/agent-runner/dist/`. Don't move it into `output/`**: `build-server.mjs` and `output/.dockerignore` know only `agent-sandbox`, so a third directory there lands in the old service's app image. The root `Dockerfile` needs only the `COPY` line for this package; `pnpm build` and the `artifacts` stage don't build it, and no CI step ships this image yet.
 
 ## Native-module architecture checks — keep all three
 

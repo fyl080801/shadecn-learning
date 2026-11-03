@@ -73,6 +73,10 @@ describe('process 驱动', () => {
     vi.stubEnv('DATABASE_URL', 'postgresql://secret@db/app')
     vi.stubEnv('MODULES_AUTH_SESSION_SECRET', 'session-secret')
     vi.stubEnv('CLUSTER_REDIS_URL', 'redis://:pw@redis:6379')
+    vi.stubEnv('PLATFORM_AGENT_TOKEN_SECRET', 'sk-should-not-leak')
+    vi.stubEnv('PLATFORM_SESSION_SECRET', 'session-secret')
+    vi.stubEnv('PLATFORM_DATABASE_URL', 'postgresql://secret@db/app')
+    vi.stubEnv('PLATFORM_REDIS_URL', 'redis://:pw@redis:6379')
     const { driver, lines } = await driverWith('console.log(JSON.stringify({ env: process.env, cwd: process.cwd() }))')
     const handle = (await driver.start(spec())) as ProcessSandboxHandle
     expect(await handle.wait()).toEqual({ exitCode: 0 })

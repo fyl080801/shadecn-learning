@@ -10,7 +10,7 @@ import type { ExecOptions, ExecResult, Sandbox, SandboxProvider } from './types.
  * 照样能读这个用户读得到的任何文件、照样能出网。这个实现只防两件事：
  *
  * 1. **凭据经环境变量泄露**：子进程的 env 是从零造的，只有 `PATH` / `HOME` / `TMPDIR`，
- *    服务端进程里的 LLM key、`DATABASE_URL`、`MODULES_AUTH_SESSION_SECRET`、`CLUSTER_REDIS_URL` 一个都不继承。
+ *    服务端进程里的 LLM key、`PLATFORM_DATABASE_URL`、`PLATFORM_SESSION_SECRET`、`PLATFORM_REDIS_URL` 一个都不继承。
  *    这是最容易犯、也最容易被注入利用的一条（「把环境变量打印到输出里」）。
  * 2. **误操作**：命令白名单（默认只有 `ffmpeg` / `ffprobe`）、不经 shell（参数里的 `;` `$()`
  *    没有意义）、超时强杀、输出截断、读写只限工作目录（路径穿越与符号链接逃逸都挡）。

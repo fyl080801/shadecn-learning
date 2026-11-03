@@ -23,7 +23,7 @@ import {
  * `oci` 驱动（docs/22 §7.2）对着一个**假的 Engine API**（测试里在 unix socket 上起的 http server）测请求形状：
  * 容器配置里的安全选项、环境变量只有那三个、label、资源上限换算、杀 / 删的先后、`wait()` 在删完之后才兑现、
  * 时长兜底、OOM、输出限行、`reap` 只清本实例的孤儿、引擎连不上 / 镜像不存在时的错误。
- * 真的 Podman / Docker 跑一轮在 apps/server 的 `sandbox-oci.test.ts`（默认跳过）。
+ * 真的 Podman / Docker 跑一轮在 packages/agent-service 的 `sandbox-oci.test.ts`（默认跳过）。
  */
 
 interface FakeContainer {
@@ -63,6 +63,8 @@ class FakeEngine {
   onStart: (container: FakeContainer) => void = () => {}
   /** 让某个接口直接失败：返回状态码 */
   fail: Partial<Record<'start' | 'kill' | 'delete' | 'wait', number>> = {}
+  /** 建容器时引擎回的错（真引擎上的说法见 agent-service 的 sandbox-oci） */
+  createError: { status: number; message: string } | null = null
   /** wait 永远不回（模拟引擎失联） */
   hangWait = false
   private seq = 0
@@ -146,6 +148,7 @@ class FakeEngine {
       return net ? this.reply(res, 200, { ...net, Driver: 'bridge' }) : this.reply(res, 404, { message: 'network not found' })
     }
     if (url.pathname === '/containers/create') {
+      if (this.createError) return this.reply(res, this.createError.status, { message: this.createError.message })
       const image = String(body?.Image)
       if (!this.images.has(image)) return this.reply(res, 404, { message: `no such image: ${image}: image not known` })
       const id = `${'c'.repeat(56)}${String((this.seq += 1)).padStart(8, '0')}`
@@ -317,6 +320,10 @@ describe('oci 驱动：容器配置', () => {
     vi.stubEnv('DATABASE_URL', 'postgresql://secret@db/app')
     vi.stubEnv('MODULES_AUTH_SESSION_SECRET', 'session-secret')
     vi.stubEnv('CLUSTER_REDIS_URL', 'redis://:pw@redis:6379')
+    vi.stubEnv('PLATFORM_AGENT_TOKEN_SECRET', 'sk-should-not-leak')
+    vi.stubEnv('PLATFORM_SESSION_SECRET', 'session-secret')
+    vi.stubEnv('PLATFORM_DATABASE_URL', 'postgresql://secret@db/app')
+    vi.stubEnv('PLATFORM_REDIS_URL', 'redis://:pw@redis:6379')
     const fake = await fakeEngine()
     fake.onStart = (c) => fake.exit(c, 0)
     const { driver } = driverOn(fake)
@@ -469,7 +476,23 @@ describe('oci 驱动：起不来', () => {
   it('镜像不存在：错误提示构建命令和配置项，不留容器', async () => {
     const fake = await fakeEngine()
     const { driver } = driverOn(fake, { image: 'missing:1' })
-    await expect(driver.start(spec())).rejects.toThrow(/沙箱镜像 missing:1 不存在.*pnpm build:sandbox-image.*MODULES_AGENT_SANDBOX_IMAGE/)
+    await expect(driver.start(spec())).rejects.toThrow(/沙箱镜像 missing:1 不存在.*pnpm build:agent-runner-image.*agent\.sandbox\.image/)
+    expect(fake.containers.size).toBe(0)
+  })
+
+  it('网络不存在：错误写明配置项 agent.sandbox.oci.network，不留容器', async () => {
+    const fake = await fakeEngine()
+    fake.createError = { status: 404, message: 'unable to find network with name or ID agent-gone: network not found' }
+    const { driver } = driverOn(fake, { network: 'agent-gone' })
+    await expect(driver.start(spec())).rejects.toThrow(/沙箱网络 agent-gone 不存在（agent\.sandbox\.oci\.network）/)
+    expect(fake.containers.size).toBe(0)
+  })
+
+  it('网络不存在，引擎回 500（Podman 5.8 实测）：同样写明配置项', async () => {
+    const fake = await fakeEngine()
+    fake.createError = { status: 500, message: 'container create: unable to find network with name or ID agent-gone: network not found' }
+    const { driver } = driverOn(fake, { network: 'agent-gone' })
+    await expect(driver.start(spec())).rejects.toThrow(/沙箱网络 agent-gone 不存在（agent\.sandbox\.oci\.network）/)
     expect(fake.containers.size).toBe(0)
   })
 
