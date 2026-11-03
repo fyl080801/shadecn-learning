@@ -1,0 +1,32 @@
+{
+  /*
+   * customConditions: source —— 类型从 @learning/* 的源码来，编译本包不用先构建它们。
+   * paths：@hocuspocus/* 的 exports 也有 source 条件，指向它们不带 allowImportingTsExtensions 编译不了的 src/，所以类型钉到 dist。
+   */
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "customConditions": ["source"],
+    "paths": {
+      "@hocuspocus/common": ["./node_modules/@hocuspocus/common/dist/index.d.ts"],
+      "@hocuspocus/provider": ["./node_modules/@hocuspocus/provider/dist/index.d.ts"],
+      "@hocuspocus/server": ["./node_modules/@hocuspocus/server/dist/index.d.ts"]
+    },
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "target": "ES2023",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": ".",
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "types": ["node"]
+  },
+  "exclude": ["node_modules", "dist"]
+}

@@ -167,6 +167,36 @@ function behaviours(createUrl: (dir: string) => string, cleanup?: (app: NestFast
     expect(JSON.parse((await get('/api/projects/personal', cookie)).body).kind).toBe('personal')
   })
 
+  it('协同接进来了：监控接口要登录，/ws/collaboration 真的走 upgrade，跨站握手 403', async () => {
+    expect((await get('/api/collab/rooms')).status).toBe(401)
+    expect(JSON.parse((await get('/api/collab/rooms', cookie)).body)).toMatchObject({ totalRooms: 0 })
+    expect((await get('/api/collab/health', cookie)).status).toBe(200)
+
+    const handshake = (headers: Record<string, string>) => {
+      const { hostname, port } = new URL(baseUrl)
+      return new Promise<number>((resolve, reject) => {
+        const req = http.request({
+          hostname: hostname.replace(/^\[|\]$/g, ''),
+          port,
+          path: '/ws/collaboration',
+          headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', ...headers },
+        })
+        req.on('upgrade', (res, socket) => {
+          socket.destroy()
+          resolve(res.statusCode ?? 0)
+        })
+        req.on('response', (res) => {
+          res.destroy()
+          resolve(res.statusCode ?? 0)
+        })
+        req.on('error', reject)
+        req.end()
+      })
+    }
+    expect(await handshake({})).toBe(101)
+    expect(await handshake({ origin: 'https://evil.example' })).toBe(403)
+  })
+
   it('登出之后回到匿名状态', async () => {
     const user = await app.get(UserService).findOrCreate({ issuer: 'https://issuer.test', subject: 'bob' })
     const other = `sid=${await app.get(SessionService).create({
@@ -237,14 +267,14 @@ describe('模块依赖和 imports 顺序无关', () => {
     writeConfig(dir, productionConfig({ url: `file:${path.join(dir, 'order.db')}`, dir }))
     const imports = Reflect.getMetadata('imports', AppModule) as unknown[]
     const providers = Reflect.getMetadata('providers', AppModule) as unknown[]
-    expect(imports).toHaveLength(8)
+    expect(imports).toHaveLength(9)
 
     @Module({})
     class ReorderedRoot {}
     const { app, baseUrl } = await listen({
       module: ReorderedRoot,
-      // 排列之外的三个（cluster、它的检查、画布 REST）放在最前面，也是一种「先后无关」
-      imports: [imports[5], imports[6], imports[7], ...order.map((index) => imports[index])],
+      // 排列之外的四个（cluster、它的检查、画布 REST、协同）放在最前面，也是一种「先后无关」
+      imports: [imports[5], imports[6], imports[7], imports[8], ...order.map((index) => imports[index])],
       providers,
     } as never)
 

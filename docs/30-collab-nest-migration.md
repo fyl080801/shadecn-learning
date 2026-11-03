@@ -1,6 +1,6 @@
 # REQ-NEST NestJS 版服务
 
-> 状态：**规划中** —— 尚无实现。
+> 状态：**实施中** —— 已完成第 1～3 步和里程碑 A（§6）：登录、项目、画布、协同单进程跑通。
 
 ## 1. 目标与边界
 
@@ -18,11 +18,11 @@
 
 | 模块（包） | 对应 | 职责 | imports | exports | Controller | 实体 |
 |---|---|---|---|---|---|---|
-| `SessionModule`（`@learning/session`，已有） | `mod-auth` | 登录、会话。账号关联和头像待补 | — | `SessionService`、`UserService`、守卫 | `AuthController`，待补关联、头像 | `Session`、`UserIdentity`、`PendingLink`、`AuthRequest` |
+| `SessionModule`（`@learning/session`，已有） | `mod-auth` | 登录、会话。账号关联和头像待补 | — | `SessionService`、`UserService`、`RequestOrigins`、守卫 | `AuthController`，待补关联、头像 | `Session`、`UserIdentity`、`PendingLink`、`AuthRequest` |
 | `CanvasModule`（`@learning/canvas`） | `mod-canvas` 服务层 | 项目、成员、邀请、画布的读写，判权，`FlowDocStore`，撤权信号，落库请求令牌 | — | `ProjectsService`、`FlowsService`、`FlowDocStore`、`AccessRevocation`、`FlowMemberGuard` | — | `Project`、`ProjectMember`、`ProjectInvite`、`Flow`、`FlowUserState` |
 | `CanvasApiModule`（同上） | `mod-canvas/routes` | 画布 REST | `CanvasModule` | — | `ProjectsController`、`InvitesController`、`FlowsController` | — |
 | `CollabModule`（`@learning/collab`） | `mod-collab` | Hocuspocus 实例、持久化、配额、awareness、单连接互斥、写闸门、复验、退出 | `CanvasModule` | `CollabServer`、`FlowPersistence` | — | — |
-| `CollabGatewayModule`（同上） | `mod-collab` 入口 | WebSocket upgrade，监控和 `/doc` 接口 | `CollabModule` | — | `CollabMonitorController`、`FlowDocController` | — |
+| `CollabGatewayModule`（同上） | `mod-collab` 入口 | WebSocket upgrade，监控和 `/doc` 接口 | `CollabModule`、`CanvasModule`（`FlowMemberGuard` 在控制器所在模块实例化） | — | `CollabMonitorController`、`FlowDocController` | — |
 | `StorageModule`（`@learning/storage`） | `mod-storage` | S3、上传、缩略图 | `CanvasModule` | `AssetStorage` | `AssetsController` | `FlowAsset` |
 | `AppsModule`（`@learning/apps`） | `mod-apps` | `executeApp`、生成任务 | `CanvasModule`、`CollabModule`、`StorageModule` | `AppsService` | `AppsController`、`FlowAppsController` | `AppTask` |
 | `AgentModule`（`@learning/agent`，目录 `packages/agent-service`） | `mod-agent` | agent 编排、网关 | `CanvasModule`、`CollabModule`、`StorageModule` | — | 面板、网关 | `AgentConversation`、`AgentRun`、`AgentToolCall`、`AgentGrant`、`AgentGrantScope` |
@@ -90,6 +90,7 @@ auth: { oidc: … }                                    # 和 platform 相同：�
 - **踢人要关 socket**：CLOSE 消息加真正的关闭帧。握手拒绝没有关闭事件，原因放在错误的 `reason` 上。`unauthorized` 和 `forbidden` 不能合并。
 - **多副本**：socketId 带 `instanceId` 前缀；每次更新的副作用跳过 `source === 'redis'`；Redis 扩展的 `lockTimeout` 设 10 秒；共享层故障 fail-open。
 - **不要照抄落库统计**：实测两副本撞 redlock 时，`logging.ts` 的「开始 − 完成」会把正常跳过记成失败，`/api/collab/health` 一直 503。改成在业务钩子里计数。
+- **`/api/collab/health` 只看现在**：欠着落库、写队列卡住或共享层故障才 503，补齐后回到 200。累计的 `store.failed` 只留在响应里（旧服务翻了就 503 到重启，这里故意不同）。
 - **配额和写闸门拒绝时不抛错**：置 `readOnly`；写闸门挂 `beforeSync`，不拦 SyncStep1。
 
 ## 6. 实现顺序
@@ -115,6 +116,8 @@ auth: { oidc: … }                                    # 和 platform 相同：�
 - agent 面板显示加载失败（`useFlowAgent.ts:310-316`）。
 
 头像为空时走 `v-if` 的回退显示。
+
+第 4 步之前，开着房间复制画布拿到的是上次落库的内容：还没有副本回话 `canvas.flush-content`。
 
 ## 7. 需要用户决定的事项
 

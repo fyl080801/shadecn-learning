@@ -1,9 +1,14 @@
 {
+  // paths：customConditions 里的 source 也会命中 @hocuspocus/* 自己的 exports（指向编译不了的 src/），经 @learning/collab 的源码引到这里时要钉到 dist
   "compilerOptions": {
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "resolvePackageJsonExports": true,
     "customConditions": ["source"],
+    "paths": {
+      "@hocuspocus/common": ["../../packages/collab/node_modules/@hocuspocus/common/dist/index.d.ts"],
+      "@hocuspocus/server": ["../../packages/collab/node_modules/@hocuspocus/server/dist/index.d.ts"]
+    },
     "esModuleInterop": true,
     "isolatedModules": true,
     "declaration": true,

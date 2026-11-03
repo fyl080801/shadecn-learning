@@ -8,6 +8,7 @@ packages/web/dist
 packages/data-access/dist
 packages/session/dist
 packages/canvas/dist
+packages/collab/dist
 output
 .git
 .claude

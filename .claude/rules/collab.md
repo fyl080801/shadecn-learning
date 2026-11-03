@@ -1,7 +1,7 @@
 ---
 paths:
   - "packages/mod-collab/**"
-  - "packages/mod-collab/**"
+  - "packages/collab/**"
   - "apps/web/src/composables/flow/sync/**"
   - "apps/web/src/composables/flow/useFlowPresence.ts"
   - "apps/web/src/lib/presence.ts"
@@ -84,3 +84,16 @@ paths:
   - **Cache the verdict as a Promise (also in-flight dedup); never delay frames** — one serial message queue per connection, so awaiting a timer starves the heartbeat. TTL 10s; `revalidateConnections` clears the table first, so a revoked member's next write re-queries. `prime()` on `connected`, `forget()` on `onDisconnect`; **an authorize that throws means allow**.
   - **What it checks is injected and mandatory** (`createWriteGate({ authorize })`): both canvas kinds use `collabWriteAuthorize` (`authorizeCollab`, which for personal rooms checks owner). `sessionWriteAuthorize` has no caller. No `if (personal)` inside the gate.
 - **WebSocket `Origin` is checked by hand** (`isAllowedCollabOrigin` in `authorize.ts`, from the upgrade handler — Hono's `cors` never sees it; CSWSH). Allow: **no `Origin`** (non-browser), **on `SERVER_ORIGINS`**, or **`Origin` host = request `Host`**.
+
+## `@learning/collab` (`packages/collab`, the Nest service)
+
+A second implementation of everything above, sharing no code with `mod-collab`: same Hocuspocus version and the same invariants, so a fix to one usually belongs in the other. What differs, and what reading the code alone would get wrong:
+
+- **State lives in providers** (`CollabServer`, `FlowPersistence`, `CollabQuota`, `AwarenessClaims`, `ExclusiveConnections`); `test/package.test.ts` refuses top-level `let` and mutable containers. Two apps in one process (tests) don't see each other.
+- **`CollabModule` has no entry, `CollabGatewayModule` owns the socket.** `CollabGateway` holds crossws and hands `CollabServer` a `SocketCloser`, because the close order has to live in one place: `onModuleDestroy` stops timers, the revocation subscription and new upgrades → `beforeApplicationShutdown` closes connections and sockets, stores each room directly, drains (20s cap), then force-closes whoever didn't answer → Nest closes HTTP → `onApplicationShutdown` closes ORM and Redis. An upgraded socket still counts against `server.close()`, so a socket left open means `app.close()` never returns (measured). The hook runs before the ORM closes; moving it to `onApplicationShutdown` loses the last debounce window.
+- **Hocuspocus stores by itself on last leave, so "all clients gone" tests can't see whether the shutdown flush works.** Only a room held open by a direct connection can (`test/shutdown.test.ts`).
+- **Keep the `upgrade` listener while stopping**; answer 503. Without a listener Node hands the upgrade to Fastify as a normal request and it lands on the page fallback. Other paths: leave them if `listenerCount('upgrade') > 1` (Vite HMR), destroy otherwise.
+- **The shutdown close is 1012 `server-restarting`**, not a `CLOSE_*`: `classifyClose` must not recognise it, so the provider reconnects.
+- **Store stats count where the write happens** (`FlowPersistence.storeStats()`: `completed`, `failed`), not "started − completed" around the hook chain (`docs/30` §5). `/api/collab/health` here judges by what is owed now: cumulative `failed` stays in the body but doesn't drive the 503.
+- **Per-update side effects skip `isRelayedUpdate(origin)`; the quota check does not**: each replica holds a full doc and must measure it.
+- **`POST /doc` needs a Fastify content-type parser** (else 415), registered in `onModuleInit`, before routes. It parses before routing: an oversized body gets Fastify's 413 ahead of the guards, in Nest's default error shape.

@@ -8,7 +8,7 @@ server:
   port: 3001
   # 监听地址。不写 = 只听本机；容器里写 0.0.0.0
   # host: 0.0.0.0
-  # 对外域名的白名单：登录回调的域名和 cookie 的 Secure 都按它判定，第一个是默认（请求的域名都不在名单里时用它）。不支持通配符。
+  # 对外域名的白名单：登录回调的域名、cookie 的 Secure、协同 WebSocket 的 Origin 校验都按它判定，第一个是默认（请求的域名都不在名单里时用它）。不支持通配符。
   # 不写时开发环境默认 http://localhost:<port> 和 http://127.0.0.1:<port>；生产环境配了登录方式却不写 = 拒绝启动
   # origins:
   #   - https://platform.example.com

@@ -465,7 +465,7 @@ function displayName(member: ProjectMemberView) {
               不说的话，管理员会以为「移除」等于「收回权限」。
             -->
             <AlertDialogDescription>
-              移除后对方立刻访问不到本项目及其中的画布，正在编辑的人会在几十秒内断开。
+              移除后对方立刻访问不到本项目及其中的画布，正在编辑的人会在几秒内断开。
               注意：分享链接可以重复使用，对方若还留着那条链接可以自行重新加入——
               要彻底断掉，请在分享面板里重置链接。
             </AlertDialogDescription>
