@@ -66,6 +66,63 @@ describeOnBothDatabases('AssetStorage（别的模块读写画布资源）', (ctx
     vi.spyOn(ctx.s3.client, 'getObject').mockResolvedValueOnce({ status: 'not_found' })
     expect(await storage().read(flowId, saved.url, { maxBytes: 1000 })).toBeNull()
   })
+
+  it('objectUrl：和存的时候回的地址一样，是公开地址', async () => {
+    const { alice, flowId } = await flow()
+    const saved = await storage().save({ flowId, createdById: alice.userId, data: await jpeg(), contentType: 'image/jpeg' })
+    expect(storage().objectUrl(saved.key)).toBe(saved.url)
+  })
+
+  it('复制出来的画布：没有记录，read 读不到；readByUrl 按地址读得到，类型取对象存储记的', async () => {
+    const { alice, flowId } = await flow()
+    const data = await jpeg()
+    const saved = await storage().save({ flowId, createdById: alice.userId, data, contentType: 'image/jpeg' })
+
+    const copy = await alice.json(`/api/flows/${flowId}/duplicate`, 'POST')
+    expect(copy.status).toBe(201)
+    const copyId = copy.json<{ id: string }>().id
+    expect(copyId).not.toBe(flowId)
+    expect(await storage().findInFlow(copyId, [saved.key])).toEqual([])
+    expect(await storage().read(copyId, saved.url, { maxBytes: 10_000_000 })).toBeNull()
+
+    expect(await storage().readByUrl(saved.url, { maxBytes: 10_000_000 })).toEqual({ status: 'ok', data, contentType: 'image/jpeg' })
+  })
+
+  it('原画布连记录一起删了：对象还在，复制出来的画布上 readByUrl 照样读得到', async () => {
+    const { alice, flowId } = await flow()
+    const data = await jpeg()
+    const saved = await storage().save({ flowId, createdById: alice.userId, data, contentType: 'image/jpeg' })
+    await ctx.dataAccess.em().nativeDelete(FlowAsset, { key: saved.key })
+    expect(await storage().findInFlow(flowId, [saved.key])).toEqual([])
+    expect((await storage().readByUrl(saved.url, { maxBytes: 10_000_000 })).status).toBe('ok')
+  })
+
+  it('readByUrl：外部地址、内网地址、别的桶、穿越、档位地址 → foreign，一个请求都不发', async () => {
+    const { alice, flowId } = await flow()
+    const saved = await storage().save({ flowId, createdById: alice.userId, data: await jpeg(), contentType: 'image/jpeg' })
+    ctx.s3.reads.length = 0
+    for (const url of [
+      'https://evil.test/a.jpg',
+      'http://169.254.169.254/latest/meta-data',
+      saved.url.replace('/canvas-bucket/', '/other-bucket/'),
+      saved.url.replace('/canvas-bucket/', '/canvas-bucket/../other-bucket/'),
+      saved.url.replace(/\.jpg$/, '@low.webp'),
+    ]) {
+      expect([url, await storage().readByUrl(url, { maxBytes: 1000 })]).toEqual([url, { status: 'foreign' }])
+    }
+    expect(ctx.s3.reads).toEqual([])
+  })
+
+  it('readByUrl：对象没了 → not_found；超过上限 → too_large；对象存储出错 → reject，不和「不是我们的」混在一起', async () => {
+    const { alice, flowId } = await flow()
+    const saved = await storage().save({ flowId, createdById: alice.userId, data: await jpeg(), contentType: 'image/jpeg' })
+    vi.spyOn(ctx.s3.client, 'getObject').mockResolvedValueOnce({ status: 'not_found' })
+    expect(await storage().readByUrl(saved.url, { maxBytes: 1000 })).toEqual({ status: 'not_found' })
+    vi.spyOn(ctx.s3.client, 'getObject').mockResolvedValueOnce({ status: 'too_large' })
+    expect(await storage().readByUrl(saved.url, { maxBytes: 1 })).toEqual({ status: 'too_large' })
+    vi.spyOn(ctx.s3.client, 'getObject').mockRejectedValueOnce(new Error('S3 GetObject 失败：503'))
+    await expect(storage().readByUrl(saved.url, { maxBytes: 1000 })).rejects.toThrow('S3 GetObject 失败')
+  })
 })
 
 describe('没配对象存储', () => {
@@ -112,5 +169,7 @@ describe('没配对象存储', () => {
     const storage = app.get(AssetStorage)
     expect(await storage.read('f', 'https://s3.test/b/k', { maxBytes: 1 })).toBeNull()
     await expect(storage.save({ flowId: 'f', createdById: 'u', data: new Uint8Array([1]), contentType: 'image/png' })).rejects.toThrow('没有配置对象存储')
+    expect(storage.objectUrl('canvas/assets/x')).toBeNull()
+    expect(await storage.readByUrl('https://s3.test/b/k', { maxBytes: 1 })).toEqual({ status: 'unavailable' })
   })
 })

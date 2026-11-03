@@ -156,6 +156,7 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 - **写回节点的操作用 `@learning/contracts/flow-ops`**：`recordGeneration`、`attachAsset`、`appendGeneratedText` 直接 import 整份 `flow-ops`，和 `packages/shared` 的逐字相同由 `packages/contracts/test/contracts.test.ts` 保证；它的闭包带 `@dagrejs/dagre`，所以 `@learning/apps` 和 `apps/platform` 声明这个可选 peer。
 - **LLM 通路在 `@learning/llm`（`packages/llm`）**：`llm-config`、`llm-providers`、`model`、`stream-upstream` 四个文件（从 `packages/apps/src/llm/` 原样移过去，`model-stream` 改名 `stream-upstream`），依赖 `@earendil-works/pi-ai`，版本同 `mod-apps`。没有 DI token，`apps` 当普通依赖。`llm.providers` 只有它这一个解析器。agent 编排没搬（`docs/31` §5.3）。
 - **agent 的框架无关部分在 `@learning/agent-core`（`packages/agent-core`）**：从 `packages/agent` 复制，只改 import（`.ts` → `.js`，`@shadecn/shared/` → `@learning/contracts/`），不搬 k8s 驱动；`model`、`llm-providers` 归 `@learning/llm`，`model-stream` 只留服务端自己的那部分。tsc 产物，驱动按子路径导出，runner 的闭包不含 Nest、ORM、`@learning/llm`。与 `@shadecn/agent` 互不同步（协议版本仍是 9），新增一个 `process` 驱动起产物 runner 真子进程的用例。`AgentModule` 还没有（`docs/31` §7 第 5 步起）。
+- **agent 要的底座接口已经补上（`docs/31` §4.4）**：`@learning/cluster` 的 `SharedMap.compareAndSet`、`SharedLog` + `Cluster.createLog`，`@learning/session` 的 `UserService.briefs`、`SessionService.deriveSecret`，`@learning/storage` 的 `AssetStorage.objectUrl`、`readByUrl`。`readByUrl` 不查 `FlowAsset`，只认本桶素材目录里的地址，别的地址不发请求（§7 的「复制画布不动记录」就是它存在的原因）。这一步还没有调用方。
 
 ## 9. 需要用户决定的事项
 

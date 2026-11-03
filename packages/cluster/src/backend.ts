@@ -1,5 +1,5 @@
 import type { SharedLock } from './shared-lock.js'
-import type { Codec, SharedChannel, SharedMap } from './shared-state.js'
+import type { Codec, SharedChannel, SharedLog, SharedMap } from './shared-state.js'
 
 /** 共享层的健康快照。同步、不发网络请求：健康检查不能因为 Redis 慢就跟着卡住 */
 export interface ClusterHealth {
@@ -14,6 +14,7 @@ export interface ClusterHealth {
 export interface ClusterBackend {
   createLock(namespace: string): SharedLock
   createMap<V>(namespace: string, codec: Codec<V>): SharedMap<V>
+  createLog<V>(namespace: string, codec: Codec<V>): SharedLog<V>
   createChannel<V>(namespace: string, codec: Codec<V>): SharedChannel<V>
   health(): ClusterHealth
   close(): Promise<void>

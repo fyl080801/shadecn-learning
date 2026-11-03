@@ -5,7 +5,7 @@ import { Session } from './entities.js'
 import { describeError } from './errors.js'
 import { HTTP_TIMEOUT, OidcError, type ProviderTokens } from './oauth/index.js'
 import { type ResolvedSessionOptions, SESSION_OPTIONS } from './options.js'
-import { newSessionToken, sessionTokenId } from './session-token.js'
+import { deriveSecretFrom, newSessionToken, sessionTokenId } from './session-token.js'
 import { type RefreshTokens, TokenRefresher } from './token-refresher.js'
 
 /** access_token 还剩这么久以内就顺手续一次 */
@@ -78,6 +78,14 @@ export class SessionService {
 
   private idOf(token: string): string {
     return sessionTokenId(this.options.secret, token)
+  }
+
+  /**
+   * 按用途从会话密钥派生一把密钥，同一把会话密钥、同一个用途在所有进程上都得到同一个值。
+   * 开发时没配 `PLATFORM_SESSION_SECRET` 的话，会话密钥是这次运行临时生成的，派生结果也只在这次运行里有效。
+   */
+  deriveSecret(purpose: string): string {
+    return deriveSecretFrom(this.options.secret, purpose)
   }
 
   /** 建会话，返回要写进 cookie 的原始 token。库里只存它的 HMAC */

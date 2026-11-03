@@ -130,7 +130,7 @@ exports:     无
 |---|---|---|---|
 | `@learning/cluster` | `SharedMap.compareAndSet`、`SharedLog` + `Cluster.createLog`，内存和 Redis 两套 | 现在都没有（`shared-state.ts:28-40`、`cluster.ts:34-44`）。占用和槽位续期要 CAS，补发日志要 log。Redis 的 `XREAD BLOCK` 要单独连接（`server-kit/src/cluster/redis.ts:26,243`） | 约 260 行 + 契约测试 |
 | `@learning/session` | `UserService.briefs(ids)`、`SessionService.deriveSecret(purpose)` | 现在都没有（`user.service.ts:27,35`）。`mod-agent/src/module.ts:37,50` 要用 | 约 20 行 |
-| `@learning/storage` | `AssetStorage.objectUrl(key)`、不查归属的按地址读 | `AssetStorage.read` 要求记录属于这张画布（`asset-storage.ts:81-85`），而复制画布只带地址、不带记录（`docs/30` §7），直接用的话复制出来的画布上 `view_node_media` 会读不到。旧服务只判「本桶的键」（`mod-agent/src/media.ts:20-24`）。防 SSRF 的规则不变：不是本桶的地址一律不请求 | 约 15 行 |
+| `@learning/storage` | `AssetStorage.objectUrl(key)`、`AssetStorage.readByUrl(url, options)`（不查归属的按地址读，结果分 `ok`、`unavailable`、`foreign`、`not_found`、`too_large`，对应 `MediaReadError` 的几种原因；S3 出错 reject） | `AssetStorage.read` 要求记录属于这张画布（`asset-storage.ts:81-85`），而复制画布只带地址、不带记录（`docs/30` §7），直接用的话复制出来的画布上 `view_node_media` 会读不到。旧服务只判「本桶的键」（`mod-agent/src/media.ts:20-24`）。防 SSRF 的规则不变：不是本桶的地址一律不请求 | 约 15 行 |
 
 `revokeAllGrantsForUser` 只有定义和测试，没有生产调用方（`mod-agent/src/authority.ts:330`），不搬。
 
@@ -268,7 +268,6 @@ agent:                    # 一个都不配也照样加载：view 回 enabled: f
 
 - **真 runner + 真网关 + Nest 没有合起来跑过**：Fastify 挂载用的是模拟处理函数，真 runner 用的是普通 `http.createServer`。两半分别验证过，合起来在第 6 步。
 - **没有构建和运行过 OCI 镜像**：只验证了从副本打 bundle，这次没有启动容器。
-- `SharedLog`、`compareAndSet` 的 Redis 版本没有移植试跑；约 260 行是按旧实现的行数估的。
 - `@learning/llm` 的移动没有试过。§5.3 的依据是 diff 和 import 关系。
 - SSE 经 `front-proxy.mjs` 没有实际跑过，只读了代码（`response.pipe(res)`）。
 - hijack 的 SSE 和 `app.close()` 的关系没有实测。

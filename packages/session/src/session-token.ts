@@ -17,6 +17,14 @@ export function sessionTokenId(secret: string, token: string): string {
   return createHmac('sha256', secret).update(token).digest('hex')
 }
 
+/**
+ * 由会话密钥派生出的另一把密钥：同一把 `session` 密钥按用途各派生一把，互不通用，也不是会话密钥本身（比如 agent 给 run 短令牌签名的那把）。
+ * **改算法 = 拿它签过的东西全部失效**，`test/session.test.ts` 用写死的摘要钉着；和 `mod-auth` 的 `deriveSecret` 是同一个算法。
+ */
+export function deriveSecretFrom(secret: string, purpose: string): string {
+  return createHmac('sha256', secret).update(purpose).digest('hex')
+}
+
 /** 给前端 / 业务代码看的用户信息 —— access_token 一类的东西一律不在这里 */
 export interface SessionUser {
   id: string

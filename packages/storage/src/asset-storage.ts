@@ -22,6 +22,17 @@ export interface SavedFlowAsset {
   size: number
 }
 
+/**
+ * {@link AssetStorage.readByUrl} 的结果。S3 本身出错（连不上、5xx）不在这里，会 reject：调用方要分得清「不是我们的」和「现在读不了」。
+ * - `unavailable`：没配对象存储；
+ * - `foreign`：不是本桶素材目录里的地址，**一个请求都没发**；
+ * - `not_found`：对象没了；
+ * - `too_large`：超过 `maxBytes`，没读完就掐断了。
+ */
+export type AssetReadResult =
+  | { status: 'ok'; data: Uint8Array; contentType: string }
+  | { status: 'unavailable' | 'foreign' | 'not_found' | 'too_large' }
+
 const EXTENSION_OF: Record<string, string> = {
   'image/png': '.png',
   'image/jpeg': '.jpg',
@@ -37,7 +48,9 @@ const EXTENSION_OF: Record<string, string> = {
  *
  * - **存**：和浏览器上传同一套 —— 键由 `buildAssetKey` 拼、图片同步出缩略图、记一行 `FlowAsset`（归这张画布）；
  * - **读**：只读**这张画布自己的**资源。地址先经 `assetKeyOfUrl` 反解成本桶素材键（字符串比对，不发请求），
- *   再查 `FlowAsset` 归属；任何一步对不上都是 null —— 调用方据此知道「不是我们的资源」，**绝不去请求那个地址**（防 SSRF）。
+ *   再查 `FlowAsset` 归属；任何一步对不上都是 null —— 调用方据此知道「不是我们的资源」，**绝不去请求那个地址**（防 SSRF）；
+ * - **按地址读**（{@link readByUrl}）：只判「是不是本桶的素材」，不查归属。复制画布只带地址、不带记录（`docs/30` §7），复制出来的画布上 {@link read} 读不到。
+ *   防 SSRF 的规则不变：同一个 `assetKeyOfUrl`，请求按反解出的键发，从不请求传进来的地址。
  *
  * 这里不判「谁在要」：判权归调用方（路由的 `FlowMemberGuard`、agent 的 Grant）。
  */
@@ -56,6 +69,11 @@ export class AssetStorage {
 
   get available(): boolean {
     return this.client !== null
+  }
+
+  /** 对象的公开地址（写进节点、浏览器直接读的那个）。没配对象存储 → null */
+  objectUrl(key: string): string | null {
+    return this.client ? this.client.objectUrl(key) : null
   }
 
   /** 这些键里**属于这张画布**的那些，按 `keys` 的顺序；条数对不上 = 有不属于这张画布的 */
@@ -88,5 +106,18 @@ export class AssetStorage {
     if (got.status === 'not_found') return null
     if (got.status === 'too_large') throw new Error(`资源超过 ${options.maxBytes} 字节`)
     return { data: got.body, contentType: owned.contentType }
+  }
+
+  /**
+   * 按地址读本桶的素材，**不查归属**：只要键在素材目录里、是我们拼出来的形状就读，类型以 S3 记的为准（没有记录可查）。
+   * 这里不判「谁在要」，调用方必须已经判过这个人能看这个地址所在的节点（agent 的 `flow:read`）。
+   */
+  async readByUrl(url: string, options: { maxBytes: number; signal?: AbortSignal }): Promise<AssetReadResult> {
+    if (!this.client) return { status: 'unavailable' }
+    const key = assetKeyOfUrl(url, this.client.objectUrl(''), this.keyPrefix)
+    if (!key) return { status: 'foreign' }
+    const got = await this.client.getObject(key, options)
+    if (got.status !== 'ok') return got
+    return { status: 'ok', data: got.body, contentType: got.contentType }
   }
 }

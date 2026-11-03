@@ -194,6 +194,45 @@ describe.skipIf(!s3Url)('真的对象存储（PLATFORM_TEST_S3_URL）', () => {
     await expect(app.get(AssetStorage).read(flowId, saved.url, { maxBytes: 10 })).rejects.toThrow('资源超过 10 字节')
   })
 
+  it('readByUrl：不查归属，经内网地址真的读回来；别的桶、穿越不发请求；没有的对象 not_found；超限 too_large', async () => {
+    const storage = app.get(AssetStorage)
+    const data = await photo(300, 200)
+    const saved = await storage.save({ flowId, createdById: alice.userId, data, contentType: 'image/jpeg' })
+    remember(saved.key)
+    // 存进节点的是公开地址，它只用来反解键。真的按它发请求的话这里连 localhost 也一样能通，所以下面另外钉请求发到哪
+    expect(storage.objectUrl(saved.key)).toBe(saved.url)
+    expect(saved.url.startsWith(`${publicEndpoint}/${bucket}/`)).toBe(true)
+
+    const realFetch = globalThis.fetch
+    const requested: string[] = []
+    vi.stubGlobal('fetch', (input: string | URL | Request, init?: RequestInit) => {
+      requested.push(String(input))
+      return realFetch(input, init)
+    })
+    try {
+      const got = await storage.readByUrl(saved.url, { maxBytes: 1024 * 1024 })
+      expect(got).toMatchObject({ status: 'ok', contentType: 'image/jpeg' })
+      expect(Buffer.from((got as { data: Uint8Array }).data).equals(Buffer.from(data))).toBe(true)
+      expect(requested).toEqual([`${internal}/${bucket}/${saved.key}`])
+
+      requested.length = 0
+      for (const url of [
+        saved.url.replace(`/${bucket}/`, '/another-platform-test-bucket/'),
+        saved.url.replace(`/${bucket}/`, `/${bucket}/../another-platform-test-bucket/`),
+        saved.url.replace(`${publicEndpoint}/`, `${internal}/`),
+      ]) {
+        expect([url, await storage.readByUrl(url, { maxBytes: 1024 * 1024 })]).toEqual([url, { status: 'foreign' }])
+      }
+      expect(requested).toEqual([])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+
+    const missing = storage.objectUrl(`${keyPrefix}/assets/00/11/0011${randomUUID().slice(4)}.jpg`) as string
+    expect(await storage.readByUrl(missing, { maxBytes: 1024 })).toEqual({ status: 'not_found' })
+    expect(await storage.readByUrl(saved.url, { maxBytes: 10 })).toEqual({ status: 'too_large' })
+  })
+
   it('密钥不对：上传 502，服务不崩', async () => {
     const wrongDir = fs.mkdtempSync(path.join(os.tmpdir(), 'storage-wrong-'))
     const wrong = await bootStorageApp({

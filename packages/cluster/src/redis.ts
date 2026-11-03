@@ -3,7 +3,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { Redis } from 'ioredis'
 import type { ClusterBackend } from './backend.js'
 import { SharedLock, SharedLockUnavailableError } from './shared-lock.js'
-import { type Codec, SharedChannel, SharedMap } from './shared-state.js'
+import { type Codec, type LogAppendOptions, type LogEntry, SharedChannel, SharedLog, SharedMap } from './shared-state.js'
 
 /**
  * Redis 实现。只有 `redis` 模式才加载这个文件（`cluster.ts` 动态 import），`single` 模式连 ioredis 都不加载，和两个数据库驱动一个套路。
@@ -26,6 +26,22 @@ const KEY_PREFIX = 'learning'
 const RELEASE_LOCK = `
 if redis.call('get', KEYS[1]) == ARGV[1] then
   return redis.call('del', KEYS[1])
+end
+return 0
+`
+
+/**
+ * 比较后写。ARGV：expected、next、TTL 毫秒（0 = 不过期）。
+ * 必须在服务端一步做完：键过期后可能已经易主，客户端先 GET 再 SET 会让旧持有者盖掉新主人。
+ */
+const COMPARE_AND_SET = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  if tonumber(ARGV[3]) > 0 then
+    redis.call('set', KEYS[1], ARGV[2], 'PX', ARGV[3])
+  else
+    redis.call('set', KEYS[1], ARGV[2])
+  end
+  return 1
 end
 return 0
 `
@@ -121,6 +137,11 @@ class RedisMap<V> extends SharedMap<V> {
     return result === 'OK'
   }
 
+  async compareAndSet(key: string, expected: V, next: V, ttlMs?: number): Promise<boolean> {
+    const result = await this.redis.eval(COMPARE_AND_SET, 1, `${this.#prefix}${key}`, this.codec.encode(expected), this.codec.encode(next), String(ttlMs ?? 0))
+    return result === 1
+  }
+
   async delete(key: string): Promise<void> {
     await this.redis.del(`${this.#prefix}${key}`)
   }
@@ -145,6 +166,217 @@ class RedisMap<V> extends SharedMap<V> {
   async deleteByPrefix(prefix: string): Promise<void> {
     const keys = await scanKeys(this.redis, `${this.#prefix}${prefix}*`)
     if (keys.length > 0) await this.redis.del(...keys)
+  }
+}
+
+/**
+ * 同时最多占几条阻塞连接。`XREAD BLOCK` 会把整条连接堵住，同一条连接上的命令都得排在它后面，所以不能用主连接。
+ * 超过这个数就退回轮询：慢一点，但一群人同时接回时不会把 Redis 的连接数打满。
+ */
+const MAX_BLOCKING_CONNECTIONS = 16
+/** 用完留着复用的连接数，多出来的直接关 */
+const MAX_IDLE_BLOCKING_CONNECTIONS = 4
+const LOG_POLL_INTERVAL_MS = 200
+/** 排查时在 `CLIENT LIST` 里认得出来 */
+const BLOCKING_CONNECTION_NAME = 'learning-cluster-log'
+
+/** stream 条目的字段名：每条只有一个字段，值是编码后的字符串 */
+const LOG_FIELD = 'v'
+
+type StreamEntry = [id: string, fields: string[]]
+type XReadReply = [stream: string, entries: StreamEntry[]][] | null
+
+/**
+ * 阻塞读用的连接池。这些连接和主连接的调法不一样，都是因为 `XREAD BLOCK` 本来就要等：
+ * - 没有 `commandTimeout`：主连接的 2 秒会把每个更长的阻塞读都掐掉。放开之后对面不回话就没人管了，所以每次都有自己的看门狗，到点断开这条连接；
+ * - 不重连（`retryStrategy` 返回 null）：断了立刻 `end`，命令 reject，下一次 wait 开新的。
+ *   默认重连的话，`autoResendUnfulfilledCommands: false` 下断开时在等的命令可能既不重发也不 reject，等的人就永远等下去。
+ *
+ * 关闭时只 `disconnect` 不 `QUIT`：堵在 `XREAD` 上的连接回不了 `QUIT`，对面不回话时也回不了，等它就是拖住退出。
+ */
+class BlockingPool {
+  readonly #idle: Redis[] = []
+  /** 正在用的连接 → 让等它的人立刻收工 */
+  readonly #busy = new Map<Redis, () => void>()
+  /** 退回轮询、正在睡的人 */
+  readonly #sleepers = new Set<() => void>()
+  #closed = false
+
+  constructor(private readonly redis: Redis) {}
+
+  get closed(): boolean {
+    return this.#closed
+  }
+
+  #takeIdle(): Redis | undefined {
+    for (let conn = this.#idle.pop(); conn; conn = this.#idle.pop()) {
+      if (conn.status === 'ready') return conn
+      conn.disconnect()
+    }
+    return undefined
+  }
+
+  #open(): Redis {
+    const conn = this.redis.duplicate({
+      lazyConnect: true,
+      commandTimeout: undefined,
+      retryStrategy: () => null,
+      connectionName: BLOCKING_CONNECTION_NAME,
+    })
+    let lastError: string | undefined
+    conn.on('error', (err: Error) => {
+      if (err.message === lastError) return
+      lastError = err.message
+      console.error(`[cluster] Redis 阻塞读连接出错：${err.message}`)
+    })
+    return conn
+  }
+
+  #giveBack(conn: Redis): void {
+    if (this.#closed || conn.status !== 'ready' || this.#idle.length >= MAX_IDLE_BLOCKING_CONNECTIONS) conn.disconnect()
+    else this.#idle.push(conn)
+  }
+
+  /** 借一条连接等一次。`full` = 到上限了，调用方退回轮询；`closed` = 等的途中关闭了。连接出错、对面不回话都 reject */
+  xread(stream: string, from: string, blockMs: number): Promise<XReadReply | 'full' | 'closed'> {
+    if (this.#closed) return Promise.resolve('closed')
+    let conn = this.#takeIdle()
+    const fresh = !conn
+    if (!conn) {
+      if (this.#busy.size >= MAX_BLOCKING_CONNECTIONS) return Promise.resolve('full')
+      conn = this.#open()
+    }
+    const connection = conn
+
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const settle = (finish: () => void) => {
+        if (settled) return
+        settled = true
+        clearTimeout(watchdog)
+        this.#busy.delete(connection)
+        finish()
+      }
+      const limitMs = blockMs + COMMAND_TIMEOUT_MS + (fresh ? CONNECT_TIMEOUT_MS : 0)
+      const watchdog = setTimeout(() => {
+        settle(() => {
+          connection.disconnect()
+          reject(new Error('[cluster] Redis 阻塞读超时：对面不回话'))
+        })
+      }, limitMs)
+      this.#busy.set(connection, () => settle(() => resolve('closed')))
+
+      const connected = fresh ? connection.connect() : Promise.resolve()
+      connected
+        .then(() => connection.call('XREAD', 'BLOCK', blockMs, 'STREAMS', stream, from))
+        .then(
+          (reply) =>
+            settle(() => {
+              this.#giveBack(connection)
+              resolve(reply as XReadReply)
+            }),
+          (err: unknown) =>
+            settle(() => {
+              connection.disconnect()
+              reject(err instanceof Error ? err : new Error(String(err)))
+            }),
+        )
+    })
+  }
+
+  /** 退回轮询时的睡眠，关闭时立刻醒 */
+  pause(ms: number): Promise<void> {
+    if (this.#closed) return Promise.resolve()
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer)
+        this.#sleepers.delete(wake)
+        resolve()
+      }
+      const timer = setTimeout(wake, ms)
+      this.#sleepers.add(wake)
+    })
+  }
+
+  close(): void {
+    this.#closed = true
+    for (const conn of this.#idle.splice(0)) conn.disconnect()
+    for (const [conn, finish] of [...this.#busy]) {
+      conn.disconnect()
+      finish()
+    }
+    for (const wake of [...this.#sleepers]) wake()
+  }
+}
+
+class RedisLog<V> extends SharedLog<V> {
+  readonly #prefix: string
+
+  constructor(
+    private readonly redis: Redis,
+    private readonly pool: BlockingPool,
+    prefix: string,
+    namespace: string,
+    private readonly codec: Codec<V>,
+  ) {
+    super()
+    this.#prefix = `${prefix}:${namespace}:`
+  }
+
+  #decode(entries: StreamEntry[] | undefined): LogEntry<V>[] {
+    const result: LogEntry<V>[] = []
+    for (const [id, fields] of entries ?? []) {
+      const at = fields.indexOf(LOG_FIELD)
+      const raw = at < 0 ? undefined : fields[at + 1]
+      if (raw !== undefined) result.push({ id, value: this.codec.decode(raw) })
+    }
+    return result
+  }
+
+  async append(key: string, value: V, options: LogAppendOptions = {}): Promise<string> {
+    const full = `${this.#prefix}${key}`
+    const trim = options.maxLen !== undefined ? ['MAXLEN', String(options.maxLen)] : []
+    // 追加和续期放在一个 MULTI 里：不会出现写进去了却没设上过期的 stream
+    const multi = this.redis.multi().call('XADD', full, ...trim, '*', LOG_FIELD, this.codec.encode(value))
+    if (options.ttlMs) multi.pexpire(full, options.ttlMs)
+    const results = await multi.exec()
+    if (!results) throw new Error('[cluster] XADD 没有执行（事务被放弃）')
+    for (const [err] of results) if (err) throw err
+    return String(results[0]?.[1])
+  }
+
+  async read(key: string, after: string | null): Promise<LogEntry<V>[]> {
+    return this.#decode((await this.redis.call('XRANGE', `${this.#prefix}${key}`, after === null ? '-' : `(${after}`, '+')) as StreamEntry[])
+  }
+
+  async wait(key: string, after: string | null, blockMs: number): Promise<LogEntry<V>[]> {
+    // 关闭后不能回空数组：调用方是循环，每次都立刻回空就是空转。主连接关了之后 read 也会 reject，这里挡的是关闭途中的窗口
+    if (this.pool.closed) throw new Error('[cluster] 共享层已关闭')
+    // 已经有了就别去借阻塞连接
+    const ready = await this.read(key, after)
+    if (ready.length > 0) return ready
+
+    // BLOCK 0 是永远等，至少 1 毫秒。起点 0-0 = 从头，stream 还不存在时 XREAD BLOCK 照样等它被建出来
+    const ms = Math.max(1, Math.floor(blockMs))
+    const reply = await this.pool.xread(`${this.#prefix}${key}`, after ?? '0-0', ms)
+    if (reply === 'closed') return []
+    if (reply === 'full') return this.#poll(key, after, ms)
+    return this.#decode(reply?.[0]?.[1])
+  }
+
+  /** 连接到上限时的退路：用主连接 XRANGE，同样等满 `blockMs` 才回空，否则调用方的「每等满一段查一次登记」会变成每 200 毫秒一次 */
+  async #poll(key: string, after: string | null, blockMs: number): Promise<LogEntry<V>[]> {
+    const deadline = Date.now() + blockMs
+    for (;;) {
+      await this.pool.pause(Math.min(LOG_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())))
+      if (this.pool.closed) return []
+      const got = await this.read(key, after)
+      if (got.length > 0 || Date.now() >= deadline) return got
+    }
+  }
+
+  async expire(key: string, ttlMs: number): Promise<boolean> {
+    return (await this.redis.pexpire(`${this.#prefix}${key}`, ttlMs)) === 1
   }
 }
 
@@ -293,18 +525,22 @@ export async function createRedisBackend(url: string): Promise<ClusterBackend> {
   }
 
   const subscriber = new Subscriber(redis)
+  const blocking = new BlockingPool(redis)
 
   return {
     createLock: (namespace) => new RedisLock(redis, KEY_PREFIX, namespace),
     createMap: <V>(namespace: string, codec: Codec<V>) => new RedisMap<V>(redis, KEY_PREFIX, namespace, codec),
+    createLog: <V>(namespace: string, codec: Codec<V>) => new RedisLog<V>(redis, blocking, KEY_PREFIX, namespace, codec),
     createChannel: <V>(namespace: string, codec: Codec<V>) => new RedisChannel<V>(redis, subscriber, KEY_PREFIX, namespace, codec),
-    // 读 ioredis 自己维护的状态，不发 PING。订阅连接还没建是正常的（第一次订阅才建），建了就要算上：它断了总线收不到回话
+    // 读 ioredis 自己维护的状态，不发 PING。订阅连接还没建是正常的（第一次订阅才建），建了就要算上：它断了总线收不到回话。
+    // 阻塞连接不算：断了的那条立刻丢弃，下一次 wait 开新的，留不下「坏着」的状态
     health: () => ({
       ok: redis.status === 'ready' && (subscriber.status === null || subscriber.status === 'ready'),
       backend: 'redis',
       status: redis.status,
     }),
     close: async () => {
+      blocking.close()
       await subscriber.close()
       // quit 等服务端回话，连不上时立刻失败，黑洞时受 commandTimeout 约束。disconnect 才能停掉后台重连
       await redis.quit().catch(() => undefined)

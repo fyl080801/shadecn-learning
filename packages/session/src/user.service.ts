@@ -12,6 +12,13 @@ export interface FindOrCreateUserInput {
   roles?: string[]
 }
 
+/** 给别人看的用户信息。**没有邮箱字段**：名字兜底时可能落到邮箱（同在场信息、成员列表的口径），但不单独给出 */
+export interface UserBrief {
+  id: string
+  name: string
+  avatarUrl: string | null
+}
+
 /**
  * 显示名的取值顺序，只此一份：协同在场信息和成员列表都从这里取，同一个人在两处才不会叫两个名字。
  * 要和前端 `useAuth().displayName` 一致，否则改写前后名字会跳。
@@ -26,6 +33,19 @@ export class UserService {
 
   findById(id: string): Promise<User | null> {
     return this.dataAccess.em().findOne(User, id)
+  }
+
+  /** 一批人的显示名和头像，一次查询。查不到的（已被删）也给一份兜底，所以每个请求的 id 都在结果里 */
+  async briefs(userIds: readonly string[]): Promise<Map<string, UserBrief>> {
+    const ids = [...new Set(userIds)]
+    const result = new Map<string, UserBrief>()
+    if (ids.length === 0) return result
+    const rows = await this.dataAccess.em().find(User, { id: { $in: ids } }, { fields: ['id', 'name', 'username', 'email', 'avatarUrl'] })
+    for (const row of rows) result.set(row.id, { id: row.id, name: displayNameOf(row), avatarUrl: row.avatarUrl })
+    for (const id of ids) {
+      if (!result.has(id)) result.set(id, { id, name: displayNameOf({ name: null, username: null, email: null }), avatarUrl: null })
+    }
+    return result
   }
 
   /**

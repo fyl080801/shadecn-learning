@@ -82,6 +82,80 @@ function contract(open: () => Promise<ClusterBackend>, peerOf: (backend: Cluster
       expect(await map.deleteIfEquals('k', 'new-owner')).toBe(false)
     })
 
+    it('compareAndSet：值相等才写；值不同或键不存在返回 false，不写', async () => {
+      const map = backend.createMap(unique('m'), stringCodec)
+      expect(await map.compareAndSet('k', 'a', 'b', 5000)).toBe(false)
+      expect(await map.get('k')).toBeUndefined()
+
+      await map.set('k', 'run-1', 5000)
+      expect(await map.compareAndSet('k', 'run-2', 'run-3', 5000)).toBe(false)
+      expect(await map.get('k')).toBe('run-1')
+
+      // 转交：持有者换成另一个
+      expect(await map.compareAndSet('k', 'run-1', 'run-child', 5000)).toBe(true)
+      expect(await map.get('k')).toBe('run-child')
+    })
+
+    it('compareAndSet 续期：重设 TTL，值不变；过期被别人占走后续不回来', async () => {
+      const name = unique('m')
+      const map = backend.createMap(name, stringCodec)
+      expect(await map.claim('k', 'me', 300)).toBe(true)
+      await sleep(200)
+      expect(await map.compareAndSet('k', 'me', 'me', 600)).toBe(true)
+      await sleep(250)
+      // 原 TTL 早该到了，续期后还在
+      expect(await map.get('k')).toBe('me')
+
+      await sleep(450)
+      expect(await map.get('k')).toBeUndefined()
+      expect(await peer.createMap(name, stringCodec).claim('k', 'other', 5000)).toBe(true)
+      expect(await map.compareAndSet('k', 'me', 'me', 5000)).toBe(false)
+      expect(await map.get('k')).toBe('other')
+    })
+
+    it('compareAndSet 比较失败不动原来的 TTL', async () => {
+      const map = backend.createMap(unique('m'), stringCodec)
+      await map.set('k', 'other', 200)
+      expect(await map.compareAndSet('k', 'me', 'me', 5000)).toBe(false)
+      await sleep(300)
+      expect(await map.get('k')).toBeUndefined()
+    })
+
+    it('compareAndSet 不给 TTL：写成不过期，不沿用原来的 TTL', async () => {
+      const map = backend.createMap(unique('m'), stringCodec)
+      await map.set('k', 'a', 150)
+      expect(await map.compareAndSet('k', 'a', 'b')).toBe(true)
+      await sleep(250)
+      expect(await map.get('k')).toBe('b')
+      await map.delete('k')
+    })
+
+    it('compareAndSet 对已经过期的键：当作不存在', async () => {
+      const map = backend.createMap(unique('m'), stringCodec)
+      await map.set('k', 'me', 50)
+      await sleep(120)
+      expect(await map.compareAndSet('k', 'me', 'me', 5000)).toBe(false)
+      expect(await map.get('k')).toBeUndefined()
+    })
+
+    it('compareAndSet 比的是编码后的值，对象不靠引用', async () => {
+      const map = backend.createMap<{ run: string }>(unique('m'), jsonCodec())
+      await map.set('k', { run: 'a' }, 5000)
+      expect(await map.compareAndSet('k', { run: 'a' }, { run: 'b' }, 5000)).toBe(true)
+      expect(await map.get('k')).toEqual({ run: 'b' })
+    })
+
+    it('并发的 compareAndSet 只有一个赢，值就是赢家写的（两个实例同时抢）', async () => {
+      const name = unique('m')
+      const ours = backend.createMap(name, stringCodec)
+      const theirs = peer.createMap(name, stringCodec)
+      await ours.set('k', 'start', 5000)
+      const contenders = Array.from({ length: 40 }, (_, index) => `next-${index}`)
+      const results = await Promise.all(contenders.map((next, index) => (index % 2 ? ours : theirs).compareAndSet('k', 'start', next, 5000)))
+      expect(results.filter(Boolean)).toHaveLength(1)
+      expect(await ours.get('k')).toBe(contenders[results.indexOf(true)])
+    })
+
     it('entries 按前缀列，键不带 namespace；过期的不算', async () => {
       const map = backend.createMap(unique('m'), stringCodec)
       await map.set('room-1:a', '1', 5000)
@@ -315,6 +389,28 @@ describe.skipIf(!redisUrl)('共享结构的 Redis 专属语义', () => {
   })
   const pubsubClients = async () => ((await admin.call('CLIENT', 'LIST', 'TYPE', 'pubsub')) as string).split('\n').filter(Boolean).length
 
+  it('compareAndSet 的 TTL 落在键上：给了是 PX，不给就清掉', async () => {
+    const backend = await createRedisBackend(redisUrl as string)
+    const name = unique('m')
+    const map = backend.createMap(name, stringCodec)
+    await map.set('k', 'a', 60_000)
+    expect(await map.compareAndSet('k', 'a', 'b', 5000)).toBe(true)
+    const ttl = await admin.pttl(`learning:${name}:k`)
+    expect(ttl).toBeGreaterThan(0)
+    expect(ttl).toBeLessThanOrEqual(5000)
+    expect(await map.compareAndSet('k', 'b', 'c')).toBe(true)
+    expect(await admin.pttl(`learning:${name}:k`)).toBe(-1)
+    await map.delete('k')
+    await backend.close()
+  })
+
+  it('compareAndSet 连接断了：reject，不是回 false（false 的意思是「被别人占了」）', async () => {
+    const backend = await createRedisBackend(redisUrl as string)
+    const map = backend.createMap(unique('m'), stringCodec)
+    await backend.close()
+    await expect(map.compareAndSet('k', 'a', 'b', 1000)).rejects.toThrow()
+  })
+
   it('订阅连接断了：ioredis 重连后自动重新订阅，消息又收得到（断开期间的丢失）', async () => {
     const backend = await createRedisBackend(redisUrl as string)
     const channel = backend.createChannel(unique('c'), stringCodec)
@@ -377,7 +473,7 @@ describe('Cluster', () => {
     expect(new Cluster('single', createMemoryBackend(), 'fixed').instanceId).toBe('fixed')
   })
 
-  it('single 的 health 恒 ok，createMap / createChannel / bus 都可用；关闭只关一次，先撤总线', async () => {
+  it('single 的 health 恒 ok，createMap / createLog / createChannel / bus 都可用；关闭只关一次，先撤总线', async () => {
     const backend = createMemoryBackend()
     const close = vi.spyOn(backend, 'close')
     const cluster = new Cluster('single', backend, 'me')
@@ -388,6 +484,8 @@ describe('Cluster', () => {
     expect((await cluster.bus.request(TOKEN, null)).replies).toEqual([{ instance: 'me', value: 'pong' }])
     await cluster.createMap('m', stringCodec).set('k', 'v')
     expect(await cluster.createMap('m', stringCodec).get('k')).toBe('v')
+    await cluster.createLog('g', stringCodec).append('k', 'v')
+    expect((await cluster.createLog('g', stringCodec).read('k', null)).map((entry) => entry.value)).toEqual(['v'])
 
     await cluster.onApplicationShutdown()
     await cluster.onApplicationShutdown()

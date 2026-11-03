@@ -165,8 +165,66 @@ function behaviours(createFixture: () => DatabaseFixture) {
     })
   })
 
+  describe('SessionService.deriveSecret', () => {
+    it('算法和旧服务一致：HMAC-SHA256(会话密钥, 用途) 的十六进制，用写死的摘要钉着', () => {
+      expect(sessions.deriveSecret('shadecn-agent-sts')).toBe('81bbfbc9f28813260a399bc8e71250a9b752c375d6990789f5fd76ad367bfe64')
+    })
+
+    it('用途互相隔离；不是会话密钥本身；同一个用途结果稳定', () => {
+      const a = sessions.deriveSecret('purpose-a')
+      expect(a).not.toBe(sessions.deriveSecret('purpose-b'))
+      expect(a).not.toBe(SECRET)
+      expect(sessions.deriveSecret('purpose-a')).toBe(a)
+    })
+
+    it('两个进程：密钥相同派生结果相同（别的副本验得过），密钥不同就不同', async () => {
+      const boot = (secret: string) => bootContext([sessionConfig(fixture.url, { secret }), DataAccessModule, ClusterModule, SessionModule])
+      const same = await boot(SECRET)
+      const other = await boot('another-secret')
+      expect(same.get(SessionService).deriveSecret('p')).toBe(sessions.deriveSecret('p'))
+      expect(other.get(SessionService).deriveSecret('p')).not.toBe(sessions.deriveSecret('p'))
+      await same.close()
+      await other.close()
+    })
+  })
+
   describe('UserService', () => {
     const issuer = 'https://issuer.test'
+
+    it('briefs：显示名和头像，只有这三个字段；显示名的取值顺序同 displayNameOf', async () => {
+      const named = await users.findOrCreate({ issuer, subject: 'a', name: '名字', username: 'u', email: 'a@test', avatarUrl: 'https://a.test/x.png' })
+      const byUsername = await users.findOrCreate({ issuer, subject: 'b', username: 'u2', email: 'b@test' })
+      const byEmail = await users.findOrCreate({ issuer, subject: 'c', email: 'c@test' })
+      const anonymous = await users.findOrCreate({ issuer, subject: 'd' })
+
+      const briefs = await users.briefs([named.id, byUsername.id, byEmail.id, anonymous.id])
+      expect(Object.fromEntries(briefs)).toStrictEqual({
+        [named.id]: { id: named.id, name: '名字', avatarUrl: 'https://a.test/x.png' },
+        [byUsername.id]: { id: byUsername.id, name: 'u2', avatarUrl: null },
+        [byEmail.id]: { id: byEmail.id, name: 'c@test', avatarUrl: null },
+        [anonymous.id]: { id: anonymous.id, name: '匿名用户', avatarUrl: null },
+      })
+    })
+
+    it('briefs：查不到的也给兜底，每个请求的 id 都在结果里；重复的 id 只算一个', async () => {
+      const user = await users.findOrCreate({ issuer, subject: 'a', name: '名字' })
+      const briefs = await users.briefs([user.id, 'gone', user.id, 'gone'])
+      expect([...briefs.keys()].sort()).toEqual([user.id, 'gone'].sort())
+      expect(briefs.get('gone')).toStrictEqual({ id: 'gone', name: '匿名用户', avatarUrl: null })
+    })
+
+    it('briefs：一批人一次查询；空列表不查库', async () => {
+      const a = await users.findOrCreate({ issuer, subject: 'a', name: 'A' })
+      const b = await users.findOrCreate({ issuer, subject: 'b', name: 'B' })
+      const em = dataAccess.em()
+      const find = vi.spyOn(em, 'find')
+      const fork = vi.spyOn(dataAccess, 'em').mockReturnValue(em)
+      expect((await users.briefs([a.id, b.id])).size).toBe(2)
+      expect(find).toHaveBeenCalledTimes(1)
+      expect((await users.briefs([])).size).toBe(0)
+      expect(fork).toHaveBeenCalledTimes(1)
+      fork.mockRestore()
+    })
 
     it('findOrCreate 新建时可空字段写 null，roles 存 JSON', async () => {
       const user = await users.findOrCreate({ issuer, subject: 'a', roles: ['admin'] })

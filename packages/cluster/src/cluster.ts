@@ -7,7 +7,7 @@ import { Bus, type BusEnvelope } from './bus.js'
 import { createMemoryBackend } from './memory.js'
 import { type ResolvedClusterOptions, resolveClusterOptions } from './options.js'
 import type { SharedLock } from './shared-lock.js'
-import { type Codec, jsonCodec, type SharedChannel, type SharedMap, stringCodec } from './shared-state.js'
+import { type Codec, jsonCodec, type SharedChannel, type SharedLog, type SharedMap, stringCodec } from './shared-state.js'
 
 /**
  * 跨进程共享状态的入口，经依赖注入拿到。**类本身就是注入 token**，所以进程里只能有一份：消费者把 `@learning/cluster` 声明成 peerDependency。
@@ -38,6 +38,11 @@ export class Cluster implements OnApplicationShutdown {
   /** 同名 namespace 是同一张表 */
   createMap<V>(namespace: string, codec: Codec<V>): SharedMap<V> {
     return this.backend.createMap(namespace, codec)
+  }
+
+  /** 同名 namespace 是同一份日志 */
+  createLog<V>(namespace: string, codec: Codec<V>): SharedLog<V> {
+    return this.backend.createLog(namespace, codec)
   }
 
   createChannel<V>(namespace: string, codec: Codec<V>): SharedChannel<V> {
