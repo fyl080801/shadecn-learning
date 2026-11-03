@@ -210,6 +210,32 @@ function behaviours(createUrl: (dir: string) => string, cleanup?: (app: NestFast
     expect((await send(`/api/flows/${flowId}/apps/${encodeURIComponent('a:b')}/execute`, { params: {}, nodeId: 'n' })).statusCode).toBe(404)
   })
 
+  it('agent 接进来了：面板要登录、要是成员；没配模型时未启用，发消息 503', async () => {
+    const send = (target: string, body: unknown) => app.inject({ method: 'POST', url: target, headers: { cookie, 'content-type': 'application/json' }, payload: JSON.stringify(body) })
+    const { id: projectId } = (await send('/api/projects', { name: 'agent 项目' })).json<{ id: string }>()
+    const { id: flowId } = (await send(`/api/projects/${projectId}/flows`, { name: 'agent 画布' })).json<{ id: string }>()
+    expect((await get(`/api/flows/${flowId}/agent`)).status).toBe(401)
+    expect(JSON.parse((await get(`/api/flows/${flowId}/agent`, cookie)).body)).toMatchObject({ enabled: false, running: false, activeRuns: [], latest: null })
+    expect(JSON.parse((await get(`/api/flows/${flowId}/agent/conversations`, cookie)).body)).toEqual([])
+    expect((await send(`/api/flows/${flowId}/agent/messages`, { text: '你好' })).statusCode).toBe(503)
+    expect((await get('/api/flows/nope/agent', cookie)).status).toBe(404)
+  })
+
+  it('agent 的网关不过会话守卫和页面闸门：回网关自己的 401；别的路由的坏 JSON 和 1MB 上限都不变', async () => {
+    const unauthorized = { error: 'unauthorized', message: '令牌无效、已过期，或这一轮已经结束' }
+    const gateway = (payload: string, headers: Record<string, string> = {}) => app.inject({ method: 'POST', url: '/api/agent-gateway/run/input', headers: { 'content-type': 'application/json', ...headers }, payload })
+    const anonymous = await gateway('{}')
+    expect(anonymous.statusCode).toBe(401)
+    expect(anonymous.json()).toEqual(unauthorized)
+    expect((await gateway('{}', { cookie })).json()).toEqual(unauthorized)
+    // 请求体不解析：不是 JSON 也到得了网关（令牌在先）
+    expect((await gateway('{')).json()).toEqual(unauthorized)
+
+    const post = (target: string, payload: string) => app.inject({ method: 'POST', url: target, headers: { cookie, 'content-type': 'application/json' }, payload })
+    expect((await post('/api/projects', '{')).statusCode).toBe(400)
+    expect((await post('/api/projects', JSON.stringify({ name: 'x'.repeat(2 * 1024 * 1024) }))).statusCode).toBe(413)
+  })
+
   it('协同接进来了：监控接口要登录，/ws/collaboration 真的走 upgrade，跨站握手 403', async () => {
     expect((await get('/api/collab/rooms')).status).toBe(401)
     expect(JSON.parse((await get('/api/collab/rooms', cookie)).body)).toMatchObject({ totalRooms: 0 })
@@ -310,14 +336,14 @@ describe('模块依赖和 imports 顺序无关', () => {
     writeConfig(dir, productionConfig({ url: `file:${path.join(dir, 'order.db')}`, dir }))
     const imports = [...(Reflect.getMetadata('imports', PlatformBaseModule) as unknown[]), CollabGatewayModule]
     const providers = Reflect.getMetadata('providers', PlatformBaseModule) as unknown[]
-    expect(imports).toHaveLength(11)
+    expect(imports).toHaveLength(12)
 
     @Module({})
     class ReorderedRoot {}
     const { app, baseUrl } = await listen({
       module: ReorderedRoot,
-      // 排列之外的六个（cluster、它的检查、画布 REST、存储、应用、协同）放在最前面，也是一种「先后无关」
-      imports: [imports[5], imports[6], imports[7], imports[8], imports[9], imports[10], ...order.map((index) => imports[index])],
+      // 排列之外的七个（cluster、它的检查、画布 REST、存储、应用、agent、协同）放在最前面，也是一种「先后无关」
+      imports: [imports[5], imports[6], imports[7], imports[8], imports[9], imports[10], imports[11], ...order.map((index) => imports[index])],
       providers,
     } as never)
 
@@ -529,6 +555,8 @@ describe('协同由副本提供时的根模块', () => {
     const { app, baseUrl } = await listen(PlatformSplitModule)
     expect((await rawRequest(baseUrl, '/api/none')).status).toBe(401)
     expect((http.Server.prototype.listenerCount.call(app.getHttpServer(), 'upgrade'))).toBe(0)
+    expect((await rawRequest(baseUrl, '/api/flows/nope/agent')).status).toBe(401)
+    expect((await app.inject({ method: 'POST', url: '/api/agent-gateway/run/input', headers: { 'content-type': 'application/json' }, payload: '{}' })).json()).toMatchObject({ error: 'unauthorized' })
     await app.close()
   })
 
@@ -550,6 +578,10 @@ describe('协同由副本提供时的根模块', () => {
     expect((http.Server.prototype.listenerCount.call(app.getHttpServer(), 'upgrade'))).toBe(0)
     expect(JSON.parse((await rawRequest(baseUrl, '/api/apps', cookie)).body)).toEqual([])
     expect(app.get(CollabServer, { strict: false }).hocuspocus.documents.size).toBe(0)
+    // agent 也归平台：面板和网关都在这个根模块里，同样没有 WebSocket 入口
+    expect((await rawRequest(baseUrl, '/api/flows/nope/agent', cookie)).status).toBe(404)
+    expect((await rawRequest(baseUrl, '/api/flows/nope/agent')).status).toBe(401)
+    expect((await app.inject({ method: 'POST', url: '/api/agent-gateway/run/input', headers: { 'content-type': 'application/json' }, payload: '{}' })).json()).toMatchObject({ error: 'unauthorized' })
     // 上传归平台，不归协同副本：这个根模块里就有
     expect((await app.inject({ method: 'POST', url: '/api/flows/nope/assets/variants', headers: { cookie, 'content-type': 'application/json' }, payload: '{}' })).statusCode).toBe(404)
     await app.close()

@@ -154,6 +154,9 @@ importers:
       '@dagrejs/dagre':
         specifier: ^3.1.3
         version: 3.1.3
+      '@learning/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent-service
       '@learning/apps':
         specifier: workspace:*
         version: link:../../packages/apps
@@ -209,6 +212,9 @@ importers:
         specifier: ^13.6.32
         version: 13.6.32
     devDependencies:
+      '@learning/agent-core':
+        specifier: workspace:*
+        version: link:../../packages/agent-core
       '@nestjs/cli':
         specifier: ^12.0.11
         version: 12.0.11(@swc/core@1.16.21(@swc/helpers@0.5.19))(@types/node@24.12.0)(prettier@3.9.10)

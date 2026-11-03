@@ -47,7 +47,7 @@ export interface ProcessSandboxHandle extends SandboxHandle {
 }
 
 export const PROCESS_DRIVER_REFUSED_IN_PRODUCTION =
-  'process 沙箱驱动不是强隔离，生产环境（NODE_ENV=production）拒绝启用；确需使用请显式放行（MODULES_AGENT_SANDBOX_ALLOW_PROCESS=1）'
+  'process 沙箱驱动不是强隔离，生产环境（NODE_ENV=production）拒绝启用；确需使用请显式放行（agent.sandbox.allowProcess）'
 
 const DEFAULT_PATH = '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin'
 /** 一轮最多转发多少行输出：被攻破的 runner 不该能把服务端日志刷爆（`oci` 驱动用同一组上限） */

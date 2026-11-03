@@ -30,6 +30,9 @@ export default defineConfig({
     environment: 'node',
     include: ['test/**/*.test.ts'],
     fileParallelism: false,
+    // 真子进程、PostgreSQL + Redis 上一轮要好几秒（房间卸载要等 Redis 扩展 1 秒），而且不止一轮
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     env: { NODE_ENV: 'test' },
   },
 })

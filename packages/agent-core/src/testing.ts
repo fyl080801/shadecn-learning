@@ -8,9 +8,14 @@ import { createMemoryRunRegistry } from './run-registry.js'
 import type { SandboxDriver } from './sandbox/driver.js'
 import { createAgentRegistry, DEFAULT_AGENT_MODEL, loadAgentConfigs, type AgentRegistry } from './agents.js'
 import { BUILTIN_SKILLS, type SkillRegistry } from './skills/index.js'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
 export { createInlineDriver, type InlineDriverOptions } from './sandbox/drivers/inline.js'
+/** 脚本里写回复用：起真上游的测试（`apps/platform`）不必为此直接依赖 pi */
+export { fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai'
 
 /**
  * **测试专用**：让一轮 agent 走完整的生产路径（runner 的 `streamProxy` → 网关 → 服务端的 `streamSimple` → 上游），又不碰网络。
@@ -338,6 +343,60 @@ export function testAgentRegistry(skills: SkillRegistry = BUILTIN_SKILLS): Agent
 /** 一步只调 `load_skill({ id })` 的模型回复（docs/23 §3.3：它必须单独成批）—— 按需技能的工具要先加载才在 */
 export function loadSkillStep(id: string): AssistantMessage {
   return fauxAssistantMessage([fauxToolCall('load_skill', { id })], { stopReason: 'toolUse' })
+}
+
+export interface ScriptedUpstream {
+  /** 给 `llm.providers.<name>.baseUrl` 的地址（带 `/v1`） */
+  readonly url: string
+  /** 上游只认这把 key，写进 `.env`，`llm.providers.<name>.apiKey` 引用它 */
+  readonly apiKey: string
+  readonly modelId: string
+  readonly scripted: ScriptedModel
+  close(): Promise<void>
+}
+
+/**
+ * {@link registerScriptedModel} 开成真的 HTTP 服务：服务端真进程（`apps/platform/dist/main.js`）的 `llm.providers` 指向它，脚本还在测试进程里。不碰真实模型。
+ *
+ * - 不给 `respond`：按 `scripted.setResponses` 排好的脚本到达一个答一个；
+ * - 给 `respond`：每次请求都按它答（步骤顺序事先定不了的时候用，比如浏览器里人工发的消息）；
+ * - `chunkDelayMs`：两帧之间停这么久，页面上才看得见流式。
+ */
+export async function startScriptedUpstream(options: { respond?: ScriptedStep; chunkDelayMs?: number; port?: number } = {}): Promise<ScriptedUpstream> {
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    req.on('end', () => {
+      const cut = new AbortController()
+      res.once('close', () => cut.abort())
+      void (async () => {
+        if (options.respond) model.setResponses([options.respond])
+        const headers = Object.entries(req.headers).map(([name, value]): [string, string] => [name, String(value)])
+        const reply = await model.fetch(`${url}${(req.url ?? '').replace(/^\/v1/, '')}`, { method: 'POST', headers, body: Buffer.concat(chunks).toString('utf8'), signal: cut.signal })
+        res.writeHead(reply.status, { 'content-type': reply.headers.get('content-type') ?? 'application/json' })
+        for await (const chunk of reply.body ?? []) {
+          res.write(chunk)
+          if (options.chunkDelayMs) await sleep(options.chunkDelayMs)
+        }
+        res.end()
+      })().catch(() => res.destroy())
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(options.port ?? 0, '127.0.0.1', resolve))
+  // 请求要等到 listen 之后才来，上面的回调读得到这两个
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`
+  const model = registerScriptedModel({ baseUrl: url })
+  return {
+    url,
+    apiKey: SCRIPTED_API_KEY,
+    modelId: model.model.model.id,
+    scripted: model,
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections()
+        server.close(() => resolve())
+      }),
+  }
 }
 
 /**

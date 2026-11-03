@@ -9,7 +9,7 @@ import { type CanActivate, Controller, Get, Injectable, Module, type OnApplicati
 import { APP_GUARD, NestApplication } from '@nestjs/core'
 import type { NestFastifyApplication } from '@nestjs/platform-fastify'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { bootstrapService, serverHost, serverPort } from '../src/index.js'
+import { bootstrapService, HTTP_CLOSE_GRACE_MS, serverHost, serverPort } from '../src/index.js'
 
 let shutdowns = 0
 
@@ -165,6 +165,24 @@ describe('bootstrapService', () => {
     app = undefined
     expect(shutdowns).toBe(1)
   })
+
+  it('HTTP 关闭有上限：连上一个字节都没发的连接不算空闲，到上限也断开，app.close() 能返回', async () => {
+    app = await bootstrapService(rootWith({ port: 0, host: '127.0.0.1' }), { name: 'x', ...SILENT })
+    // 等服务端真的接受了：同一个进程里 connect 先到，还在 backlog 里的连接会随 close 一起被拒，什么也测不到
+    const accepted = new Promise((resolve) => app!.getHttpServer().once('connection', resolve))
+    const socket = net.connect(Number(new URL(await app.getUrl()).port), '127.0.0.1')
+    socket.on('error', () => undefined)
+    await accepted
+    const closed = new Promise((resolve) => socket.once('close', resolve))
+
+    const startedAt = Date.now()
+    await app.close()
+    app = undefined
+    const elapsed = Date.now() - startedAt
+    expect(elapsed).toBeGreaterThanOrEqual(HTTP_CLOSE_GRACE_MS - 100)
+    expect(elapsed).toBeLessThan(HTTP_CLOSE_GRACE_MS + 3_000)
+    await closed
+  }, 15_000)
 
   it('server.host 写了就听它：只听 127.0.0.1 时 IPv6 回环连不上；0.0.0.0 监听所有 IPv4 地址', async () => {
     app = await bootstrapService(rootWith({ port: 0, host: '127.0.0.1' }), { name: 'probe', ...SILENT })

@@ -482,7 +482,7 @@ describe('oci 驱动：起不来', () => {
     expect(fake.find('DELETE', /\/containers\//)).toBeTruthy()
   })
 
-  it('引擎连不上：start / check / reap 的错误都写明 socket 路径和该配的 MODULES_AGENT_SANDBOX_OCI_SOCKET', async () => {
+  it('引擎连不上：start / check / reap 的错误都写明 socket 路径和该配的 agent.sandbox.oci.socket', async () => {
     dir = await mkdtemp(path.join(tmpdir(), 'oci-'))
     const socket = path.join(dir, 'nobody-home.sock')
     const driver = createOciDriver({ engine: createEngineClient(socket), image: 'sandbox:test', instance: 'inst-a' })
@@ -491,7 +491,7 @@ describe('oci 驱动：起不来', () => {
       (err: unknown) => err as Error,
     ))
     expect(failure.message).toContain(`连不上容器引擎（${socket}：ENOENT）`)
-    expect(failure.message).toContain('MODULES_AGENT_SANDBOX_OCI_SOCKET')
+    expect(failure.message).toContain('agent.sandbox.oci.socket')
     await expect(driver.check()).rejects.toThrow('连不上容器引擎')
     await expect(driver.reap(new Set())).rejects.toThrow('连不上容器引擎')
   })
@@ -573,7 +573,7 @@ describe('Engine API 的零件', () => {
       expect(findEngineSocket(`unix://${machineSocket}`, {})).toEqual({ ok: true, path: machineSocket })
 
       expect(engineSocketCandidates({ DOCKER_HOST: 'unix:///run/user/1000/docker.sock' })).toEqual({ ok: true, candidates: ['/run/user/1000/docker.sock'] })
-      expect(engineSocketCandidates({ DOCKER_HOST: 'tcp://10.0.0.1:2375' })).toEqual({ ok: false, reason: expect.stringContaining('MODULES_AGENT_SANDBOX_OCI_SOCKET') })
+      expect(engineSocketCandidates({ DOCKER_HOST: 'tcp://10.0.0.1:2375' })).toEqual({ ok: false, reason: expect.stringContaining('agent.sandbox.oci.socket') })
       const listed = engineSocketCandidates({ HOME: '/Users/me', TMPDIR: dir, XDG_RUNTIME_DIR: '/run/user/1000' })
       expect(listed.ok && listed.candidates).toEqual([
         '/var/run/docker.sock',

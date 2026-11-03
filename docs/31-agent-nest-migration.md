@@ -121,7 +121,7 @@ exports:     无
 
 - **面板**是 `@learning/*` 里第一个 SSE。控制器走 `FlowMemberGuard`，判完状态码再 `reply.hijack()`。沿用 `sseRelay` 的顺序：先订阅、再开流、补发积压、15 秒心跳，断开只退订。`@CurrentAccess().role` 判管理员中止。
 - **网关**不走控制器，理由有三：`gateway.handle` 要 `Request → Response`（`gateway.ts:206`）；Fastify 在路由之前解析 JSON，默认上限 1MB，而网关要 4MB（`gateway.ts:84`）；runner 带的是 bearer，不走会话。
-  - 做法同 `@learning/foundation` 的探针，用普通 Fastify 路由：`AgentGatewayMount` 在 `onModuleInit` 里 `register` 一个封装作用域，`removeAllContentTypeParsers` 后只留直通解析器，路由是 `/api/agent-gateway/*`。
+  - 做法同 `@learning/foundation` 的探针，用普通 Fastify 路由：`AgentGatewayMount` 在 `onModuleInit` 里 `register` 一个封装作用域（Nest 12 的 `init()` 先注册控制器路由，再跑 `onModuleInit`，`ready` 要等到 `listen` 或 `inject`），`removeAllContentTypeParsers` 后只留直通解析器，路由是 `/api/agent-gateway/*`。
   - 响应要写 `reply.raw`，还要处理背压，连接关闭时 `reader.cancel()`：空闲判定靠 SSE body 被取消（`.claude/rules/agent.md:48`）。
 
 ### 4.4 要补的跨模块接口
@@ -142,7 +142,7 @@ agent:                    # 一个都不配也照样加载：view 回 enabled: f
   model: qwen3
   thinking: medium        # 可选，titleModel、maxOutputTokens 同样可选
   runIdleTimeoutMs: …     # 还有 runTotalTimeoutMs、leaseTtlMs、grantMarginMs
-  gatewayUrl: …           # 默认由驱动和 server.port 推出（mod-agent/src/config.ts:247-257）
+  gatewayUrl: …           # 默认由驱动和 server.port 推出（mod-agent/src/config.ts:247-257）；server.port 是 0 时必须写，否则不启用
   sandbox:
     driver: process       # process | oci；process 在生产拒绝，除非 allowProcess
     exec: false           # image、runtime、cpus、memoryMib、pids、diskMib、oci.{socket,network}
@@ -259,17 +259,15 @@ agent:                    # 一个都不配也照样加载：view 回 enabled: f
 | 风险 | 影响 | 应对 |
 |---|---|---|
 | 网关桥接写错：背压、取消 | 空闲上限误判，或 run 卡住 | 探针已验证 Fastify 这一半；第 6 步用真 runner 走完整路径 |
-| hijack 的 SSE 拖住 `app.close()` | `docs/30` §5 记过类似情况：socket 没关就不返回，ORM 和 Redis 也关不掉 | `abortAll` 之后流都该结束，第 6 步用真 SIGTERM 钉住 |
+| hijack 的 SSE 拖住 `app.close()` | `docs/30` §5 记过类似情况：socket 没关就不返回，ORM 和 Redis 也关不掉 | 已解决：`abortAll` 只结束本进程的轮次，跟着别的副本上那一轮的流由 `AgentSseStreams.closeAll` 退订并结束；真 SIGTERM 钉住（`apps/platform/test/agent-sigterm.test.ts`，单进程和两个进程各一） |
 | 宿主重写漏掉不变式 | 权限或数据问题，不一定报错 | 重点是这几条：每次读写判权、写前查 `quotaLocked`、释放只走 `deleteIfEquals`、`titleModel` 不进测试接线、stores 写操作的 `where` 带 `user`。旧测试照搬，不放宽 |
 | `flow-ops` 进 `@learning/apps` 后平台要有 dagre | 没声明的话，产物运行时才报错 | `package.test.ts` 的「import 的包都声明了」会拦住；第 1 步验收跑产物 |
 | run 和页面共用平台的事件循环 | 模型流和工具执行可能拖慢页面 | 本地不算问题；`apps/agent` 是退路（§6.3） |
 
 ## 9. 没有核实的部分
 
-- **真 runner + 真网关 + Nest 没有合起来跑过**：Fastify 挂载用的是模拟处理函数，真 runner 用的是普通 `http.createServer`。两半分别验证过，合起来在第 6 步。
 - **没有构建和运行过 OCI 镜像**：只验证了从副本打 bundle，这次没有启动容器。
 - `@learning/llm` 的移动没有试过。§5.3 的依据是 diff 和 import 关系。
 - SSE 经 `front-proxy.mjs` 没有实际跑过，只读了代码（`response.pipe(res)`）。
-- hijack 的 SSE 和 `app.close()` 的关系没有实测。
 - `AgentModule` 的约 2300 行、第 5 步和第 6 步的行数都是估算。
 - `docs/20`、`docs/22`、`docs/23`、`docs/24`、`docs/26` 只读了状态和相关章节，行为细节以 `.claude/rules/agent.md` 和代码为准。

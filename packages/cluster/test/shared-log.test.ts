@@ -267,13 +267,18 @@ describe.skipIf(!redisUrl)('SharedLog 契约（Redis，PLATFORM_TEST_REDIS_URL�
 })
 
 describe.skipIf(!redisUrl)('SharedLog 的 Redis 专属语义', () => {
-  const url = redisUrl as string
+  // 单独一个逻辑库：同一个 Redis 上别的 project（agent 的接回、真进程的退出用例）也开阻塞连接，名字一样，按库分开才数得准
+  const BLOCKING_DB = 9
+  const url = (redisUrl && Object.assign(new URL(redisUrl), { pathname: `/${BLOCKING_DB}` }).href) as string
   const admin = new Redis(url)
   let backend: ClusterBackend
 
-  /** 阻塞连接都带这个名字，同文件的用例串行，别的测试文件不用它，数得准 */
+  /** 阻塞连接都带这个名字，同文件的用例串行 */
   const blockingClients = async () =>
-    ((await admin.call('CLIENT', 'LIST', 'TYPE', 'normal')) as string).split('\n').filter((line) => line.includes(' name=learning-cluster-log ')).map((line) => /^id=(\d+) /.exec(line)?.[1] as string)
+    ((await admin.call('CLIENT', 'LIST', 'TYPE', 'normal')) as string)
+      .split('\n')
+      .filter((line) => line.includes(' name=learning-cluster-log ') && line.includes(` db=${BLOCKING_DB} `))
+      .map((line) => /^id=(\d+) /.exec(line)?.[1] as string)
 
   beforeEach(async () => {
     backend = await createRedisBackend(url)

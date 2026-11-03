@@ -13,7 +13,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AGENT_TOKEN_SECRET_ENV, AGENT_OPTIONS, AGENT_TOKEN_SECRET_PURPOSE, type AgentOptions, resolveAgentOptions } from '../src/options.js'
 import { runnerCommand } from '../src/runner-command.js'
-import { AGENT_RUNTIME, agentGatewayUrl, agentSandboxInstance } from '../src/sandbox.js'
+import { AGENT_RUNTIME, agentGatewayUrl, agentSandboxInstance, buildSandboxDriver } from '../src/sandbox.js'
 import { deriveSecretFrom } from '../../session/src/session-token.js'
 import { bootAgentApp, ensureRunnerBuilt, memoryS3, SECRET, silenceConsole, until } from './helpers.js'
 
@@ -56,6 +56,16 @@ describe('agent.sandbox.driver / 令牌密钥', () => {
     const server = { server: { port: 3100 } }
     expect(options({ sandbox: { driver: 'oci' } }, { values: server }).gatewayUrl).toBe('http://host.docker.internal:3100')
     expect(options({ sandbox: { driver: 'oci' }, gatewayUrl: 'http://shadecn:3000/' }, { values: server }).gatewayUrl).toBe('http://shadecn:3000')
+  })
+
+  it('server.port 是 0 又没配 agent.gatewayUrl：agent 未启用并写明原因，不带着一个连不回来的地址启用；配了地址就照常', () => {
+    const zero = { server: { port: 0 } }
+    const refused = buildSandboxDriver(options({}, { values: zero }))
+    expect(refused).toEqual({ ok: false, reason: expect.stringContaining('agent.gatewayUrl') })
+    expect(buildSandboxDriver(options({ sandbox: { driver: 'k8s' } }, { values: zero }))).toEqual({ ok: false, reason: expect.stringContaining('k8s') })
+    const explicit = options({ gatewayUrl: 'http://127.0.0.1:4567/' }, { values: zero })
+    expect(explicit).toMatchObject({ gatewayUrl: 'http://127.0.0.1:4567', gatewayUnknown: false })
+    expect(options({}, { values: { server: { port: 4567 } } }).gatewayUnknown).toBe(false)
   })
 
   it('沙箱的镜像 / 网络 / 资源上限：有默认值，可配；配坏了（非正数、不是数）退回默认', () => {
@@ -214,7 +224,7 @@ describe('装配', () => {
 
     const missing = await runtimeWith({ ...ollama, sandbox: { driver: 'oci', oci: { socket: path.join(engineDir, 'gone.sock') } } }, { isProduction: true })
     expect(missing.enabled).toBe(false)
-    expect(missing.disabledReason).toContain('MODULES_AGENT_SANDBOX_OCI_SOCKET')
+    expect(missing.disabledReason).toContain('agent.sandbox.oci.socket')
   })
 
   it('oci 启动：自检告警（镜像不存在、默认网络可以出网），并清掉本实例的孤儿容器（按 instance label 列）', async () => {

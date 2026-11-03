@@ -50,6 +50,8 @@ export function buildSandboxDriver(options: AgentOptions): BuiltDriver {
         : '不认识这个沙箱驱动，可选 process / oci'
     return { ok: false, reason: `agent.sandbox.driver=${choice.unknown}：${hint}` }
   }
+  // 不等监听后再算：地址要进 runtime 的网关配置，`oci` 容器的 instance 标识也由它算，都在建 provider 时就定了。一个端口要到监听时才知道的进程，只有配了地址才知道怎么连回来
+  if (options.gatewayUnknown) return { ok: false, reason: 'server.port 是 0，端口要到监听时才知道，runner 连不回来：写一个固定端口，或配 agent.gatewayUrl' }
   try {
     if (choice === 'oci') {
       const socket = findEngineSocket(options.ociSocket, process.env)

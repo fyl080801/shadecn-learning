@@ -41,6 +41,8 @@ export interface AgentOptions {
   sandboxResources: { cpu: number; memoryMiB: number; pids: number; diskMiB: number }
   /** 沙箱里看到的服务端地址，不含网关路径 */
   gatewayUrl: string
+  /** `server.port: 0` 又没写 `agent.gatewayUrl`：启动时算不出 runner 该连回哪里，`SANDBOX_DRIVER` 据此写成「未启用」 */
+  gatewayUnknown: boolean
   tokenSecret: string
   grantMarginMs: number
   leaseTtlMs: number
@@ -158,6 +160,7 @@ export function resolveAgentOptions(config: ConfigService, session: Pick<Session
       diskMiB: positiveInt(`${SECTION}.sandbox.diskMib`, sandbox.diskMib, 512),
     },
     gatewayUrl: (gatewayUrl ?? defaultGateway).replace(/\/+$/, ''),
+    gatewayUnknown: port === 0 && gatewayUrl === undefined,
     tokenSecret: config.env(AGENT_TOKEN_SECRET_ENV) ?? session.deriveSecret(AGENT_TOKEN_SECRET_PURPOSE),
     grantMarginMs: numberOr(`${SECTION}.grantMarginMs`, section.grantMarginMs, 60_000, (parsed) => parsed >= 0),
     leaseTtlMs: positiveInt(`${SECTION}.leaseTtlMs`, section.leaseTtlMs, 30_000),

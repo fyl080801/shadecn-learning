@@ -1,6 +1,6 @@
 # REQ-NEST NestJS 版服务
 
-> 状态：**实施中** —— 已完成第 1～7 步和里程碑 A、B（§6）：登录、账号关联、默认头像、项目、画布、协同、节点上传图片和缩略图、应用列表和节点生成单进程跑通，平台 + 两个协同副本也跑通。
+> 状态：**实施中** —— 已完成第 1～7 步和里程碑 A、B（§6）：登录、账号关联、默认头像、项目、画布、协同、节点上传图片和缩略图、应用列表和节点生成单进程跑通，平台 + 两个协同副本也跑通。画布 agent 单进程跑通（`docs/31` 的里程碑 C）；拆开形态和 `oci` 镜像还没做（`docs/31` §7 第 7、8 步）。
 
 ## 1. 目标与边界
 
@@ -25,7 +25,7 @@
 | `CollabGatewayModule`（同上） | `mod-collab` 入口 | WebSocket upgrade，监控和 `/doc` 接口 | `CollabModule`、`CanvasModule`（`FlowMemberGuard` 在控制器所在模块实例化） | — | `CollabMonitorController`、`FlowDocController` | — |
 | `StorageModule`（`@learning/storage`） | `mod-storage` | S3、上传、缩略图 | `CanvasModule` | `AssetStorage` | `AssetsController` | `FlowAsset` |
 | `AppsModule`（`@learning/apps`，目录 `packages/apps`） | `mod-apps` | `executeApp`、生成任务 | `CanvasModule`、`CollabModule`、`StorageModule` | `AppsService` | `AppsController`、`FlowAppsController` | `AppTask` |
-| `AgentModule`（`@learning/agent`，目录 `packages/agent-service`） | `mod-agent` | agent 配置、判权、登记、画布访问、runtime；面板和网关在 `docs/31` §7 第 6 小步 | `CanvasModule`、`CollabModule`、`StorageModule` | — | 还没有（第 6 小步：面板、网关） | `AgentConversation`、`AgentRun`、`AgentToolCall`、`AgentGrant`、`AgentGrantScope` |
+| `AgentModule`（`@learning/agent`，目录 `packages/agent-service`） | `mod-agent` | agent 配置、判权、登记、画布访问、runtime、面板的 SSE、runner 的网关 | `CanvasModule`、`CollabModule`、`StorageModule` | — | `AgentController`（网关是 Fastify 普通路由 `AgentGatewayMount`，不过会话守卫） | `AgentConversation`、`AgentRun`、`AgentToolCall`、`AgentGrant`、`AgentGrantScope` |
 
 ```
 config, data-access, cluster, session        全局底座
@@ -49,7 +49,7 @@ contracts                                    只依赖 yjs，任何模块都可�
 **`apps/platform`**：两个根模块、两个入口，都是静态模块列表，差别只在有没有协同入口，不靠配置开关。
 
 - `AppModule`（`main.ts`）= `PlatformBaseModule` + `CollabGatewayModule`。默认 `cluster: single`、`schemaSync: apply`，`pnpm dev:platform` 一个进程一个端口就能用全部功能。
-- `PlatformBaseModule`：页面、登录、`CanvasApiModule`、`StorageModule`、`AppsModule`，功能到了再加 `AgentModule`。协同由副本提供时，入口 `main-without-collab.ts` 的根模块是 `PlatformSplitModule`（`PlatformBaseModule` 加一道检查，不是 `cluster: redis` 就拒绝启动）。这个入口没有协同入口，但有房间（§8）。
+- `PlatformBaseModule`：页面、登录、`CanvasApiModule`、`StorageModule`、`AppsModule`、`AgentModule`。协同由副本提供时，入口 `main-without-collab.ts` 的根模块是 `PlatformSplitModule`（`PlatformBaseModule` 加一道检查，不是 `cluster: redis` 就拒绝启动）。这个入口没有协同入口，但有房间（§8）。
 
 **`apps/collab`**（`@learning/collab-service`）：只有 `main.ts` + `AppModule`，用于协同独立扩缩。
 
@@ -122,9 +122,11 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 | 5 | 账号关联、identicon 头像（`session`） | 移植 `apps/server/test/auth/*` 相关用例；设置页可用 |
 | 6 | `StorageModule` | 移植 storage 用例；节点上传图片可用 |
 | 7 | `AppsModule` | 移植 `flow-apps` 用例；节点生成可用 |
-| 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，方案和分步见 [docs/31](31-agent-nest-migration.md)。第 5 小步已完成：`@learning/agent` 有模块，没有 HTTP，还没接进 `PlatformBaseModule` |
+| 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，方案和分步见 [docs/31](31-agent-nest-migration.md)。第 6 小步和里程碑 C 已完成：`@learning/agent` 接进 `PlatformBaseModule`，`process` 驱动单进程跑通 |
 
-**第 7 步之后前端的状况**：登录、设置页「登录方式」、默认头像、项目、成员、邀请、画布、协同、节点上传图片和缩略图、应用列表、节点生成可用（浏览器走过）。没配对象存储时上传回 503 并弹提示，生成结果挂上游地址；没配应用时列表是空的。别的功能照常。agent 面板显示加载失败（`useFlowAgent.ts:310-316`），不白屏、不无限重试（读代码确认）。
+**第 7 步之后前端的状况**：登录、设置页「登录方式」、默认头像、项目、成员、邀请、画布、协同、节点上传图片和缩略图、应用列表、节点生成可用（浏览器走过）。没配对象存储时上传回 503 并弹提示，生成结果挂上游地址；没配应用时列表是空的。别的功能照常。
+
+**`docs/31` 第 6 小步之后**：agent 面板可用（浏览器走过）：发消息看到流式文字、节点出现、别的成员同画布可见；运行中刷新接回；中止；移除发起人后这一轮被叫停；重启后内容和会话都在。没配模型时面板显示未启用，发消息 503。前端一行没改。
 
 头像为空（这个功能上线前登录、会话还活着）时走 `v-if` 的回退显示，下次登录补上。
 
@@ -155,11 +157,13 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 - **请求体上限同别的路由是 1MB**（旧服务 `docs/29` §3.6 是 32MB）：Fastify 在路由之前解析 JSON，放宽的话匿名和非成员也能让服务端先读满上限，再收 401 / 404。前端只发提示词和参考图地址，用不到更大的。要放开得先解决这一点。坏 JSON 同 canvas，先于守卫回 400：`/api/flows/...` 是 `{ error }`，`/api/apps/...` 是 Nest 默认形状（前端不调这个入口）。
 - **写回节点的操作用 `@learning/contracts/flow-ops`**：`recordGeneration`、`attachAsset`、`appendGeneratedText` 直接 import 整份 `flow-ops`，和 `packages/shared` 的逐字相同由 `packages/contracts/test/contracts.test.ts` 保证；它的闭包带 `@dagrejs/dagre`，所以 `@learning/apps` 和 `apps/platform` 声明这个可选 peer。
 - **LLM 通路在 `@learning/llm`（`packages/llm`）**：`llm-config`、`llm-providers`、`model`、`stream-upstream` 四个文件（从 `packages/apps/src/llm/` 原样移过去，`model-stream` 改名 `stream-upstream`），依赖 `@earendil-works/pi-ai`，版本同 `mod-apps`。没有 DI token，`apps` 当普通依赖。`llm.providers` 只有它这一个解析器。agent 编排没搬（`docs/31` §5.3）。
-- **agent 的框架无关部分在 `@learning/agent-core`（`packages/agent-core`）**：从 `packages/agent` 复制，只改 import（`.ts` → `.js`，`@shadecn/shared/` → `@learning/contracts/`），不搬 k8s 驱动；`model`、`llm-providers` 归 `@learning/llm`，`model-stream` 只留服务端自己的那部分。tsc 产物，驱动按子路径导出，runner 的闭包不含 Nest、ORM、`@learning/llm`。与 `@shadecn/agent` 互不同步（协议版本仍是 9），新增一个 `process` 驱动起产物 runner 真子进程的用例。`AgentModule` 还没有（`docs/31` §7 第 5 步起）。
+- **agent 的框架无关部分在 `@learning/agent-core`（`packages/agent-core`）**：从 `packages/agent` 复制，只改 import（`.ts` → `.js`，`@shadecn/shared/` → `@learning/contracts/`），不搬 k8s 驱动；`model`、`llm-providers` 归 `@learning/llm`，`model-stream` 只留服务端自己的那部分。tsc 产物，驱动按子路径导出，runner 的闭包不含 Nest、ORM、`@learning/llm`。与 `@shadecn/agent` 互不同步（协议版本仍是 9），新增一个 `process` 驱动起产物 runner 真子进程的用例。宿主见下一条。
 - **agent 要的底座接口已经补上（`docs/31` §4.4）**：`@learning/cluster` 的 `SharedMap.compareAndSet`、`SharedLog` + `Cluster.createLog`，`@learning/session` 的 `UserService.briefs`、`SessionService.deriveSecret`，`@learning/storage` 的 `AssetStorage.objectUrl`、`readByUrl`。`readByUrl` 不查 `FlowAsset`，只认本桶素材目录里的地址，别的地址不发请求（§7 的「复制画布不动记录」就是它存在的原因）。`@learning/agent` 是它们的调用方。
-- **`AgentModule` 的宿主在 `@learning/agent`（`packages/agent-service`，`docs/31` §7 第 5 小步）**：配置（`agent` 段、`llm.providers`）、五张表、stores、判权、占用和任务登记、画布访问、沙箱驱动、runtime 都有了；没有 HTTP，也没接进 `PlatformBaseModule`，所以平台进程现在没有 agent，页面上发不了消息（第 6 小步）。
+- **`AgentModule` 的宿主在 `@learning/agent`（`packages/agent-service`，`docs/31` §7 第 5、6 小步）**：配置（`agent` 段、`llm.providers`）、五张表、stores、判权、占用和任务登记、画布访问、沙箱驱动、runtime、面板的 SSE、runner 的网关。接在 `PlatformBaseModule`，`apps/collab` 不 import、不用配。
+  - **退出**（`docs/31` §8.2，真 SIGTERM 钉着）：`onModuleDestroy` 先拒绝新的一轮和新的接回（503，「服务正在重启，请稍后再试」），`abortAll` 上限 5 秒，再结束所有 SSE。HTTP 关闭另有 5 秒上限（`@learning/foundation` 的 `boundHttpClose`）：连上后一个字节都没发的连接不算空闲，否则要等 60 秒。
+  - `server.port: 0` 又没配 `agent.gatewayUrl` 时 agent 不启用并写明原因：端口要到监听时才知道，而网关地址在建 provider 时就定了。
   - 一个都不配也照样加载，`enabled: false`；模型表、agent 定义、文字技能坏了拒绝启动，启用与否都一样；写 `driver: k8s` 不启用并写明原因。
-  - `oci` 的宿主接线提前到这一步（`docs/31` §7 原本排在第 8 小步）：§4.5 的配置已经写了它，`AgentSandboxReaper` 也只为它存在。镜像 `apps/agent-runner` 还没有，默认镜像名 `learning-agent-runner:latest` 拉不到，真容器没跑过。
+  - `oci` 的宿主接线提前到这一步（`docs/31` §7 原本排在第 8 小步）：§4.5 的配置已经写了它，`AgentSandboxReaper` 也只为它存在。镜像 `apps/agent-runner` 还没有，默认镜像名 `learning-agent-runner:latest` 拉不到，真容器没跑过（第 8 小步）。
   - 和旧服务不同：`agent` 段里不认识的字段拒绝启动；不支持一期的 `driver: local`（没有旧配置）；模型表路径不可配，固定 `<dataDir>/agent-models.json`；账号级撤销不搬（`docs/31` §4.4）。
 
 ## 9. 需要用户决定的事项

@@ -13,8 +13,9 @@ import { testConfigModule } from '@learning/config/testing'
 import { AgentEventType, type AgentStreamEvent } from '@learning/contracts/agent'
 import { nodesMap } from '@learning/contracts/flow-doc'
 import { DataAccess, DataAccessModule } from '@learning/data-access'
+import { boundHttpClose } from '@learning/foundation'
 import { ApiSessionGuard, SessionIdentityModule, SessionService, UserService } from '@learning/session'
-import { S3_CLIENT, type S3Client } from '@learning/storage'
+import { AssetStorage, S3_CLIENT, type S3Client } from '@learning/storage'
 import { Module } from '@nestjs/common'
 import { APP_GUARD } from '@nestjs/core'
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify'
@@ -25,7 +26,11 @@ import { AgentModule } from '../src/agent.module.js'
 import { AgentAuthorities, type AgentAuthorityOptions } from '../src/authority.js'
 import { AgentCanvasAccess } from '../src/canvas-access.js'
 import { AgentConversation, AgentGrant, AgentGrantScope, AgentRun, AgentToolCall } from '../src/entities.js'
-import { AGENT_HOST_OPTIONS, type AgentHostOptions } from '../src/runtime.js'
+import { AgentMediaReader } from '../src/media.js'
+import { AGENT_MODELS, type AgentModels } from '../src/models.js'
+import { AGENT_OPTIONS, type AgentOptions } from '../src/options.js'
+import { AGENT_HOST_OPTIONS, type AgentHostOptions, buildAgentRuntime } from '../src/runtime.js'
+import { AGENT_RUNTIME, type BuiltDriver, SANDBOX_DRIVER } from '../src/sandbox.js'
 import { AgentGrants } from '../src/stores.js'
 
 export const SECRET = 'test-secret'
@@ -43,6 +48,11 @@ export interface BootOptions {
   withoutAgent?: boolean
   /** 让 `AgentModule` 离根比 `CollabModule` 远，协同的关闭钩子先跑（见上） */
   agentBelowCollab?: boolean
+  /**
+   * 真的监听一个端口（SSE 要真 socket，`app.inject` 要等响应结束才返回），`AGENT_RUNTIME` 换成能在用例之间切换的那一份（{@link SwitchableRuntime}），
+   * 控制器、网关挂载、退出钩子拿到的都是它。切回去之前是生产接线建的那一份。
+   */
+  http?: boolean
   override?: (builder: TestingModuleBuilder) => void
 }
 
@@ -64,7 +74,26 @@ class DeepMiddle {}
 @Module({ imports: [DeepMiddle] })
 class DeepOuter {}
 
-/** 和将来 `apps/platform` 一样的接线，少了页面、登录流程和 agent 的 HTTP 入口（`docs/31` §7 第 6 步才有） */
+export type SwitchableRuntime = AgentRuntime & { use(runtime: AgentRuntime | null): void }
+
+/** 转发到当前那一份 runtime。这样换模型不用重启 app，走的还是生产的控制器和网关挂载 */
+function switchableRuntime(initial: AgentRuntime): SwitchableRuntime {
+  let current = initial
+  const use = (runtime: AgentRuntime | null) => {
+    current = runtime ?? initial
+  }
+  return new Proxy({} as SwitchableRuntime, {
+    get: (_target, key) => (key === 'use' ? use : Reflect.get(current, key)),
+    // `{ ...runtime, 只换一两样 }` 展开的是当前那一份
+    ownKeys: () => Reflect.ownKeys(current),
+    getOwnPropertyDescriptor: (_target, key) => {
+      const found = Reflect.getOwnPropertyDescriptor(current, key)
+      return found && { ...found, configurable: true }
+    },
+  })
+}
+
+/** 和 `apps/platform` 一样的接线，少了页面和登录流程 */
 export function agentTestModule(options: BootOptions): TestingModuleBuilder {
   const values = { database: { url: options.databaseUrl }, session: { ttlSeconds: 3600 }, ...options.values }
   const builder = Test.createTestingModule({
@@ -79,6 +108,13 @@ export function agentTestModule(options: BootOptions): TestingModuleBuilder {
     providers: [{ provide: APP_GUARD, useClass: ApiSessionGuard }],
   })
   if (options.s3 !== undefined) builder.overrideProvider(S3_CLIENT).useValue(options.s3)
+  if (options.http) {
+    builder.overrideProvider(AGENT_RUNTIME).useFactory({
+      inject: [AGENT_OPTIONS, SANDBOX_DRIVER, AGENT_MODELS, AGENT_HOST_OPTIONS, AgentMediaReader, AssetStorage],
+      factory: (agentOptions: AgentOptions, built: BuiltDriver, models: AgentModels, host: AgentHostOptions, reader: AgentMediaReader, storage: AssetStorage) =>
+        switchableRuntime(buildAgentRuntime(agentOptions, built, models, host, storage.available ? reader : undefined)),
+    })
+  }
   options.override?.(builder)
   return builder
 }
@@ -86,6 +122,12 @@ export function agentTestModule(options: BootOptions): TestingModuleBuilder {
 export async function bootAgentApp(options: BootOptions): Promise<NestFastifyApplication> {
   const moduleRef = await agentTestModule(options).compile()
   const app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter(), { logger: false })
+  if (options.http) {
+    // 和 `bootstrapService` 一样：测试里的 fetch 也会留下一个字节没发的连接，没有上限就关不掉
+    boundHttpClose(app)
+    await app.listen(0, '127.0.0.1')
+    return app
+  }
   await app.init()
   await app.getHttpAdapter().getInstance().ready()
   return app
@@ -99,7 +141,7 @@ export interface Actor {
 
 let seq = 0
 
-export async function createActor(app: NestFastifyApplication, name = 'alice'): Promise<Actor> {
+async function signIn(app: NestFastifyApplication, name: string): Promise<{ userId: string; cookie: string }> {
   seq += 1
   const user = await app.get(UserService, { strict: false }).findOrCreate({ issuer: 'https://issuer.test', subject: `agent-user-${seq}-${Date.now()}`, username: name, name, email: `${name}${seq}@example.com` })
   const token = await app.get(SessionService, { strict: false }).create({
@@ -107,12 +149,60 @@ export async function createActor(app: NestFastifyApplication, name = 'alice'): 
     provider: 'oidc',
     tokens: { accessToken: 'x', refreshToken: null, idToken: null, expiresAt: new Date(Date.now() + HOUR), refreshExpiresAt: null, sessionState: null },
   })
-  const cookie = `sid=${token}`
+  return { userId: user.id, cookie: `sid=${token}` }
+}
+
+export async function createActor(app: NestFastifyApplication, name = 'alice'): Promise<Actor> {
+  const { userId, cookie } = await signIn(app, name)
   const send = async (url: string, method: string, body?: unknown) => {
     const res = await app.inject({ method: method as 'GET', url, headers: { cookie, ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { payload: JSON.stringify(body) }) })
     return { status: res.statusCode, json: <T>() => JSON.parse(res.body) as T }
   }
-  return { userId: user.id, request: (url, init = {}) => send(url, init.method ?? 'GET'), json: send }
+  return { userId, request: (url, init = {}) => send(url, init.method ?? 'GET'), json: send }
+}
+
+/** `vi.stubGlobal('fetch', …)` 之前的真 fetch：测试自己当浏览器发请求用它 */
+export const realFetch = globalThis.fetch
+
+/** 经真 socket 发请求的用户，拿到的是真的 `Response`（SSE 能边到边读、能 `body.cancel()` 断开） */
+export interface HttpActor {
+  userId: string
+  cookie: string
+  request(url: string, init?: RequestInit): Promise<Response>
+  json(url: string, method: string, body?: unknown): Promise<Response>
+}
+
+export async function createHttpActor(app: NestFastifyApplication, baseUrl: string, name = 'alice'): Promise<HttpActor> {
+  const { userId, cookie } = await signIn(app, name)
+  const request: HttpActor['request'] = (url, init = {}) => realFetch(`${baseUrl}${url}`, { ...init, headers: { cookie, ...(init.headers as Record<string, string> | undefined) } })
+  return {
+    userId,
+    cookie,
+    request,
+    json: (url, method, body) => request(url, { method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) }),
+  }
+}
+
+export async function createHttpProject(owner: HttpActor, name = '测试项目'): Promise<string> {
+  return ((await (await owner.json('/api/projects', 'POST', { name })).json()) as { id: string }).id
+}
+
+export async function createHttpFlow(member: HttpActor, projectId: string, name = '测试画布'): Promise<string> {
+  return ((await (await member.json(`/api/projects/${projectId}/flows`, 'POST', { name })).json()) as { id: string }).id
+}
+
+export async function joinHttpInvite(admin: HttpActor, projectId: string, invitee: HttpActor): Promise<void> {
+  const { token } = (await (await admin.request(`/api/projects/${projectId}/invite`)).json()) as { token: string }
+  await invitee.json(`/api/invites/${token}/accept`, 'POST')
+}
+
+/** 按 AG-UI 的 HTTP 编码解析：每帧只有 `data:` 行 */
+export function parseSse(raw: string): AgentStreamEvent[] {
+  return raw
+    .split('\n\n')
+    .map((frame) => frame.trim())
+    .filter((frame) => frame.startsWith('data: '))
+    .map((frame) => JSON.parse(frame.slice('data: '.length)) as AgentStreamEvent)
 }
 
 export async function createProject(owner: Actor, name = '测试项目'): Promise<string> {
@@ -179,12 +269,20 @@ export type ScriptedRuntime = AgentRuntime & { scripted: ScriptedModel }
 
 export interface AgentTestContext {
   readonly app: NestFastifyApplication
+  /** `http: true` 时监听的地址 */
+  readonly baseUrl: string
+  /** `http: true` 时的 `AGENT_RUNTIME` */
+  readonly runtime: SwitchableRuntime
+  httpActor(name?: string): Promise<HttpActor>
   /** 给对象存储的默认假 S3（要别的 S3 的用例自己起一个 app） */
   readonly s3: MemoryS3
   actor(name?: string): Promise<Actor>
-  /** 脚本化的模型 + 生产那套宿主接线（`AGENT_HOST_OPTIONS`）+ 进程内的 runner，走完整路径：runner → 网关 → 服务端调上游 */
+  /**
+   * 脚本化的模型 + 生产那套宿主接线（`AGENT_HOST_OPTIONS`）+ 进程内的 runner，走完整路径：runner → 网关 → 服务端调上游。
+   * `http: true` 时它就是面板接口用的那一份，runner 的请求也经真 socket 走 `/api/agent-gateway`。
+   */
   useScripted(responses: ScriptedStep[], overrides?: Partial<AgentRuntimeOptions>, model?: { imageInput?: boolean }): ScriptedRuntime
-  /** 相当于第 6 步的 `POST …/messages`：发起一轮，等它彻底结束，兑现这一轮的全部事件 */
+  /** 相当于 `POST …/messages`：不经 HTTP 发起一轮，等它彻底结束，兑现这一轮的全部事件 */
   send(runtime: AgentRuntime, who: Actor, flowId: string, text: string): Promise<AgentStreamEvent[]>
   /** 生产那一份 */
   readonly authorities: AgentAuthorities
@@ -234,12 +332,20 @@ export function silenceConsole(): void {
 
 function suite(databaseUrl: string, values: Record<string, unknown>, boot: Partial<BootOptions>, body: (ctx: AgentTestContext) => void, beforeClose: ((app: NestFastifyApplication) => Promise<unknown>) | undefined, afterClose: () => void) {
   let app: NestFastifyApplication
+  let baseUrl = ''
   const s3 = memoryS3()
   const runtimes: AgentRuntime[] = []
   const ctx: AgentTestContext = {
     get app() {
       return app
     },
+    get baseUrl() {
+      return baseUrl
+    },
+    get runtime() {
+      return app.get<SwitchableRuntime>(AGENT_RUNTIME, { strict: false })
+    },
+    httpActor: (name) => createHttpActor(app, baseUrl, name),
     s3,
     actor: (name) => createActor(app, name),
     useScripted(responses, overrides = {}, model = {}) {
@@ -247,7 +353,12 @@ function suite(databaseUrl: string, values: Record<string, unknown>, boot: Parti
       scripted.setResponses(responses)
       const runtime = createAgentRuntime({ ...scripted.runtimeOptions(), ...ctx.host, ...overrides })
       runtimes.push(runtime)
-      vi.stubGlobal('fetch', gatewayFetch((request) => runtime.gateway.handle(request)))
+      if (boot.http) {
+        ctx.runtime.use(runtime)
+        vi.stubGlobal('fetch', gatewayFetch((request) => realFetch(new Request(`${baseUrl}${new URL(request.url).pathname}`, request))))
+      } else {
+        vi.stubGlobal('fetch', gatewayFetch((request) => runtime.gateway.handle(request)))
+      }
       return Object.assign(runtime, { scripted })
     },
     async send(runtime, who, flowId, text) {
@@ -279,6 +390,7 @@ function suite(databaseUrl: string, values: Record<string, unknown>, boot: Parti
   beforeAll(async () => {
     silenceConsole()
     app = await bootAgentApp({ databaseUrl, values, s3: s3.client, ...boot })
+    if (boot.http) baseUrl = await app.getUrl()
   }, 30_000)
 
   beforeEach(async () => {
@@ -298,6 +410,7 @@ function suite(databaseUrl: string, values: Record<string, unknown>, boot: Parti
     const collab = app.get(CollabServer, { strict: false })
     await until(() => collab.hocuspocus.getConnectionsCount() === 0, '房间散场')
     vi.unstubAllGlobals()
+    if (boot.http) ctx.runtime.use(null)
   })
 
   afterAll(async () => {
@@ -305,7 +418,7 @@ function suite(databaseUrl: string, values: Record<string, unknown>, boot: Parti
     await app?.close()
     afterClose()
     vi.restoreAllMocks()
-  })
+  }, 30_000)
 
   body(ctx)
 }

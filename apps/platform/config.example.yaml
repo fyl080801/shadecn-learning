@@ -91,6 +91,33 @@ session:
 #       models:
 #         - { id: qwen3, name: 千问 3 }
 
+# 画布 agent（docs/31 §4.5）。一个都不配也照样加载：面板显示未启用，发消息 503。写错字段名 = 拒绝启动。
+# 连接信息和 key 不在这一段，provider 只引用 llm.providers（或 pi 的内置提供方）。签 run 短令牌的密钥放 .env 的 PLATFORM_AGENT_TOKEN_SECRET，不设就从会话密钥派生。
+# agent:
+#   provider: selfhost
+#   model: qwen3
+#   # 思考强度，不写 = 不开
+#   # thinking: medium
+#   # 生成会话标题用的模型表键（<数据目录>/agent-models.json），默认 default；off = 不生成
+#   # titleModel: off
+#   # maxOutputTokens: 16384
+#   # 一轮的上限（毫秒）：网关上没有动静多久算空闲、总时长
+#   # runIdleTimeoutMs: 120000
+#   # runTotalTimeoutMs: 1800000
+#   # 占用和任务登记的 TTL（毫秒）；Grant 提前多久算过期
+#   # leaseTtlMs: 30000
+#   # grantMarginMs: 60000
+#   # runner 连回网关的地址（不含 /api/agent-gateway）。不写时按驱动和 server.port 推出；server.port 是 0 时必须写，否则 agent 未启用
+#   # gatewayUrl: http://127.0.0.1:3001
+#   sandbox:
+#     # process（默认）：runner 是本机子进程，和服务端同用户、同文件系统、可以出网，不是强隔离，生产拒绝，除非 allowProcess。oci：容器
+#     driver: process
+#     # allowProcess: true
+#     # 给模型 run_media_command（ffmpeg / ffprobe）
+#     # exec: false
+#     # oci 才用：image、runtime、cpus、memoryMib、pids、diskMib、oci.socket、oci.network
+#     # image: learning-agent-runner:latest
+
 web:
   # 前端目录。默认生产是 output/public（vite build 的产物），开发是 apps/web（Vite 的 root）
   # root: output/public
