@@ -53,6 +53,22 @@ session:
 #   github:
 #     clientId: Iv1.xxxxxxxx
 
+# 对象存储（图片 / 视频节点的上传，S3 兼容）。不写 storage.bucket 或缺密钥 = 上传接口回 503，别的功能照常。
+# 密钥只放 .env（PLATFORM_S3_ACCESS_KEY_ID、PLATFORM_S3_SECRET_ACCESS_KEY），写在这里会拒绝启动。
+# 桶要对匿名开放读（s3:GetObject）：节点里存的是对象的原始地址，浏览器直接去那里取，不经过这个服务（docs/13 §3.7）。
+# storage:
+#   # 浏览器访问得到的公开地址，存进节点的就是 <它>/<bucket>/<key>。默认 https://s3.fyl080801.uk
+#   endpoint: https://s3.example.com
+#   # 这个服务自己发请求用的地址（集群内网）。不写 = 和 endpoint 一样；两边必须是同一个桶、同一份数据
+#   # internalEndpoint: http://minio.minio.svc.cluster.local:9000
+#   # 签名用的 region，默认 us-east-1
+#   # region: us-east-1
+#   bucket: canvas
+#   # 单个文件上限（MB），默认 100
+#   # maxUploadMb: 100
+#   # 对象键的根目录，默认 canvas；几个环境共用一个桶时用它隔开。写空串 = 桶根
+#   # keyPrefix: canvas
+
 web:
   # 前端目录。默认生产是 output/public（vite build 的产物），开发是 apps/web（Vite 的 root）
   # root: output/public

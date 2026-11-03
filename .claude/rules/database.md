@@ -74,3 +74,7 @@ paths:
 - **`packages/canvas/src/entities.ts` and `packages/mod-canvas/src/entities.ts` are two definitions, not one with a copy.** They produce the same DDL today (compared on SQLite and PostgreSQL when the package was added), but a change to one does not go into the other: the services never share a database (`docs/30` §1), so nothing pins them together and they may drift. Only the `CAS` and `updatedAt` rules above apply to both.
 - `containsIgnoreCase` and `newId` have their own copy in `@learning/data-access`'s `columns.ts`, next to the column helpers.
 - `parseGraph` here accepts only the current `GRAPH_SCHEMA_VERSION`: this service has no old rows, so mod-canvas's v1 / v2 tolerance wasn't carried over. `FlowDocStore.read`'s `legacy` only reads the `graph` of a canvas that has no `ydoc` yet.
+
+## `@learning/storage` — `FlowAsset`
+
+- Same two-definitions rule as canvas against `mod-storage`. **`FlowAssets.record` decides on the `key` unique constraint, never read-then-write**: `complete` can replay, and the loser re-reads (same flow = done, another flow = the error stands, ownership never moves). Don't turn it into an upsert: that would let a member reassign a key to another canvas.

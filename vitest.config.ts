@@ -17,6 +17,7 @@ import { defineConfig } from 'vitest/config'
  *   session —— packages/session/vitest.config.ts：Node 环境，测用户和会话的 Nest 模块（@learning/session）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL
  *   canvas —— packages/canvas/vitest.config.ts：Node 环境，测项目、邀请、画布的 Nest 模块（@learning/canvas）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL，设了 PLATFORM_TEST_REDIS_URL 才连 Redis
  *   collab —— packages/collab/vitest.config.ts：Node 环境，测实时协同的 Nest 模块（@learning/collab）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL，设了 PLATFORM_TEST_REDIS_URL 才跑跨副本的用例
+ *   storage —— packages/storage/vitest.config.ts：Node 环境，测对象存储的 Nest 模块（@learning/storage）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL，设了 PLATFORM_TEST_S3_URL 才连真的对象存储
  *   agent-sandbox —— apps/agent-sandbox/vitest.config.ts：Node 环境，测沙箱镜像的构建脚本（runner 的边界判定、共用的打包逻辑）
  *   server-kit —— packages/server-kit/vitest.config.ts：Node 环境，测服务端底座的运行时库（模块内核、共享层契约、总线、权限撤销信号）
  *   server-core —— packages/server-core/vitest.config.ts：Node 环境，测服务端底座不碰数据库的部分（集成测试在 server project）
@@ -50,6 +51,7 @@ export default defineConfig({
       'packages/session/vitest.config.ts',
       'packages/canvas/vitest.config.ts',
       'packages/collab/vitest.config.ts',
+      'packages/storage/vitest.config.ts',
       'packages/server-kit/vitest.config.ts',
       'packages/server-core/vitest.config.ts',
       'packages/mod-auth/vitest.config.ts',
@@ -78,6 +80,7 @@ export default defineConfig({
         'packages/session/src/**/*.ts',
         'packages/canvas/src/**/*.ts',
         'packages/collab/src/**/*.ts',
+        'packages/storage/src/**/*.ts',
         'scripts/**/*.mjs',
         'apps/web/src/**/*.ts',
         'apps/web/src/**/*.vue',

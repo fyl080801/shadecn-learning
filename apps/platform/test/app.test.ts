@@ -169,6 +169,20 @@ function behaviours(createUrl: (dir: string) => string, cleanup?: (app: NestFast
     expect(JSON.parse((await get('/api/projects/personal', cookie)).body).kind).toBe('personal')
   })
 
+  it('上传接进来了：匿名 401；没配对象存储时服务照常跑，成员 503，别的画布 404', async () => {
+    expect((await app.inject({ method: 'POST', url: '/api/flows/nope/assets' })).statusCode).toBe(401)
+    const send = (target: string, body: unknown) =>
+      app.inject({ method: 'POST', url: target, headers: { cookie, 'content-type': 'application/json' }, payload: JSON.stringify(body) })
+    const { id: projectId } = (await send('/api/projects', { name: '上传项目' })).json<{ id: string }>()
+    const { id: flowId } = (await send(`/api/projects/${projectId}/flows`, { name: '上传画布' })).json<{ id: string }>()
+
+    const multipart = (target: string) =>
+      app.inject({ method: 'POST', url: target, headers: { cookie, 'content-type': 'multipart/form-data; boundary=x' }, payload: '--x--\r\n' })
+    expect((await multipart(`/api/flows/${flowId}/assets`)).statusCode).toBe(503)
+    expect((await multipart('/api/flows/nope/assets')).statusCode).toBe(404)
+    expect((await send(`/api/flows/${flowId}/assets/variants`, { src: 'x' })).statusCode).toBe(503)
+  })
+
   it('协同接进来了：监控接口要登录，/ws/collaboration 真的走 upgrade，跨站握手 403', async () => {
     expect((await get('/api/collab/rooms')).status).toBe(401)
     expect(JSON.parse((await get('/api/collab/rooms', cookie)).body)).toMatchObject({ totalRooms: 0 })
@@ -269,14 +283,14 @@ describe('模块依赖和 imports 顺序无关', () => {
     writeConfig(dir, productionConfig({ url: `file:${path.join(dir, 'order.db')}`, dir }))
     const imports = [...(Reflect.getMetadata('imports', PlatformBaseModule) as unknown[]), CollabGatewayModule]
     const providers = Reflect.getMetadata('providers', PlatformBaseModule) as unknown[]
-    expect(imports).toHaveLength(9)
+    expect(imports).toHaveLength(10)
 
     @Module({})
     class ReorderedRoot {}
     const { app, baseUrl } = await listen({
       module: ReorderedRoot,
-      // 排列之外的四个（cluster、它的检查、画布 REST、协同）放在最前面，也是一种「先后无关」
-      imports: [imports[5], imports[6], imports[7], imports[8], ...order.map((index) => imports[index])],
+      // 排列之外的五个（cluster、它的检查、画布 REST、存储、协同）放在最前面，也是一种「先后无关」
+      imports: [imports[5], imports[6], imports[7], imports[8], imports[9], ...order.map((index) => imports[index])],
       providers,
     } as never)
 
@@ -492,6 +506,8 @@ describe('协同由副本提供时的根模块', () => {
     expect(JSON.parse((await rawRequest(baseUrl, '/api/projects/personal', cookie)).body).kind).toBe('personal')
     expect((await rawRequest(baseUrl, '/api/collab/rooms', cookie)).status).toBe(404)
     expect((await rawRequest(baseUrl, '/api/collab/health', cookie)).status).toBe(404)
+    // 上传归平台，不归协同副本：这个根模块里就有
+    expect((await app.inject({ method: 'POST', url: '/api/flows/nope/assets/variants', headers: { cookie, 'content-type': 'application/json' }, payload: '{}' })).statusCode).toBe(404)
     await app.close()
   })
 })

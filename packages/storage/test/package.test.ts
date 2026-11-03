@@ -1,0 +1,62 @@
+import fs from 'node:fs'
+import { builtinModules } from 'node:module'
+import path from 'node:path'
+import { describe, expect, it } from 'vitest'
+
+const packageDir = path.resolve(import.meta.dirname, '..')
+const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'))
+
+function sources(dir: string) {
+  return fs
+    .readdirSync(path.join(packageDir, dir), { recursive: true, encoding: 'utf8' })
+    .filter((file) => file.endsWith('.ts') && file !== 'package.test.ts')
+    .map((file) => ({ file, code: fs.readFileSync(path.join(packageDir, dir, file), 'utf8') }))
+}
+
+describe('包的依赖边界', () => {
+  it('package.json 不声明 @shadecn/*；注入 token 和实体基类所在的包都是 peerDependency，进程里只有应用装的那一份', () => {
+    const declared = Object.keys({ ...manifest.dependencies, ...manifest.devDependencies, ...manifest.peerDependencies })
+    expect(declared.filter((name) => name.startsWith('@shadecn/'))).toEqual([])
+    for (const name of ['@learning/canvas', '@learning/config', '@learning/data-access', '@learning/session', '@learning/contracts', '@mikro-orm/core', '@nestjs/common', '@nestjs/core']) {
+      expect(manifest.peerDependencies[name], name).toBeDefined()
+      expect(manifest.dependencies?.[name], name).toBeUndefined()
+    }
+    expect(manifest.peerDependencies['@mikro-orm/core']).toBe('7.2.5')
+  })
+
+  it('源码和测试都不 import @shadecn/*，不 import server-kit 的内核；@mikro-orm/ 下只用 core（驱动的选择归 data-access）', () => {
+    for (const dir of ['src', 'test']) {
+      for (const { file, code } of sources(dir)) {
+        expect(code, file).not.toMatch(/(from|import\()\s*'@shadecn\//)
+        expect(code, file).not.toMatch(/(from|import\()\s*'@mikro-orm\/(?!core')/)
+      }
+    }
+  })
+
+  it('依赖方向是 storage → canvas：不认识协同、apps、agent', () => {
+    for (const { file, code } of sources('src')) expect(code, file).not.toMatch(/@learning\/(collab|apps|agent)/)
+  })
+
+  it('sharp 只经动态 import 加载，版本和 @shadecn/mod-storage 一样：静态 import 的话原生二进制装不上就起不来', () => {
+    expect(manifest.dependencies.sharp).toBe('0.35.5')
+    for (const { file, code } of sources('src')) expect(code, file).not.toMatch(/(from|import)\s+'sharp'/)
+  })
+
+  it('src 里 import 的每个包都声明了：tsc 不查这个，缺了到产物运行时才炸', () => {
+    const declared = new Set(Object.keys({ ...manifest.dependencies, ...manifest.peerDependencies }))
+    const imported = new Set<string>()
+    for (const { code } of sources('src')) {
+      for (const [, specifier] of code.matchAll(/(?:from|import\()\s*'([^'.][^']*)'/g)) {
+        if (specifier.startsWith('node:') || builtinModules.includes(specifier)) continue
+        const parts = specifier.split('/')
+        imported.add(specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0])
+      }
+    }
+    expect([...imported].filter((name) => !declared.has(name))).toEqual([])
+  })
+
+  it('和 data-access 用的是同一份 @mikro-orm/core：两份的话实体基类和异常类的 instanceof 全错', () => {
+    const real = (from: string) => fs.realpathSync(path.join(from, 'node_modules/@mikro-orm/core'))
+    expect(real(packageDir)).toBe(real(path.resolve(packageDir, '../data-access')))
+  })
+})

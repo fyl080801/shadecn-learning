@@ -1,6 +1,6 @@
 # REQ-NEST NestJS 版服务
 
-> 状态：**实施中** —— 已完成第 1～5 步和里程碑 A、B（§6）：登录、账号关联、默认头像、项目、画布、协同单进程跑通，平台 + 两个协同副本也跑通。
+> 状态：**实施中** —— 已完成第 1～6 步和里程碑 A、B（§6）：登录、账号关联、默认头像、项目、画布、协同、节点上传图片和缩略图单进程跑通，平台 + 两个协同副本也跑通。
 
 ## 1. 目标与边界
 
@@ -49,7 +49,7 @@ contracts                                    只依赖 yjs，任何模块都可�
 **`apps/platform`**：两个根模块、两个入口，都是静态模块列表，差别只在有没有协同入口，不靠配置开关。
 
 - `AppModule`（`main.ts`）= `PlatformBaseModule` + `CollabGatewayModule`。默认 `cluster: single`、`schemaSync: apply`，`pnpm dev:platform` 一个进程一个端口就能用全部功能。
-- `PlatformBaseModule`（`main-without-collab.ts`）：页面、登录、`CanvasApiModule`，功能到了再加 `StorageModule`、`AppsModule`、`AgentModule`。协同由副本提供时跑这个入口。
+- `PlatformBaseModule`（`main-without-collab.ts`）：页面、登录、`CanvasApiModule`、`StorageModule`，功能到了再加 `AppsModule`、`AgentModule`。协同由副本提供时跑这个入口。
 
 **`apps/collab`**（`@learning/collab-service`）：只有 `main.ts` + `AppModule`，用于协同独立扩缩。
 
@@ -124,14 +124,27 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 | 7 | `AppsModule` | 移植 `flow-apps` 用例；节点生成可用 |
 | 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，到这一步先单独出一份方案 |
 
-**第 5 步之后前端的状况**：登录、设置页「登录方式」、默认头像、项目、成员、邀请、画布、协同可用（浏览器走过）。其余功能报错或显示为空，都不白屏、不无限重试（读代码确认）：
+**第 6 步之后前端的状况**：登录、设置页「登录方式」、默认头像、项目、成员、邀请、画布、协同、节点上传图片和缩略图可用（浏览器走过）。没配对象存储时上传回 503 并弹提示，别的功能照常。其余功能报错或显示为空，都不白屏、不无限重试（读代码确认）：
 
-- 上传失败并弹提示。
 - 应用列表和生成任务按空处理（`api.ts` 的 `appApi.list`、`useFlowAppTasks.ts:97`）。
 - agent 面板显示加载失败（`useFlowAgent.ts:310-316`）。
 
 头像为空（这个功能上线前登录、会话还活着）时走 `v-if` 的回退显示，下次登录补上。
 
-## 7. 需要用户决定的事项
+## 7. 对象存储（第 6 步）
+
+行为同 `docs/13` §3.7、`docs/27`，配置和与 `mod-storage` 不同的地方如下。
+
+配置在 `config.yaml` 的 `storage` 段（`endpoint`、`internalEndpoint`、`region`、`bucket`、`maxUploadMb`、`keyPrefix`，含义同 `MODULES_STORAGE_*`），凭据在 `.env` 的 `PLATFORM_S3_ACCESS_KEY_ID`、`PLATFORM_S3_SECRET_ACCESS_KEY`，写进 `config.yaml` 拒绝启动。协同副本不 import 这个模块，也不用配：`flow_asset` 由平台建，上传的路径前置代理都分给平台。
+
+- **没配齐时模块照样加载**，接口回 503（旧服务是模块不加载，路由不存在；`docs/13` 写的是 503）。没有 `/api/features`，前端也没有用它。
+- **读资源不经过服务**：和旧服务一样，节点里存对象的原始地址，桶对匿名开放读。所以「被移除的成员读不到」只管得到画布、协同和上传接口，**知道地址的人照样能读对象**。私有访问是 `docs/25` 的方案，还没实施。
+- **和 canvas 没有回调**：复制画布不动对象和记录（节点里的地址原样带过去，补缩略图不要求记录属于当前画布）；画布软删时记录留着，真删靠外键级联；对象都不删（`docs/13` §3.7）。撤权靠每个请求重新判成员。所以不需要 canvas 反过来调 storage。
+- **同一个键记两次**（`complete` 重放）：靠 `key` 的唯一约束判输赢。同一张画布算成功，别的画布持有这个键算失败（500），归属不会被改写。旧服务一律 500。
+- **判权在读请求体之前**：匿名和非成员发多大的文件都是 401 / 404，不占内存。但 JSON 写坏的请求（`multipart`、`complete`、`variants`）由 Fastify 在路由之前拦下，非成员也是 400，同 canvas（`CLAUDE.md`）。
+- **请求的 `content-type`**：上传和分片路由只特别收 `multipart/form-data`、`application/octet-stream`。写成 Fastify 不认识的类型是 415（旧服务是 400 或照收），前端不会这样发。
+- **sharp 用到才加载**：装不上只是没有缩略图，服务照常启动。
+
+## 8. 需要用户决定的事项
 
 无。

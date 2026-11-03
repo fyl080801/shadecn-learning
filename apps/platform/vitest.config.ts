@@ -22,6 +22,7 @@ export default defineConfig({
       '@learning/data-access': path.resolve(import.meta.dirname, '../../packages/data-access/src/index.ts'),
       '@learning/session/testing': path.resolve(import.meta.dirname, '../../packages/session/src/testing.ts'),
       '@learning/session': path.resolve(import.meta.dirname, '../../packages/session/src/index.ts'),
+      '@learning/storage': path.resolve(import.meta.dirname, '../../packages/storage/src/index.ts'),
     },
   },
   test: {
