@@ -64,6 +64,7 @@ COPY packages/canvas/package.json ./packages/canvas/
 COPY packages/collab/package.json ./packages/collab/
 COPY packages/storage/package.json ./packages/storage/
 COPY packages/apps/package.json ./packages/apps/
+COPY packages/llm/package.json ./packages/llm/
 RUN pnpm install --frozen-lockfile ${NPM_REGISTRY:+--registry=${NPM_REGISTRY}}
 COPY . .
 # 前端 → output/public，后端 → output/server（index.js + db-sync.js），外加 package.json / Dockerfile：

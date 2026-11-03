@@ -1,4 +1,4 @@
-import type { LlmModelDef, LlmProviderTable } from './llm/llm-config.js'
+import type { LlmModelDef, LlmProviderTable } from '@learning/llm/llm-config'
 import { isRecord } from './driver.js'
 
 /**

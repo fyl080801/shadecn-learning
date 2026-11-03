@@ -1,5 +1,5 @@
 /**
- * 语言服务提供方（config.yaml 的 `llm.providers`）：形状照抄 pi 的 `models.json` 的一个子集。应用表的 `type: llm` 引用这张表的 key，带模型的提供方自动成为 text 类应用（`../llm-apps.ts`）。
+ * 语言服务提供方（config.yaml 的 `llm.providers`）：形状照抄 pi 的 `models.json` 的一个子集。应用表的 `type: llm` 引用这张表的 key，带模型的提供方自动成为 text 类应用（`@learning/apps` 的 `llm-apps.ts`）。
  *
  * ```yaml
  * llm:

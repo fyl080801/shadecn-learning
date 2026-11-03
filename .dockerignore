@@ -12,6 +12,7 @@ packages/canvas/dist
 packages/collab/dist
 packages/storage/dist
 packages/apps/dist
+packages/llm/dist
 output
 .git
 .claude

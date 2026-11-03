@@ -1,7 +1,7 @@
 import type { ConfigService } from '@learning/config'
 import { APPS_CONFIG_PATH, type Catalog, catalogFromConfig } from './catalog.js'
 import { DRIVERS } from './drivers/index.js'
-import { parseLlmProviders } from './llm/llm-config.js'
+import { parseLlmProviders } from '@learning/llm/llm-config'
 
 export const APPS_CATALOG = Symbol('APPS_CATALOG')
 

@@ -16,6 +16,7 @@ export default defineConfig({
       '@learning/config': path.resolve(import.meta.dirname, '../../packages/config/src/index.ts'),
       '@learning/canvas': path.resolve(import.meta.dirname, '../../packages/canvas/src/index.ts'),
       '@learning/collab': path.resolve(import.meta.dirname, '../../packages/collab/src/index.ts'),
+      '@learning/llm': path.resolve(import.meta.dirname, '../../packages/llm/src'),
       '@learning/contracts': path.resolve(import.meta.dirname, '../../packages/contracts/src'),
       '@learning/cluster': path.resolve(import.meta.dirname, '../../packages/cluster/src/index.ts'),
       '@learning/foundation': path.resolve(import.meta.dirname, '../../packages/foundation/src/index.ts'),

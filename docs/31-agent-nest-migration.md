@@ -178,7 +178,7 @@ agent:                    # 一个都不配也照样加载：view 回 enabled: f
 
 依据：两边的 `model.ts`、`llm-providers.ts` 只有注释不同（实测 diff），`apps` 的 `model-stream.ts` 是 agent 那份的子集。
 
-`@learning/llm` 含 `llm-config`、`llm-providers`、`model`、`stream-upstream`，pi-ai 是它自己的依赖。runner 碰不到它（runner 的闭包连类型都不引用 `model.ts`）。agent-core 只把 `./model.ts` 的类型 import 改过去。`.claude/rules/apps.md` 关于不再写一个客户端的规则不变。
+`@learning/llm` 含 `llm-config`、`llm-providers`、`model`、`stream-upstream`，pi-ai 是它自己的依赖（`@learning/apps` 的 `drivers/llm.ts` 也直接用 `normalizeContext`，所以也声明，版本相同，没有 DI token）。runner 碰不到它（runner 的闭包连类型都不引用 `model.ts`）。agent-core 只把 `./model.ts` 的类型 import 改过去。`.claude/rules/apps.md` 关于不再写一个客户端的规则不变。
 
 ### 5.4 副本要不要防漂移
 

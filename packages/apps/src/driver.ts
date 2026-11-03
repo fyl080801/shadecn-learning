@@ -1,4 +1,4 @@
-import type { LlmProviderTable } from './llm/llm-config.js'
+import type { LlmProviderTable } from '@learning/llm/llm-config'
 import type { AppCategory, AppOutput, AppProgress, AppUsage, ParamSchema, ParamSpec, TaskHandle } from './contract.js'
 
 export type { TaskHandle } from './contract.js'

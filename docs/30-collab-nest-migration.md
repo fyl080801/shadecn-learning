@@ -154,7 +154,7 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 - **同一节点一个任务靠唯一约束**：`app_task.active_key`，进行中是 `<flowId>/<nodeId>`，结束清成 null。旧服务是先查后插，并发提交能插出两个。
 - **请求体上限同别的路由是 1MB**（旧服务 `docs/29` §3.6 是 32MB）：Fastify 在路由之前解析 JSON，放宽的话匿名和非成员也能让服务端先读满上限，再收 401 / 404。前端只发提示词和参考图地址，用不到更大的。要放开得先解决这一点。坏 JSON 同 canvas，先于守卫回 400：`/api/flows/...` 是 `{ error }`，`/api/apps/...` 是 Nest 默认形状（前端不调这个入口）。
 - **写回节点的操作用 `@learning/contracts/flow-ops`**：`recordGeneration`、`attachAsset`、`appendGeneratedText` 直接 import 整份 `flow-ops`，和 `packages/shared` 的逐字相同由 `packages/contracts/test/contracts.test.ts` 保证；它的闭包带 `@dagrejs/dagre`，所以 `@learning/apps` 和 `apps/platform` 声明这个可选 peer。
-- **LLM 通路的最小闭包在 `packages/apps/src/llm/`**：`llm-providers`、`model` 两个文件和 `model-stream` 里 `streamUpstream` 那一段（约 400 行，加 `llm.providers` 的解析），依赖 `@earendil-works/pi-ai`，版本同 `mod-apps`。agent 编排没搬。第 8 步也要模型通路时再决定抽不抽成小包。
+- **LLM 通路在 `@learning/llm`（`packages/llm`）**：`llm-config`、`llm-providers`、`model`、`stream-upstream` 四个文件（从 `packages/apps/src/llm/` 原样移过去，`model-stream` 改名 `stream-upstream`），依赖 `@earendil-works/pi-ai`，版本同 `mod-apps`。没有 DI token，`apps` 当普通依赖。`llm.providers` 只有它这一个解析器。agent 编排没搬（`docs/31` §5.3）。
 
 ## 9. 需要用户决定的事项
 

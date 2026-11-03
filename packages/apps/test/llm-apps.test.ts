@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { LlmProviderTable } from '../src/llm/llm-config.js'
+import type { LlmProviderTable } from '@learning/llm/llm-config'
 import { APPS_CONFIG_PATH, catalogFromConfig } from '../src/catalog.js'
 import { DRIVERS } from '../src/drivers/index.js'
 import { withLlmProviderApps } from '../src/llm-apps.js'

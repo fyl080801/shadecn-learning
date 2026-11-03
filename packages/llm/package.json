@@ -1,0 +1,23 @@
+{
+  "name": "@learning/llm",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./llm-config": { "source": "./src/llm-config.ts", "types": "./dist/llm-config.d.ts", "default": "./dist/llm-config.js" },
+    "./llm-providers": { "source": "./src/llm-providers.ts", "types": "./dist/llm-providers.d.ts", "default": "./dist/llm-providers.js" },
+    "./model": { "source": "./src/model.ts", "types": "./dist/model.d.ts", "default": "./dist/model.js" },
+    "./stream-upstream": { "source": "./src/stream-upstream.ts", "types": "./dist/stream-upstream.d.ts", "default": "./dist/stream-upstream.js" }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "~6.0.2"
+  }
+}

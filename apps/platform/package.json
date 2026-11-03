@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @learning/config --filter @learning/contracts --filter @learning/foundation --filter @learning/cluster --filter @learning/web --filter @learning/data-access --filter @learning/session --filter @learning/canvas --filter @learning/collab --filter @learning/storage --filter @learning/apps build && nest start --watch",
-    "build": "pnpm --filter @learning/config --filter @learning/contracts --filter @learning/foundation --filter @learning/cluster --filter @learning/web --filter @learning/data-access --filter @learning/session --filter @learning/canvas --filter @learning/collab --filter @learning/storage --filter @learning/apps build && nest build",
+    "dev": "pnpm --filter @learning/config --filter @learning/contracts --filter @learning/foundation --filter @learning/cluster --filter @learning/web --filter @learning/data-access --filter @learning/session --filter @learning/canvas --filter @learning/collab --filter @learning/storage --filter @learning/llm --filter @learning/apps build && nest start --watch",
+    "build": "pnpm --filter @learning/config --filter @learning/contracts --filter @learning/foundation --filter @learning/cluster --filter @learning/web --filter @learning/data-access --filter @learning/session --filter @learning/canvas --filter @learning/collab --filter @learning/storage --filter @learning/llm --filter @learning/apps build && nest build",
     "start": "NODE_ENV=production node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

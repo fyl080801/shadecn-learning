@@ -1,7 +1,7 @@
 import { AppsService } from '../src/apps.service.js'
 import { buildCatalog } from '../src/catalog.js'
 import { DRIVERS } from '../src/drivers/index.js'
-import type { LlmProviderTable } from '../src/llm/llm-config.js'
+import type { LlmProviderTable } from '@learning/llm/llm-config'
 
 export interface Recorded {
   url: string

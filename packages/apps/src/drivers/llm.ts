@@ -2,13 +2,13 @@ import { normalizeContext, type ImageContent, type TextContent } from '@earendil
 import { AppError, type ParamSchema } from '../contract.js'
 import { defineDriver, type DriverEnv, type Operation, type ProviderDriver } from '../driver.js'
 import { decodeDataUrl } from '../http.js'
-import type { LlmProviderTable } from '../llm/llm-config.js'
-import { resolveProviderModel } from '../llm/llm-providers.js'
-import { resolveAgentModel, type ModelResolution } from '../llm/model.js'
-import { AGENT_CLIENT_IDENTITY, streamUpstream } from '../llm/model-stream.js'
+import type { LlmProviderTable } from '@learning/llm/llm-config'
+import { resolveProviderModel } from '@learning/llm/llm-providers'
+import { resolveAgentModel, type ModelResolution } from '@learning/llm/model'
+import { AGENT_CLIENT_IDENTITY, streamUpstream } from '@learning/llm/stream-upstream'
 
 /**
- * 语言模型驱动（docs/29 §4.3）：`../llm/` 选模型、按线协议发请求（那几个文件是 `@shadecn/agent` 模型通路的复制，这里不再写一份 OpenAI 兼容客户端）。
+ * 语言模型驱动（docs/29 §4.3）：`@learning/llm` 选模型、按线协议发请求（那个包是 `@shadecn/agent` 模型通路的复制，这里不再写一份 OpenAI 兼容客户端）。
  *
  * 两种驱动共用同一个操作（`text`，{@link chatOperation}），只差「模型怎么解析」：
  * - **`llm`**（{@link llmServiceDriver}）：引用语言服务提供方（配置的 `llm.providers`，`providers.<id>: { type: llm, provider: <key> }`），
