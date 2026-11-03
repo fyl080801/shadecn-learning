@@ -123,12 +123,38 @@ describe('登录（完整 AppModule，生产模式）', () => {
     expect(login.body).toBe(LOGIN_PAGE)
   })
 
-  it('还没有账号关联：/api/auth/identities 是 404，不是假数据', async () => {
+  it('设置页要的接口都在，都要登录：列表 + 待确认，默认头像能取到；静态回退不插手 /api', async () => {
     expect((await browser.get('/api/auth/identities')).status).toBe(401)
+    expect((await browser.get('/api/avatars/0f4c717d8a4e2a3e.svg')).status).toBe(401)
     await login('oidc')
+
     const res = await browser.get('/api/auth/identities')
-    expect(res.status).toBe(404)
-    expect(JSON.parse(res.body)).toMatchObject({ statusCode: 404 })
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ items: [{ provider: 'oidc', primary: true }], pending: null })
+
+    const { avatarUrl } = JSON.parse((await browser.get('/api/auth/me')).body).user as { avatarUrl: string }
+    expect(avatarUrl).toMatch(/^\/api\/avatars\/[0-9a-f]{16}\.svg$/)
+    const avatar = await browser.get(avatarUrl)
+    expect(avatar.status).toBe(200)
+    expect(avatar.headers['content-type']).toContain('image/svg+xml')
+    expect(avatar.body).not.toContain(SECRET_PAGE)
+    expect((await browser.get('/api/avatars/not-a-seed.svg')).status).toBe(404)
+  })
+
+  it('关联走完一整趟：回到 /settings 这个受保护页面，确认之后多一条', async () => {
+    await login('oidc')
+    // 这个文件共用一个库，前面的用例已经用这个提供方的默认账号登录过
+    idp.github.user = { id: 777, login: 'linked-only', name: null, email: null, avatar_url: null }
+    const start = await browser.get('/api/auth/link/github')
+    expect(start.status).toBe(302)
+    const back = await browser.get(await followAuthorize(idp.githubAuthorizeUrl(start.headers.location as string)))
+    expect(back.headers.location).toBe('/settings')
+    expect((await browser.get('/settings')).body).toBe(SECRET_PAGE)
+    expect(JSON.parse((await browser.get('/api/auth/identities')).body).pending).toMatchObject({ provider: 'github' })
+
+    const confirmed = await browser.request('POST', '/api/auth/link/confirm')
+    expect(confirmed.status).toBe(200)
+    expect(JSON.parse((await browser.get('/api/auth/identities')).body).items).toMatchObject([{ provider: 'oidc' }, { provider: 'github' }])
   })
 })
 

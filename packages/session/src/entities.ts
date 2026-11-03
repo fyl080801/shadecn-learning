@@ -82,7 +82,7 @@ export const Session = defineEntity({
 export type Session = InferEntity<typeof Session>
 
 /**
- * 一条**等待用户确认**的账号关联（docs/02 §3.9.3）。**这里只有定义，账号关联还没有实现**（docs/02 §3.3.2）。
+ * 一条**等待用户确认**的账号关联（docs/02 §3.9.2）。
  *
  * 第三方授权回来之后**不直接**写 `UserIdentity`，先落在这里，把「你要关联的是
  * @octocat」摆到用户眼前，点了确认才提交。

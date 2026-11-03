@@ -1,15 +1,17 @@
 import { LOGIN_DONE_PATH } from '@learning/contracts/auth'
-import { Controller, Get, Inject, Query, Req, Res } from '@nestjs/common'
+import { Controller, Get, HttpException, Inject, Param, Query, Req, Res } from '@nestjs/common'
 import { LOGIN_OPTIONS, type ResolvedLoginOptions } from './auth-options.js'
 import { AuthProviders } from './auth-providers.js'
+import { CurrentUser } from './current-user.decorator.js'
 import { describeError, loginFailureMessage } from './errors.js'
+import { linkFailureMessage } from './identities.service.js'
 import { renderLoginDonePage } from './login-done-page.js'
 import { AUTH_REQUEST_TTL_SECONDS, LoginService } from './login.service.js'
 import { type ResolvedSessionOptions, SESSION_OPTIONS } from './options.js'
 import { Public } from './public.decorator.js'
 import { safeRedirect } from './redirect.js'
 import { headerValue, type OriginRequest, originOfRequest } from './request-origins.js'
-import { toSessionUser } from './session-token.js'
+import { type SessionUser, toSessionUser } from './session-token.js'
 import { readCookie, type SessionRequest } from './session.guard.js'
 import { SessionService } from './session.service.js'
 
@@ -36,8 +38,20 @@ const afterLogin = (redirectTo: string) => (redirectTo === LOGIN_DONE_PATH ? LOG
 const queryValue = (value: unknown) => (typeof value === 'string' && value ? value : null)
 
 /**
- * 前端依赖的登录端点，形状以 `apps/web/src/lib/auth.ts` 和 `LoginPage.vue` 读取的为准。账号关联（link、identities）不在这里。
- * 路径固定：前端写死了 `/api/auth/*`。全部匿名可达。
+ * 关联流程唯一的落点：确认框只长在设置页上（`LinkedAccounts.vue`），送去别处就留下一条用户看不见、也没法确认的待关联。所以不接受 `?redirect=`。
+ * 失败原因走 `?link_error=`，前端读一次就洗掉；成功不带参数，确认框靠 `GET /api/auth/identities` 的 `pending` 弹出来。
+ */
+const LINK_RETURN_PATH = '/settings'
+
+function withLinkError(path: string, message: string): string {
+  const url = new URL(path, 'http://internal')
+  url.searchParams.set('link_error', message)
+  return `${url.pathname}${url.search}${url.hash}`
+}
+
+/**
+ * 前端依赖的登录跳转端点，形状以 `apps/web/src/lib/auth.ts` 和 `LoginPage.vue` 读取的为准。
+ * 路径固定：前端写死了 `/api/auth/*`。除了发起关联（`link/:provider`），全部匿名可达；设置页要的 JSON 接口在 `IdentitiesController`。
  */
 @Controller('api/auth')
 export class AuthController {
@@ -132,7 +146,29 @@ export class AuthController {
     ])
   }
 
-  /** 回调：只有这一个地址，靠 `AuthRequest.provider` 分发到具体提供方 */
+  /**
+   * 关联一条新的登录方式：和登录是同一套授权流程，`AuthRequest` 上多带一个 `linkUserId`，回调就不建会话，改成落一条待确认。
+   * 前端是整页跳转。没有 `@Public()`，登录靠全局的 `ApiSessionGuard`。
+   */
+  @Get('link/:provider')
+  async startLink(
+    @CurrentUser() user: SessionUser,
+    @Req() request: HttpRequest,
+    @Param('provider') providerId: string,
+    @Res() reply: HttpReply,
+  ) {
+    const provider = this.providers.get(providerId)
+    if (!provider) throw new HttpException({ error: 'Not Found', message: '没有这个登录方式' }, 404)
+
+    const origin = this.originOf(request)
+    const started = await this.login.begin(provider, LINK_RETURN_PATH, origin, user.id)
+    if (!started) return this.redirect(reply, withLinkError(LINK_RETURN_PATH, `连不上 ${provider.label}`))
+    return this.redirect(reply, started.url, [
+      this.cookie(TX_COOKIE, started.txId, { path: TX_COOKIE_PATH, maxAge: AUTH_REQUEST_TTL_SECONDS, origin }),
+    ])
+  }
+
+  /** 回调：只有这一个地址，靠 `AuthRequest.provider` 分发到具体提供方，靠 `AuthRequest.linkUserId` 分开登录和关联 */
   @Public()
   @Get('callback')
   async callback(
@@ -142,10 +178,13 @@ export class AuthController {
   ) {
     const clearTx = this.cookie(TX_COOKIE, '', { path: TX_COOKIE_PATH, maxAge: 0, origin: this.originOf(request) })
     const txId = readCookie(request.headers.cookie, TX_COOKIE)
-    // 先消费再看别的：不管这一趟成不成，这个授权请求都不能再用第二次
+    // 先消费再看别的：不管这一趟成不成，这个授权请求都不能再用第二次。也要先于 `?error=`：用户在提供方那边点了取消，该回登录页还是设置页只有它知道
     const authRequest = await this.login.consume(txId)
-    const failed = (message: string) =>
-      this.redirect(reply, this.loginPageWithError(message, authRequest ? safeRedirect(authRequest.redirectTo) : '/'), [clearTx])
+    const linkUserId = authRequest?.linkUserId ?? null
+    const failed = (message: string) => {
+      const returnTo = authRequest ? safeRedirect(authRequest.redirectTo) : '/'
+      return this.redirect(reply, linkUserId ? withLinkError(returnTo, message) : this.loginPageWithError(message, returnTo), [clearTx])
+    }
 
     // 用户在提供方那边点了取消之类。原因来自 URL，只显示（登录页转义），不进日志
     const error = queryValue(query.error)
@@ -162,6 +201,15 @@ export class AuthController {
     if (!provider) return failed('这个登录方式没有启用')
 
     try {
+      if (linkUserId) {
+        // 中途换了人（另一个标签页登出又登进别的账号）就不能绑了。在换 token 之前判：结果反正用不上
+        const current = await this.sessions.load(readCookie(request.headers.cookie, this.options.cookieName))
+        if (current?.user.id !== linkUserId) return failed('登录状态已变化，请重新操作')
+        const blocked = await this.login.completeLink(provider, authRequest, code, linkUserId)
+        if (blocked) return failed(linkFailureMessage(blocked, provider.label))
+        return this.redirect(reply, safeRedirect(authRequest.redirectTo), [clearTx])
+      }
+
       const token = await this.login.complete(provider, authRequest, code, {
         userAgent: headerValue(request.headers['user-agent']),
         ip: headerValue(request.headers['x-forwarded-for'])?.split(',')[0]?.trim() ?? null,

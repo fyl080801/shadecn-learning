@@ -200,7 +200,7 @@ GitHub 上没有本应用的角色概念，用它登录拿到的 roles 恒为空
 
 - 密钥是运行目录 `.env`（或环境变量）的 `PLATFORM_SESSION_SECRET`（示例见 `apps/platform/.env.example`），写在 `config.yaml` 的 `session.secret` 会拒绝启动。生产环境缺它拒绝启动；开发环境缺它用临时密钥，重启后会话全部失效。
 - 请求上只有用户信息，access_token 一类的字段不会给到路由。
-- **页面和接口都要登录**，开发环境也一样：匿名打开任何页面（含 `/index.html`）都跳到 `/login?redirect=…`，已登录打开 `/login` 跳回 `redirect`（只认站内路径）；`/api/*` 未登录回 401。匿名可访问的只有登录页、js / css / 图片等资源、`/favicon.ico`、`/vite.svg`、`/api/auth/*`，以及健康检查 `/api/health`（只回答进程是否在跑，不碰数据库）和 `/api/health/ready`（数据库和共享层都通才 200，否则 503）。校验时数据库故障回 500。页面闸门默认开启，只有配置里写 `web.auth: false` 才关，关了之后 `/api/*` 仍要登录。
+- **页面和接口都要登录**，开发环境也一样：匿名打开任何页面（含 `/index.html`）都跳到 `/login?redirect=…`，已登录打开 `/login` 跳回 `redirect`（只认站内路径）；`/api/*` 未登录回 401。匿名可访问的只有登录页、js / css / 图片等资源、`/favicon.ico`、`/vite.svg`、登录流程的 `/api/auth/{me,config,login,callback,login-done,logout}`，以及健康检查 `/api/health`（只回答进程是否在跑，不碰数据库）和 `/api/health/ready`（数据库和共享层都通才 200，否则 503）。校验时数据库故障回 500。页面闸门默认开启，只有配置里写 `web.auth: false` 才关，关了之后 `/api/*` 仍要登录。
 - 会话和 `@shadecn/server` 的语义相同：访问令牌快过期时由请求顺手续期，一次网络抖动不会把人踢出去，提供方明确回绝才结束会话，活过 `session.ttlSeconds` 也结束。
 
 #### 3.3.2 NestJS 服务的登录（OIDC + GitHub）
@@ -213,7 +213,9 @@ GitHub 上没有本应用的角色概念，用它登录拿到的 roles 恒为空
 - **两个都没配**：能启动，记一条警告；登录页显示「登录不可用」，页面和 `/api` 仍然全部拦住。这一点和 `@shadecn/server` 的「没配就放行」不同。
 - **端点**：`GET /api/auth/config` 回 `{ enabled, providers }`，`GET /api/auth/me` 回 `{ enabled, authenticated, user }`，`GET /api/auth/login?provider=&redirect=`（不带 `provider` 用第一个），`GET /api/auth/callback`，`GET /api/auth/logout`。登录失败经 `/login?error=` 显示原因。
 - **重新登录的窗口**（§3.7）：登录完成后落在 `/api/auth/login-done`，它通知开它的页面并关掉自己。
-- **本期不做**：账号关联（`/api/auth/link/*`、`/api/auth/identities`，设置页的「登录方式」卡片因此读不到数据；`pending_link` 表已存在但没有读写）、默认头像（`/api/avatars`，没有 `picture` 的用户没有头像）、登出时撤销 token 或结束提供方上的会话。
+- **账号关联和默认头像**和 §3.5.1、§3.9 相同，路径、状态码、响应形状一致，设置页的「登录方式」卡片直接可用。差别：提供方 id 是 `oidc` / `github`，列表里那一行没有专属图标，用默认的钥匙图标。这些接口都要登录，`/api/auth/link/*`、`/api/auth/identities` 和 `/api/avatars` 都由平台提供（协同副本没有）。
+- **默认头像的归属**：登录时写进 `User.avatarUrl`，读的地方（`/api/auth/me`、成员列表、协同在场）都只读这一列，平台和协同副本因此是同一个值。这个功能上线之前登录、会话还活着的用户，头像一直是空的，直到下次登录（前端显示回退样式）。
+- **本期不做**：登出时撤销 token 或结束提供方上的会话。
 
 ### 3.4 授权请求防重放
 

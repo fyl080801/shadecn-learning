@@ -144,7 +144,7 @@ function behaviours(createFixture: () => DatabaseFixture) {
       await em0.flush()
 
       const sweeper = context.get(SessionSweeper, { strict: false })
-      expect(await sweeper.sweepExpired()).toEqual({ sessions: 1, authRequests: 1 })
+      expect(await sweeper.sweepExpired()).toEqual({ sessions: 1, authRequests: 1, pendingLinks: 0 })
 
       const em = dataAccess.em()
       expect(await em.findOne(Session, live.id)).not.toBeNull()
@@ -152,7 +152,7 @@ function behaviours(createFixture: () => DatabaseFixture) {
       expect(await em.findOne(Session, lapsed.id)).not.toBeNull()
       expect((await em.find(AuthRequest, {})).map((row) => row.state)).toEqual(['pending'])
       expect(await em.count(User)).toBe(3)
-      expect(await sweeper.sweepExpired()).toEqual({ sessions: 0, authRequests: 0 })
+      expect(await sweeper.sweepExpired()).toEqual({ sessions: 0, authRequests: 0, pendingLinks: 0 })
     })
 
     it('deleteByToken 幂等：删过再删、不存在、undefined 都不抛', async () => {

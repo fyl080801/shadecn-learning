@@ -1,6 +1,6 @@
 # REQ-NEST NestJS 版服务
 
-> 状态：**实施中** —— 已完成第 1～4 步和里程碑 A、B（§6）：登录、项目、画布、协同单进程跑通，平台 + 两个协同副本也跑通。
+> 状态：**实施中** —— 已完成第 1～5 步和里程碑 A、B（§6）：登录、账号关联、默认头像、项目、画布、协同单进程跑通，平台 + 两个协同副本也跑通。
 
 ## 1. 目标与边界
 
@@ -18,7 +18,7 @@
 
 | 模块（包） | 对应 | 职责 | imports | exports | Controller | 实体 |
 |---|---|---|---|---|---|---|
-| `SessionModule`（`@learning/session`，已有） | `mod-auth` | 登录、会话。账号关联和头像待补 | — | `SessionService`、`UserService`、`RequestOrigins`、守卫 | `AuthController`，待补关联、头像 | `Session`、`UserIdentity`、`PendingLink`、`AuthRequest` |
+| `SessionModule`（`@learning/session`，已有） | `mod-auth` | 登录、会话、账号关联、默认头像 | — | `SessionService`、`UserService`、`RequestOrigins`、守卫 | `AuthController`、`IdentitiesController`、`AvatarsController` | `Session`、`UserIdentity`、`PendingLink`、`AuthRequest` |
 | `CanvasModule`（`@learning/canvas`） | `mod-canvas` 服务层 | 项目、成员、邀请、画布的读写，判权，`FlowDocStore`，撤权信号，落库请求令牌 | — | `ProjectsService`、`FlowsService`、`FlowDocStore`、`AccessRevocation`、`FlowMemberGuard` | — | `Project`、`ProjectMember`、`ProjectInvite`、`Flow`、`FlowUserState` |
 | `CanvasApiModule`（同上） | `mod-canvas/routes` | 画布 REST | `CanvasModule` | — | `ProjectsController`、`InvitesController`、`FlowsController` | — |
 | `CollabModule`（`@learning/collab`） | `mod-collab` | Hocuspocus 实例、持久化、配额、awareness、单连接互斥、写闸门、复验、退出 | `CanvasModule` | `CollabServer`、`FlowPersistence` | — | — |
@@ -124,14 +124,13 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 | 7 | `AppsModule` | 移植 `flow-apps` 用例；节点生成可用 |
 | 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，到这一步先单独出一份方案 |
 
-**到里程碑 A 时前端的状况**（读代码确认，未在浏览器跑过）：登录、项目、成员、邀请、画布、协同可用。其余功能报错或显示为空，都不白屏、不无限重试：
+**第 5 步之后前端的状况**：登录、设置页「登录方式」、默认头像、项目、成员、邀请、画布、协同可用（浏览器走过）。其余功能报错或显示为空，都不白屏、不无限重试（读代码确认）：
 
-- 设置页「登录方式」弹错误提示（`LinkedAccounts.vue:97-104`）。
 - 上传失败并弹提示。
 - 应用列表和生成任务按空处理（`api.ts` 的 `appApi.list`、`useFlowAppTasks.ts:97`）。
 - agent 面板显示加载失败（`useFlowAgent.ts:310-316`）。
 
-头像为空时走 `v-if` 的回退显示。
+头像为空（这个功能上线前登录、会话还活着）时走 `v-if` 的回退显示，下次登录补上。
 
 ## 7. 需要用户决定的事项
 

@@ -53,6 +53,19 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 失败响应 → 给用户看的话。后端的约定是 `error` 放状态名（"Conflict"），`message` 放说给人听的中文，所以优先 `message`。
+ * - 401：apiFetch 已经弹了「要不要去登录」的确认框，这里只把顺带冒出来的那条 toast 说人话；
+ * - 500：**不用 `message`**，那是未捕获异常的原文（可能带 SQL）；
+ * - `message` 只认字符串：框架默认的错误体里它可能是数组。
+ */
+function errorMessageOf(status: number, body: unknown): string {
+  if (status === 401) return "登录状态已失效，请重新登录"
+  const { error, message } = (body ?? {}) as { error?: unknown; message?: unknown }
+  if (status !== 500 && typeof message === "string" && message) return message
+  return typeof error === "string" && error ? error : `请求失败（${status}）`
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await apiFetch(path, {
     ...init,
@@ -67,14 +80,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const body: unknown = await res.json().catch(() => null)
   if (!res.ok) {
-    // 401 时 apiFetch 已经弹了「要不要去登录」的确认框，这里只把顺带冒出来的
-    // 那条 toast 说人话（后端给的是 "Unauthorized"）
-    const message =
-      res.status === 401
-        ? "登录状态已失效，请重新登录"
-        : ((body as { error?: string } | null)?.error ??
-          `请求失败（${res.status}）`)
-    throw new ApiError(message, res.status, body)
+    throw new ApiError(errorMessageOf(res.status, body), res.status, body)
   }
   return body as T
 }
@@ -89,11 +95,7 @@ const json = (body: unknown) => JSON.stringify(body)
  */
 async function streamFailure(res: Response): Promise<ApiError> {
   const body: unknown = await res.json().catch(() => null)
-  const message =
-    res.status === 401
-      ? "登录状态已失效，请重新登录"
-      : ((body as { error?: string } | null)?.error ?? `请求失败（${res.status}）`)
-  return new ApiError(message, res.status, body)
+  return new ApiError(errorMessageOf(res.status, body), res.status, body)
 }
 
 function query(params: Record<string, string | number | undefined>) {

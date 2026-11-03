@@ -283,11 +283,16 @@ export class FakeBrowser {
   }
 
   get(target: string, headers: Record<string, string> = {}): Promise<BrowserResponse> {
+    return this.request('GET', target, headers)
+  }
+
+  /** 不带请求体。关联的确认和解绑是 POST / DELETE，和前端一样不发 body */
+  request(method: string, target: string, headers: Record<string, string> = {}): Promise<BrowserResponse> {
     const { hostname, port } = new URL(this.baseUrl)
     const cookie = this.cookieHeader(target.split('?')[0])
     return new Promise((resolve, reject) => {
       const req = http.request(
-        { hostname, port, path: target, headers: { host: new URL(this.origin).host, ...(cookie ? { cookie } : {}), ...headers } },
+        { hostname, port, method, path: target, headers: { host: new URL(this.origin).host, ...(cookie ? { cookie } : {}), ...headers } },
         (res) => {
           let body = ''
           res.on('data', (chunk) => (body += chunk))

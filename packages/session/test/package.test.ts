@@ -34,7 +34,7 @@ describe('包的依赖边界', () => {
   })
 
   it('src 里 import 的每个包都声明了：tsc 不查这个，缺了到产物运行时才炸', () => {
-    const declared = new Set(Object.keys(manifest.peerDependencies))
+    const declared = new Set(Object.keys({ ...manifest.dependencies, ...manifest.peerDependencies }))
     const imported = new Set<string>()
     for (const { code } of sources('src')) {
       for (const [, specifier] of code.matchAll(/(?:from|import\()\s*'([^'.][^']*)'/g)) {

@@ -438,7 +438,7 @@ describe('未配 auth.oidc 的进程', () => {
     expect(await without.get(SessionService).load(byLoad)).toBeNull()
     expect(await rowOf(byLoad)).toBeNull()
 
-    expect(await withOidc.get(SessionSweeper, { strict: false }).sweepExpired()).toEqual({ sessions: 1, authRequests: 0 })
+    expect(await withOidc.get(SessionSweeper, { strict: false }).sweepExpired()).toEqual({ sessions: 1, authRequests: 0, pendingLinks: 0 })
     expect(await rowOf(bySweep)).toBeNull()
   })
 })

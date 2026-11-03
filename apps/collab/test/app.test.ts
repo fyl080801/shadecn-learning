@@ -50,7 +50,7 @@ describe('根模块', () => {
   })
 
   it('画布 REST、登录、页面、Vite 的 WebSocket 都不分给副本', () => {
-    for (const pathname of ['/', '/login', '/api/flows/f1', '/api/flows/f1/duplicate', '/api/flows/f1/document', '/api/projects', '/api/auth/me', '/api/health/ready', '/assets/a.js', '/@vite/client', '/api/collaboration']) {
+    for (const pathname of ['/', '/login', '/api/flows/f1', '/api/flows/f1/duplicate', '/api/flows/f1/document', '/api/projects', '/api/auth/me', '/api/auth/identities', '/api/auth/link/github', '/api/avatars/0f4c717d8a4e2a3e.svg', '/api/health/ready', '/assets/a.js', '/@vite/client', '/api/collaboration']) {
       expect(isCollabPath(pathname), pathname).toBe(false)
     }
   })
@@ -97,6 +97,9 @@ describe('启动', () => {
     expect(await status('/api/collab/rooms')).toBe(401)
     expect(await status('/api/projects')).toBe(404)
     expect(await status('/')).toBe(404)
+    // 账号关联和头像归平台（LoginModule），副本上没有这些路由；头像靠 User.avatarUrl 过桥（packages/collab/test/avatar.test.ts）
+    expect(await status('/api/avatars/0f4c717d8a4e2a3e.svg')).toBe(404)
+    expect(await status('/api/auth/identities')).toBe(404)
     expect(app.get(Cluster).mode).toBe('redis')
     const tables = await app.get(DataAccess).em().getConnection().execute<{ name: string }[]>(`select name from sqlite_master where type = 'table'`)
     expect(tables).toEqual([])

@@ -19,6 +19,9 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
+  "dependencies": {
+    "minidenticons": "^4.2.1"
+  },
   "peerDependencies": {
     "@learning/cluster": "workspace:*",
     "@learning/config": "workspace:*",
