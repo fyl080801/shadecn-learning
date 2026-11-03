@@ -14,6 +14,7 @@ packages/storage/dist
 packages/apps/dist
 packages/llm/dist
 packages/agent-core/dist
+packages/agent-service/dist
 output
 .git
 .claude

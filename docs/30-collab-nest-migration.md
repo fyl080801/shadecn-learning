@@ -25,7 +25,7 @@
 | `CollabGatewayModule`（同上） | `mod-collab` 入口 | WebSocket upgrade，监控和 `/doc` 接口 | `CollabModule`、`CanvasModule`（`FlowMemberGuard` 在控制器所在模块实例化） | — | `CollabMonitorController`、`FlowDocController` | — |
 | `StorageModule`（`@learning/storage`） | `mod-storage` | S3、上传、缩略图 | `CanvasModule` | `AssetStorage` | `AssetsController` | `FlowAsset` |
 | `AppsModule`（`@learning/apps`，目录 `packages/apps`） | `mod-apps` | `executeApp`、生成任务 | `CanvasModule`、`CollabModule`、`StorageModule` | `AppsService` | `AppsController`、`FlowAppsController` | `AppTask` |
-| `AgentModule`（`@learning/agent`，目录 `packages/agent-service`） | `mod-agent` | agent 编排、网关 | `CanvasModule`、`CollabModule`、`StorageModule` | — | 面板、网关 | `AgentConversation`、`AgentRun`、`AgentToolCall`、`AgentGrant`、`AgentGrantScope` |
+| `AgentModule`（`@learning/agent`，目录 `packages/agent-service`） | `mod-agent` | agent 配置、判权、登记、画布访问、runtime；面板和网关在 `docs/31` §7 第 6 小步 | `CanvasModule`、`CollabModule`、`StorageModule` | — | 还没有（第 6 小步：面板、网关） | `AgentConversation`、`AgentRun`、`AgentToolCall`、`AgentGrant`、`AgentGrantScope` |
 
 ```
 config, data-access, cluster, session        全局底座
@@ -122,7 +122,7 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 | 5 | 账号关联、identicon 头像（`session`） | 移植 `apps/server/test/auth/*` 相关用例；设置页可用 |
 | 6 | `StorageModule` | 移植 storage 用例；节点上传图片可用 |
 | 7 | `AppsModule` | 移植 `flow-apps` 用例；节点生成可用 |
-| 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，方案和分步见 [docs/31](31-agent-nest-migration.md) |
+| 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，方案和分步见 [docs/31](31-agent-nest-migration.md)。第 5 小步已完成：`@learning/agent` 有模块，没有 HTTP，还没接进 `PlatformBaseModule` |
 
 **第 7 步之后前端的状况**：登录、设置页「登录方式」、默认头像、项目、成员、邀请、画布、协同、节点上传图片和缩略图、应用列表、节点生成可用（浏览器走过）。没配对象存储时上传回 503 并弹提示，生成结果挂上游地址；没配应用时列表是空的。别的功能照常。agent 面板显示加载失败（`useFlowAgent.ts:310-316`），不白屏、不无限重试（读代码确认）。
 
@@ -156,7 +156,11 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 - **写回节点的操作用 `@learning/contracts/flow-ops`**：`recordGeneration`、`attachAsset`、`appendGeneratedText` 直接 import 整份 `flow-ops`，和 `packages/shared` 的逐字相同由 `packages/contracts/test/contracts.test.ts` 保证；它的闭包带 `@dagrejs/dagre`，所以 `@learning/apps` 和 `apps/platform` 声明这个可选 peer。
 - **LLM 通路在 `@learning/llm`（`packages/llm`）**：`llm-config`、`llm-providers`、`model`、`stream-upstream` 四个文件（从 `packages/apps/src/llm/` 原样移过去，`model-stream` 改名 `stream-upstream`），依赖 `@earendil-works/pi-ai`，版本同 `mod-apps`。没有 DI token，`apps` 当普通依赖。`llm.providers` 只有它这一个解析器。agent 编排没搬（`docs/31` §5.3）。
 - **agent 的框架无关部分在 `@learning/agent-core`（`packages/agent-core`）**：从 `packages/agent` 复制，只改 import（`.ts` → `.js`，`@shadecn/shared/` → `@learning/contracts/`），不搬 k8s 驱动；`model`、`llm-providers` 归 `@learning/llm`，`model-stream` 只留服务端自己的那部分。tsc 产物，驱动按子路径导出，runner 的闭包不含 Nest、ORM、`@learning/llm`。与 `@shadecn/agent` 互不同步（协议版本仍是 9），新增一个 `process` 驱动起产物 runner 真子进程的用例。`AgentModule` 还没有（`docs/31` §7 第 5 步起）。
-- **agent 要的底座接口已经补上（`docs/31` §4.4）**：`@learning/cluster` 的 `SharedMap.compareAndSet`、`SharedLog` + `Cluster.createLog`，`@learning/session` 的 `UserService.briefs`、`SessionService.deriveSecret`，`@learning/storage` 的 `AssetStorage.objectUrl`、`readByUrl`。`readByUrl` 不查 `FlowAsset`，只认本桶素材目录里的地址，别的地址不发请求（§7 的「复制画布不动记录」就是它存在的原因）。这一步还没有调用方。
+- **agent 要的底座接口已经补上（`docs/31` §4.4）**：`@learning/cluster` 的 `SharedMap.compareAndSet`、`SharedLog` + `Cluster.createLog`，`@learning/session` 的 `UserService.briefs`、`SessionService.deriveSecret`，`@learning/storage` 的 `AssetStorage.objectUrl`、`readByUrl`。`readByUrl` 不查 `FlowAsset`，只认本桶素材目录里的地址，别的地址不发请求（§7 的「复制画布不动记录」就是它存在的原因）。`@learning/agent` 是它们的调用方。
+- **`AgentModule` 的宿主在 `@learning/agent`（`packages/agent-service`，`docs/31` §7 第 5 小步）**：配置（`agent` 段、`llm.providers`）、五张表、stores、判权、占用和任务登记、画布访问、沙箱驱动、runtime 都有了；没有 HTTP，也没接进 `PlatformBaseModule`，所以平台进程现在没有 agent，页面上发不了消息（第 6 小步）。
+  - 一个都不配也照样加载，`enabled: false`；模型表、agent 定义、文字技能坏了拒绝启动，启用与否都一样；写 `driver: k8s` 不启用并写明原因。
+  - `oci` 的宿主接线提前到这一步（`docs/31` §7 原本排在第 8 小步）：§4.5 的配置已经写了它，`AgentSandboxReaper` 也只为它存在。镜像 `apps/agent-runner` 还没有，默认镜像名 `learning-agent-runner:latest` 拉不到，真容器没跑过。
+  - 和旧服务不同：`agent` 段里不认识的字段拒绝启动；不支持一期的 `driver: local`（没有旧配置）；模型表路径不可配，固定 `<dataDir>/agent-models.json`；账号级撤销不搬（`docs/31` §4.4）。
 
 ## 9. 需要用户决定的事项
 

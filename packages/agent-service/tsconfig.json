@@ -1,0 +1,33 @@
+{
+  /*
+   * customConditions: source —— 类型从 @learning/* 的源码来，编译本包不用先构建它们。
+   * rootDir 是上一级：测试要用 collab 的配额、storage 的签名函数（不是导出 API），这个配置不产出文件，产出用 tsconfig.build.json。
+   * paths：source 也会命中 @hocuspocus/* 自己的 exports（指向编译不了的 src/），经 @learning/collab 的源码引到这里时要钉到 dist。
+   */
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "customConditions": ["source"],
+    "paths": {
+      "@hocuspocus/common": ["../collab/node_modules/@hocuspocus/common/dist/index.d.ts"],
+      "@hocuspocus/extension-redis": ["../collab/node_modules/@hocuspocus/extension-redis/dist/index.d.ts"],
+      "@hocuspocus/server": ["../collab/node_modules/@hocuspocus/server/dist/index.d.ts"]
+    },
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "target": "ES2023",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": "..",
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "types": ["node"]
+  },
+  "exclude": ["node_modules", "dist"]
+}

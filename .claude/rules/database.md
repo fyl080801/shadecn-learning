@@ -82,3 +82,9 @@ paths:
 ## `@learning/apps` — `AppTask`
 
 - Same two-definitions rule against `mod-apps`. It has one column `mod-apps` doesn't: `active_key`, unique and nullable, set while a task is active (`docs/30` §8). Both databases allow any number of NULLs under a unique constraint, which is what makes it work without a partial index.
+
+## `@learning/agent` — the agent tables
+
+- Same two-definitions rule against `mod-agent`. `AgentConversation` has real FKs with cascade to `@learning/canvas`'s `Flow` and `@learning/data-access`'s `User`; `AgentRun`, `AgentToolCall`, `AgentGrant` and `AgentGrantScope` keep plain-text ids so the audit trail outlives what it describes, as described above. `AGENT_ENTITIES` in `entities.ts` is the `useValue` the module registers, so a process without `AgentModule` has none of these tables.
+- **Every write on a conversation, and every read that returns the model context, has `flow` and `user` in the `where`**: someone else's conversation and a missing one are the same result (0 rows). The display reads (`list`, `get`) use `flow` alone on purpose, because members may read each other's conversations.
+- `AgentGrants` has no `revokeAllForUser`: the old service never called its own in production (`docs/31` §4.4).

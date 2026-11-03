@@ -3,6 +3,7 @@ paths:
   - "apps/agent-sandbox/**"
   - "packages/agent/**"
   - "packages/agent-core/**"
+  - "packages/agent-service/**"
   - "packages/mod-agent/**"
   - "packages/mod-agent/**"
   - "apps/web/src/components/flow/agent/**"
@@ -152,6 +153,20 @@ A second implementation of `packages/agent` for the Nest service, copied with on
 - **No top-level `let` / `var` in `src/`** (pinned by `test/package.test.ts`): every piece of run state lives in `createAgentRuntime`'s closure, so one process can hold several runtimes. Top-level `Set` / `Map` constants (lookup tables) are fine.
 - **`test/runner-process.test.ts` runs the tsc output**: it rebuilds `@learning/contracts`, `@learning/llm` and this package's `dist/`, then starts `node dist/runner/main.js` through the `process` driver against a real HTTP gateway and a scripted upstream. That is the only test that catches a missing dependency declaration or an ESM resolution error in the output.
 - `@dagrejs/dagre` is a peer of this package (the `auto_layout` tool reaches it through `@learning/contracts/flow-layout`); `yjs` and `@learning/contracts` are peers too, so a process holds one copy.
+
+## The Nest host — `packages/agent-service` (`@learning/agent`, `docs/31` §4)
+
+The invariants of the host section above hold, with `modules.agent` read as config.yaml's `agent` section. What differs, and what the obvious change gets wrong:
+
+- **Providers, not `AgentPorts` and `lazySingleton`.** `AGENT_HOST_OPTIONS` is the old `agentHostOptions`: what the runtime and the tests share. **`titleModel` stays out of it, passed only in `buildAgentRuntime`**, for the reason above. `AGENT_RUNTIME` is built at startup, not on the first request, so a bad `titleModel` key refuses to start even when the agent is disabled.
+- **Validation lives in the factories (`AGENT_MODELS`, `AGENT_DEFINITIONS`, `AGENT_TEXT_SKILLS`, `AGENT_OPTIONS`).** Nest builds every provider, so a throw means no listening port, enabled or not. "Configured right but unusable now" (`$ENV` unset, driver can't be built, `driver: k8s`) must stay `enabled: false`, never a throw. A misspelt field in the `agent` section refuses to start and the message never echoes a value; a bad number falls back to the default with a warning, as in the old service.
+- **Exit: `AgentModule.onModuleDestroy` calls `abortAll`, capped at `AGENT_SHUTDOWN_TIMEOUT_MS`.** A run's cleanup disconnects its direct connection, which stores and unloads the room, and `CollabServer` closes rooms and the Redis extension in `beforeApplicationShutdown` (same as `TaskRunner`, `.claude/rules/apps.md`). Nest finishes every module's `onModuleDestroy` first, whatever the module order. **Moving it to `beforeApplicationShutdown` passes on a flat root**: within a phase Nest runs shallower modules first, and an importer usually sits above what it imports, but a later relink in `TopologyTree` can put it below. `test/shutdown.test.ts` boots that shape (`agentBelowCollab`) so the mistake fails.
+- **`AgentMediaReader` reads through `AssetStorage.readByUrl`, not `read`.** `read` checks `FlowAsset` ownership, and a duplicated canvas carries URLs without records, so `view_node_media` would see nothing there. `readByUrl` is still the SSRF guard: a `foreign` URL is mapped to `MediaReadError` with no request sent. S3 failures reject, and they map to `unavailable` so nothing from S3 reaches the model.
+- **`AgentCanvasAccess.write` checks `CollabServer.quotaLocked` after authorizing**: a direct connection passes neither the write gate nor `beforeHandleMessage`, so this is its only quota check. `flowHasNode` reads through `FlowPersistence.load`, the room's own load path, which also covers a canvas that only has `graph` so far.
+- **The token secret's purpose string must never parse as a session token.** `deriveSecretFrom` and `sessionTokenId` are the same HMAC, so a purpose that is valid 43-char base64url would let that cookie value's session id equal the signing key. The colon in `agent:run-token` keeps it out of that alphabet. Changing the string invalidates tokens in flight; a test pins the digest.
+- **The default sandbox image is `learning-agent-runner:latest`**, not `shadecn-agent-sandbox`: `docs/31` §3.3 chose a separate runner for this service.
+- **`process` runs `@learning/agent-core`'s tsc output** (`runner-command.ts`, resolved by package name). Tests that need it enabled call `ensureRunnerBuilt()` in `test/helpers.ts`, which builds only if the output is missing.
+- **Testing without HTTP**: `useScripted` in `test/helpers.ts` spreads `AGENT_HOST_OPTIONS` over a scripted runtime, and `send` stands in for the panel's `POST …/messages`. **The scripted upstream answers in arrival order**, so a test with two concurrent runs must await the first step's `reached` before starting the second, or the two scripts swap (`gated`).
 
 ## Dependencies
 
