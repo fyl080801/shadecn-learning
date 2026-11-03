@@ -15,6 +15,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@hocuspocus/extension-redis": "^4.6.0",
     "@hocuspocus/server": "^4.6.0",
     "crossws": "^0.4.10"
   },

@@ -1,6 +1,7 @@
 ---
 paths:
   - "packages/cluster/**"
+  - "apps/collab/**"
   - "packages/server-kit/src/cluster/**"
   - "apps/server/scripts/dev-cluster.mjs"
   - "k8s/**"
@@ -29,7 +30,9 @@ paths:
 - **The Redis connection is tuned for the request path, don't relax it**: `enableOfflineQueue: false` (fail instead of queueing through an outage), `commandTimeout` (the only thing that frees a command when the peer stops answering without closing, measured with a paused container), `autoResendUnfulfilledCommands: false` (a `SET NX` the caller gave up on must not be resent after a reconnect: it would leave a lock nobody releases). `apps/server`'s client differs on purpose: its callers are not on the login path.
 - **A timed-out `SET NX` may still run**: when the peer only stopped answering, the command sits in the socket and executes on recovery, leaving a lock nobody releases, and every waiter sits out the TTL (measured: pausing the Redis container). So a failed acquire also sends the token-checked release, which the same connection orders after the `SET`. If the connection dropped first, the lock simply waits out its TTL.
 - **The connection closes in `onApplicationShutdown`**, like the ORM: requests draining through HTTP close may still hold a lock.
-- **`cluster` must not import a business package**, `data-access` included. `redis` + SQLite is a rule about two sections, so the rule is `assertClusterDatabase` here and the wiring is `apps/platform`'s `ClusterDatabaseCheckModule` (same shape as `WEB_PAGE_AUTH`). **A new service must add that module too.**
+- **`cluster` must not import a business package**, `data-access` included. `redis` + SQLite is a rule about two sections, so the rule is `assertClusterDatabase` here and the wiring is `@learning/session`'s `ClusterDatabaseCheckModule` (session already peers on both). **Every root module imports it.**
+- **`Cluster.redisUrl` exists for Hocuspocus's Redis extension and nothing else; it may hold a password, so it never reaches a log.** The extension opens its own connections because `redis.ts`'s are tuned for the request path (no offline queue, no resend) and a subscriber can't share them.
 - **Add a method only when a caller exists**: `SharedLog`, `SharedCounter`, `compareAndSet` and `Bus.dispatch` are absent on purpose. Redis wire format isn't compatible with `apps/server`, and needn't be: the two products share no Redis data.
 - **Memory stores encoded values and shares a namespace within a backend**, so a read returns a new object and two `createMap(ns)` calls see one table, as on Redis. Otherwise a test passes on memory and the behaviour differs on Redis.
+- **A replica running `single` is the data-loss case of `docs/14` §2**, and a platform in `single` can't reach replicas either (revocation and flush go through this layer). `apps/collab`'s `AppModule` refuses `single`; the platform can't, since one process with `single` is its default, so `docs/30` §3 says it must switch too.
 - **`Bus.request` must not reject on a shared-layer failure**: it returns what it got and callers fall back (the database). A failed subscribe must not leave a handler registered: the next subscribe would believe the channel is live and never receive anything. Pub/sub has its own connection, created on first subscribe, re-subscribed by ioredis after a reconnect (pinned), closed with the backend; messages sent while it is down are lost by contract. `Cluster` closes the bus before the backend, or registrations outlive the process until their TTL.

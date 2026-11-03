@@ -52,6 +52,7 @@ COPY packages/mod-apps/package.json ./packages/mod-apps/
 COPY apps/server/package.json ./apps/server/
 COPY apps/agent-sandbox/package.json ./apps/agent-sandbox/
 COPY apps/platform/package.json ./apps/platform/
+COPY apps/collab/package.json ./apps/collab/
 COPY packages/config/package.json ./packages/config/
 COPY packages/web/package.json ./packages/web/
 COPY packages/contracts/package.json ./packages/contracts/

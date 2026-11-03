@@ -223,11 +223,26 @@ describe('awareness clientID 归属', () => {
     expect(await claims.dropForeignClients(room, 'socket-c', forged)).toBe(1)
   })
 
-  it('房间散场后整张登记表作废', async () => {
+  it('断开之后号码能被重连的新 socket 接着用（房间散场之前一定先断开）', async () => {
     await claims.dropForeignClients(room, 'socket-a', states({ 1: {} }))
-    await claims.forgetRoom(room)
+    await claims.releaseSocket(room, 'socket-a')
+    claims.forgetRoom(room)
 
     expect(await claims.dropForeignClients(room, 'socket-b', states({ 1: {} }))).toBe(0)
+  })
+
+  it('房间在一个副本上散场，别的副本上开着的连接的号码不会被放掉，也就不能被冒用', async () => {
+    const backend = createMemoryBackend()
+    const replica = (instance: string) => new AwarenessClaims(new Cluster('single', backend, instance))
+    const [a, b, c] = [replica('a'), replica('b'), replica('c')]
+    await b.dropForeignClients(room, 'b:socket', states({ 1: {} }))
+
+    // 副本 a 上这个房间的人走光了
+    await a.dropForeignClients(room, 'a:socket', states({ 2: {} }))
+    await a.releaseSocket(room, 'a:socket')
+    a.forgetRoom(room)
+
+    expect(await c.dropForeignClients(room, 'c:forger', states({ 1: {} }))).toBe(1)
   })
 
   it('共享层挂了 → 放行：防冒名的护栏不能把所有人的在场卡死', async () => {
@@ -236,7 +251,6 @@ describe('awareness clientID 归属', () => {
     const mine = states({ 7: {} })
     expect(await broken.dropForeignClients(room, 'socket-a', mine)).toBe(0)
     await expect(broken.releaseSocket(room, 'socket-a')).resolves.toBeUndefined()
-    await expect(broken.forgetRoom(room)).resolves.toBeUndefined()
   })
 })
 

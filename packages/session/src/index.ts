@@ -10,6 +10,7 @@
  * 进程里的 `DataAccess`、`ConfigService`、`Cluster`、实体基类都只有应用装的那一份。
  */
 export { ApiSessionGuard } from './api-session.guard.js'
+export { ClusterDatabaseCheckModule } from './cluster-database.module.js'
 export { CurrentUser } from './current-user.decorator.js'
 export { SessionIdentityModule } from './identity.module.js'
 export { LoginModule } from './login.module.js'

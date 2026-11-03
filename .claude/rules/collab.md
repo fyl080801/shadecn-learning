@@ -2,6 +2,7 @@
 paths:
   - "packages/mod-collab/**"
   - "packages/collab/**"
+  - "apps/collab/**"
   - "apps/web/src/composables/flow/sync/**"
   - "apps/web/src/composables/flow/useFlowPresence.ts"
   - "apps/web/src/lib/presence.ts"
@@ -94,6 +95,15 @@ A second implementation of everything above, sharing no code with `mod-collab`: 
 - **Hocuspocus stores by itself on last leave, so "all clients gone" tests can't see whether the shutdown flush works.** Only a room held open by a direct connection can (`test/shutdown.test.ts`).
 - **Keep the `upgrade` listener while stopping**; answer 503. Without a listener Node hands the upgrade to Fastify as a normal request and it lands on the page fallback. Other paths: leave them if `listenerCount('upgrade') > 1` (Vite HMR), destroy otherwise.
 - **The shutdown close is 1012 `server-restarting`**, not a `CLOSE_*`: `classifyClose` must not recognise it, so the provider reconnects.
+- **`revalidateConnections` must not reuse a round already in flight**: it may have read the database before the revocation, and the route's 204 promises the person is gone. Callers join the one round queued behind it.
 - **Store stats count where the write happens** (`FlowPersistence.storeStats()`: `completed`, `failed`), not "started − completed" around the hook chain (`docs/30` §5). `/api/collab/health` here judges by what is owed now: cumulative `failed` stays in the body but doesn't drive the 503.
 - **Per-update side effects skip `isRelayedUpdate(origin)`; the quota check does not**: each replica holds a full doc and must measure it.
+- **The Redis extension comes through `COLLAB_EXTENSIONS`, an async factory**, so `new Hocuspocus` gets it in the constructor and `single` never loads the package or ioredis (the factory holds the only dynamic import, `test/package.test.ts`). Calling `configure()` a second time also works but re-fires `onConfigure` on the inline hooks.
+- **Redlock is only an optimization, and it can skip a store.** A lost lock throws `SkipFurtherHooksError`, so the inline `onStoreDocument` doesn't run and nothing is counted. Nothing retries that skip: durability comes from `beforeUnloadDocument`, the flush paths and CAS, none of which take the lock. Don't add the lock to them, and don't treat a skip as a failure.
+- **A failed store must release the lock itself.** A throw ends the hook chain, so the extension's `afterStoreDocument` never runs and the lock sits for its full 10s, turning every replica's stores into skips (measured: new content stayed out of the database and nothing was owed). The inline `onStoreDocument` runs that hook in its `catch`, then rethrows.
+- **`FailOpenRedis` doesn't take the lock unless `pub` is `ready`.** Upstream's `onStoreDocument` waits out ioredis's retries (measured about 50s) and redlock then reports the outage as a failed quorum, indistinguishable from a lost lock: stores stop, nothing is owed, and edits sit in memory for the whole outage.
+- **Relayed updates don't schedule a store on the receiving replica** (`shouldSkipStoreHooks`): the replica that took the edit stores it. Quota and side effects are what still run on `onChange`.
+- **Per-replica cleanup stays per-replica**: `AwarenessClaims.forgetRoom`, `CollabQuota.forget` and `ExclusiveConnections.forgetRoom` clear only local state when a room unloads here, because the room may be open on another replica. Deleting shared claims lets anyone take over that replica's clientIDs. Own claims are already gone by then: `onDisconnect` runs before the unload.
+- **The shutdown waits for empty rooms before closing the extension** (`roomsSettled`, capped): disconnect hooks release claims in the shared layer, and leaving before they finish means a reconnecting client's cursor is dropped as impersonation until the claim's TTL. The extension holds unloads for 1s (`disconnectDelay`), so a replica takes at least that long to exit once it had a room.
+- **The poll primes in `onModuleInit`, not on the first tick**: the watcher's first read only records, so priming on the first tick would miss a revocation in the first 3s.
 - **`POST /doc` needs a Fastify content-type parser** (else 415), registered in `onModuleInit`, before routes. It parses before routing: an oversized body gets Fastify's 413 ahead of the guards, in Nest's default error shape.

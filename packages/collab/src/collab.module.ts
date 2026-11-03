@@ -1,7 +1,9 @@
 import { CanvasModule } from '@learning/canvas'
+import { Cluster } from '@learning/cluster'
 import { Module } from '@nestjs/common'
 import { AwarenessClaims } from './awareness.js'
 import { CollabAuth } from './collab-auth.js'
+import { COLLAB_EXTENSIONS, createCollabExtensions } from './collab-extensions.js'
 import { CollabServer } from './collab-server.js'
 import { ExclusiveConnections } from './exclusive.js'
 import { FlowPersistence } from './flow-persistence.js'
@@ -13,7 +15,15 @@ import { CollabQuota } from './quota.js'
  */
 @Module({
   imports: [CanvasModule],
-  providers: [CollabAuth, FlowPersistence, CollabQuota, AwarenessClaims, ExclusiveConnections, CollabServer],
+  providers: [
+    CollabAuth,
+    FlowPersistence,
+    CollabQuota,
+    AwarenessClaims,
+    ExclusiveConnections,
+    { provide: COLLAB_EXTENSIONS, inject: [Cluster], useFactory: createCollabExtensions },
+    CollabServer,
+  ],
   exports: [CollabServer, FlowPersistence],
 })
 export class CollabModule {}

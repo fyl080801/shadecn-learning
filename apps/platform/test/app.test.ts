@@ -4,6 +4,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { Cluster } from '@learning/cluster'
+import { CollabGatewayModule } from '@learning/collab'
 import { DataAccess } from '@learning/data-access'
 import { bootstrapService } from '@learning/foundation'
 import { SessionService, UserService } from '@learning/session'
@@ -12,6 +13,7 @@ import { NestFactory } from '@nestjs/core'
 import { Module } from '@nestjs/common'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppModule } from '../src/app.module.js'
+import { PlatformBaseModule } from '../src/platform-base.module.js'
 
 const SECRET_PAGE = 'PROTECTED-INDEX'
 const LOGIN_PAGE = 'LOGIN-ENTRY'
@@ -251,7 +253,7 @@ describe('模块依赖和 imports 顺序无关', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  // AppModule 的 imports 是 [config, data-access, session, page-auth, web]。全排 120 种没必要：全局模块之间的先后只看前后关系，
+  // 根模块的 imports 是 [config, data-access, session, page-auth, web, …]。全排 120 种没必要：全局模块之间的先后只看前后关系，
   // 三个有依赖的业务模块排全，config（谁都依赖它）和 page-auth（web 要它）放在最前和最后各试一次
   it.each([
     ['config, page-auth, data-access, session, web', [0, 3, 1, 2, 4]],
@@ -265,8 +267,8 @@ describe('模块依赖和 imports 顺序无关', () => {
   ])('%s：启动成功，全新的库上第一次校验页面时表已对齐，且只同步一次', async (_name, order) => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     writeConfig(dir, productionConfig({ url: `file:${path.join(dir, 'order.db')}`, dir }))
-    const imports = Reflect.getMetadata('imports', AppModule) as unknown[]
-    const providers = Reflect.getMetadata('providers', AppModule) as unknown[]
+    const imports = [...(Reflect.getMetadata('imports', PlatformBaseModule) as unknown[]), CollabGatewayModule]
+    const providers = Reflect.getMetadata('providers', PlatformBaseModule) as unknown[]
     expect(imports).toHaveLength(9)
 
     @Module({})
@@ -455,6 +457,42 @@ describe('cluster + 数据库的组合', () => {
       web: { root: dir },
     })
     await expect(listen(AppModule)).rejects.toThrow('database.schemaSync')
+  })
+})
+
+describe('协同由副本提供时的根模块', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = staticDir()
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.restoreAllMocks()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('两个根模块只差协同入口：AppModule = PlatformBaseModule + CollabGatewayModule', () => {
+    expect(Reflect.getMetadata('imports', AppModule)).toEqual([PlatformBaseModule, CollabGatewayModule])
+    expect(Reflect.getMetadata('imports', PlatformBaseModule)).not.toContain(CollabGatewayModule)
+  })
+
+  it('PlatformBaseModule 能单独启动：页面和画布 REST 都在，协同的接口不存在', async () => {
+    writeConfig(dir, productionConfig({ url: `file:${path.join(dir, 'base.db')}`, dir }))
+    const { app, baseUrl } = await listen(PlatformBaseModule)
+    const user = await app.get(UserService).findOrCreate({ issuer: 'https://issuer.test', subject: 'base-user' })
+    const cookie = `sid=${await app.get(SessionService).create({
+      userId: user.id,
+      provider: 'keycloak',
+      tokens: { accessToken: 'x', refreshToken: null, idToken: null, expiresAt: new Date(Date.now() + 3600_000), refreshExpiresAt: null, sessionState: null },
+    })}`
+
+    expect((await rawRequest(baseUrl, '/', cookie)).body).toBe(SECRET_PAGE)
+    expect(JSON.parse((await rawRequest(baseUrl, '/api/projects/personal', cookie)).body).kind).toBe('personal')
+    expect((await rawRequest(baseUrl, '/api/collab/rooms', cookie)).status).toBe(404)
+    expect((await rawRequest(baseUrl, '/api/collab/health', cookie)).status).toBe(404)
+    await app.close()
   })
 })
 

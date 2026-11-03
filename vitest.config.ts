@@ -7,6 +7,7 @@ import { defineConfig } from 'vitest/config'
  *   shared —— packages/shared/vitest.config.ts：Node 环境，测前后端共用的契约（packages/shared/test/**）
  *   agent  —— packages/agent/vitest.config.ts：Node 环境，测画布 Agent（编排、画布工具、沙箱，packages/agent/test/**）
  *   platform —— apps/platform/vitest.config.ts：Node 环境，测 NestJS 服务（@learning/platform）
+ *   collab-service —— apps/collab/vitest.config.ts：Node 环境，测协同副本（@learning/collab-service）和前置代理；设了 PLATFORM_TEST_REDIS_URL 才真的启动
  *   config —— packages/config/vitest.config.ts：Node 环境，测配置的 Nest 模块（@learning/config）
  *   learning-web —— packages/web/vitest.config.ts：Node 环境，测托管前端的 Nest 模块（@learning/web）
  *   contracts —— packages/contracts/vitest.config.ts：Node 环境，测复制的契约文件没有漂移、yjs 单份（@learning/contracts）
@@ -15,7 +16,7 @@ import { defineConfig } from 'vitest/config'
  *   data-access —— packages/data-access/vitest.config.ts：Node 环境，测数据访问的 Nest 模块（@learning/data-access）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL
  *   session —— packages/session/vitest.config.ts：Node 环境，测用户和会话的 Nest 模块（@learning/session）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL
  *   canvas —— packages/canvas/vitest.config.ts：Node 环境，测项目、邀请、画布的 Nest 模块（@learning/canvas）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL，设了 PLATFORM_TEST_REDIS_URL 才连 Redis
- *   collab —— packages/collab/vitest.config.ts：Node 环境，测实时协同的 Nest 模块（@learning/collab）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL
+ *   collab —— packages/collab/vitest.config.ts：Node 环境，测实时协同的 Nest 模块（@learning/collab）；设了 PLATFORM_TEST_DATABASE_URL 才连 PostgreSQL，设了 PLATFORM_TEST_REDIS_URL 才跑跨副本的用例
  *   agent-sandbox —— apps/agent-sandbox/vitest.config.ts：Node 环境，测沙箱镜像的构建脚本（runner 的边界判定、共用的打包逻辑）
  *   server-kit —— packages/server-kit/vitest.config.ts：Node 环境，测服务端底座的运行时库（模块内核、共享层契约、总线、权限撤销信号）
  *   server-core —— packages/server-core/vitest.config.ts：Node 环境，测服务端底座不碰数据库的部分（集成测试在 server project）
@@ -39,6 +40,7 @@ export default defineConfig({
       'packages/agent/vitest.config.ts',
       'apps/agent-sandbox/vitest.config.ts',
       'apps/platform/vitest.config.ts',
+      'apps/collab/vitest.config.ts',
       'packages/config/vitest.config.ts',
       'packages/web/vitest.config.ts',
       'packages/contracts/vitest.config.ts',
@@ -66,6 +68,7 @@ export default defineConfig({
         'apps/server/**/*.ts',
         'apps/agent-sandbox/scripts/**/*.mjs',
         'apps/platform/src/**/*.ts',
+        'apps/collab/src/**/*.ts',
         'packages/config/src/**/*.ts',
         'packages/web/src/**/*.ts',
         'packages/contracts/src/**/*.ts',

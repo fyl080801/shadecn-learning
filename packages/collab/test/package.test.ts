@@ -26,6 +26,7 @@ describe('包的依赖边界', () => {
   it('Hocuspocus 和 crossws 的版本线和 mod-collab 一致', () => {
     const reference = JSON.parse(fs.readFileSync(path.resolve(packageDir, '../mod-collab/package.json'), 'utf8')).peerDependencies
     expect(manifest.dependencies['@hocuspocus/server']).toBe(reference['@hocuspocus/server'])
+    expect(manifest.dependencies['@hocuspocus/extension-redis']).toBe(reference['@hocuspocus/extension-redis'])
     expect(manifest.dependencies.crossws).toBe(reference.crossws)
     expect(manifest.peerDependencies.yjs).toBe(reference.yjs)
   })
@@ -49,6 +50,15 @@ describe('包的依赖边界', () => {
     }
   })
 
+  it('Redis 扩展只动态 import，ioredis 不进来：single 模式这两个包都不加载', () => {
+    for (const { file, code } of sources('src')) {
+      expect(code, file).not.toMatch(/from\s*'@hocuspocus\/extension-redis'/)
+      expect(code, file).not.toMatch(/from\s*'ioredis'/)
+    }
+    const dynamic = sources('src').filter(({ code }) => code.includes(`import('@hocuspocus/extension-redis')`))
+    expect(dynamic.map(({ file }) => file)).toEqual(['collab-extensions.ts'])
+  })
+
   it('src 里 import 的每个包都声明了：tsc 不查这个，缺了到产物运行时才炸', () => {
     const declared = new Set([...Object.keys(manifest.peerDependencies), ...Object.keys(manifest.dependencies)])
     const imported = new Set<string>()
@@ -62,15 +72,17 @@ describe('包的依赖边界', () => {
     expect([...imported].filter((name) => !declared.has(name))).toEqual([])
   })
 
-  it('apps/platform 自己声明 yjs：peer 要应用来装，少了它产物里解析不到', () => {
-    const platform = JSON.parse(fs.readFileSync(path.resolve(packageDir, '../../apps/platform/package.json'), 'utf8'))
-    expect(platform.dependencies.yjs).toBe(manifest.peerDependencies.yjs)
+  it.each(['platform', 'collab'])('apps/%s 自己声明 yjs：peer 要应用来装，少了它产物里解析不到', (app) => {
+    const service = JSON.parse(fs.readFileSync(path.resolve(packageDir, `../../apps/${app}/package.json`), 'utf8'))
+    expect(service.dependencies.yjs).toBe(manifest.peerDependencies.yjs)
   })
 
   it('一份 yjs：本包、Hocuspocus、contracts 解析到同一个文件', () => {
     const yjsFrom = (from: string) => fs.realpathSync(createRequire(path.join(from, 'package.json')).resolve('yjs'))
     const server = fs.realpathSync(path.join(packageDir, 'node_modules/@hocuspocus/server'))
+    const redisExtension = fs.realpathSync(path.join(packageDir, 'node_modules/@hocuspocus/extension-redis'))
     expect(yjsFrom(server)).toBe(yjsFrom(packageDir))
+    expect(yjsFrom(redisExtension)).toBe(yjsFrom(packageDir))
     expect(yjsFrom(path.resolve(packageDir, '../contracts'))).toBe(yjsFrom(packageDir))
   })
 })

@@ -3,6 +3,7 @@
 **/node_modules
 dist
 apps/platform/dist
+apps/collab/dist
 packages/config/dist
 packages/web/dist
 packages/data-access/dist
@@ -34,6 +35,7 @@ data
 apps/server/test
 apps/agent-sandbox/test
 apps/platform/test
+apps/collab/test
 apps/web/src/test
 packages/*/test
 vitest.config.ts

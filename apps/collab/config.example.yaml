@@ -1,0 +1,27 @@
+# 协同副本的配置（docs/30 §3）。每个进程一个数据目录：<目录>/config.yaml。敏感值放运行目录的 .env（示例见 .env.example）。
+
+server:
+  # 每个副本一个端口，3000 是前置代理，3001 是平台
+  port: 3002
+  # 只听本机就够了：外面的流量都经前置代理
+  host: 127.0.0.1
+  # 协同 WebSocket 的 Origin 校验按它判定，要包含浏览器实际打开的地址，也就是前置代理
+  origins:
+    - http://127.0.0.1:3000
+
+database:
+  # 和平台同一个库。带密码的放 .env 的 PLATFORM_DATABASE_URL
+  # url: postgresql://user@127.0.0.1:5432/platform
+  # 必须是 off，否则拒绝启动：表结构由平台同步，所以平台要先就绪
+  schemaSync: off
+
+cluster:
+  # 必须是 redis，否则拒绝启动。平台也要切到 redis，撤权和复制前落库才到得了这里
+  mode: redis
+  url: redis://127.0.0.1:6379
+
+# 和平台相同：握手要续期会话
+# auth:
+#   oidc:
+#     issuer: https://keycloak.example.com/realms/demo
+#     clientId: platform

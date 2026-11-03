@@ -53,13 +53,15 @@ export class AwarenessClaims {
     await Promise.all(entries.filter(([, owner]) => owner === socketId).map(([key]) => this.claims.delete(key))).catch(() => undefined)
   }
 
-  /** 房间散场：整张登记表作废 */
-  async forgetRoom(room: string): Promise<void> {
+  /**
+   * 房间在本实例散场：只清本地。共享表里本实例的登记在 {@link releaseSocket} 时已经放掉了，剩下的是别的副本上正开着的连接，删了它们的号码就能被人冒用。
+   * 崩溃留下的登记靠 TTL 过期。
+   */
+  forgetRoom(room: string): void {
     const prefix = `${room}:`
     for (const key of [...this.localOwners.keys()]) {
       if (key.startsWith(prefix)) this.localOwners.delete(key)
     }
-    await this.claims.deleteByPrefix(prefix).catch(() => undefined)
   }
 }
 

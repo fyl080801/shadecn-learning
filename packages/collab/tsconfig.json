@@ -9,6 +9,7 @@
     "customConditions": ["source"],
     "paths": {
       "@hocuspocus/common": ["./node_modules/@hocuspocus/common/dist/index.d.ts"],
+      "@hocuspocus/extension-redis": ["./node_modules/@hocuspocus/extension-redis/dist/index.d.ts"],
       "@hocuspocus/provider": ["./node_modules/@hocuspocus/provider/dist/index.d.ts"],
       "@hocuspocus/server": ["./node_modules/@hocuspocus/server/dist/index.d.ts"]
     },

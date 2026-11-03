@@ -95,6 +95,21 @@ describeOnBothDatabases('真 provider', (ctx) => {
       await vi.waitFor(() => expect([...nodesMap(again.doc).keys()]).toEqual(['n1']), TIMEOUT)
     })
 
+    it('开着房间复制画布：拿到还没落库的内容，投影也是新的', async () => {
+      const { alice, flowId, name } = await room()
+      const a = open(name, alice.cookie)
+      await synced(a)
+      nodesMap(a.doc).set('unsaved', nodeMap())
+      await vi.waitFor(() => expect(hocuspocus().documents.get(name)?.getMap('nodes').has('unsaved')).toBe(true), TIMEOUT)
+      expect(await saved(flowId)).toEqual([])
+
+      const res = await alice.request(`/api/flows/${flowId}/duplicate`, { method: 'POST' })
+      expect(res.status).toBe(201)
+      const copy = res.json<{ id: string; nodeCount: number }>()
+      expect(copy.nodeCount).toBe(1)
+      expect(await saved(copy.id)).toEqual(['unsaved'])
+    })
+
     it('/api/collab/rooms 报得出在线的房间和连接', async () => {
       const { alice, flowId, name } = await room()
       const a = open(name, alice.cookie)
@@ -201,6 +216,53 @@ describeOnBothDatabases('真 provider', (ctx) => {
 
       expect((await alice.request(`/api/flows/${flowId}`, { method: 'DELETE' })).status).toBe(204)
       await closedWith(a, CLOSE_REVOKED)
+    })
+
+    it('撤权落在进行中那轮复验查完之后：等到的是一轮新的，人当场下线，不等 20 秒兜底', async () => {
+      const bob = await ctx.actor('bob')
+      const { alice, projectId, name } = await room([bob])
+      const a = open(name, alice.cookie)
+      const b = open(name, bob.cookie)
+      await synced(a)
+      await synced(b)
+
+      // 卡住第一轮：它拿的是撤权之前的判定
+      const auth = ctx.app.get(CollabAuth, { strict: false })
+      const realAuthorize = auth.authorize.bind(auth)
+      let release!: () => void
+      const held = new Promise<void>((resolve) => (release = resolve))
+      const authorize = vi.spyOn(auth, 'authorize').mockImplementation(async (...args) => {
+        const verdict = await realAuthorize(...args)
+        await held
+        return verdict
+      })
+      const first = ctx.server.revalidateConnections()
+      await vi.waitFor(() => expect(authorize).toHaveBeenCalled(), TIMEOUT)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // 这时才撤权，第一轮已经查完库了
+      await ctx.dataAccess.em().nativeDelete(ProjectMember, { project: projectId, user: bob.userId })
+      authorize.mockRestore()
+      const second = ctx.server.revalidateConnections()
+      release()
+      await first
+      await second
+
+      await vi.waitFor(() => expect(b.closes.map((close) => close.code)).toContain(CLOSE_REVOKED.code), 1000)
+      expect(a.closes).toEqual([])
+    })
+
+    it('复验进行中再来多少次，都只补一轮：不叠着跑', async () => {
+      const auth = ctx.app.get(CollabAuth, { strict: false })
+      const { alice, name } = await room()
+      const a = open(name, alice.cookie)
+      await synced(a)
+      const rounds = vi.spyOn(auth, 'authorize')
+
+      const calls = [ctx.server.revalidateConnections(), ctx.server.revalidateConnections(), ctx.server.revalidateConnections(), ctx.server.revalidateConnections()]
+      await Promise.all(calls)
+
+      expect(rounds).toHaveBeenCalledTimes(2)
     })
 
     it('会话没了：复验关的是 4401，不是 4403 —— 一个空闲超时的人不该被告知「你已不是成员」', async () => {
@@ -376,7 +438,8 @@ describeOnBothDatabases('真 provider', (ctx) => {
       await ctx.app.get(CollabServer, { strict: false }).retryFailedStores()
       expect(hocuspocus().documents.has(name)).toBe(false)
       expect(await saved(flowId)).toEqual(expect.arrayContaining(['precious', 'second']))
-    })
+      // 两轮防抖，Redis 模式下每次散场还要多等 1 秒（扩展的 disconnectDelay）
+    }, 20_000)
   })
 
   describe('upgrade 入口', () => {

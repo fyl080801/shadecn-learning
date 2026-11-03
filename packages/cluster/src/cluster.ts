@@ -19,11 +19,13 @@ export class Cluster implements OnApplicationShutdown {
 
   /**
    * @param instanceId 这个进程的身份，协同的 socketId 前缀和总线都用它。主机名方便排查，随机后缀保证同一台机器上的两个进程、重启前后都不撞
+   * @param redisUrl `redis` 模式连的地址，可能带密码，别进日志。Hocuspocus 的 Redis 扩展要自己开连接：这里的连接是为请求路径调的（`redis.ts`），订阅和 redlock 用不了
    */
   constructor(
     readonly mode: ResolvedClusterOptions['mode'],
     private readonly backend: ClusterBackend,
     readonly instanceId = `${hostname()}-${randomUUID().slice(0, 8)}`,
+    readonly redisUrl?: string,
   ) {
     this.bus = new Bus(instanceId, backend.createChannel<BusEnvelope>('bus', jsonCodec()), backend.createMap('bus-responder', stringCodec))
   }
@@ -65,5 +67,5 @@ export async function openCluster(config: ConfigService): Promise<Cluster> {
   const { createRedisBackend } = await import('./redis.js')
   const backend = await createRedisBackend(options.url)
   console.log('[cluster] 多进程模式，共享状态走 Redis')
-  return new Cluster('redis', backend)
+  return new Cluster('redis', backend, undefined, options.url)
 }

@@ -4,7 +4,8 @@ import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { FlowDocStore } from '@learning/canvas'
+import { CANVAS_FLUSH_CONTENT, FlowDocStore } from '@learning/canvas'
+import { Cluster } from '@learning/cluster'
 import { nodesMap } from '@learning/contracts/flow-doc'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { CollabServer } from '../src/collab-server.js'
@@ -78,6 +79,21 @@ describe('app.close()', () => {
     expect(nodeIdsOf(row?.ydoc)).toEqual(['held-open'])
     await reader.close()
   }, 30_000)
+
+  it('落库请求的登记在关连接之前就撤掉：之后到的请求不再问一个马上要走的实例', async () => {
+    const app = await bootCollabApp(`file:${path.join(dir, 'flush-handler.db')}`)
+    const server = app.get(CollabServer, { strict: false })
+    const flush = vi.spyOn(server, 'flushRoom')
+    const bus = app.get(Cluster).bus
+
+    expect((await bus.request(CANVAS_FLUSH_CONTENT, { flowId: 'f1' })).replies).toHaveLength(1)
+    expect(flush).toHaveBeenCalledWith('f1')
+
+    await server.onModuleDestroy()
+    expect((await bus.request(CANVAS_FLUSH_CONTENT, { flowId: 'f1' })).replies).toEqual([])
+
+    await app.close()
+  })
 
   it('定时器和撤权订阅在关闭时撤掉，不会对着关掉的 ORM 再跑', async () => {
     const app = await bootCollabApp(`file:${path.join(dir, 'timers.db')}`)

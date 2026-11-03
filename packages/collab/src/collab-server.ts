@@ -1,15 +1,17 @@
-import { AccessRevocation } from '@learning/canvas'
+import { AccessRevocation, CANVAS_FLUSH_CONTENT, REVOCATION_POLL_INTERVAL_MS } from '@learning/canvas'
 import { Cluster } from '@learning/cluster'
 import { CLOSE_QUOTA_LOCKED, CLOSE_REVOKED, CLOSE_UNAUTHORIZED, STORE_STATE_MESSAGE } from '@learning/contracts/collab'
-import { type Connection, type Document, Hocuspocus } from '@hocuspocus/server'
+import { type Connection, type Document, type Extension, Hocuspocus } from '@hocuspocus/server'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { type BeforeApplicationShutdown, Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import * as Y from 'yjs'
 import { AwarenessClaims, enforceIdentity } from './awareness.js'
 import { closeForGood, denialError } from './close.js'
+import { COLLAB_EXTENSIONS } from './collab-extensions.js'
 import { type CollabAuthorization, type CollabDenialReason, CollabAuth, type CollabIdentity } from './collab-auth.js'
 import { EXCLUSIVE_SWEEP_INTERVAL, ExclusiveConnections, type ExclusiveDocument } from './exclusive.js'
 import { pruneDanglingEdges } from './flow-doc.js'
-import { flowIdOf, FlowPersistence } from './flow-persistence.js'
+import { flowIdOf, FlowPersistence, roomOf } from './flow-persistence.js'
 import { COLLAB_LIMITS, CollabQuota } from './quota.js'
 import { createWriteGate, isWriteSync, type WriteGate } from './write-gate.js'
 
@@ -31,6 +33,14 @@ const STORE_RETRY_INTERVAL = 30_000
 const SUMMARY_INTERVAL = 60_000
 /** 退出时收尾的上限。配 k8s 的 `terminationGracePeriodSeconds: 60`。超时就认了，内容还在客户端的 IndexedDB 里 */
 const SHUTDOWN_TIMEOUT_MS = 20_000
+/**
+ * 退出时等房间散场的上限。断开钩子（放掉 awareness 和互斥的登记）在散场之前跑，没跑完就退的话，重连到别的副本的人要等登记过期才看得到光标；
+ * Redis 扩展要在散场前等 1 秒（`disconnectDelay`），所以至少要比它长。落库失败的房间散不了场，到点就不等了：内容已经由 `flushRooms` 尽力写过。
+ */
+const ROOMS_SETTLE_TIMEOUT_MS = 3_000
+const ROOMS_SETTLE_POLL_MS = 20
+/** 关 Redis 扩展的上限：Redis 这时可能已经挂了，它的 `quit` 会在离线队列里一直等 */
+const EXTENSIONS_CLOSE_TIMEOUT_MS = 2_000
 
 /**
  * 同一条更新会在每个持有房间的副本上触发 `onChange`。按条计的副作用要跳过 redis 转发来的那份，否则一条更新记 N 次。
@@ -57,8 +67,8 @@ export type SocketCloser = (force: boolean) => void
  * **不接 WebSocket**：那是 `CollabGateway` 的事。将来 agent 进程只 import `CollabModule`，房间经 direct connection 打开，落库和复验照常。
  *
  * 关闭顺序（docs/30 §5），每一步都是因为下一步要依赖它：
- * - `onModuleDestroy`：停定时器和撤权订阅（入口由 `CollabGateway` 在同一阶段停）；
- * - `beforeApplicationShutdown`：关连接和 socket、逐房间落库、排空。**此时 ORM 和 Redis 还开着**，它们在 `onApplicationShutdown`；
+ * - `onModuleDestroy`：停定时器和撤权订阅，撤掉总线上的落库登记（入口由 `CollabGateway` 在同一阶段停）；
+ * - `beforeApplicationShutdown`：关连接和 socket、逐房间落库、排空、等房间散场、关 Redis 扩展。**此时 ORM 和共享层还开着**，它们在 `onApplicationShutdown`；
  * - 然后 Nest 才关 HTTP：upgrade 之后的 socket 也算 server 的连接，不关的话 `app.close()` 一直不返回（实测），ORM 也就关不掉。
  */
 @Injectable()
@@ -68,10 +78,13 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
   private readonly writeGate: WriteGate
   /** 这一条消息超限、临时置为 readOnly 的连接，`afterHandleMessage` 恢复 */
   private readonly oversizedFrame = new WeakSet<Connection>()
-  /** 上一轮复验还没跑完：房间多、库慢时下一轮不能叠上来 */
+  /** 正在跑的那轮复验：房间多、库慢时下一轮不能叠上来 */
   private revalidating: Promise<void> | null = null
+  /** 排在它后面的一轮，见 {@link revalidateConnections} */
+  private nextRevalidation: Promise<void> | null = null
   private timers: NodeJS.Timeout[] = []
   private stopRevocation: (() => void) | undefined
+  private stopFlushHandler: (() => Promise<void>) | undefined
   private socketCloser: SocketCloser | undefined
   private readonly instanceId: string
   /** 只算这个副本收到的更新，见 {@link isRelayedUpdate} */
@@ -84,7 +97,8 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
     @Inject(AwarenessClaims) private readonly awareness: AwarenessClaims,
     @Inject(ExclusiveConnections) private readonly exclusive: ExclusiveConnections,
     @Inject(AccessRevocation) private readonly revocation: AccessRevocation,
-    @Inject(Cluster) cluster: Cluster,
+    @Inject(Cluster) private readonly cluster: Cluster,
+    @Inject(COLLAB_EXTENSIONS) extensions: Extension[],
   ) {
     this.instanceId = cluster.instanceId
     this.writeGate = createWriteGate({
@@ -94,7 +108,7 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
         return result.ok ? null : result.reason
       },
     })
-    this.hocuspocus = this.createInstance()
+    this.hocuspocus = this.createInstance(extensions)
   }
 
   /** socketId 只在进程内唯一，awareness 归属会跨实例比对，要带实例前缀 */
@@ -102,9 +116,11 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
     return `${this.instanceId}:${socketId}`
   }
 
-  private createInstance(): Hocuspocus {
+  private createInstance(extensions: Extension[]): Hocuspocus {
     return new Hocuspocus({
       name: 'flow-collab',
+      // 业务钩子排在所有扩展之后：Redis 扩展（priority 1000）的 redlock 没抢到时，下面的 onStoreDocument 不跑，也就不算一次落库
+      extensions,
 
       /** 握手鉴权。身份靠 httpOnly cookie，所以走这里而不是 `onAuthenticate`。抛错就是拒绝，原因挂在 `reason` 上 */
       onConnect: async (data) => {
@@ -188,10 +204,19 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
       onStoreDocument: async (data) => {
         const pruned = pruneDanglingEdges(data.document)
         if (pruned > 0) console.log(`[collab] ${data.documentName} 清理了 ${pruned} 条悬空连线`)
-        await this.persistence.store(data.documentName, data.document, { projection: data.clientsCount === 0 })
+        try {
+          await this.persistence.store(data.documentName, data.document, { projection: data.clientsCount === 0 })
+        } catch (error) {
+          // 抛错钩子链就断了，Redis 扩展放锁的 afterStoreDocument 不会跑。不放的话锁要占满 10 秒，所有副本这段时间的落库都被当成「别的实例在存」跳过，补上欠账之后的新内容也进不了库
+          await this.hocuspocus.hooks('afterStoreDocument', data).catch(() => undefined)
+          throw error
+        }
       },
 
-      /** 投影的兜底写入点：最后一个人离开时，Hocuspocus 只在还有挂起的防抖时才补一次 store，「改完等两秒再关页面」走不到上面 */
+      /**
+       * 投影的兜底写入点：最后一个人离开时，Hocuspocus 只在还有挂起的防抖时才补一次 store，「改完等两秒再关页面」走不到上面。
+       * 也是多副本下的兜底：redlock 没抢到时 `onStoreDocument` 被跳过，这里不看锁，读 → 合并 → CAS 保证不丢。
+       */
       beforeUnloadDocument: async (data) => {
         await this.persistence.store(data.documentName, data.document, { projection: true })
       },
@@ -216,7 +241,7 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
       afterUnloadDocument: async (data) => {
         this.quota.forget(data.documentName)
         this.exclusive.forgetRoom(data.documentName)
-        await this.awareness.forgetRoom(data.documentName)
+        this.awareness.forgetRoom(data.documentName)
         await this.persistence.forget(data.documentName)
       },
 
@@ -280,18 +305,30 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
 
   /**
    * 对所有在线连接重查会话 + 成员身份，查不过的踢下线。主动撤权和定时兜底都汇到这里，所以判定缓存也在这里作废。
-   * 已经在跑就复用那一轮：调用方等到的是「有一轮完整的复验跑完了」。房间之间并行：串行的话最后一个房间的窗口是「间隔 + 前面所有房间的耗时」。
+   * 调用方等到的是「**调用之后才开始**的一轮复验跑完了」，路由 204 的保证靠它。已经有一轮在跑时不能直接复用：它可能已经查完库了，撤权落在这之后就看不到，要等定时兜底。
+   * 所以排一轮接着跑，这期间再来的共用排着的那一轮：不叠着跑，最多多一轮。房间之间并行：串行的话最后一个房间的窗口是「间隔 + 前面所有房间的耗时」。
    */
   revalidateConnections(): Promise<void> {
-    this.revalidating ??= (async () => {
-      try {
-        this.writeGate.clear()
-        await Promise.all([...this.hocuspocus.documents.values()].map((document) => this.revalidateDocument(document)))
-      } finally {
-        this.revalidating = null
-      }
-    })()
-    return this.revalidating
+    if (!this.revalidating) {
+      this.revalidating = this.runRevalidation()
+      return this.revalidating
+    }
+    this.nextRevalidation ??= this.revalidating
+      .catch(() => undefined)
+      .then(() => {
+        this.nextRevalidation = null
+        return this.revalidateConnections()
+      })
+    return this.nextRevalidation
+  }
+
+  private async runRevalidation(): Promise<void> {
+    try {
+      this.writeGate.clear()
+      await Promise.all([...this.hocuspocus.documents.values()].map((document) => this.revalidateDocument(document)))
+    } finally {
+      this.revalidating = null
+    }
   }
 
   private every(intervalMs: number, label: string, task: () => void | Promise<unknown>): void {
@@ -316,7 +353,7 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
     else console.log(line)
   }
 
-  onModuleInit(): void {
+  async onModuleInit(): Promise<void> {
     // 落库状态一翻转就告诉房间里的人：内容进了内存也广播了，连接看不出异常，不说一声界面会一直写着「已同步」
     this.persistence.onStoreStateChange((documentName, ok) => {
       const document = this.hocuspocus.documents.get(documentName)
@@ -335,6 +372,30 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
      * 不靠定时兜底：那段时间里被移除的人改的东西会被合并、落库，其他人撤销不回来（UndoManager 只跟踪自己的 origin）。
      */
     this.stopRevocation = this.revocation.onRevoked(() => this.revalidateConnections())
+
+    /*
+     * 别的进程（平台、别的副本）撤了权，这里只看得到世代号变了。变了就转成本进程的通知，上面的订阅者当场复验。
+     * 启动时就记下当前值，不等第一拍：第一次只记不报，等到第一拍才记的话，启动后三秒内的撤权就漏了。
+     */
+    const watcher = this.revocation.createWatcher()
+    await watcher.changed()
+    this.every(REVOCATION_POLL_INTERVAL_MS, '撤权轮询', async () => {
+      if (await watcher.changed()) await this.revocation.notify()
+    })
+
+    this.stopFlushHandler = await this.cluster.bus.handle(CANVAS_FLUSH_CONTENT, async ({ flowId }) => {
+      await this.flushRoom(flowId)
+      return null
+    })
+  }
+
+  /**
+   * 把这张画布还开着的房间落一次库，给 `CANVAS_FLUSH_CONTENT`（复制画布之前）。房间不在本实例上就什么也不做，照样回话：请求方据此知道不用再等。
+   * 带投影：复制出来的画布，计数读的是投影，不写就是上一轮的样子。不看 redlock：请求方在等这份内容，CAS 兜得住并发。
+   */
+  async flushRoom(flowId: string): Promise<void> {
+    const document = this.hocuspocus.documents.get(roomOf(flowId))
+    if (document) await this.persistence.store(document.name, document, { projection: true })
   }
 
   /**
@@ -363,11 +424,14 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
     return { rooms, totalRooms: rooms.length, totalConnections: rooms.reduce((sum, room) => sum + room.connections, 0) }
   }
 
-  onModuleDestroy(): void {
+  /** 先撤登记再关连接：之后到的落库请求不会再等一个马上要走的实例 */
+  async onModuleDestroy(): Promise<void> {
     for (const timer of this.timers) clearInterval(timer)
     this.timers = []
     this.stopRevocation?.()
     this.stopRevocation = undefined
+    await this.stopFlushHandler?.()
+    this.stopFlushHandler = undefined
   }
 
   async beforeApplicationShutdown(): Promise<void> {
@@ -387,7 +451,24 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
     // 对方不回关闭帧的 socket（断网、挂起的标签页）也不能挡住退出。收尾期间才完成握手的连接一起带走
     this.hocuspocus.closeConnections()
     this.socketCloser?.(true)
+    await this.roomsSettled()
+    await this.closeExtensions()
     this.summarize()
+  }
+
+  /** 等没人的房间走完散场，见 {@link ROOMS_SETTLE_TIMEOUT_MS}。direct connection 撑着的房间不散场，不等 */
+  private async roomsSettled(): Promise<void> {
+    const deadline = Date.now() + ROOMS_SETTLE_TIMEOUT_MS
+    const leaving = () => [...this.hocuspocus.documents.values()].some((document) => document.getConnectionsCount() === 0)
+    while (leaving() && Date.now() < deadline) await sleep(ROOMS_SETTLE_POLL_MS)
+  }
+
+  /** 散场之后才关：扩展在散场的钩子里还要退订。Redis 连接不关的话进程退不干净，也不算漏数据，所以出错只记一笔 */
+  private async closeExtensions(): Promise<void> {
+    await Promise.race([
+      this.hocuspocus.hooks('onDestroy', { instance: this.hocuspocus }).catch((err: unknown) => console.warn('[collab] 关闭 Hocuspocus 扩展失败', err)),
+      sleep(EXTENSIONS_CLOSE_TIMEOUT_MS, undefined, { ref: false }),
+    ])
   }
 
   /**

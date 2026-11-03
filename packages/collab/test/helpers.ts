@@ -69,7 +69,10 @@ async function inject(app: NestFastifyApplication, url: string, init: RequestIni
 class GuardModule {}
 
 /** 和 `apps/platform` 的 `AppModule` 一样的接线，少了页面和登录流程。真的监听端口：upgrade 只发生在真连接上 */
-export async function bootCollabApp(databaseUrl: string, options: { imports?: NonNullable<ModuleMetadata['imports']>; values?: Record<string, unknown> } = {}): Promise<NestFastifyApplication> {
+export async function bootCollabApp(
+  databaseUrl: string,
+  options: { imports?: NonNullable<ModuleMetadata['imports']>; values?: Record<string, unknown>; canvasApi?: boolean } = {},
+): Promise<NestFastifyApplication> {
   const app = await NestFactory.create<NestFastifyApplication>(
     {
       module: GuardModule,
@@ -78,7 +81,7 @@ export async function bootCollabApp(databaseUrl: string, options: { imports?: No
         DataAccessModule,
         ClusterModule,
         SessionIdentityModule,
-        CanvasApiModule,
+        ...(options.canvasApi === false ? [] : [CanvasApiModule]),
         ...(options.imports ?? [CollabGatewayModule]),
       ],
     },

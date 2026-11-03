@@ -1,6 +1,6 @@
 # REQ-NEST NestJS 版服务
 
-> 状态：**实施中** —— 已完成第 1～3 步和里程碑 A（§6）：登录、项目、画布、协同单进程跑通。
+> 状态：**实施中** —— 已完成第 1～4 步和里程碑 A、B（§6）：登录、项目、画布、协同单进程跑通，平台 + 两个协同副本也跑通。
 
 ## 1. 目标与边界
 
@@ -46,9 +46,12 @@ contracts                                    只依赖 yjs，任何模块都可�
 
 ## 3. 组装
 
-**`apps/platform`**：`AppModule` 加 `CanvasApiModule`、`CollabGatewayModule`，功能到了再加 `StorageModule`、`AppsModule`、`AgentModule`。默认 `cluster: single`、`schemaSync: apply`，`pnpm dev:platform` 一个进程一个端口就能用全部功能。
+**`apps/platform`**：两个根模块、两个入口，都是静态模块列表，差别只在有没有协同入口，不靠配置开关。
 
-**`apps/collab`**：只有 `main.ts` + `AppModule`，用于协同独立扩缩。
+- `AppModule`（`main.ts`）= `PlatformBaseModule` + `CollabGatewayModule`。默认 `cluster: single`、`schemaSync: apply`，`pnpm dev:platform` 一个进程一个端口就能用全部功能。
+- `PlatformBaseModule`（`main-without-collab.ts`）：页面、登录、`CanvasApiModule`，功能到了再加 `StorageModule`、`AppsModule`、`AgentModule`。协同由副本提供时跑这个入口。
+
+**`apps/collab`**（`@learning/collab-service`）：只有 `main.ts` + `AppModule`，用于协同独立扩缩。
 
 ```
 imports: ConfigModule, DataAccessModule, ClusterModule, SessionIdentityModule,
@@ -56,10 +59,10 @@ imports: ConfigModule, DataAccessModule, ClusterModule, SessionIdentityModule,
 providers: APP_GUARD = ApiSessionGuard
 ```
 
-配置用现有的 `<dataDir>/config.yaml`，每个进程设自己的 `DATA_DIR`：
+配置用现有的 `<dataDir>/config.yaml`，每个进程设自己的 `DATA_DIR`（示例：`apps/collab/config.example.yaml`）。不是 `cluster: redis` 或不是 `schemaSync: off` 都拒绝启动：
 
 ```yaml
-server: { port: 3002, origins: [http://localhost:3000] }
+server: { port: 3002, origins: [http://127.0.0.1:3000] }
 database: { schemaSync: off, url: postgresql://… }   # 带密码的放 PLATFORM_DATABASE_URL
 cluster: { mode: redis, url: redis://127.0.0.1:6379 }
 auth: { oidc: … }                                    # 和 platform 相同：握手要续期
@@ -67,8 +70,21 @@ auth: { oidc: … }                                    # 和 platform 相同：�
 
 **本地多副本**：一个 `apps/platform`（`apply`）+ 两个 `apps/collab`（`off`），共用本地 PG 和 Redis。`PLATFORM_SESSION_SECRET` 相同；平台也切到 `cluster: redis`。
 
-- 前端的 WebSocket 同源，要加一个小前置代理（`apps/collab/scripts/dev-front.mjs`，思路同 `dev-cluster.mjs`）。它监听 3000，把 `/ws/collaboration`、`/api/collab`、`/api/flows/*/doc` 轮流分给协同副本，其余给平台。此时平台不导入 `CollabGatewayModule`。
-- 启动脚本先等平台就绪，再起协同（`off` 不建表）。
+- 前端的 WebSocket 同源，要加一个小前置代理（`apps/collab/scripts/dev-front.mjs`，思路同 `dev-cluster.mjs`）。它监听 3000（`DEV_FRONT_PORT`），把 `/ws/collaboration`、`/api/collab`、`/api/flows/*/doc` 轮流分给协同副本，其余给平台。此时平台跑 `main-without-collab`，不导入 `CollabGatewayModule`。
+- 启动脚本先等平台就绪，再起协同（`off` 不建表），都就绪了代理才开门。
+- 平台退出就整组收摊。副本退出只摘掉它，客户端自动重连到别的副本；最后一个副本退出才收摊。
+
+```
+pnpm dev:front       # 构建平台和副本，再跑 dev-front.mjs。生产模式：NODE_ENV=production，web.root 指向 output/public，先 pnpm build:platform
+
+data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
+  .env               # 大家共用：PLATFORM_SESSION_SECRET 必须相同
+  platform/config.yaml    # server.port: 3001
+  collab-a/config.yaml    # server.port: 3002
+  collab-b/config.yaml    # server.port: 3003
+```
+
+每个 `config.yaml` 都要写明 `server.port`，`server.origins` 要包含代理的地址，缺了脚本当场报错。
 
 ## 4. `@shadecn/shared` 契约
 
@@ -101,7 +117,7 @@ auth: { oidc: … }                                    # 和 platform 相同：�
 | 2 | `CanvasModule` + `CanvasApiModule` | 移植 `apps/server/test/routes/{projects,flows,invites,personal-space}`，走 `app.inject`；浏览器能登录、建项目、建画布 |
 | 3 | `CollabModule` + `CollabGatewayModule`，接进 `apps/platform` | 移植 `apps/server/test/collab/*`；新增真 `@hocuspocus/provider` 用例：同步、落库失败不丢、真 SIGTERM 后内容在库、yjs 单份 |
 | **里程碑 A** | 登录 + canvas + 协同本地跑通（单进程） | 真实浏览器 + `@learning/session/testing` 的假 IdP：登录、建画布，两个账号同时编辑互相可见，刷新后内容还在；`kill -TERM` 后重启内容不丢；移除成员后对方被踢 |
-| 4 | `apps/collab`、前置代理、Redis 扩展、撤权轮询、flush 回话 | 真 provider 用例改用两个副本：跨副本可见、未落库内容可见、撤权 3 秒内生效、单连接互斥跨副本 |
+| 4 | `apps/collab`、前置代理、Redis 扩展、撤权轮询、flush 回话 | 真 provider 用例改用两个副本（`packages/collab/test/replicas.test.ts`）：跨副本可见、未落库内容可见、撤权 3 秒内生效、单连接互斥跨副本、复制画布拿到未落库内容、两副本同时落库不丢且 health 不误报 |
 | **里程碑 B** | 平台 + 两个协同副本本地跑通 | 里程碑 A 的步骤经前置代理重跑；再 `kill -TERM` 一个副本，客户端切到另一个，内容不丢 |
 | 5 | 账号关联、identicon 头像（`session`） | 移植 `apps/server/test/auth/*` 相关用例；设置页可用 |
 | 6 | `StorageModule` | 移植 storage 用例；节点上传图片可用 |
@@ -116,8 +132,6 @@ auth: { oidc: … }                                    # 和 platform 相同：�
 - agent 面板显示加载失败（`useFlowAgent.ts:310-316`）。
 
 头像为空时走 `v-if` 的回退显示。
-
-第 4 步之前，开着房间复制画布拿到的是上次落库的内容：还没有副本回话 `canvas.flush-content`。
 
 ## 7. 需要用户决定的事项
 

@@ -7,6 +7,7 @@
     "customConditions": ["source"],
     "paths": {
       "@hocuspocus/common": ["../../packages/collab/node_modules/@hocuspocus/common/dist/index.d.ts"],
+      "@hocuspocus/extension-redis": ["../../packages/collab/node_modules/@hocuspocus/extension-redis/dist/index.d.ts"],
       "@hocuspocus/server": ["../../packages/collab/node_modules/@hocuspocus/server/dist/index.d.ts"]
     },
     "esModuleInterop": true,

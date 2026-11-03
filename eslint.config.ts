@@ -15,6 +15,7 @@ export default defineConfig(
     ignores: [
       "dist",
       "apps/platform/dist",
+      "apps/collab/dist",
       "packages/config/dist",
       "packages/web/dist",
       "packages/contracts/dist",
@@ -73,6 +74,7 @@ export default defineConfig(
       "apps/server/scripts/**/*.{js,mjs}",
       "apps/agent-sandbox/**/*.{ts,mjs}",
       "apps/platform/**/*.ts",
+      "apps/collab/**/*.{ts,mjs}",
       "packages/config/**/*.ts",
       "packages/web/**/*.ts",
       "packages/contracts/**/*.ts",
