@@ -11,6 +11,7 @@
     "paths": {
       "@hocuspocus/common": ["../collab/node_modules/@hocuspocus/common/dist/index.d.ts"],
       "@hocuspocus/extension-redis": ["../collab/node_modules/@hocuspocus/extension-redis/dist/index.d.ts"],
+      "@hocuspocus/provider": ["../collab/node_modules/@hocuspocus/provider/dist/index.d.ts"],
       "@hocuspocus/server": ["../collab/node_modules/@hocuspocus/server/dist/index.d.ts"]
     },
     "esModuleInterop": true,

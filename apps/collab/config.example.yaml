@@ -25,3 +25,5 @@ cluster:
 #   oidc:
 #     issuer: https://keycloak.example.com/realms/demo
 #     clientId: platform
+
+# agent、对象存储、生成应用都只配在平台上，副本不用配：这些路径前置代理都分给平台

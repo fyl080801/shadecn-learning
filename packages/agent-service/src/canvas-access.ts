@@ -114,14 +114,22 @@ export class AgentCanvasAccess {
   }
 
   /**
-   * 把一张画布的运行中任务列表推给它的房间（docs/20 §3.10.4）。走 stateless：一次性的旁路消息，不进 Y.Doc、不进撤销栈、不落库。
-   * 房间没加载（没人连着）就不发：之后连上的人会先拉一次全量。`cluster: redis` 时经 Redis 扩展到别的副本；给的是共享登记里的全量，所以哪个副本发的都完整。
+   * 把一张画布的运行中任务列表推给它的房间（docs/20 §3.10.4）。走 stateless：一次性的旁路消息，不进 Y.Doc、不进撤销栈、不落库。给的是共享登记里的全量，所以哪个进程发的都完整。
+   *
+   * **平台上没有这个房间不等于没有人在看**：人连在副本上时，平台的房间只活到这一轮的 direct connection 断开，而编排层是断开之后才发最后那份空列表（`session.ts` 的收尾顺序）。
+   * 所以这时还要经共享层发给副本，否则副本上的人要等 `expiresAt` 过了才看到它结束。`single` 下没有别的副本，等于不发。
+   * 之后连上的人会先拉一次全量，所以错过也不要紧。返回值是本进程有没有这个房间。
    */
   broadcastRuns(flowId: string, runs: AgentRunEntry[]): boolean {
-    const document = this.collab.hocuspocus.documents.get(roomOf(flowId))
-    if (!document) return false
+    const room = roomOf(flowId)
     // 带上服务端此刻的时钟：前端拿它把每项的 expiresAt 换算成本机时间
-    document.broadcastStateless(formatAgentRunsMessage(flowId, runs, Date.now()))
-    return true
+    const message = formatAgentRunsMessage(flowId, runs, Date.now())
+    const document = this.collab.hocuspocus.documents.get(room)
+    if (document) {
+      document.broadcastStateless(message)
+      return true
+    }
+    this.collab.publishStateless(room, message)
+    return false
   }
 }

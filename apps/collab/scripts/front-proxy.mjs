@@ -14,6 +14,7 @@ const pathOf = (url) => new URL(url ?? '/', 'http://front.invalid').pathname
 /**
  * 前置代理：浏览器只认这一个地址，WebSocket 也同源。协同的路径在副本之间轮流分，别的给平台；不做粘性，房间同步靠 Redis，副本之间不需要。
  * 转发时不改 `Host`：登录回调的域名、WebSocket 的 `Origin` 校验都要看到浏览器打开的那个地址。
+ * HTTP 的响应是流（agent 面板的 SSE）：响应头和每一帧都不缓冲，两头谁断了都要传给另一头。
  *
  * @param {{ platformPort: number, replicaPorts: number[] }} options
  */
@@ -39,11 +40,26 @@ export function createFrontProxy({ platformPort, replicaPorts }) {
     }
     const upstream = http.request({ host: '127.0.0.1', port, method: req.method, path: req.url, headers: req.headers }, (response) => {
       res.writeHead(response.statusCode ?? 502, response.headers)
+      // SSE 的响应头要马上到：不然 fetch 等到第一帧才返回，而接回时第一帧可能很久才有
+      res.flushHeaders()
       response.pipe(res)
+      // pipe 不传递错误：上游中途断了，不收拾的话客户端的流永远挂着。断开而不是 end：正常结束的流在客户端看来是「这一轮说完了」
+      response.once('close', () => {
+        if (!response.complete) res.destroy()
+      })
     })
     upstream.on('error', (err) => {
-      if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+      // 响应头发出去之后不能再改状态码，也不能往流里写错误文字（响应还在发的时候断，走的是上面的 close）
+      if (res.headersSent) {
+        res.destroy()
+        return
+      }
+      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
       res.end(`[dev-front] 转发到 ${port} 失败：${err.message}`)
+    })
+    // 客户端断开要传给上游：平台靠这条连接的 close 退订 SSE（「断开只退订」，docs/31 §4.3），pipe 不会替你断
+    res.once('close', () => {
+      if (!res.writableFinished) upstream.destroy()
     })
     req.pipe(upstream)
   })

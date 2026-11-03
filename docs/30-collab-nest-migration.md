@@ -1,6 +1,6 @@
 # REQ-NEST NestJS 版服务
 
-> 状态：**实施中** —— 已完成第 1～7 步和里程碑 A、B（§6）：登录、账号关联、默认头像、项目、画布、协同、节点上传图片和缩略图、应用列表和节点生成单进程跑通，平台 + 两个协同副本也跑通。画布 agent 单进程跑通（`docs/31` 的里程碑 C）；拆开形态和 `oci` 镜像还没做（`docs/31` §7 第 7、8 步）。
+> 状态：**实施中** —— 已完成第 1～7 步和里程碑 A、B（§6）：登录、账号关联、默认头像、项目、画布、协同、节点上传图片和缩略图、应用列表和节点生成单进程跑通，平台 + 两个协同副本也跑通。画布 agent 单进程和拆开形态都跑通（`docs/31` 的里程碑 C、D）；`oci` 镜像还没做（`docs/31` §7 第 8 步）。
 
 ## 1. 目标与边界
 
@@ -86,6 +86,13 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 
 每个 `config.yaml` 都要写明 `server.port`，`server.origins` 要包含代理的地址，缺了脚本当场报错。
 
+**agent 在这个形态里**（`docs/31` §6.2）只配在 `platform/config.yaml`，密钥放共用的 `.env`，副本不用配。
+
+- 面板的 SSE 经代理到平台。代理不缓冲响应头和帧；浏览器断开，平台那边的连接跟着断，订阅当场退掉，这一轮照常跑；平台中途断了，浏览器看到的是连接断开，不是流正常结束。
+- runner 的网关**不经代理**，直连平台的端口。`agent.gatewayUrl` 不写就按 `server.port`、`server.host` 推出，写了要和它们配对；指向代理、端口对不上、平台听不到那个地址，`dev-front.mjs` 启动时报错。
+- 平台退出整组收摊，这时正在跑的轮次以「服务正在重启」结束。副本退出不影响正在跑的轮次，页面切到别的副本。
+- 没刷新的页面在整组重启后会自己重连：provider 退避重试，间隔从 1 秒翻倍到 30 秒，所以停得越久，代理开门后要等得越久（实测停 9 秒，代理开门后不到 1 秒同步；停 49 秒，开门后 15 秒同步），这段时间显示「离线」。
+
 ## 4. `@shadecn/shared` 契约
 
 新建 `@learning/contracts`（tsc 产物，`yjs` 是 peer），**把后端要用的文件原样复制进去**：`collab`、`flow-graph`、`flow-doc`、`canvas`、`auth`，第 7 步加了 `apps`、`flow-collection`、`flow-node-types`、`flow-ops-core`，`docs/31` 的第 1 步又加了 `agent`、`director-*`、`flow-layout`、`flow-ops`、`id`（`@dagrejs/dagre` 是可选 peer，只有 import `flow-ops` 或 `flow-layout` 的进程才加载，协同副本不 import）。前端继续用 `@shadecn/shared`。
@@ -122,11 +129,13 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 | 5 | 账号关联、identicon 头像（`session`） | 移植 `apps/server/test/auth/*` 相关用例；设置页可用 |
 | 6 | `StorageModule` | 移植 storage 用例；节点上传图片可用 |
 | 7 | `AppsModule` | 移植 `flow-apps` 用例；节点生成可用 |
-| 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，方案和分步见 [docs/31](31-agent-nest-migration.md)。第 6 小步和里程碑 C 已完成：`@learning/agent` 接进 `PlatformBaseModule`，`process` 驱动单进程跑通 |
+| 8 | `AgentModule` | 它依赖的 `@shadecn/agent` 规模大，又不能直接引用，方案和分步见 [docs/31](31-agent-nest-migration.md)。第 7 小步和里程碑 D 已完成：`@learning/agent` 接在 `PlatformBaseModule`，`process` 驱动单进程和「平台 + 两个副本」都跑通 |
 
 **第 7 步之后前端的状况**：登录、设置页「登录方式」、默认头像、项目、成员、邀请、画布、协同、节点上传图片和缩略图、应用列表、节点生成可用（浏览器走过）。没配对象存储时上传回 503 并弹提示，生成结果挂上游地址；没配应用时列表是空的。别的功能照常。
 
 **`docs/31` 第 6 小步之后**：agent 面板可用（浏览器走过）：发消息看到流式文字、节点出现、别的成员同画布可见；运行中刷新接回；中止；移除发起人后这一轮被叫停；重启后内容和会话都在。没配模型时面板显示未启用，发消息 503。前端一行没改。
+
+**`docs/31` 第 7 小步之后**：经前置代理的「平台 + 两个副本」上，上面这些都走过一遍，另外走过：别的副本上的人看到任务列表和结束；副本上的人改节点，模型下一步收到改动通知，被改的节点写入被拒绝；`kill -TERM` 一个副本，这一轮继续，页面切到另一个副本。前端一行没改。
 
 头像为空（这个功能上线前登录、会话还活着）时走 `v-if` 的回退显示，下次登录补上。
 
@@ -162,6 +171,7 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 - **`AgentModule` 的宿主在 `@learning/agent`（`packages/agent-service`，`docs/31` §7 第 5、6 小步）**：配置（`agent` 段、`llm.providers`）、五张表、stores、判权、占用和任务登记、画布访问、沙箱驱动、runtime、面板的 SSE、runner 的网关。接在 `PlatformBaseModule`，`apps/collab` 不 import、不用配。
   - **退出**（`docs/31` §8.2，真 SIGTERM 钉着）：`onModuleDestroy` 先拒绝新的一轮和新的接回（503，「服务正在重启，请稍后再试」），`abortAll` 上限 5 秒，再结束所有 SSE。HTTP 关闭另有 5 秒上限（`@learning/foundation` 的 `boundHttpClose`）：连上后一个字节都没发的连接不算空闲，否则要等 60 秒。
   - `server.port: 0` 又没配 `agent.gatewayUrl` 时 agent 不启用并写明原因：端口要到监听时才知道，而网关地址在建 provider 时就定了。
+  - **任务列表跨进程**：房间在本进程就走 `document.broadcastStateless`，不在就经 `CollabServer.publishStateless` 发给副本。一轮收尾时平台的房间已经卸载，而结束那份空列表在这之后才发，不这样的话副本上的人要等 `expiresAt` 过了（30 秒）才看到它结束。
   - 一个都不配也照样加载，`enabled: false`；模型表、agent 定义、文字技能坏了拒绝启动，启用与否都一样；写 `driver: k8s` 不启用并写明原因。
   - `oci` 的宿主接线提前到这一步（`docs/31` §7 原本排在第 8 小步）：§4.5 的配置已经写了它，`AgentSandboxReaper` 也只为它存在。镜像 `apps/agent-runner` 还没有，默认镜像名 `learning-agent-runner:latest` 拉不到，真容器没跑过（第 8 小步）。
   - 和旧服务不同：`agent` 段里不认识的字段拒绝启动；不支持一期的 `driver: local`（没有旧配置）；模型表路径不可配，固定 `<dataDir>/agent-models.json`；账号级撤销不搬（`docs/31` §4.4）。

@@ -9,6 +9,7 @@ import { ConfigModule } from '@learning/config'
 import { DataAccess, DataAccessModule } from '@learning/data-access'
 import { ClusterDatabaseCheckModule, SessionIdentityModule } from '@learning/session'
 import { bootstrapService } from '@learning/foundation'
+import { ModulesContainer } from '@nestjs/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isCollabPath } from '../scripts/front-proxy.mjs'
 import { AppModule } from '../src/app.module.js'
@@ -50,7 +51,7 @@ describe('根模块', () => {
   })
 
   it('画布 REST、登录、页面、Vite 的 WebSocket 都不分给副本', () => {
-    for (const pathname of ['/', '/login', '/api/flows/f1', '/api/flows/f1/duplicate', '/api/flows/f1/document', '/api/flows/f1/assets', '/api/flows/f1/assets/multipart', '/api/flows/f1/assets/multipart/u1/parts/1', '/api/flows/f1/assets/variants', '/api/apps', '/api/apps/a%3Ab', '/api/apps/a%3Ab/execute', '/api/flows/f1/apps/tasks', '/api/flows/f1/apps/tasks/t1/cancel', '/api/flows/f1/apps/a%3Ab/execute', '/api/projects', '/api/auth/me', '/api/auth/identities', '/api/auth/link/github', '/api/avatars/0f4c717d8a4e2a3e.svg', '/api/health/ready', '/assets/a.js', '/@vite/client', '/api/collaboration']) {
+    for (const pathname of ['/', '/login', '/api/flows/f1', '/api/flows/f1/duplicate', '/api/flows/f1/document', '/api/flows/f1/assets', '/api/flows/f1/assets/multipart', '/api/flows/f1/assets/multipart/u1/parts/1', '/api/flows/f1/assets/variants', '/api/apps', '/api/apps/a%3Ab', '/api/apps/a%3Ab/execute', '/api/flows/f1/apps/tasks', '/api/flows/f1/apps/tasks/t1/cancel', '/api/flows/f1/apps/a%3Ab/execute', '/api/projects', '/api/auth/me', '/api/auth/identities', '/api/auth/link/github', '/api/avatars/0f4c717d8a4e2a3e.svg', '/api/health/ready', '/assets/a.js', '/@vite/client', '/api/collaboration', '/api/flows/f1/agent', '/api/flows/f1/agent/messages', '/api/flows/f1/agent/runs/r1/events', '/api/flows/f1/agent/runs/r1/abort', '/api/agent-gateway/run/input', '/api/agent-gateway/model/entry/api/stream']) {
       expect(isCollabPath(pathname), pathname).toBe(false)
     }
   })
@@ -106,6 +107,13 @@ describe('启动', () => {
     // 应用和生成任务归平台（AppsModule），副本上没有这张表也没有这些路由
     expect(await status('/api/apps')).toBe(404)
     expect(await status('/api/flows/f1/apps/tasks')).toBe(404)
+    // agent 归平台：面板和 runner 的网关都不在副本上，这个进程也没有 agent 的 provider
+    expect(await status('/api/flows/f1/agent')).toBe(404)
+    expect((await app.inject({ method: 'POST', url: '/api/flows/f1/agent/messages', headers: { 'content-type': 'application/json' }, payload: '{}' })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'POST', url: '/api/agent-gateway/run/input', headers: { 'content-type': 'application/json' }, payload: '{}' })).statusCode).toBe(404)
+    const loaded = [...app.get(ModulesContainer).values()].map((item) => item.metatype?.name)
+    expect(loaded).toContain('CollabGatewayModule')
+    expect(loaded.filter((name) => name && /^(Agent|Apps|Storage|CanvasApi|Web|Login)/.test(name))).toEqual([])
     expect(app.get(Cluster).mode).toBe('redis')
     const tables = await app.get(DataAccess).em().getConnection().execute<{ name: string }[]>(`select name from sqlite_master where type = 'table'`)
     expect(tables).toEqual([])

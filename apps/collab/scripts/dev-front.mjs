@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parse } from 'yaml'
+import { platformGatewayProblem } from './check-platform-config.mjs'
 import { createFrontProxy } from './front-proxy.mjs'
 
 /**
@@ -13,6 +14,7 @@ import { createFrontProxy } from './front-proxy.mjs'
  *
  * `NODE_ENV` 原样传给子进程：不设是开发模式（平台挂 Vite，HMR 的 WebSocket 也经代理），`production` 用 `output/public`。
  * Redis 和 PostgreSQL 不代劳，自己起。依赖先后：平台 `apply` 建表，就绪了才起副本（`off` 不建表），都就绪了代理才开门。
+ * agent 配在 `platform/config.yaml`，副本不用配：面板的流经代理到平台，runner 不经代理，直连平台的端口（配对检查见 `check-platform-config.mjs`）。
  *
  * 平台退出就整组收摊。副本退出只是摘掉它，这样才能 `kill -TERM` 一个副本看客户端切到另一个；最后一个副本也退出了才收摊。
  */
@@ -37,12 +39,13 @@ function fail(message) {
 function readInstance(dir, entry) {
   const file = path.join(dir, 'config.yaml')
   if (!fs.existsSync(file)) fail(`缺 ${file}（示例见 apps/collab/config.example.yaml）`)
-  const server = parse(fs.readFileSync(file, 'utf8'))?.server ?? {}
+  const config = parse(fs.readFileSync(file, 'utf8'))
+  const server = config?.server ?? {}
   if (!Number.isInteger(server.port) || server.port === 0) fail(`${file} 要写明 server.port：代理要知道往哪转`)
   if (server.port === frontPort) fail(`${file} 的 server.port 和前置代理（DEV_FRONT_PORT=${frontPort}）撞了`)
   if (!server.origins?.includes(frontOrigin)) fail(`${file} 的 server.origins 要包含前置代理的地址 ${frontOrigin}`)
   if (!fs.existsSync(entry)) fail(`缺 ${entry}，先构建（pnpm build:platform && pnpm build:collab-service）`)
-  return { name: path.basename(dir), dir, entry, port: server.port }
+  return { name: path.basename(dir), dir, entry, port: server.port, config }
 }
 
 const collabEntry = path.join(repoRoot, 'apps/collab/dist/main.js')
@@ -56,6 +59,8 @@ const collabDirs = fs.existsSync(root)
 if (collabDirs.length === 0) fail(`${root} 下没有 collab-* 目录`)
 
 const platform = readInstance(path.join(root, 'platform'), path.join(repoRoot, 'apps/platform/dist/main-without-collab.js'))
+const gatewayProblem = platformGatewayProblem(platform.config, frontPort)
+if (gatewayProblem) fail(`${path.join(platform.dir, 'config.yaml')}：${gatewayProblem}`)
 const replicas = collabDirs.map((dir) => readInstance(dir, collabEntry))
 const proxy = createFrontProxy({ platformPort: platform.port, replicaPorts: replicas.map((replica) => replica.port) })
 

@@ -38,6 +38,30 @@ describe('依赖边界', () => {
     }
   })
 
+  it('agent 不进这个进程：依赖闭包里没有 @learning/agent、agent-core、llm、apps、storage，也没有 pi', () => {
+    const packagesDir = path.resolve(appDir, '../../packages')
+    const manifests = new Map(
+      fs
+        .readdirSync(packagesDir)
+        .map((dir) => path.join(packagesDir, dir, 'package.json'))
+        .filter((file) => fs.existsSync(file))
+        .map((file) => JSON.parse(fs.readFileSync(file, 'utf8')) as { name: string; dependencies?: Record<string, string>; peerDependencies?: Record<string, string> })
+        .map((item) => [item.name, item] as const),
+    )
+    const closure = new Set<string>()
+    const walk = (names: string[]) => {
+      for (const name of names) {
+        if (closure.has(name)) continue
+        closure.add(name)
+        const item = manifests.get(name)
+        if (item) walk(Object.keys({ ...item.dependencies, ...item.peerDependencies }))
+      }
+    }
+    walk(Object.keys(manifest.dependencies))
+    expect(closure).toContain('@learning/collab')
+    expect([...closure].filter((name) => /^@learning\/(agent|agent-core|llm|apps|storage)$/.test(name) || name.startsWith('@earendil-works/'))).toEqual([])
+  })
+
   it('新包都登记过：Dockerfile 的 COPY，.dockerignore 的 dist 和 test', () => {
     const root = path.resolve(appDir, '../..')
     expect(fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8')).toContain('COPY apps/collab/package.json ./apps/collab/')

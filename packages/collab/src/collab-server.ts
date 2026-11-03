@@ -1,7 +1,7 @@
 import { AccessRevocation, CANVAS_FLUSH_CONTENT, REVOCATION_POLL_INTERVAL_MS } from '@learning/canvas'
 import { Cluster } from '@learning/cluster'
 import { CLOSE_QUOTA_LOCKED, CLOSE_REVOKED, CLOSE_UNAUTHORIZED, STORE_STATE_MESSAGE } from '@learning/contracts/collab'
-import { type Connection, type Document, type Extension, Hocuspocus } from '@hocuspocus/server'
+import { type beforeBroadcastStatelessPayload, type Connection, type Document, type Extension, Hocuspocus } from '@hocuspocus/server'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { type BeforeApplicationShutdown, Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import * as Y from 'yjs'
@@ -412,6 +412,17 @@ export class CollabServer implements OnModuleInit, OnModuleDestroy, BeforeApplic
   /** 房间到了容量上限的原因；没到是 null。经 direct connection 往房间写的模块（生成任务）写之前判，它们不过写闸门和 `beforeHandleMessage` */
   quotaLocked(documentName: string): string | null {
     return this.quota.locked(documentName)
+  }
+
+  /**
+   * 给别的副本上这个房间里的人发一条 stateless，本进程不用有这个房间。没有 Redis 扩展时什么都不做（只有一个进程，房间不在这里就没有人）。
+   * 本进程有房间时用 `document.broadcastStateless`，这个方法不给本进程的连接发。
+   * 直接跑钩子：`document.broadcastStateless` 要先有文档，Redis 扩展发布时只看房间名和载荷。发不出去只记一笔，stateless 本来就是旁路消息。
+   */
+  publishStateless(documentName: string, payload: string): void {
+    void this.hocuspocus
+      .hooks('beforeBroadcastStateless', { documentName, payload } as beforeBroadcastStatelessPayload)
+      .catch((err: unknown) => console.warn(`[collab] 跨副本发送 stateless 失败：${documentName}`, err))
   }
 
   /** 接 WebSocket 的那一层登记怎么关 socket。关连接和落库的顺序只写在这里 */

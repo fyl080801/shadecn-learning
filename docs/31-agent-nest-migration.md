@@ -1,6 +1,6 @@
 # REQ-NEST-AGENT Agent 搬到 Nest 的方案
 
-> 状态：**实施中** —— 这是 [REQ-NEST](30-collab-nest-migration.md) §6 第 8 步的方案，§8.1 的事项都已定，按推荐执行。
+> 状态：**实施中** —— 这是 [REQ-NEST](30-collab-nest-migration.md) §6 第 8 步的方案，§8.1 的事项都已定，按推荐执行。第 1～7 小步和里程碑 C、D 已完成，还差第 8 小步（`oci` 镜像）。
 
 ## 1. 结论
 
@@ -201,11 +201,11 @@ agent:                    # 一个都不配也照样加载：view 回 enabled: f
 
 | 现象 | 依据 | 处理 |
 |---|---|---|
-| 副本上别人的改动，在平台上 origin 是 `redis`，只能认成「其他协作者」 | `mod-agent/src/canvas-access.ts:69-71` | 同旧服务的 agent 副本，接受 |
+| 副本上别人的改动，在平台上 origin 是 `redis`，只能认成「其他协作者」 | `packages/agent-service/src/canvas-access.ts` 的 `classifyCollabOrigin` | 同旧服务的 agent 副本，接受。里程碑 D 实测：通知和拒绝文案里都是「其他协作者」 |
 | 房间在副本上时，刚建的节点可能判成不存在（库里慢一个防抖窗口） | `mod-agent/src/canvas-access.ts:145` | 同旧服务，再点一次即可 |
-| `agent:runs` 从平台发，经 Redis 到副本上的客户端 | `mod-agent/src/runs-broadcast.ts` | 里程碑 D 验证 |
+| `agent:runs` 从平台发，经 Redis 到副本上的客户端 | `AgentCanvasAccess.broadcastRuns` | 开始和占用变化时房间在平台上，走 `document.broadcastStateless`。**结束那份空列表发出时平台的房间已经卸载**（编排层先关画布再发），改走 `CollabServer.publishStateless`，否则副本上的人要等 30 秒。旧服务的 `broadcastAgentRuns` 读代码是同一个判断（`mod-agent/src/runs-broadcast.ts`），没有实测，也没有改 |
 | 平台 `cluster: single` 配副本时，房间是孤岛 | `docs/30` §8 | 拆分入口（`PlatformSplitModule`）拒绝启动 |
-| `/api/flows/*/agent` 默认分给平台，流经 `pipe` 转发 | `apps/collab/scripts/front-proxy.mjs:27,40-43` | 不改代理。网关不经代理，runner 直连平台端口 |
+| `/api/flows/*/agent` 默认分给平台，流经代理转发 | `apps/collab/scripts/front-proxy.mjs` | **改了代理**：原来的 `pipe` 不传递断开，浏览器走了平台收不到，「断开只退订」不成立，订阅要到这一轮结束才退；上游中途断了客户端一直挂着；响应头要等第一帧。现在两头的断开都传给对方，响应头当场发出。网关不经代理，runner 直连平台端口（`dev-front.mjs` 启动时查配对） |
 
 ### 6.3 单独的 `apps/agent`（可选）
 
@@ -239,6 +239,8 @@ agent:                    # 一个都不配也照样加载：view 回 enabled: f
 
 **不搬的旧测试**：`dispatch`、`k8s-manifests`、`sandbox-k8s`、`k8s-driver`。
 
+**第 7 小步的测试**：`packages/agent-service/test/multi-replica.test.ts`（移植，用生产的 `AgentRuns`、`AgentLeases`，内存和 Redis 各跑一遍，新增节点占用跨副本）；`test/split-rooms.test.ts`（新增，真 Redis + 真 provider：`agent:runs` 到副本、副本上的改动通知模型、副本退出这一轮继续）；`apps/collab/test/front-proxy.test.ts`（真代理 + 真上游）；`apps/platform/test/agent-sigterm.test.ts` 的两进程用例改用 `dist/main-without-collab.js`。
+
 **不调付费模型**：单元和路由测试用 `registerScriptedModel`。浏览器要真 HTTP，`@learning/agent-core/testing` 加一个 `startScriptedUpstream()`（约 40 行，思路同 `@learning/session/testing` 的假 IdP），`llm.providers` 指向它。
 
 ## 8. 风险和待用户决定的事项
@@ -259,7 +261,7 @@ agent:                    # 一个都不配也照样加载：view 回 enabled: f
 | 风险 | 影响 | 应对 |
 |---|---|---|
 | 网关桥接写错：背压、取消 | 空闲上限误判，或 run 卡住 | 探针已验证 Fastify 这一半；第 6 步用真 runner 走完整路径 |
-| hijack 的 SSE 拖住 `app.close()` | `docs/30` §5 记过类似情况：socket 没关就不返回，ORM 和 Redis 也关不掉 | 已解决：`abortAll` 只结束本进程的轮次，跟着别的副本上那一轮的流由 `AgentSseStreams.closeAll` 退订并结束；真 SIGTERM 钉住（`apps/platform/test/agent-sigterm.test.ts`，单进程和两个进程各一） |
+| hijack 的 SSE 拖住 `app.close()` | `docs/30` §5 记过类似情况：socket 没关就不返回，ORM 和 Redis 也关不掉 | 已解决：`abortAll` 只结束本进程的轮次，跟着别的副本上那一轮的流由 `AgentSseStreams.closeAll` 退订并结束；真 SIGTERM 钉住（`apps/platform/test/agent-sigterm.test.ts`，单进程 `dist/main.js`，两个进程 `dist/main-without-collab.js`） |
 | 宿主重写漏掉不变式 | 权限或数据问题，不一定报错 | 重点是这几条：每次读写判权、写前查 `quotaLocked`、释放只走 `deleteIfEquals`、`titleModel` 不进测试接线、stores 写操作的 `where` 带 `user`。旧测试照搬，不放宽 |
 | `flow-ops` 进 `@learning/apps` 后平台要有 dagre | 没声明的话，产物运行时才报错 | `package.test.ts` 的「import 的包都声明了」会拦住；第 1 步验收跑产物 |
 | run 和页面共用平台的事件循环 | 模型流和工具执行可能拖慢页面 | 本地不算问题；`apps/agent` 是退路（§6.3） |
@@ -268,6 +270,7 @@ agent:                    # 一个都不配也照样加载：view 回 enabled: f
 
 - **没有构建和运行过 OCI 镜像**：只验证了从副本打 bundle，这次没有启动容器。
 - `@learning/llm` 的移动没有试过。§5.3 的依据是 diff 和 import 关系。
-- SSE 经 `front-proxy.mjs` 没有实际跑过，只读了代码（`response.pipe(res)`）。
+- 里程碑 D 只走了 `process` 驱动 + 假 IdP + 脚本化上游，没有配对象存储，没有调真实模型。经代理的上传和 `view_node_media` 没有在这个形态下走过。
+- 只有一个平台进程。平台多副本时 runner 要连回发起它的那个进程，地址怎么配没有试过；`agent-sigterm` 的两进程用例只验证了共享登记和退出。
 - `AgentModule` 的约 2300 行、第 5 步和第 6 步的行数都是估算。
 - `docs/20`、`docs/22`、`docs/23`、`docs/24`、`docs/26` 只读了状态和相关章节，行为细节以 `.claude/rules/agent.md` 和代码为准。

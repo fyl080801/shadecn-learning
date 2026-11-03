@@ -14,7 +14,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { AppModule } from '../src/app.module.js'
 
 /**
- * 真 SIGTERM（`docs/31` §8.2）：真启动 `apps/platform/dist/main.js`，`process` 驱动起真 runner，模型是测试进程里的脚本化上游。
+ * 真 SIGTERM（`docs/31` §8.2）：真启动 `apps/platform` 的产物（单进程 `dist/main.js`，拆开形态 `dist/main-without-collab.js`），`process` 驱动起真 runner，模型是测试进程里的脚本化上游。
  * 钉的是 `app.close()` 模拟不了的东西：信号走完 Nest 的关闭流程、`useProcessExit` 的退出码、hijack 的 SSE 真的结束、产物里的依赖声明和解析路径都对。
  */
 
@@ -22,6 +22,8 @@ const platformDir = path.resolve(import.meta.dirname, '..')
 const repoRoot = path.resolve(platformDir, '../..')
 const SECRET = 'sigterm-test-secret'
 const UPSTREAM_KEY_ENV = 'SIGTERM_TEST_UPSTREAM_KEY'
+/** 拆开形态的入口：根是 `PlatformSplitModule`，没有协同入口，不是 `cluster: redis` 就拒绝启动 */
+const SPLIT_ENTRY = 'dist/main-without-collab.js'
 /** 这些包的产物比源码旧，起来的就不是这次改的代码 */
 const BUILT_PACKAGES = ['apps/platform', 'packages/agent-service', 'packages/agent-core', 'packages/foundation', 'packages/collab', 'packages/canvas', 'packages/cluster', 'packages/session', 'packages/storage', 'packages/contracts']
 
@@ -32,7 +34,7 @@ function newestFile(dir: string): number {
 
 function ensurePlatformBuilt(): void {
   const stale = BUILT_PACKAGES.some((name) => newestFile(path.join(repoRoot, name, 'src')) > newestFile(path.join(repoRoot, name, 'dist')))
-  if (stale || !fs.existsSync(path.join(platformDir, 'dist/main.js'))) execFileSync('pnpm', ['--filter', '@learning/platform', 'build'], { cwd: repoRoot, stdio: 'pipe' })
+  if (stale || !fs.existsSync(path.join(platformDir, 'dist/main.js')) || !fs.existsSync(path.join(platformDir, SPLIT_ENTRY))) execFileSync('pnpm', ['--filter', '@learning/platform', 'build'], { cwd: repoRoot, stdio: 'pipe' })
 }
 
 function freePort(): Promise<number> {
@@ -66,10 +68,10 @@ interface Platform {
 const children = new Set<ChildProcess>()
 
 /** 配置走真实路径：`$DATA_DIR/config.yaml` + 环境变量。环境是列出来的，开发机的 `PLATFORM_*` 进不来 */
-async function startPlatform(dir: string, port: number, values: Record<string, unknown>, env: Record<string, string>): Promise<Platform> {
+async function startPlatform(dir: string, port: number, values: Record<string, unknown>, env: Record<string, string>, entry = 'dist/main.js'): Promise<Platform> {
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, 'config.yaml'), JSON.stringify({ ...values, server: { port, host: '127.0.0.1', origins: [`http://127.0.0.1:${port}`] } }))
-  const child = spawn(process.execPath, [path.join(platformDir, 'dist/main.js')], {
+  const child = spawn(process.execPath, [path.join(platformDir, entry)], {
     cwd: dir,
     env: { PATH: process.env.PATH ?? '', NODE_ENV: 'production', DATA_DIR: dir, PLATFORM_SESSION_SECRET: SECRET, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -257,7 +259,7 @@ describe('真 SIGTERM（dist/main.js，SQLite，process 驱动）', () => {
 const postgresUrl = process.env.PLATFORM_TEST_DATABASE_URL
 const redisUrl = process.env.PLATFORM_TEST_REDIS_URL
 
-describe.skipIf(!postgresUrl || !redisUrl)('真 SIGTERM（两个进程，PostgreSQL + Redis）', () => {
+describe.skipIf(!postgresUrl || !redisUrl)('真 SIGTERM（两个进程，dist/main-without-collab.js，PostgreSQL + Redis）', () => {
   const SCHEMA = 'platform_sigterm'
   let root: string
   let idp: FakeIdp
@@ -305,8 +307,8 @@ describe.skipIf(!postgresUrl || !redisUrl)('真 SIGTERM（两个进程，Postgre
   it('跟着别的副本上那一轮的进程收到信号：很快退出、退出码 0，流结束；这一轮不受影响，持有者退出时另一边照样收到收尾帧', async () => {
     const holderDir = path.join(root, 'holder')
     const followerDir = path.join(root, 'follower')
-    const holder = await startPlatform(holderDir, await freePort(), values(true), env())
-    const follower = await startPlatform(followerDir, await freePort(), values(false), env())
+    const holder = await startPlatform(holderDir, await freePort(), values(true), env(), SPLIT_ENTRY)
+    const follower = await startPlatform(followerDir, await freePort(), values(false), env(), SPLIT_ENTRY)
     const cookie = await login(holder.baseUrl)
     const onHolder = client(holder.baseUrl, cookie)
     const onFollower = client(follower.baseUrl, cookie)
@@ -341,15 +343,23 @@ describe.skipIf(!postgresUrl || !redisUrl)('真 SIGTERM（两个进程，Postgre
     expect(((await (await onHolder.request(agentApiPath(flowId))).json()) as { running: boolean }).running).toBe(true)
 
     // 持有者退出：另一个进程上新接回的流收到收尾帧
-    const replica = await startPlatform(followerDir, await freePort(), values(false), env())
-    const watching = await client(replica.baseUrl, cookie).request(agentRunEventsPath(flowId, runId))
+    const replica = await startPlatform(followerDir, await freePort(), values(false), env(), SPLIT_ENTRY)
+    const onReplica = client(replica.baseUrl, cookie)
+    const watching = await onReplica.request(agentRunEventsPath(flowId, runId))
     expect(watching.status).toBe(200)
     const watcher = follow(watching)
     await until(() => watcher.events().length > 0, '重新接回')
+    const holderAt = Date.now()
     holder.child.kill('SIGTERM')
     expect(await holder.exited, holder.logs.join('')).toEqual({ code: 0, signal: null })
+    expect(Date.now() - holderAt, holder.logs.join('')).toBeLessThan(5_000)
     await Promise.all([origin.ended, watcher.ended])
-    expect(watcher.events().at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'cancelled' } })
+    for (const stream of [origin, watcher]) {
+      expect(stream.events().at(-1)).toMatchObject({ type: AgentEventType.RUN_FINISHED, outcome: { type: 'cancelled' }, result: { error: '服务正在重启' } })
+    }
+    // 另一个进程上看：这一轮结束了，已写的内容在库里
+    expect(await (await onReplica.request(agentApiPath(flowId))).json()).toMatchObject({ running: false, activeRuns: [] })
+    expect(await (await onReplica.request(`/api/flows/${flowId}`)).json()).toMatchObject({ nodeCount: 1 })
 
     replica.child.kill('SIGTERM')
     expect(await replica.exited, replica.logs.join('')).toEqual({ code: 0, signal: null })

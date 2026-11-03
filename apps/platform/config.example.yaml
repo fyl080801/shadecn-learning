@@ -21,7 +21,7 @@ database:
   # 启动时要不要同步表结构：apply（默认）或 off。多副本（HPA）下只留一个进程 apply，其他写 off：只验证连得上，不执行任何 DDL
   # schemaSync: apply
 
-# 多进程部署才需要。不写这一段 = 单进程。
+# 多进程部署才需要。不写这一段 = 单进程。协同副本单独跑（入口 main-without-collab，docs/30 §3）时必须是 redis，否则拒绝启动；agent 只配在平台上。
 # cluster:
 #   # single 或 redis。不写时按有没有地址推断：有就是 redis
 #   mode: redis
@@ -107,7 +107,8 @@ session:
 #   # 占用和任务登记的 TTL（毫秒）；Grant 提前多久算过期
 #   # leaseTtlMs: 30000
 #   # grantMarginMs: 60000
-#   # runner 连回网关的地址（不含 /api/agent-gateway）。不写时按驱动和 server.port 推出；server.port 是 0 时必须写，否则 agent 未启用
+#   # runner 连回网关的地址（不含 /api/agent-gateway）。不写时按驱动和 server.port、server.host 推出；server.port 是 0 时必须写，否则 agent 未启用
+#   # 拆开形态（前面有前置代理）也是平台自己的端口：网关不经代理，runner 直连。server.host 要让 runner 够得着这个地址，`pnpm dev:front` 启动时会查
 #   # gatewayUrl: http://127.0.0.1:3001
 #   sandbox:
 #     # process（默认）：runner 是本机子进程，和服务端同用户、同文件系统、可以出网，不是强隔离，生产拒绝，除非 allowProcess。oci：容器
