@@ -502,6 +502,37 @@ importers:
         specifier: ^13.6.32
         version: 13.6.32
 
+  packages/agent-core:
+    dependencies:
+      '@earendil-works/pi-agent-core':
+        specifier: 1.4.0
+        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@modelcontextprotocol/sdk@1.32.2(zod@3.25.76))(@smithy/signature-v4@5.7.4)(undici@8.12.3)(ws@8.22.0)(zod@3.25.76)
+      '@earendil-works/pi-ai':
+        specifier: 1.4.0
+        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@modelcontextprotocol/sdk@1.32.2(zod@3.25.76))(@smithy/signature-v4@5.7.4)(undici@8.12.3)(ws@8.22.0)(zod@3.25.76)
+      '@learning/llm':
+        specifier: workspace:*
+        version: link:../llm
+      yaml:
+        specifier: 2.8.2
+        version: 2.8.2
+    devDependencies:
+      '@dagrejs/dagre':
+        specifier: ^3.1.3
+        version: 3.1.3
+      '@learning/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.12.0
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+      yjs:
+        specifier: ^13.6.32
+        version: 13.6.32
+
   packages/apps:
     dependencies:
       '@earendil-works/pi-ai':

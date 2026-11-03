@@ -1,0 +1,55 @@
+{
+  "name": "@learning/agent-core",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./canvas": { "source": "./src/canvas.ts", "types": "./dist/canvas.d.ts", "default": "./dist/canvas.js" },
+    "./authority": { "source": "./src/authority.ts", "types": "./dist/authority.d.ts", "default": "./dist/authority.js" },
+    "./tools": { "source": "./src/tools.ts", "types": "./dist/tools.d.ts", "default": "./dist/tools.js" },
+    "./events": { "source": "./src/events.ts", "types": "./dist/events.d.ts", "default": "./dist/events.js" },
+    "./model-stream": { "source": "./src/model-stream.ts", "types": "./dist/model-stream.d.ts", "default": "./dist/model-stream.js" },
+    "./media": { "source": "./src/media.ts", "types": "./dist/media.d.ts", "default": "./dist/media.js" },
+    "./occupancy": { "source": "./src/occupancy.ts", "types": "./dist/occupancy.d.ts", "default": "./dist/occupancy.js" },
+    "./run-registry": { "source": "./src/run-registry.ts", "types": "./dist/run-registry.d.ts", "default": "./dist/run-registry.js" },
+    "./session": { "source": "./src/session.ts", "types": "./dist/session.d.ts", "default": "./dist/session.js" },
+    "./store": { "source": "./src/store.ts", "types": "./dist/store.d.ts", "default": "./dist/store.js" },
+    "./protocol": { "source": "./src/protocol.ts", "types": "./dist/protocol.d.ts", "default": "./dist/protocol.js" },
+    "./token": { "source": "./src/token.ts", "types": "./dist/token.d.ts", "default": "./dist/token.js" },
+    "./gateway": { "source": "./src/gateway.ts", "types": "./dist/gateway.d.ts", "default": "./dist/gateway.js" },
+    "./runner": { "source": "./src/runner/index.ts", "types": "./dist/runner/index.d.ts", "default": "./dist/runner/index.js" },
+    "./runner/main": { "source": "./src/runner/main.ts", "types": "./dist/runner/main.d.ts", "default": "./dist/runner/main.js" },
+    "./sandbox": { "source": "./src/sandbox/index.ts", "types": "./dist/sandbox/index.d.ts", "default": "./dist/sandbox/index.js" },
+    "./sandbox/drivers/process": { "source": "./src/sandbox/drivers/process.ts", "types": "./dist/sandbox/drivers/process.d.ts", "default": "./dist/sandbox/drivers/process.js" },
+    "./sandbox/drivers/oci": { "source": "./src/sandbox/drivers/oci.ts", "types": "./dist/sandbox/drivers/oci.d.ts", "default": "./dist/sandbox/drivers/oci.js" },
+    "./sandbox/drivers/engine": { "source": "./src/sandbox/drivers/engine.ts", "types": "./dist/sandbox/drivers/engine.d.ts", "default": "./dist/sandbox/drivers/engine.js" },
+    "./sandbox/drivers/inline": { "source": "./src/sandbox/drivers/inline.ts", "types": "./dist/sandbox/drivers/inline.d.ts", "default": "./dist/sandbox/drivers/inline.js" },
+    "./testing": { "source": "./src/testing.ts", "types": "./dist/testing.d.ts", "default": "./dist/testing.js" },
+    "./agents": { "source": "./src/agents.ts", "types": "./dist/agents.d.ts", "default": "./dist/agents.js" },
+    "./text-skills": { "source": "./src/text-skills.ts", "types": "./dist/text-skills.d.ts", "default": "./dist/text-skills.js" },
+    "./skills": { "source": "./src/skills/index.ts", "types": "./dist/skills/index.d.ts", "default": "./dist/skills/index.js" },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@learning/llm": "workspace:*",
+    "yaml": "2.8.2"
+  },
+  "peerDependencies": {
+    "@dagrejs/dagre": "^3.1.3",
+    "@learning/contracts": "workspace:*",
+    "yjs": "^13.6.32"
+  },
+  "devDependencies": {
+    "@dagrejs/dagre": "^3.1.3",
+    "@learning/contracts": "workspace:*",
+    "@types/node": "^24.10.1",
+    "typescript": "~6.0.2",
+    "yjs": "^13.6.32"
+  }
+}

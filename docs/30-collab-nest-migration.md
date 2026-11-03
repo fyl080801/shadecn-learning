@@ -155,6 +155,7 @@ data/dev-front/      # DEV_FRONT_ROOT，也是所有进程的运行目录
 - **请求体上限同别的路由是 1MB**（旧服务 `docs/29` §3.6 是 32MB）：Fastify 在路由之前解析 JSON，放宽的话匿名和非成员也能让服务端先读满上限，再收 401 / 404。前端只发提示词和参考图地址，用不到更大的。要放开得先解决这一点。坏 JSON 同 canvas，先于守卫回 400：`/api/flows/...` 是 `{ error }`，`/api/apps/...` 是 Nest 默认形状（前端不调这个入口）。
 - **写回节点的操作用 `@learning/contracts/flow-ops`**：`recordGeneration`、`attachAsset`、`appendGeneratedText` 直接 import 整份 `flow-ops`，和 `packages/shared` 的逐字相同由 `packages/contracts/test/contracts.test.ts` 保证；它的闭包带 `@dagrejs/dagre`，所以 `@learning/apps` 和 `apps/platform` 声明这个可选 peer。
 - **LLM 通路在 `@learning/llm`（`packages/llm`）**：`llm-config`、`llm-providers`、`model`、`stream-upstream` 四个文件（从 `packages/apps/src/llm/` 原样移过去，`model-stream` 改名 `stream-upstream`），依赖 `@earendil-works/pi-ai`，版本同 `mod-apps`。没有 DI token，`apps` 当普通依赖。`llm.providers` 只有它这一个解析器。agent 编排没搬（`docs/31` §5.3）。
+- **agent 的框架无关部分在 `@learning/agent-core`（`packages/agent-core`）**：从 `packages/agent` 复制，只改 import（`.ts` → `.js`，`@shadecn/shared/` → `@learning/contracts/`），不搬 k8s 驱动；`model`、`llm-providers` 归 `@learning/llm`，`model-stream` 只留服务端自己的那部分。tsc 产物，驱动按子路径导出，runner 的闭包不含 Nest、ORM、`@learning/llm`。与 `@shadecn/agent` 互不同步（协议版本仍是 9），新增一个 `process` 驱动起产物 runner 真子进程的用例。`AgentModule` 还没有（`docs/31` §7 第 5 步起）。
 
 ## 9. 需要用户决定的事项
 

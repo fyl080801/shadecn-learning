@@ -80,7 +80,7 @@ runner 和 Nest 无关，能复用代码，问题是复用哪一份。
 
 | 包 | 目录 | 内容 | 依赖约束 |
 |---|---|---|---|
-| `@learning/agent-core` | `packages/agent-core` | §3.2 的框架无关代码 | 不 import `@nestjs/*`、`@mikro-orm/*`、`@learning/*` 的业务包（`package.test.ts` 钉）。pi 两个包和 `yaml` 是自己的依赖，`yjs`、`@learning/contracts` 是 peer |
+| `@learning/agent-core` | `packages/agent-core` | §3.2 的框架无关代码 | 不 import `@nestjs/*`、`@mikro-orm/*`、`@learning/*` 的业务包（`package.test.ts` 钉）。pi 两个包、`yaml`、`@learning/llm` 是自己的依赖，`yjs`、`@learning/contracts`、`@dagrejs/dagre` 是 peer |
 | `@learning/agent` | `packages/agent-service` | `AgentModule` | 同 `@learning/apps`：`@learning/*`、`@nestjs/*`、`@mikro-orm/core`、`yjs` 都是 peer，要 `@hocuspocus/*` 的 `paths` |
 
 分两个包，是为了让 runner 的闭包和沙箱镜像碰不到 Nest 和 ORM，旧结构也是这样分的。核心包的边界测试保留「没有顶层 `let`」，不要 `@learning/apps` 那条「顶层不能 `new Set`」（§2 的常量表会命中）。

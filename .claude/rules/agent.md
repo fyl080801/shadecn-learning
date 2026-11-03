@@ -2,6 +2,7 @@
 paths:
   - "apps/agent-sandbox/**"
   - "packages/agent/**"
+  - "packages/agent-core/**"
   - "packages/mod-agent/**"
   - "packages/mod-agent/**"
   - "apps/web/src/components/flow/agent/**"
@@ -138,6 +139,19 @@ Source-only, server-only (Node types + ES2023 tsconfig — the sandbox spawns pr
 ### What the package wires
 
 The routes (`routes.ts` `createAgentRoutes`, SSE + the permission matrix in its header; requester and admin role come from `canvas.request` — admin abort reads the role `canvas.flowGuard` set on this request; declared for `web`, mounted under the flow guard by `setup`), the gateway (`createAgentGatewayRoutes`, declared `role: 'agent', access: 'public'` — outside the session gate, bearer-only), `agent/index.ts`'s `agentHostOptions` (the wiring tests reuse) and driver / gateway wiring (`MODULES_AGENT_SANDBOX_DRIVER`, production refusal, token secret; the driver is built once and shared by the lazy runtime and the startup reaper), `agent/runner-command.ts` (how the runner is spawned: tsx loader from source, `agent-runner.js` + forwarded `--import`s from the bundle), `agent/runs-broadcast.ts` (the room broadcast — agent-side, the collab layer stays agent-agnostic), `agent/canvas-access.ts` (direct connection into the live room, **authorizes through the run's authority and checks the quota before every read/write**), `agent/authority.ts` (Grant issue / authorize / reconcile, above), `agent/media.ts` (the `MediaReader` over `@shadecn/mod-storage`, wired only when S3 is configured), `agent/leases.ts` (the node-occupancy registry: `SharedMap` `agent-node-lease`, `stringCodec` + own `JSON.stringify` so CAS compares exact strings, TTL `MODULES_AGENT_LEASE_TTL_MS`, value carries `SERVER_INSTANCE_ID`), `agent/runs.ts` (the run registry: `SharedMap` `agent-run` / `agent-conversation`, `SharedLog` `agent-replay`, `SharedChannel` `agent-stop` on channel = `SERVER_INSTANCE_ID`; same codec rule and TTL), `agent/models.ts` (the model table file, above), `agent/definitions.ts` (agent definitions + text skills, both loaded and validated at import), and env/config.
+
+## The Nest copy — `packages/agent-core` (`@learning/agent-core`, `docs/31` §3)
+
+A second implementation of `packages/agent` for the Nest service, copied with only the import lines rewritten (`.ts` → `.js`, `@shadecn/shared/` → `@learning/contracts/`); **it shares nothing with `@shadecn/agent` and nothing keeps the two in sync** — a fix to either is made in both by hand. Everything above (the gateway protocol, the run / registry / authority invariants, the runner boundary) holds for it unchanged; only the differences are listed here.
+
+- **Not copied**: the `k8s` driver (`k8s`, `kube`, `drivers/index`) and its test; `model` and `llm-providers` (they live in `@learning/llm`, which agent-core takes as an ordinary dependency — it has no DI token). `model-stream.ts` keeps only the server's own part (`outputTokenLimit`, `proxyFramesOf`, `MAX_TOOL_ARGUMENT_CHARS`, `isServedModelApi`); `streamUpstream`, `AGENT_CLIENT_IDENTITY` and `SERVED_MODEL_APIS` come from `@learning/llm/stream-upstream`, so there is one copy of each.
+- **The runner's closure never reaches `@learning/llm`, Nest or the ORM, not even as a type** (`test/package.test.ts` walks `runner/main.ts`): the sandbox image carries only the pi packages, `yjs`, `dagre` and the contracts it inlines. A new import in a runner-side file that pulls in `model.ts` / `llm-providers.ts` types breaks that.
+- **Drivers are subpath exports** (`./sandbox/drivers/{process,oci,engine,inline}`), there is no `sandbox/drivers` aggregator — it existed only to pick `k8s`. Every export has the `source` / `types` / `default` triple, like `@learning/contracts`; the package is compiled with tsc and consumers run `dist/`.
+- **Resource files (`agents/*.md`, `skills/README.md`) sit at the package root and are located by package path** (`@learning/agent-core/package.json` is exported); the package never searches for them itself. `testing.ts`'s `AGENT_DEFINITIONS_DIR` is `../agents/` relative to the file, which is right for both `src/` and `dist/` — don't nest either deeper.
+- **`protocol-version.test.ts` has its own recorded hash** for v9: the hash covers `protocol.ts`'s import lines, so the rewrite changed it with the protocol untouched. Changing the wire bumps `RUNNER_PROTOCOL_VERSION` in both copies independently.
+- **No top-level `let` / `var` in `src/`** (pinned by `test/package.test.ts`): every piece of run state lives in `createAgentRuntime`'s closure, so one process can hold several runtimes. Top-level `Set` / `Map` constants (lookup tables) are fine.
+- **`test/runner-process.test.ts` runs the tsc output**: it rebuilds `@learning/contracts`, `@learning/llm` and this package's `dist/`, then starts `node dist/runner/main.js` through the `process` driver against a real HTTP gateway and a scripted upstream. That is the only test that catches a missing dependency declaration or an ESM resolution error in the output.
+- `@dagrejs/dagre` is a peer of this package (the `auto_layout` tool reaches it through `@learning/contracts/flow-layout`); `yjs` and `@learning/contracts` are peers too, so a process holds one copy.
 
 ## Dependencies
 

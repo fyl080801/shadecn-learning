@@ -1,0 +1,11 @@
+{
+  /*
+   * 产出 dist/：@learning/contracts、@learning/llm 的类型走它们的 dist（先构建它们），不带 source 条件，否则它们的源码会落到 rootDir 之外。
+   */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "customConditions": []
+  },
+  "include": ["src"]
+}

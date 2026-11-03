@@ -1,0 +1,30 @@
+{
+  /*
+   * customConditions: source —— 类型从 @learning/contracts、@learning/llm 的源码来，编译本包不用先构建它们。
+   * 本包是纯服务端的（沙箱要 spawn 子进程、读写文件），所以带 Node 类型和 ES2023；产出用 tsconfig.build.json。
+   * 测试和源码共用一份：这里本来就开着 Node 类型。
+   */
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "customConditions": ["source"],
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "declaration": true,
+    "removeComments": true,
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "sourceMap": true,
+    "outDir": "./dist",
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "types": ["node"]
+  },
+  "include": ["src", "test", "vitest.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}

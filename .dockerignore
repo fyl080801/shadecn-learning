@@ -13,6 +13,7 @@ packages/collab/dist
 packages/storage/dist
 packages/apps/dist
 packages/llm/dist
+packages/agent-core/dist
 output
 .git
 .claude
