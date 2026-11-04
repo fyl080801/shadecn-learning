@@ -6,7 +6,6 @@ import { describe, expect, it } from 'vitest'
 
 const packageDir = path.resolve(import.meta.dirname, '..')
 const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'))
-const legacy = JSON.parse(fs.readFileSync(path.resolve(packageDir, '../agent/package.json'), 'utf8'))
 
 function sources(dir: string) {
   return fs
@@ -61,9 +60,9 @@ describe('包的依赖边界（docs/31 §4.1）', () => {
     }
   })
 
-  it('pi 两个包和 yaml 是自己的依赖（不是 peer），版本和 @shadecn/agent 一致；yjs 是 peer', () => {
+  it('pi 两个包和 yaml 是自己的依赖（不是 peer）；yjs 是 peer', () => {
     for (const name of ['@earendil-works/pi-agent-core', '@earendil-works/pi-ai', 'yaml']) {
-      expect(manifest.dependencies[name], name).toBe(legacy.peerDependencies[name])
+      expect(manifest.dependencies[name], name).toBeDefined()
       expect(manifest.peerDependencies?.[name], name).toBeUndefined()
     }
     expect(manifest.peerDependencies.yjs).toBeDefined()

@@ -70,9 +70,6 @@ describe('runner 的边界判定', () => {
     'packages/config/src/index.ts',
     'packages/data-access/src/index.ts',
     'apps/platform/src/app.module.ts',
-    // 旧服务那份同名文件：路径换成 agent-core 之后它们不该再算 runner 侧
-    'packages/agent/src/protocol.ts',
-    'packages/agent/src/runner/main.ts',
     'packages/shared/src/flow-doc.ts',
     'node_modules/.pnpm/@nestjs+core@12.3.2/node_modules/@nestjs/core/index.js',
   ])('其它不属于 runner 侧的文件 %s → 越界（默认拒绝）', (file) => {

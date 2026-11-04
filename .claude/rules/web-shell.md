@@ -14,6 +14,7 @@ paths:
   - "apps/web/src/style.css"
   - "apps/web/src/views/**"
   - "apps/web/src/login/**"
+  - "apps/web/vite.config.ts"
   - "apps/web/index.html"
   - "apps/web/login.html"
   - "apps/web/components.json"
@@ -31,13 +32,20 @@ paths:
 
 ## Frontend auth
 
-- The gate is server-side (`packages/mod-auth/src/guard.ts`, the platform's `auth.pageGuard`): anonymous browsers never receive `index.html`. The router's `beforeEach` is the fallback for a session that dies mid-visit: `fetchSession()` (one cached `GET /api/auth/me`), then if anonymous `goToLoginPage()` (`location.replace('/login?redirect=…')`) on the **first** navigation (`from === START_LOCATION`), else `requestReLogin(to.fullPath)`.
+- The gate is server-side (`packages/web/src/page-gate.ts`, below): anonymous browsers never receive `index.html`. The router's `beforeEach` is the fallback for a session that dies mid-visit: `fetchSession()` (one cached `GET /api/auth/me`), then if anonymous `goToLoginPage()` (`location.replace('/login?redirect=…')`) on the **first** navigation (`from === START_LOCATION`), else `requestReLogin(to.fullPath)`.
 - `lib/auth.ts`: `useAuth()` (`user` / `roles` / `isAuthenticated` / `authEnabled` / `sessionExpired` / `hasRole`) and `apiFetch()`. No token in the browser; login/logout are full-page navigations to `/api/auth/login` / `/api/auth/logout`.
 - **An expired session is never a silent redirect** (it would destroy unsubmitted input). A 401 only calls `requestReLogin(redirect)` (clears the user, remembers the URL, flips `sessionExpired`); `SessionExpiredDialog.vue` owns every exit (choices: `docs/02` §3.7).
 - **Re-login is a popup, not an iframe** (an iframe needs Keycloak to drop `X-Frame-Options` and loses its SSO cookie to third-party-cookie rules). `window.open()` may return `null` (popup blocker) — handle it without closing the dialog (`docs/02` §3.7).
-- **Success has two legs** (the session cookie is httpOnly): `packages/mod-auth/src/login-done-page.ts` renders `/auth/login-done` (registered *after* `pageGuard`), `postMessage`s a same-origin `app-auth:login-done` to `window.opener` and closes. The dialog accepts it only when `event.origin === location.origin` **and** the marker matches, then `finishReLogin()` → `fetchSession(true)` and closes only if `/api/auth/me` says logged-in. A 3s poll is the second leg, and also notices `loginWindow.closed`. `LOGIN_DONE_PATH` / `LOGIN_DONE_SOURCE` / `LOGIN_DONE_MESSAGE` live in `@shadecn/shared/auth`. On `apps/platform` the same page is served at `/api/auth/login-done` (`.claude/rules/auth.md`); the frontend still asks for `LOGIN_DONE_PATH`.
+- **Success has two legs** (the session cookie is httpOnly): `packages/session/src/login-done-page.ts` renders the page at `/api/auth/login-done`, `postMessage`s a same-origin `app-auth:login-done` to `window.opener` and closes. The dialog accepts it only when `event.origin === location.origin` **and** the marker matches, then `finishReLogin()` → `fetchSession(true)` and closes only if `/api/auth/me` says logged-in. A 3s poll is the second leg, and also notices `loginWindow.closed`. `LOGIN_DONE_PATH` / `LOGIN_DONE_SOURCE` / `LOGIN_DONE_MESSAGE` live in `@shadecn/shared/auth`. The frontend asks for `LOGIN_DONE_PATH`, which `afterLogin` rewrites (`auth.md`).
 
-## Page gate in `@learning/web` (`packages/web/src/page-gate.ts`, used by `apps/platform`)
+## Frontend hosting and the login entry
+
+- **`apps/web/vite.config.ts` is the config of record for both `vite build` and middleware mode**; `build.outDir` is `output/public`, no `server.proxy`. `@learning/web`'s `vite-host.ts` passes `hmr: { server }`: that keeps HMR on the same port (otherwise Vite opens 24678).
+- **Backend routes must stay under `/api`**: Vite middleware answers everything outside `apiPrefix` before routing.
+- **The login page is the frontend's second Vite entry**: `login.html` + `apps/web/src/login/` in `rollupOptions.input`. It can't be a SPA route (anonymous browsers never get `index.html`). It reads providers from `GET /api/auth/config` and `?redirect=` / `?error=` from `location.search`; `?redirect=` is passed straight to `/api/auth/login` where `safeRedirect` validates it, so **don't reimplement the check client-side**.
+- **`login.html` carries the same inline theme script as `index.html`** (reads `app:theme` before first paint); change both together.
+
+## Page gate in `@learning/web` (`packages/web/src/page-gate.ts`)
 
 - **The check sits at the point HTML is sent, shared by both modes**, not in a Nest guard (Vite middleware runs before routing) and not keyed on `Accept` / `Sec-Fetch`. Assets stay anonymous because the login page is an entry of the same bundle.
 - **Files can bypass that point, and each mode needs its own fix.** `static`: `@fastify/static` with `wildcard: false` makes a route per file, so `/index.html` skips the fallback controller; with `auth` set, HTML and entries go to `globIgnore`. `dev`: `/@fs/<abs>/index.html`, `/index.html?import&raw`, `/@id/…?import&raw` and, on a case-insensitive disk, `/INDEX.HTML` return the source before Vite falls through; `isHtmlFilePath` sends those straight to the gate. Consequence: with `auth` set, an entry HTML can't use an inline `<script type="module">` in dev (its `?html-proxy` request gets HTML).

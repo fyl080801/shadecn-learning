@@ -5,13 +5,7 @@
       "path": "./apps/web"
     },
     {
-      "path": "./apps/server"
-    },
-    {
       "path": "./packages/shared"
-    },
-    {
-      "path": "./packages/agent"
     }
   ]
 }

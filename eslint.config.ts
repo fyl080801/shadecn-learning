@@ -74,11 +74,6 @@ export default defineConfig(
   // Node 后端 —— Node 全局变量
   {
     files: [
-      // 后端包整个是 node 环境（含 prisma.config.ts、vitest.config.ts）
-      "apps/server/**/*.ts",
-      // 构建脚本和随产物发出去的模板，都是 node 环境
-      "apps/server/scripts/**/*.{js,mjs}",
-      "apps/agent-sandbox/**/*.{ts,mjs}",
       "apps/agent-runner/**/*.{ts,mjs}",
       "apps/platform/**/*.ts",
       "apps/collab/**/*.{ts,mjs}",
@@ -96,15 +91,10 @@ export default defineConfig(
       "packages/llm/**/*.ts",
       "packages/agent-core/**/*.ts",
       "packages/agent-service/**/*.ts",
-      "scripts/**/*.mjs",
-      // provider / 连接串解析，prisma.config.ts 和构建脚本共用的那份
-      "apps/server/prisma/*.mjs",
       "apps/web/vite.config.ts",
       "apps/web/vite-plugins/**/*.ts",
       "apps/web/vitest.config.ts",
       "packages/shared/vitest.config.ts",
-      // 画布 Agent 包整个是 node 环境（沙箱要 spawn 子进程、读写文件）
-      "packages/agent/**/*.ts",
       "vitest.config.ts",
       "eslint.config.ts"
     ],

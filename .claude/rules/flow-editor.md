@@ -11,7 +11,8 @@ paths:
   - "apps/web/src/styles/vue-flow.css"
   - "packages/shared/src/flow-*.ts"
   - "packages/shared/src/canvas.ts"
-  - "packages/mod-canvas/src/**"
+  - "packages/canvas/src/**"
+  - "packages/contracts/src/flow-*.ts"
 ---
 
 # Canvas editor (REQ-CANVAS `docs/13`, REQ-SOLO `docs/16`, REQ-NODEKIT `docs/21`)
@@ -91,7 +92,7 @@ Collaboration (sync transport, persistence, presence, close codes) is in `collab
 
 ## State — `stores/flow/` is a projection of a Y.Doc
 
-- The canvas content **is** the Yjs doc (shape in `@shadecn/shared/flow-doc`, shared by browser and server). The frontend's incremental projection (`changedTopLevelKeys` / `projectMap` / `createNodeProjector` / `readFallbackViewport`) is `lib/flow-projection.ts`; server-side `packages/mod-collab/src/flow-doc.ts` keeps only `readGraphFromDoc` and `pruneDanglingEdges`.
+- The canvas content **is** the Yjs doc (shape in `@shadecn/shared/flow-doc`, its byte copy in `@learning/contracts/flow-doc` on the server). The frontend's incremental projection (`changedTopLevelKeys` / `projectMap` / `createNodeProjector` / `readFallbackViewport`) is `lib/flow-projection.ts`; server-side `packages/collab/src/flow-doc.ts` keeps only `readGraphFromDoc` and `pruneDanglingEdges`.
 - `nodes` / `edges` are `Y.Map<id, Y.Map>` because Y.Map merges **per key** — a node as one JSON blob would let the later write clobber the earlier wholesale.
 - **Node = five groups (schema v3): `type` / `layout` / `metadata` / `data` / `runtime`, plus derived, never-stored `inputs`** (`docs/13` §3.7).
   - `layout` (position, size, zIndex, parentNode, extent, handle positions) is **flat on the node's top level** (drag hot path, Vue Flow's shape). `metadata` (label, description, icon, createdAt, createdBy, ui), `data`, `runtime` (status, error, taskId, `outputs.<portId>` flat keys) are nested `Y.Map`s.
@@ -138,7 +139,7 @@ Collaboration (sync transport, persistence, presence, close codes) is in `collab
 
 ## Personal canvases (REQ-SOLO)
 
-- A personal space is a `Project` with `kind='personal'` and a unique `personalOwner` (created on read by `GET /api/projects/personal`); its canvases have `mode: 'solo'`, **derived from the project, never stored on `Flow`**. Content, doc, projection and **transport are identical** — `composables/flow/sync/` has exactly one transport, `collab.ts`. (`GET/POST /api/flows/:id/doc` and `flow-writer.ts`'s `applyFlowUpdate()` remain server-side with no frontend caller.)
+- A personal space is a `Project` with `kind='personal'` and a unique `personalOwner` (created on read by `GET /api/projects/personal`); its canvases have `mode: 'solo'`, **derived from the project, never stored on `Flow`**. Content, doc, projection and **transport are identical** — `composables/flow/sync/` has exactly one transport, `collab.ts`. (`GET/POST /api/flows/:id/doc` and `FlowWriter.apply` remain server-side with no frontend caller.)
 - **`mode` only decides presentation**: where leaving lands, terminal-dialog / status-line wording (`docs/16` §4.6) and whether presence runs (`useFlowPresence(sync, mode)`). Never branch content, doc or transport on it.
 - **The doc and its IndexedDB cache are created immediately; the transport waits for metadata** (`context.ts` computes `mode` only when `store.meta.id === flowId`), or an unopenable canvas reports its failure twice.
 - Server side the room is owner-only and presence-free (see `collab.md`). The client must still *send* awareness: reset local state to `{}`, **never `null`** — the 15s replay is the only client→server heartbeat.
@@ -149,4 +150,4 @@ Collaboration (sync transport, persistence, presence, close codes) is in `collab
 
 ## Types
 
-Graph types, `GRAPH_SCHEMA_VERSION`, `nodeRecordFromParts` and `inputs` derivation are in `@shadecn/shared/flow-graph`; ports and `resolveConnection` in `@shadecn/shared/flow-node-types`; project/canvas API shapes in `@shadecn/shared/canvas`. `packages/mod-canvas/src/flow-types.ts` keeps only server-only code (it uses `Buffer`): `parseGraph` / `parseTransactions` / `parseUserStatePatch`, `GRAPH_LIMITS`, Op types. `metadata.createdAt` is validated with `isTimestamp` everywhere.
+Graph types, `GRAPH_SCHEMA_VERSION`, `nodeRecordFromParts` and `inputs` derivation are in `@shadecn/shared/flow-graph`; ports and `resolveConnection` in `@shadecn/shared/flow-node-types`; project/canvas API shapes in `@shadecn/shared/canvas`. `packages/canvas/src/flow-types.ts` keeps only server-only code: `parseGraph` / `readGraph` / `parseViewport` / `parseUserStatePatch`, `GRAPH_LIMITS`. `metadata.createdAt` is validated with `isTimestamp` everywhere.

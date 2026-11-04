@@ -240,7 +240,7 @@ describe('serverPort', () => {
   const portOf = (server: unknown) =>
     serverPort(new ConfigService({ rootDir: '/', dataDir: '/data', isProduction: false, values: { server } }))
 
-  it('默认 3001：3000 是 apps/server 的', () => {
+  it('默认 3001', () => {
     expect(portOf(undefined)).toBe(3001)
     expect(portOf({})).toBe(3001)
   })

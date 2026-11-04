@@ -37,7 +37,7 @@ describe('包的依赖边界', () => {
     for (const { file, code } of sources('src')) expect(code, file).not.toMatch(/@learning\/(collab|apps|agent)/)
   })
 
-  it('sharp 只经动态 import 加载，版本和 @shadecn/mod-storage 一样：静态 import 的话原生二进制装不上就起不来', () => {
+  it('sharp 只经动态 import 加载：静态 import 的话原生二进制装不上就起不来', () => {
     expect(manifest.dependencies.sharp).toBe('0.35.5')
     for (const { file, code } of sources('src')) expect(code, file).not.toMatch(/(from|import)\s+'sharp'/)
   })

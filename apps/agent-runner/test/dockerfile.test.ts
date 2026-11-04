@@ -64,20 +64,13 @@ describe('runner 镜像的 Dockerfile', () => {
 })
 
 describe('接线', () => {
-  it('根 Dockerfile 在 install 之前 COPY 这个包的 package.json', () => {
-    const root = readFileSync(path.join(repoRoot, 'Dockerfile'), 'utf8')
-    const line = root.indexOf('COPY apps/agent-runner/package.json ./apps/agent-runner/\n')
-    expect(line).toBeGreaterThan(-1)
-    expect(line).toBeLessThan(root.indexOf('RUN pnpm install --frozen-lockfile'))
-  })
-
   it('根 .dockerignore 排除构建上下文和测试', () => {
     const ignored = readFileSync(path.join(repoRoot, '.dockerignore'), 'utf8').split('\n')
     expect(ignored).toContain('apps/agent-runner/dist')
     expect(ignored).toContain('apps/agent-runner/test')
   })
 
-  it('构建上下文不进 output/：旧服务的 `docker build ./output` 只排除了 agent-sandbox', async () => {
+  it('构建上下文在包自己的 dist/，不进 output/', async () => {
     const { contextDir } = await import('../scripts/bundle-runner.mjs')
     expect(path.relative(repoRoot, contextDir)).toBe(path.join('apps', 'agent-runner', 'dist'))
   })

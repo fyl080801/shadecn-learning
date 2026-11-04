@@ -54,10 +54,10 @@ describe('包的依赖边界', () => {
     }
   })
 
-  it('pi-ai 的版本和 @shadecn/mod-apps 一致；没有 DI token，是自己的依赖', () => {
-    const reference = JSON.parse(fs.readFileSync(path.resolve(packageDir, '../mod-apps/package.json'), 'utf8')).peerDependencies
-    expect(manifest.dependencies['@earendil-works/pi-ai']).toBe(reference['@earendil-works/pi-ai'])
-    expect(manifest.peerDependencies.yjs).toBe(reference.yjs)
+  it('pi-ai 没有 DI token，是自己的依赖；yjs 是 peer', () => {
+    expect(manifest.dependencies['@earendil-works/pi-ai']).toBeDefined()
+    expect(manifest.peerDependencies['@earendil-works/pi-ai']).toBeUndefined()
+    expect(manifest.peerDependencies.yjs).toBeDefined()
   })
 
   it('src 里 import 的每个包都声明了：tsc 不查这个，缺了到产物运行时才炸', () => {

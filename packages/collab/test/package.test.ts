@@ -23,14 +23,6 @@ describe('包的依赖边界', () => {
     }
   })
 
-  it('Hocuspocus 和 crossws 的版本线和 mod-collab 一致', () => {
-    const reference = JSON.parse(fs.readFileSync(path.resolve(packageDir, '../mod-collab/package.json'), 'utf8')).peerDependencies
-    expect(manifest.dependencies['@hocuspocus/server']).toBe(reference['@hocuspocus/server'])
-    expect(manifest.dependencies['@hocuspocus/extension-redis']).toBe(reference['@hocuspocus/extension-redis'])
-    expect(manifest.dependencies.crossws).toBe(reference.crossws)
-    expect(manifest.peerDependencies.yjs).toBe(reference.yjs)
-  })
-
   it('源码和测试都不 import @shadecn/*，@mikro-orm/ 下只用 core，src 不碰 ORM', () => {
     for (const dir of ['src', 'test']) {
       for (const { file, code } of sources(dir)) {

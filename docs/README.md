@@ -37,7 +37,7 @@
 | REQ-ASSET-THUMB | 画布资源缩略图：上传时生成图标 / 低清两档，按场景取档、取不到退回原图并按需补档 | [27-asset-thumbnails.md](27-asset-thumbnails.md) | 已实现 |
 | REQ-MODULES | 服务端模块化：底座 + 可开关能力包，按角色（web / collab / agent）独立部署与扩容 | [28-server-modules.md](28-server-modules.md) | 已实现（按角色的 k8s 清单在 variants，未切线上） |
 | REQ-APPS | 应用执行：语言 / 图像 / 视频 / 3D 生成服务统一成 `executeApp`，驱动可扩充（火山方舟、ComfyUI、ollama），一个应用多个模型（差异写在配置里），画布图片 / 视频节点用应用生成（任务化：服务端执行并写回、生成状态推送、续查、取消） | [29-apps.md](29-apps.md) | 部分实现（画布生成已任务化；agent 工具未做） |
-| REQ-NEST | NestJS 版服务：按 Nest 模块仿照现有能力另写一份（`@learning/*`，`apps/platform` + `apps/collab`），`apps/server` 不动、不共用数据库 | [30-collab-nest-migration.md](30-collab-nest-migration.md) | 实施中 |
+| REQ-NEST | NestJS 版服务：按 Nest 模块重写的服务（`@learning/*`，`apps/platform` + `apps/collab`）。旧的 Hono 服务已删除，要查看去 `backup/master-60d1e7d` 分支 | [30-collab-nest-migration.md](30-collab-nest-migration.md) | 实施中 |
 | REQ-NEST-AGENT | Agent 搬到 Nest 的方案：`packages/agent` 复制成框架无关的 `@learning/agent-core`，`@learning/agent` 只重写宿主，留在平台进程 | [31-agent-nest-migration.md](31-agent-nest-migration.md) | 已完成 |
 
 ## 状态口径

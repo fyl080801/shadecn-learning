@@ -319,7 +319,7 @@ describe('目录的发现规则', () => {
     expect(loadTextSkills(path.join(tmpdir(), 'no-such-text-skills-dir'))).toEqual([])
   })
 
-  it('仓库里的目录（packages/agent/skills/）只有说明它的 README.md：没有文字技能，和内置技能一起校验通过', () => {
+  it('仓库里的目录（packages/agent-core/skills/）只有说明它的 README.md：没有文字技能，和内置技能一起校验通过', () => {
     const repoDir = fileURLToPath(new URL('../skills/', import.meta.url))
     const skills = loadTextSkills(repoDir)
     expect(skills).toEqual([])

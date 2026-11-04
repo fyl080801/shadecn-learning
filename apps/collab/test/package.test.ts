@@ -62,9 +62,8 @@ describe('依赖边界', () => {
     expect([...closure].filter((name) => /^@learning\/(agent|agent-core|llm|apps|storage)$/.test(name) || name.startsWith('@earendil-works/'))).toEqual([])
   })
 
-  it('新包都登记过：Dockerfile 的 COPY，.dockerignore 的 dist 和 test', () => {
+  it('新包登记过 .dockerignore 的 dist 和 test', () => {
     const root = path.resolve(appDir, '../..')
-    expect(fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8')).toContain('COPY apps/collab/package.json ./apps/collab/')
     const ignore = fs.readFileSync(path.join(root, '.dockerignore'), 'utf8').split('\n')
     expect(ignore).toEqual(expect.arrayContaining(['apps/collab/dist', 'apps/collab/test']))
   })
